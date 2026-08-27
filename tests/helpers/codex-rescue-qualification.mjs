@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
-import { createRescuePreparationStore, readRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { createRescuePreparationStore, readRescuePreparation, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
 import { sanitizeCodexThreadSpawnChild } from '../../scripts/lib/codex-app-server.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
@@ -22,12 +22,10 @@ const MAX_CHILD_POLLS = 64;
 const MAX_RESCUE_TASK_NAME_BYTES = 64;
 const MAX_RESCUE_TASK_BYTES = 64 * 1024;
 const MAX_RESCUE_ENVELOPE_BYTES = MAX_RESCUE_TASK_BYTES + 4096;
-const MAX_RESCUE_MODEL_BYTES = 512;
 const MAX_LEGACY_JSON_DEPTH = 8;
 const MAX_LEGACY_JSON_CANDIDATES = 256;
 const MAX_LEGACY_JSON_DECODE_BYTES = 4 * MAX_TEXT_BYTES;
 const MAX_PREPARATION_JSON_DEPTH = 256;
-const RESCUE_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
@@ -81,11 +79,13 @@ export function qualifyCodexRescueEvidence(input, options) {
 export async function qualifyCodexRescuePreparedContinuationEvidence(input, options) {
   const optionKeys = options && typeof options === 'object' && !Array.isArray(options) ? Object.keys(options) : [];
   if (options !== undefined && (!options || typeof options !== 'object' || Array.isArray(options)
-    || optionKeys.some((key) => key !== 'requireLongLifecycle')
-    || Object.hasOwn(options, 'requireLongLifecycle') && typeof options.requireLongLifecycle !== 'boolean')) {
+    || optionKeys.some((key) => !['requireCandidateClosure', 'requireLongLifecycle'].includes(key))
+    || Object.hasOwn(options, 'requireLongLifecycle') && typeof options.requireLongLifecycle !== 'boolean'
+    || Object.hasOwn(options, 'requireCandidateClosure') && typeof options.requireCandidateClosure !== 'boolean')) {
     mismatch('continuation-raw-contract', 'Prepared continuation qualification options are invalid.');
   }
   const requireLongLifecycle = options?.requireLongLifecycle === true;
+  const requireCandidateClosure = options?.requireCandidateClosure === true;
   if (!input || !['named', 'generic'].includes(input.route) || !['foreground', 'background'].includes(input.execution)
     || typeof input.parentRolloutJson !== 'string' || typeof input.childRolloutJson !== 'string'
     || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
@@ -200,7 +200,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   validateContinuationCandidateClosure(input, hostChildren, partition.records, executor, {
     parentSessionId, parentTurnId: originalParentTurnId, permissionMode: expected.permissionMode,
     workspace: workspaceAuthority.executionWorkspace,
-  });
+  }, requireCandidateClosure);
   const preChildAuthority = rescueBindingAuthorityView(preBinding); const childAuthority = rescueBindingAuthorityView(binding);
   if (childAuthority.kind !== 'subagent-start' || childAuthority.childAgentId !== childThreadId || childAuthority.childAgentType !== executor.agentType
     || childAuthority.parentTurnId !== originalParentTurnId || childAuthority.parentPermissionMode !== expected.permissionMode
@@ -560,15 +560,20 @@ function validateContinuationAppServerTranscript(transcript, expected) {
   return resumedHosts;
 }
 
-function validateContinuationCandidateClosure(input, hosts, bindings, selectedExecutor, expected) {
+function validateContinuationCandidateClosure(input, hosts, bindings, selectedExecutor, expected, requireCandidateClosure) {
   const bindingIds = bindings.map((record) => rescueBindingAuthorityView(record).childAgentId);
-  const logicalHosts = hosts.filter((candidate) => candidate.agentRole === 'zcode-rescue' || bindingIds.includes(candidate.id));
+  const targetHosts = hosts.filter((candidate) => candidate.id === selectedExecutor.agentId);
+  const targetBindings = bindingIds.filter((id) => id === selectedExecutor.agentId);
+  if (targetHosts.length !== 1 || targetBindings.length !== 1) {
+    mismatch('continuation-candidate-executors', 'The selected Rescue child does not have one exact host and durable binding closure.');
+  }
+  if (!requireCandidateClosure) return;
+  const logicalHosts = hosts.filter((candidate) => bindingIds.includes(candidate.id));
   const logicalIds = logicalHosts.map((candidate) => candidate.id);
   if (logicalIds.length !== bindingIds.length || logicalIds.some((id) => !bindingIds.includes(id))
     || bindingIds.some((id) => !logicalIds.includes(id))) {
     mismatch('continuation-candidate-executors', 'Managed Rescue hosts and durable bindings do not form one exact candidate closure.');
   }
-  if (logicalHosts.length === 1 && input.candidateExecutorRecordBytesJson === undefined) return;
   if (typeof input.candidateExecutorRecordBytesJson !== 'string'
     || Buffer.byteLength(input.candidateExecutorRecordBytesJson) > MAX_ROLLOUT_BYTES) {
     mismatch('continuation-candidate-executors', 'Candidate executor evidence is missing or oversized.');
@@ -2026,31 +2031,11 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   }
   let payload;
   assertExactPreparationJson(options.expectedPreparationPayload);
-  try { payload = JSON.parse(options.expectedPreparationPayload); } catch { mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.'); }
-  const envelopeKeys = payload?.version === 1 ? ['options', 'source', 'task', 'version']
-    : payload?.version === 2 ? ['continuationTarget', 'options', 'source', 'task', 'version'] : [];
-  assertExactKeys(payload, envelopeKeys, 'preparation-payload-contract');
-  if (!payload.options || typeof payload.options !== 'object' || Array.isArray(payload.options)) {
+  try { payload = validateRescuePreparation(JSON.parse(options.expectedPreparationPayload)); } catch {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
-  const optionKeys = Object.keys(payload.options);
-  const validModel = (value) => typeof value === 'string' && value.trim().length > 0
-    && Buffer.byteLength(value, 'utf8') <= MAX_RESCUE_MODEL_BYTES
-    && ![...value].some((character) => { const point = character.codePointAt(0); return point <= 31 || point >= 127 && point <= 159; });
-  const target = payload.version === 2 ? payload.continuationTarget : null;
-  const validTarget = target === null || target && typeof target === 'object' && !Array.isArray(target)
-    && Object.keys(target).sort().join('\0') === ['agentPath', 'childId'].sort().join('\0')
-    && typeof target.childId === 'string' && target.childId.length > 0 && Buffer.byteLength(target.childId, 'utf8') <= 512
-    && typeof target.agentPath === 'string' && Buffer.byteLength(target.agentPath, 'utf8') <= 1024
-    && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(target.agentPath)
-    && ![...target.childId].some((character) => { const point = character.codePointAt(0); return point <= 31 || point >= 127 && point <= 159; });
-  if (![1, 2].includes(payload.version) || payload.version === 2 && (!validTarget || target !== null && payload.options?.resume !== 'resume') || !['explicit', 'proactive'].includes(payload.source)
-    || typeof payload.task !== 'string' || !payload.task.trim() || Buffer.byteLength(payload.task, 'utf8') > MAX_RESCUE_TASK_BYTES
-    || optionKeys.some((key) => !['effort', 'execution', 'model', 'resume'].includes(key) || payload.options[key] === null)
-    || payload.options.execution !== undefined && !['foreground', 'background'].includes(payload.options.execution)
-    || payload.options.resume !== undefined && !['fresh', 'resume'].includes(payload.options.resume)
-    || payload.options.effort !== undefined && !RESCUE_EFFORTS.has(payload.options.effort)
-    || payload.options.model !== undefined && !validModel(payload.options.model)) {
+  if (payload.version === 2 && (payload.options.resume !== 'fresh' || payload.continuationTarget !== null)
+    || payload.version === 1 && payload.options.resume !== undefined && payload.options.resume !== 'fresh') {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
   assertParentPreparationTaskExclusivity(parent, write.event, payload.task, calls, outputs);

@@ -689,7 +689,7 @@ test('captured 2026-08-27 multiple-binding continuation selects the exact privat
     jobs.push(`${JSON.stringify(installedRawJob(siblingAnchor, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'captured-sibling-session' }))}\n`);
     jobs.push(`${JSON.stringify(installedRawJob(siblingCurrent, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'captured-sibling-session' }))}\n`);
     capture.jobRecordBytesJson = JSON.stringify(jobs);
-    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture);
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture, { requireCandidateClosure: true });
     assert.equal(evidence.childThreadId, capture.expected.childThreadId);
     assert.equal(evidence.agentPath, capture.expected.agentPath);
     assert.equal(evidence.continuationSpawnCount, 0);

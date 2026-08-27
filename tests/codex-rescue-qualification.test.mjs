@@ -428,24 +428,27 @@ test('prepared continuation selects the exact target when canonical binding orde
     jobs.push(`${JSON.stringify(rawJob(siblingAnchor, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
     jobs.push(`${JSON.stringify(rawJob(siblingCurrent, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
     input.jobRecordBytesJson = JSON.stringify(jobs);
-    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input, { requireCandidateClosure: true });
     assert.equal(evidence.childThreadId, childId); assert.equal(evidence.agentPath, agentPath);
+    const incomplete = structuredClone(input); delete incomplete.candidateExecutorRecordBytesJson;
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(incomplete, { requireCandidateClosure: true }),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-candidate-executors');
   }
 });
 
-test('prepared continuation ignores an ordinary occupancy sibling but requires complete managed sibling evidence', async () => {
+test('prepared continuation ignores ordinary and unbound stale named occupancy siblings without reading executor state', async () => {
   const ordinary = preparedContinuationFixture('named'); const ordinaryTranscript = JSON.parse(ordinary.appServerTranscriptJson);
   ordinaryTranscript[3].result.data.unshift(restoredRawCodexChild({ originWorkspace: expectedWorkspace,
     restoredPath: '/root/ordinary_helper', agentRole: null, id: 'ordinary-sibling' }));
   ordinary.appServerTranscriptJson = JSON.stringify(ordinaryTranscript);
   assert.equal((await qualifyCodexRescuePreparedContinuationEvidence(ordinary)).childThreadId, childId);
 
-  const managed = preparedContinuationFixture('named'); const managedTranscript = JSON.parse(managed.appServerTranscriptJson);
+  const staleNamed = preparedContinuationFixture('named'); const managedTranscript = JSON.parse(staleNamed.appServerTranscriptJson);
   managedTranscript[3].result.data.unshift(restoredRawCodexChild({ originWorkspace: expectedWorkspace,
     restoredPath: '/root/zcode_rescue_sibling', agentRole: 'zcode-rescue', id: 'managed-sibling' }));
-  managed.appServerTranscriptJson = JSON.stringify(managedTranscript);
-  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(managed),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-candidate-executors');
+  staleNamed.appServerTranscriptJson = JSON.stringify(managedTranscript);
+  assert.equal(staleNamed.candidateExecutorRecordBytesJson, undefined);
+  assert.equal((await qualifyCodexRescuePreparedContinuationEvidence(staleNamed)).childThreadId, childId);
 });
 
 test('qualifies raw v3 origin-to-execution workspace authority and immutable generation routing', async () => {
@@ -1641,10 +1644,33 @@ test('preparation qualification independently validates task and every bounded o
         && (envelope.task.trim().length === 0 || !error.message.includes(envelope.task)),
     );
   }
-  const valid = { ...expectedPreparationEnvelope, options: { execution: 'background', resume: 'resume', effort: 'xhigh', model: 'provider/model' } };
+  const valid = { ...expectedPreparationEnvelope, options: { execution: 'background', resume: 'fresh', effort: 'xhigh', model: 'provider/model' } };
   const preparationPayload = JSON.stringify(valid); const input = fixture();
   parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
   assert.equal(qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput, expectedPublicOutput);
+});
+
+test('spawn qualification rejects targeted resume and malformed continuation identifiers through production validation', () => {
+  const invalidEnvelopes = [
+    {
+      version: 2, source: 'explicit', task: expectedPreparationEnvelope.task,
+      options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { childId, agentPath },
+    },
+    {
+      version: 2, source: 'explicit', task: expectedPreparationEnvelope.task,
+      options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { childId: `malformed-${'\ud800'}`, agentPath },
+    },
+  ];
+  for (const envelope of invalidEnvelopes) {
+    const preparationPayload = JSON.stringify(envelope); const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-payload-contract',
+    );
+  }
 });
 
 test('preparation qualification rejects duplicate raw keys and an oversized escaped frame', () => {
