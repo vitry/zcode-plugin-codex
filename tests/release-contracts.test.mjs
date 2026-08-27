@@ -190,6 +190,7 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(english, /targetless.{0,100}multiple usable bindings.{0,100}fail closed/is);
   assert.match(english, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous.{0,100}fail closed/is);
   assert.match(english, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
+  assert.doesNotMatch(english, /resumes only its own session when it is the sole eligible binding/i);
 
   assert.match(chinese, /`--resume` 仍是无参数的公开选择/);
   assert.match(chinese, /Root 私下保留(?=[\s\S]{0,200}`task_name`)(?=[\s\S]{0,200}成功 `spawn_agent`)(?=[\s\S]{0,260}canonical (?:agent )?path)/i);
@@ -202,6 +203,7 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(chinese, /不带 target.{0,100}多个可用 binding.{0,100}fail closed/is);
   assert.match(chinese, /没有精确 private selector.{0,100}两个可用 binding.{0,100}歧义.{0,100}fail closed/is);
   assert.match(chinese, /version 2.{0,120}child ID.{0,80}path 对.{0,120}读取兼容/is);
+  assert.doesNotMatch(chinese, /仅在它是唯一合格 binding 时 resume 自己的 session/i);
 
   assert.match(security, /authorized private version-3 preparation frame.{0,160}`[^`]*agentPath[^`]*`/is);
   assert.match(security, /host child ID.{0,120}(?:discovered|resolved).{0,120}exact parent/is);
