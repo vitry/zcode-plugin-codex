@@ -205,6 +205,8 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(security, /no additional propagation.{0,180}(?:argv|environment).{0,180}(?:status|result|ZCode)/is);
   assert.match(security, /path or identity drift.{0,100}fail closed/is);
   assert.match(security, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous/is);
+  assert.match(security, /(?:absent|missing) or null (?:continuation )?(?:target|selector).{0,180}(?:valid|allowed).{0,180}one uniquely eligible complete binding/is);
+  assert.match(security, /supplied non-null selector.{0,180}(?:missing|malformed).{0,80}`?agentPath`?.{0,220}(?:exactly resolve|exact resolution|exact binding).{0,180}fail closed/is);
 
   assert.match(changelog, /multiple usable Rescue bindings.{0,180}canonical `task_name` path/is);
   assert.match(changelog, /version-3.{0,100}`[^`]*agentPath[^`]*`.{0,160}child ID.{0,120}(?:internal|inside the plugin)/is);
@@ -214,6 +216,8 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(bindingAdr, /Root retains(?=[\s\S]{0,180}`task_name`)(?=[\s\S]{0,180}canonical)/i);
   assert.match(bindingAdr, /Root neither receives nor supplies the host child ID/i);
   assert.match(bindingAdr, /plugin.{0,160}obtains.{0,100}child ID internally/is);
+  assert.match(bindingAdr, /(?:absent|missing) or null (?:continuation )?(?:target|selector).{0,180}(?:valid|allowed).{0,180}one uniquely eligible complete binding/is);
+  assert.match(bindingAdr, /supplied non-null selector.{0,180}(?:missing|malformed).{0,80}`?agentPath`?.{0,220}(?:exactly resolve|exact resolution|exact binding).{0,180}fail closed/is);
   assert.match(bindingAdr, /one canonical workspace admits at most one active writable Rescue/i);
   assert.match(bindingAdr, /parallel Rescue throughput.{0,160}separate isolation and admission design/is);
   assert.match(bindingAdr, /continuation fix neither authorizes nor implements that change/i);
