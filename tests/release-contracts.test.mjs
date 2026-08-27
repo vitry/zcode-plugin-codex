@@ -155,7 +155,9 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(english, /private stdin.{0,180}prepared state/is);
   assert.match(english, /raw-capable TTY[\s\S]+task-free readiness[\s\S]+one JSON line[\s\S]+LF/i);
   assert.match(english, /readiness[\s\S]+nonterminal[\s\S]+no (?:EOF|U\+0004)/i);
-  assert.match(english, /active `?rescueChildId`?.{0,180}rejoin|rejoin.{0,180}active Rescue child/is);
+  assert.match(english, /active `?rescueChildPath`?.{0,180}exact canonical `?task_name`?.{0,180}(?:returned|spawn)|exact canonical `?task_name`?.{0,180}active `?rescueChildPath`?.{0,180}rejoin/is);
+  assert.match(english, /Root never.{0,100}(?:receives|retains).{0,80}child ID/i);
+  assert.doesNotMatch(english, /active `?rescueChildId`?.{0,180}rejoin/i);
   assert.match(english, /`currentJobId`.{0,180}durably reserved and published.{0,180}(?:queues|fails|cancelled)/is);
   assert.match(english, /task-independent[^\n]+`zcode_rescue_task`/i);
   assert.doesNotMatch(english, /task-specific native display names/i);
@@ -165,7 +167,9 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /私有 stdin.{0,180}prepared state/is);
   assert.match(chinese, /raw-capable TTY[\s\S]+不含 task 的 readiness[\s\S]+一行 JSON[\s\S]+LF/i);
   assert.match(chinese, /readiness[\s\S]+非终态[\s\S]+不发送 (?:EOF|U\+0004)/i);
-  assert.match(chinese, /活动的 `?rescueChildId`?.{0,180}重新加入|重新加入.{0,180}活动的 Rescue child/is);
+  assert.match(chinese, /活动的 `?rescueChildPath`?.{0,180}精确 canonical `?task_name`?.{0,180}(?:返回|spawn)|精确 canonical `?task_name`?.{0,180}活动的 `?rescueChildPath`?.{0,180}重新加入/is);
+  assert.match(chinese, /Root (?:绝不|不会).{0,100}(?:收到|保留).{0,80}child ID/i);
+  assert.doesNotMatch(chinese, /活动的 `?rescueChildId`?.{0,180}重新加入/i);
   assert.match(chinese, /`currentJobId`.{0,180}持久预留并发布.{0,180}(?:排队|失败|取消)/is);
   assert.match(chinese, /与任务无关[^\n]+`zcode_rescue_task`/i);
   assert.doesNotMatch(chinese, /任务相关的原生显示名称/);
