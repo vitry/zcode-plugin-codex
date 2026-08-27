@@ -162,17 +162,20 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(english, /pair.{0,100}(?:selector|narrows selection).{0,100}(?:not authority|grants no authority)/is);
   assert.match(english, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:validate|validation)/is);
   assert.match(english, /targetless.{0,100}multiple usable bindings.{0,100}fail closed/is);
+  assert.match(english, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous.{0,100}fail closed/is);
 
   assert.match(chinese, /`--resume` 仍是无参数的公开选择/);
   assert.match(chinese, /Root 私下保留.{0,180}精确 host child ID.{0,80}(?:agent )?path 对/is);
   assert.match(chinese, /这对值.{0,100}(?:selector|收窄选择).{0,100}(?:不是 authority|不授予 authority)/is);
   assert.match(chinese, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:验证|校验)/is);
   assert.match(chinese, /不带 target.{0,100}多个可用 binding.{0,100}fail closed/is);
+  assert.match(chinese, /没有精确 private selector.{0,100}两个可用 binding.{0,100}歧义.{0,100}fail closed/is);
 
   assert.match(security, /authorized private version-2 preparation frame/i);
   assert.match(security, /original linked host lifecycle.{0,120}only exceptions/is);
   assert.match(security, /no additional propagation.{0,180}(?:argv|environment).{0,180}(?:status|result|ZCode)/is);
   assert.match(security, /cross-paired.{0,80}(?:drift|changed).{0,100}fail closed/is);
+  assert.match(security, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous/is);
 
   assert.match(changelog, /multiple usable Rescue bindings.{0,160}exact child ID\/path pair/is);
   assert.match(changelog, /targetless.{0,100}ambiguous.{0,100}fail closed/is);

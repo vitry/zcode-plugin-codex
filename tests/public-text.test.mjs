@@ -49,3 +49,12 @@ test('public Rescue text does not expose a continuation selector or concurrent-w
     assert.doesNotMatch(source, /(?:multiple|concurrent|多个|并发).{0,100}(?:active )?writable Rescue.{0,100}(?:same canonical workspace|同一 canonical workspace).{0,80}(?:supported|enabled|允许|支持|启用)/is);
   }
 });
+
+test('public Rescue text never makes multiple-binding ambiguity unconditional', () => {
+  const root = new URL('../', import.meta.url);
+  for (const path of ['README.md', 'README.zh-CN.md', 'SECURITY.md', 'CHANGELOG.md']) {
+    const source = readFileSync(new URL(path, root), 'utf8');
+    assert.doesNotMatch(source, /(?:^|[.!?;]\s+)Two usable bindings are ambiguous/mi);
+    assert.doesNotMatch(source, /(?:^|[。！？；]\s*)两个可用 binding 属于歧义/m);
+  }
+});
