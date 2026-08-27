@@ -118,7 +118,7 @@ function assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId
   for (const field of ['taskName', 'agentPath', 'childThreadId']) {
     assert.equal(post[field], pendingIdentity[field], `post-continuation ${field} must match the pending snapshot`);
   }
-  assert.equal(post.followupTarget, pendingIdentity.childThreadId, 'post-continuation follow-up target must match the pending snapshot child ID');
+  assert.equal(post.followupTarget, pendingIdentity.agentPath, 'post-continuation follow-up target must match the pending snapshot canonical path');
 }
 
 function installedRescueQualificationBody(source) {
@@ -1609,13 +1609,31 @@ test('installed Rescue choice linkage rejects post-continuation identity drift f
       { type: 'session_meta', payload: { id: parentThreadId } },
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
       { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: 'turn', item: { type: 'SubAgentActivity', id: 'spawn', kind: 'started', agent_path: '/root/zcode_rescue_drifted', agent_thread_id: pendingIdentity.childThreadId } } },
-      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.childThreadId }) } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.agentPath }) } },
     ],
     [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_drifted' } } } } }],
   ];
   assert.throws(
     () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
     /pending snapshot/u,
+  );
+});
+
+test('installed Rescue choice linkage routes the retained child by canonical path', () => {
+  const parentThreadId = 'parent-thread';
+  const pendingIdentity = { taskName: 'zcode_rescue_fix_progress', agentPath: '/root/zcode_rescue_fix_progress', childThreadId: 'child-thread' };
+  const evidence = { ...pendingIdentity };
+  const postRollouts = [
+    [
+      { type: 'session_meta', payload: { id: parentThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
+      { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: 'turn', item: { type: 'SubAgentActivity', id: 'spawn', kind: 'started', agent_path: pendingIdentity.agentPath, agent_thread_id: pendingIdentity.childThreadId } } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.agentPath }) } },
+    ],
+    [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: pendingIdentity.agentPath } } } } }],
+  ];
+  assert.doesNotThrow(
+    () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
   );
 });
 
