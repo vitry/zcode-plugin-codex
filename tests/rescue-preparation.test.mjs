@@ -147,6 +147,7 @@ test('v3 accepts an exact canonical-path continuation target', async () => {
     assert.notEqual(decoded, original);
     assert.notEqual(decoded.options, original.options);
     if (continuationTarget !== null) {
+      assert.ok(decoded.continuationTarget);
       assert.notEqual(decoded.continuationTarget, continuationTarget);
       decoded.continuationTarget.agentPath = '/root/changed';
       assert.equal(continuationTarget.agentPath, '/root/zcode_rescue_task_2');
