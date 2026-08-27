@@ -1,11 +1,32 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { execFile as execFileCallback } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+import { buildMarketplaceSnapshot } from '../scripts/build-marketplace-snapshot.mjs';
+import { npmLaunch } from '../scripts/lib/tool-launch.mjs';
 
 const root = new URL('../', import.meta.url);
+const repositoryRoot = fileURLToPath(root);
 const read = (path) => readFileSync(new URL(path, root), 'utf8');
 const commands = ['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup'];
+const execFile = promisify(execFileCallback);
+
+async function listFiles(directory, relativeDirectory = '') {
+  const paths = [];
+  for (const entry of await readdir(join(directory, relativeDirectory), { withFileTypes: true })) {
+    const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) paths.push(...await listFiles(directory, relativePath));
+    else paths.push(relativePath);
+  }
+  return paths;
+}
 
 test('English and Chinese release docs cover installation, operation, and qualification', () => {
   for (const path of ['README.md', 'README.zh-CN.md']) {
@@ -182,11 +203,38 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(changelog, /one active writable Rescue.{0,100}canonical workspace.{0,100}unchanged/is);
 });
 
-test('future writable-concurrency ADR remains source-only', () => {
+test('future writable-concurrency ADR remains absent from real package and marketplace artifacts', { timeout: 360_000 }, async (t) => {
   assert.match(read('docs/adr/0014-defer-concurrent-writable-rescue-to-isolated-worktrees.md'), /status:\s*accepted/i);
   assert.doesNotMatch(JSON.stringify(JSON.parse(read('package.json')).files), /0014-defer-concurrent-writable-rescue/);
   assert.doesNotMatch(read('scripts/build-marketplace-snapshot.mjs'), /0014-defer-concurrent-writable-rescue/);
   assert.doesNotMatch(JSON.stringify(JSON.parse(read('marketplace/plugins/zcode/package.json')).files), /0014-defer-concurrent-writable-rescue/);
+
+  const npmPack = npmLaunch(['pack', '--dry-run', '--json', '--ignore-scripts'], { env: process.env });
+  const packed = JSON.parse((await execFile(npmPack.command, npmPack.args, {
+    cwd: repositoryRoot, maxBuffer: 4 * 1024 * 1024,
+  })).stdout);
+  const packedPaths = packed?.[0]?.files?.map((entry) => entry.path) ?? [];
+  assert.ok(packedPaths.includes('docs/adr/0013-bind-rescue-child-to-zcode-session.md'));
+  assert.ok(!packedPaths.some((path) => path.includes('0014-defer-concurrent-writable-rescue')));
+
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-release-artifacts-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const source = join(temporary, 'source');
+  const output = join(temporary, 'marketplace');
+  await execFile('git', ['clone', '--quiet', '--no-hardlinks', repositoryRoot, source], { maxBuffer: 4 * 1024 * 1024 });
+  const sourceSha = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: source })).stdout.trim();
+  const npmTool = npmLaunch([], { env: process.env });
+  await buildMarketplaceSnapshot({
+    root: source,
+    output,
+    sourceRef: sourceSha,
+    sourceSha,
+    npmExecPath: npmTool.args[0],
+    env: process.env,
+  });
+  const marketplacePaths = await listFiles(output);
+  assert.ok(marketplacePaths.includes('plugins/zcode/docs/adr/0013-bind-rescue-child-to-zcode-session.md'));
+  assert.ok(!marketplacePaths.some((path) => path.includes('0014-defer-concurrent-writable-rescue')));
 });
 
 test('release docs limit migration to one exact v1/v2 session-ended binding', () => {
