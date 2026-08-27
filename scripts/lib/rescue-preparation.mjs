@@ -15,16 +15,23 @@ import {
 import { PERMISSION_MODES } from './identity.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
-export const RESCUE_PREPARATION_VERSION = 1;
+export const RESCUE_PREPARATION_VERSION = 2;
 export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
-export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES + 4096;
+// JSON can expand each one-byte task control character to a six-byte \uXXXX
+// escape. The fixed allowance covers the bounded continuation pair, options,
+// keys, JSON escaping overhead, and the terminating LF.
+export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES * 6 + 4096;
 
 const RESCUE_PREPARATION_RECORD_VERSION = 3;
+const LEGACY_PREPARATION_RECORD_VERSION = 1;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
 const RESUMES = new Set(['fresh', 'resume']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-const ENVELOPE_KEYS = ['options', 'source', 'task', 'version'];
+const V1_ENVELOPE_KEYS = Object.freeze(['options', 'source', 'task', 'version']);
+const V2_ENVELOPE_KEYS = Object.freeze([...V1_ENVELOPE_KEYS, 'continuationTarget']);
+const CONTINUATION_TARGET_KEYS = Object.freeze(['agentPath', 'childId']);
+const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
 const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
 const PREPARATION_SCAN_MAX_RECORDS = 1024;
@@ -84,8 +91,9 @@ export async function readRescuePreparation(stream) {
 
 /** @param {unknown} value */
 export function validateRescuePreparation(value) {
-  if (!plain(value) || !sameKeys(value, ENVELOPE_KEYS)
-    || value.version !== RESCUE_PREPARATION_VERSION
+  if (!plain(value)
+    || !(value.version === LEGACY_PREPARATION_RECORD_VERSION && sameKeys(value, V1_ENVELOPE_KEYS)
+      || value.version === RESCUE_PREPARATION_VERSION && sameKeys(value, V2_ENVELOPE_KEYS))
     || !SOURCES.has(value.source)
     || typeof value.task !== 'string' || value.task.trim().length === 0
     || Buffer.byteLength(value.task) > RESCUE_TASK_MAX_BYTES
@@ -97,11 +105,24 @@ export function validateRescuePreparation(value) {
   if (value.options.resume !== undefined && !RESUMES.has(value.options.resume)) throw invalidPreparation();
   if (value.options.effort !== undefined && !EFFORTS.has(value.options.effort)) throw invalidPreparation();
   if (value.options.model !== undefined && !validModel(value.options.model)) throw invalidPreparation();
+  let continuationTarget;
+  if (value.version === RESCUE_PREPARATION_VERSION) {
+    if (value.continuationTarget === null) continuationTarget = null;
+    else {
+      if (!validContinuationTarget(value.continuationTarget)
+        || value.options.resume !== 'resume') throw invalidPreparation();
+      continuationTarget = {
+        childId: value.continuationTarget.childId,
+        agentPath: value.continuationTarget.agentPath,
+      };
+    }
+  }
   return {
     version: value.version,
     source: value.source,
     task: value.task,
     options: { ...value.options },
+    ...(value.version === RESCUE_PREPARATION_VERSION ? { continuationTarget } : {}),
   };
 }
 
@@ -504,7 +525,7 @@ function validRecord(record, key, workspace) {
 /** @param {any} record @returns {'legacy'|'v2'|'pending-fresh'|'current'|null} */
 function recordKind(record) {
   if (!plain(record)) return null;
-  if (record.version === RESCUE_PREPARATION_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
+  if (record.version === LEGACY_PREPARATION_RECORD_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
   if (record.version === 2) {
     if (!validGenerationBinding(record)) return null;
     if (sameKeys(record, V2_RECORD_KEYS)) return 'v2';
@@ -832,6 +853,14 @@ function safeIdentifier(value, maximumBytes = 512) {
       const code = /** @type {number} */ (character.codePointAt(0));
       return code <= 31 || code === 127;
     });
+}
+
+/** @param {unknown} value */
+function validContinuationTarget(value) {
+  return plain(value) && sameKeys(value, CONTINUATION_TARGET_KEYS)
+    && safeIdentifier(value.childId, 512)
+    && typeof value.agentPath === 'string' && Buffer.byteLength(value.agentPath) <= 1024
+    && AGENT_PATH_PATTERN.test(value.agentPath);
 }
 
 /** @param {unknown} value */
