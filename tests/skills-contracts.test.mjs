@@ -313,6 +313,7 @@ test('new Rescue preparation frames carry only a private exact continuation targ
 test('routing precedence materializes only authoritative fresh or resume choices', () => {
   const source = skill('rescue');
   assert.match(source, /explicit `--fresh` or `--resume`[^\n]+authoritative/i);
+  assert.match(source, /explicit request with no choice \(neither `--fresh` nor `--resume`\)/i);
   assert.match(source, /count[^\n]+retained stopped operations[^\n]+(?:could|that) match[^\n]+(?:request|complete request)[^\n]+semantics/i);
   assert.match(source, /zero semantic candidates[\s\S]+fresh[\s\S]+(?:do not|without)[^\n]+ask/i);
   assert.match(source, /one semantic candidate[\s\S]+targetless[\s\S]+same-child `needs-choice`[\s\S]+ask exactly once/i);
@@ -323,6 +324,7 @@ test('routing precedence materializes only authoritative fresh or resume choices
   assert.match(source, /clear independent[\s\S]+prepare[\s\S]+`fresh`/i);
   assert.match(source, /proactive genuinely ambiguous[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+spawn/i);
   assert.doesNotMatch(source, /For a genuinely ambiguous route/i);
+  assert.doesNotMatch(source, /no choice \(`--fresh` or `--resume`\)/i);
   assert.doesNotMatch(source, /explicit[\s\S]+no route[\s\S]+omit[^\n]+`resume`/i);
   assert.match(source, /proactive[\s\S]+must include[\s\S]+(?:`fresh` or `resume`|`fresh` or `resume`)/i);
 });

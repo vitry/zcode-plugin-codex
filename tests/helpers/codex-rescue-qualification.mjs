@@ -7,7 +7,12 @@ import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
-import { createRescuePreparationStore, readRescuePreparation, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import {
+  createRescuePreparationStore,
+  readRescuePreparation,
+  RESCUE_ENVELOPE_MAX_BYTES,
+  validateRescuePreparation,
+} from '../../scripts/lib/rescue-preparation.mjs';
 import { sanitizeCodexThreadSpawnChild } from '../../scripts/lib/codex-app-server.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
@@ -20,8 +25,6 @@ const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_EXEC_AGENT_MESSAGES = 256;
 const MAX_CHILD_POLLS = 64;
 const MAX_RESCUE_TASK_NAME_BYTES = 64;
-const MAX_RESCUE_TASK_BYTES = 64 * 1024;
-const MAX_RESCUE_ENVELOPE_BYTES = MAX_RESCUE_TASK_BYTES + 4096;
 const MAX_LEGACY_JSON_DEPTH = 8;
 const MAX_LEGACY_JSON_CANDIDATES = 256;
 const MAX_LEGACY_JSON_DECODE_BYTES = 4 * MAX_TEXT_BYTES;
@@ -2270,7 +2273,7 @@ function stringLeaves(value) {
 }
 
 function assertExactPreparationJson(text) {
-  if (typeof text !== 'string' || Buffer.byteLength(`${text}\n`, 'utf8') > MAX_RESCUE_ENVELOPE_BYTES) {
+  if (typeof text !== 'string' || Buffer.byteLength(`${text}\n`, 'utf8') > RESCUE_ENVELOPE_MAX_BYTES) {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
   let offset = 0; let depth = 0;

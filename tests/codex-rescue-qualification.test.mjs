@@ -9,7 +9,7 @@ import test from 'node:test';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition, rescueBindingAuthorityView } from '../scripts/lib/rescue-binding.mjs';
-import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
+import { createRescuePreparationStore, RESCUE_ENVELOPE_MAX_BYTES } from '../scripts/lib/rescue-preparation.mjs';
 
 import {
   assertCodexRescueDisplayName,
@@ -1673,14 +1673,25 @@ test('spawn qualification rejects targeted resume and malformed continuation ide
   }
 });
 
-test('preparation qualification rejects duplicate raw keys and an oversized escaped frame', () => {
+test('preparation qualification accepts a production-valid escaped frame', () => {
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task: `objective:${'\u0000'.repeat(12_000)}` });
+  assert.ok(Buffer.byteLength(preparationPayload, 'utf8') + 1 > 64 * 1024 + 4096);
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  assert.equal(
+    qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput,
+    expectedPublicOutput,
+  );
+});
+
+test('preparation qualification rejects duplicate raw keys and a truly oversized escaped frame', () => {
   const optionsJson = JSON.stringify(expectedPreparationEnvelope.options);
   const cases = [
     `{"version":1,"source":"explicit","task":"decoy","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":${optionsJson}}`,
     `{"version":1,"source":"explicit","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":{"execution":"background","execution":"foreground","resume":"fresh"}}`,
-    JSON.stringify({ ...expectedPreparationEnvelope, task: `objective:${'\u0000'.repeat(12_000)}` }),
+    `${JSON.stringify(expectedPreparationEnvelope)}${' '.repeat(RESCUE_ENVELOPE_MAX_BYTES)}`,
   ];
-  assert.ok(Buffer.byteLength(cases[2], 'utf8') + 1 > 64 * 1024 + 4096);
+  assert.ok(Buffer.byteLength(cases[2], 'utf8') + 1 > RESCUE_ENVELOPE_MAX_BYTES);
   for (const preparationPayload of cases) {
     const input = fixture();
     parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
