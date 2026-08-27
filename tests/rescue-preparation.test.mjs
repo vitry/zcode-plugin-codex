@@ -62,7 +62,7 @@ function errorChainText(error) {
 }
 
 test('exports the versioned Rescue preparation byte bounds', () => {
-  assert.equal(RESCUE_PREPARATION_VERSION, 2);
+  assert.equal(RESCUE_PREPARATION_VERSION, 3);
   assert.equal(RESCUE_TASK_MAX_BYTES, 64 * 1024);
   assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 * 6 + 4096);
 });
@@ -128,6 +128,49 @@ test('accepts exact targetless v1 and exact v2 continuation envelopes with defen
       assert.equal(continuationTarget.childId, 'child-2');
     }
   }
+});
+
+test('v3 accepts an exact canonical-path continuation target', async () => {
+  for (const continuationTarget of [
+    null,
+    { agentPath: '/root/zcode_rescue_task_2' },
+  ]) {
+    const original = {
+      version: 3,
+      source: 'explicit',
+      task: 'continue the exact operation',
+      options: { resume: 'resume', effort: 'high' },
+      continuationTarget,
+    };
+    const decoded = await readRescuePreparation(input(`${JSON.stringify(original)}\n`));
+    assert.deepEqual(decoded, original);
+    assert.notEqual(decoded, original);
+    assert.notEqual(decoded.options, original.options);
+    if (continuationTarget !== null) {
+      assert.notEqual(decoded.continuationTarget, continuationTarget);
+      decoded.continuationTarget.agentPath = '/root/changed';
+      assert.equal(continuationTarget.agentPath, '/root/zcode_rescue_task_2');
+    }
+  }
+});
+
+test('v3 rejects pair-shaped and non-resume continuation targets', async () => {
+  const exact = { version: 3, source: 'explicit', task: 'x', options: { resume: 'resume' },
+    continuationTarget: { agentPath: '/root/zcode_rescue_task_2' } };
+  for (const value of [
+    { ...exact, continuationTarget: { childId: 'child-2', agentPath: '/root/zcode_rescue_task_2' } },
+    { ...exact, continuationTarget: {} },
+    { ...exact, continuationTarget: { agentPath: '/root/zcode_rescue_task_2', extra: true } },
+    { ...exact, continuationTarget: { agentPath: '' } },
+    { ...exact, continuationTarget: { agentPath: 'root/child' } },
+    { ...exact, continuationTarget: { agentPath: '/root/../child' } },
+    { ...exact, continuationTarget: { agentPath: '/root/child\n' } },
+    { ...exact, continuationTarget: { agentPath: `/root/${'x'.repeat(1019)}` } },
+    { ...exact, options: { resume: 'fresh' } },
+    { ...exact, options: {} },
+  ]) assert.throws(() => validateRescuePreparation(value), { code: 'RESCUE_PREPARATION_INVALID' });
+
+  await rejectsPreparation('{"version":3,"source":"explicit","task":"x","options":{"resume":"resume"},"continuationTarget":{"agentPath":"/root/a","agentPath":"/root/b"}}\n');
 });
 
 test('rejects malformed, unsafe, and non-resume v2 continuation targets', () => {
@@ -225,6 +268,30 @@ test('v2 continuation target round trips through v3 consumption and replacement 
     dataRoot, workspaceA, base.sessionId, base.turnId,
   ), 'utf8'));
   assert.deepEqual(persisted.envelope, replacementEnvelope);
+});
+
+test('v3 path target round trips inside the unchanged v3 preparation record schema', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-17T00:00:00.000Z');
+  const target = { agentPath: '/root/zcode_rescue_task_2' };
+  const base = { sessionId: 'path-target-parent', turnId: 'path-target-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue continue path target', now };
+  const envelope = { version: 3, source: 'explicit', task: 'continue path target',
+    options: { resume: 'resume' }, continuationTarget: target };
+  await store.save({ ...base, envelope, activation: reactivateActivation });
+  const consumed = await store.consume({ ...base, executorAgentId: 'rescue-child', activationProof: reactivateActivationProof });
+  assert.equal(consumed.version, 3);
+  assert.deepEqual(consumed.envelope, envelope);
+  assert.notEqual(consumed.envelope.continuationTarget, target);
+  assert.equal(Object.hasOwn(consumed, 'continuationTarget'), false);
+  assert.equal(Object.hasOwn(consumed, 'agentPath'), false);
+  const persisted = JSON.parse(await readFile(await preparedPath(
+    dataRoot, workspaceA, base.sessionId, base.turnId,
+  ), 'utf8'));
+  assert.equal(persisted.version, 3);
+  assert.deepEqual(persisted.envelope.continuationTarget, target);
+  assert.equal(Object.hasOwn(persisted, 'continuationTarget'), false);
+  assert.equal(Object.hasOwn(persisted, 'agentPath'), false);
 });
 
 test('stream errors are always converted to a new task-free preparation error', async () => {
