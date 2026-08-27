@@ -123,6 +123,7 @@ test('accepts exact targetless v1 and exact v2 continuation envelopes with defen
     assert.notEqual(decoded.options, original.options);
     if (continuationTarget !== null) {
       assert.notEqual(decoded.continuationTarget, continuationTarget);
+      assert.ok(decoded.continuationTarget !== null);
       decoded.continuationTarget.childId = 'changed';
       assert.equal(continuationTarget.childId, 'child-2');
     }

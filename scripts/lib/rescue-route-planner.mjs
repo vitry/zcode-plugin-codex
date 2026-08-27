@@ -166,8 +166,10 @@ function validatePlannerInput(input) {
 
 /** @param {unknown} value */
 function validContinuationTarget(value) {
-  return plain(value) && sameKeys(value, ['agentPath', 'childId'])
-    && boundedIdentifier(value.childId) && validAgentPath(value.agentPath);
+  if (!plain(value)) return false;
+  const target = /** @type {Record<string, unknown>} */ (value);
+  return sameKeys(target, ['agentPath', 'childId'])
+    && boundedIdentifier(target.childId) && validAgentPath(target.agentPath);
 }
 
 /** @param {any[]} children @param {string} parentId */
