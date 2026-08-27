@@ -561,20 +561,27 @@ function validateContinuationAppServerTranscript(transcript, expected) {
 }
 
 function validateContinuationCandidateClosure(input, hosts, bindings, selectedExecutor, expected) {
-  if (hosts.length === 1 && input.candidateExecutorRecordBytesJson === undefined) return;
+  const bindingIds = bindings.map((record) => rescueBindingAuthorityView(record).childAgentId);
+  const logicalHosts = hosts.filter((candidate) => candidate.agentRole === 'zcode-rescue' || bindingIds.includes(candidate.id));
+  const logicalIds = logicalHosts.map((candidate) => candidate.id);
+  if (logicalIds.length !== bindingIds.length || logicalIds.some((id) => !bindingIds.includes(id))
+    || bindingIds.some((id) => !logicalIds.includes(id))) {
+    mismatch('continuation-candidate-executors', 'Managed Rescue hosts and durable bindings do not form one exact candidate closure.');
+  }
+  if (logicalHosts.length === 1 && input.candidateExecutorRecordBytesJson === undefined) return;
   if (typeof input.candidateExecutorRecordBytesJson !== 'string'
     || Buffer.byteLength(input.candidateExecutorRecordBytesJson) > MAX_ROLLOUT_BYTES) {
     mismatch('continuation-candidate-executors', 'Candidate executor evidence is missing or oversized.');
   }
   let bytes;
   try { bytes = JSON.parse(input.candidateExecutorRecordBytesJson); } catch { mismatch('continuation-candidate-executors', 'Candidate executor evidence is missing or malformed.'); }
-  if (!Array.isArray(bytes) || bytes.length !== hosts.length || bytes.some((value) => typeof value !== 'string'
+  if (!Array.isArray(bytes) || bytes.length !== logicalHosts.length || bytes.some((value) => typeof value !== 'string'
     || Buffer.byteLength(value) > MAX_TEXT_BYTES || !value.endsWith('\n'))) {
     mismatch('continuation-candidate-executors', 'Candidate executor evidence is not the exact host-child closure.');
   }
   let executors;
   try { executors = bytes.map((value) => JSON.parse(value)); } catch { mismatch('continuation-candidate-executors', 'Candidate executor file bytes are malformed.'); }
-  const hostIds = hosts.map((candidate) => candidate.id); const bindingIds = bindings.map((record) => rescueBindingAuthorityView(record).childAgentId);
+  const hostIds = logicalIds;
   const executorKeys = Object.keys(selectedExecutor).sort().join('\0');
   if (!isDeepStrictEqual(executors.map((record) => record.agentId), hostIds)
     || bindingIds.length !== hostIds.length || hostIds.some((id) => !bindingIds.includes(id))
@@ -582,7 +589,7 @@ function validateContinuationCandidateClosure(input, hosts, bindings, selectedEx
     || !executors.some((record) => isDeepStrictEqual(record, selectedExecutor))
     || executors.some((record, index) => Object.keys(record ?? {}).sort().join('\0') !== executorKeys
       || record.kind !== 'subagent-executor' || record.active !== false
-      || record.agentId !== hosts[index].id || record.agentType !== (hosts[index].agentRole ?? 'default')
+      || record.agentId !== logicalHosts[index].id || record.agentType !== (logicalHosts[index].agentRole ?? 'default')
       || record.parentSessionId !== expected.parentSessionId || record.parentTurnId !== expected.parentTurnId
       || record.parentPermissionMode !== expected.permissionMode || record.workspace !== expected.workspace
       || Object.hasOwn(selectedExecutor, 'originWorkspace') && record.originWorkspace !== selectedExecutor.originWorkspace

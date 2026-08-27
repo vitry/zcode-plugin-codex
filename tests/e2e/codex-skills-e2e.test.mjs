@@ -17,7 +17,7 @@ import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } 
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
-import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import {
   assertCodexRescueDisplayName,
@@ -652,29 +652,37 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
 });
 
 test('captured 2026-08-27 multiple-binding continuation selects the exact private pair instead of latest order', async () => {
-  for (const siblingFirst of [false, true]) {
+  for (const expectedTargetIndex of [0, 1]) {
     const capture = installedPreparedContinuationCapture('named', { workspace: process.cwd() });
     const { parentSessionId, workspace } = capture.expected;
     const siblingAnchor = 'e'.repeat(64); const siblingCurrent = 'f'.repeat(64);
-    const sibling = createRescueBinding({ parentSessionId, executorAgentId: 'captured-sibling', executorAgentType: 'zcode-rescue',
-      executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace,
-      permissionMode: 'acceptEdits', anchorJobId: siblingAnchor, currentJobId: siblingCurrent,
-      operationId: '1'.repeat(64), now: '2026-08-10T02:00:00.000Z' });
-    const siblingPre = { ...sibling, currentJobId: siblingAnchor };
     const pre = JSON.parse(capture.bindingPreReservationBytes); const current = JSON.parse(capture.bindingPartitionBytes);
-    const preRecords = siblingFirst ? [siblingPre, ...pre.records] : [...pre.records, siblingPre];
-    const currentRecords = siblingFirst ? [sibling, ...current.records] : [...current.records, sibling];
-    capture.bindingPreReservationBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: preRecords }))}\n`;
-    capture.bindingPartitionBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: currentRecords }))}\n`;
+    let sibling; let siblingId;
+    for (let index = 0; index < 1_000; index += 1) {
+      const candidateId = `captured-sibling-${index}`;
+      const candidate = createRescueBinding({ parentSessionId, executorAgentId: candidateId, executorAgentType: 'zcode-rescue',
+        executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace,
+        permissionMode: 'acceptEdits', anchorJobId: siblingAnchor, currentJobId: siblingCurrent,
+        operationId: '1'.repeat(64), now: '2026-08-10T02:00:00.000Z' });
+      if ((candidate.key < current.records[0].key) === (expectedTargetIndex === 1)) { sibling = candidate; siblingId = candidateId; break; }
+    }
+    assert.ok(sibling && siblingId, `fixture must place target at canonical index ${expectedTargetIndex}`);
+    const siblingPre = { ...sibling, currentJobId: siblingAnchor };
+    const prePartition = createRescueBindingPartition({ parentSessionId, workspace, records: [siblingPre, ...pre.records] });
+    const currentPartition = createRescueBindingPartition({ parentSessionId, workspace, records: [sibling, ...current.records] });
+    assert.equal(currentPartition.records.findIndex((record) => rescueBindingAuthorityView(record).childAgentId === capture.expected.childThreadId), expectedTargetIndex);
+    assert.equal(prePartition.records.findIndex((record) => rescueBindingAuthorityView(record).childAgentId === capture.expected.childThreadId), expectedTargetIndex);
+    capture.bindingPreReservationBytes = `${JSON.stringify(prePartition)}\n`;
+    capture.bindingPartitionBytes = `${JSON.stringify(currentPartition)}\n`;
     const transcript = JSON.parse(capture.appServerTranscriptJson); const targetHost = transcript[3].result.data[0];
-    const siblingHost = installedCodexThreadSpawnChild({ id: 'captured-sibling', parentThreadId: parentSessionId,
-      agentPath: '/root/zcode_rescue_sibling', cwd: workspace, agentRole: 'zcode-rescue' });
-    transcript[3].result.data = siblingFirst ? [siblingHost, targetHost] : [targetHost, siblingHost];
+    const siblingHost = installedCodexThreadSpawnChild({ id: siblingId, parentThreadId: parentSessionId,
+      agentPath: `/root/${siblingId.replaceAll('-', '_')}`, cwd: workspace, agentRole: 'zcode-rescue' });
+    transcript[3].result.data = expectedTargetIndex === 1 ? [siblingHost, targetHost] : [targetHost, siblingHost];
     capture.appServerTranscriptJson = JSON.stringify(transcript);
-    const siblingExecutor = { kind: 'subagent-executor', agentId: 'captured-sibling', agentType: 'zcode-rescue', parentSessionId,
+    const siblingExecutor = { kind: 'subagent-executor', agentId: siblingId, agentType: 'zcode-rescue', parentSessionId,
       parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'captured-sibling-turn', workspace,
       active: false, createdAt: '2026-08-09T00:00:00.000Z' };
-    capture.candidateExecutorRecordBytesJson = JSON.stringify(siblingFirst
+    capture.candidateExecutorRecordBytesJson = JSON.stringify(expectedTargetIndex === 1
       ? [`${JSON.stringify(siblingExecutor)}\n`, capture.executorRecordBytes]
       : [capture.executorRecordBytes, `${JSON.stringify(siblingExecutor)}\n`]);
     const jobs = JSON.parse(capture.jobRecordBytesJson);
