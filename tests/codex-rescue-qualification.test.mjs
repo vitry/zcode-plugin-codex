@@ -96,6 +96,24 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   [interleaved[spawnOutputIndex], interleaved[startIndex]] = [interleaved[startIndex], interleaved[spawnOutputIndex]];
   startBeforeOutput.parentRolloutJson = JSON.stringify(interleaved);
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(startBeforeOutput)).route, 'named');
+  const siblingFirst = structuredClone(input); const siblingFrames = JSON.parse(siblingFirst.appServerTranscriptJson);
+  siblingFrames[1].result.data.unshift(restoredRawCodexChild({ originWorkspace, restoredPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue', id: 'sibling-child' }));
+  siblingFirst.appServerTranscriptJson = JSON.stringify(siblingFrames);
+  assert.equal((await qualifyCodexRescueRestoredChildEvidence(siblingFirst)).agentPath, restoredPath);
+
+  for (const mutate of [
+    (envelope) => { envelope.continuationTarget.childId = 'sibling-child'; },
+    (envelope) => { envelope.continuationTarget.agentPath = '/root/sibling'; },
+  ]) {
+    const changed = structuredClone(input); const rows = JSON.parse(changed.parentRolloutJson);
+    const write = rows.find((event) => event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call');
+    const host = parseFixturePollInput(write.payload.input); const envelope = JSON.parse(host.chars.trim()); mutate(envelope);
+    write.payload.input = structuredPoll(host.session_id, 'prepare-write-restored', `${JSON.stringify(envelope)}\n`).payload.input;
+    const record = JSON.parse(changed.preparationRecordBytes); record.envelope = envelope;
+    changed.parentRolloutJson = JSON.stringify(rows); changed.preparationRecordBytes = `${JSON.stringify(record)}\n`;
+    await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-target');
+  }
 
   for (const mutate of [
     (rows) => { rows.find((event) => event?.payload?.name === 'spawn_agent').timestamp = '2026-08-10T00:00:00.350Z'; },
@@ -267,6 +285,85 @@ test('qualifies named and generic foreground/background continuation in one acti
       longLifecycleChecked: true,
       execution,
     });
+  }
+});
+
+test('prepared continuation qualifies the exact v2 lifecycle pair and route path in either linked event order', async () => {
+  for (const reverseLifecycleOrder of [false, true]) {
+    const input = preparedContinuationFixture('named');
+    const parent = JSON.parse(input.parentRolloutJson);
+    if (reverseLifecycleOrder) {
+      const startedIndex = parent.findIndex((event) => event?.payload?.kind === 'started');
+      const outputIndex = parent.findIndex((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'spawn-1');
+      [parent[startedIndex], parent[outputIndex]] = [parent[outputIndex], parent[startedIndex]];
+    }
+    input.parentRolloutJson = JSON.stringify(parent);
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+    assert.equal(evidence.agentPath, agentPath);
+
+    const calls = JSON.parse(input.parentRolloutJson);
+    const writes = calls.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.call_id?.startsWith('prepare-write-'));
+    const fresh = JSON.parse(parseFixturePollInput(writes[0].payload.input).chars.trim());
+    const resume = JSON.parse(parseFixturePollInput(writes[1].payload.input).chars.trim());
+    assert.deepEqual(fresh, { version: 2, source: 'explicit', task: 'repair fixture', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null });
+    assert.deepEqual(resume.continuationTarget, { childId, agentPath });
+    const followup = calls.find((event) => event?.payload?.name === 'followup_task');
+    assert.equal(JSON.parse(followup.payload.arguments).target, agentPath);
+  }
+});
+
+test('prepared continuation rejects each cross-pair and post-planning target mutation without sibling acceptance', async () => {
+  const mutations = [
+    ['continuation-target-lifecycle', (input) => {
+      const rows = JSON.parse(input.parentRolloutJson);
+      const output = rows.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'spawn-1');
+      output.payload.output = JSON.stringify({ agent_id: 'sibling-child' });
+      input.parentRolloutJson = JSON.stringify(rows);
+    }],
+    ['continuation-target-preparation', (input) => {
+      const rows = JSON.parse(input.parentRolloutJson);
+      const write = rows.find((event) => event?.payload?.call_id === 'prepare-write-2' && event.payload.type === 'custom_tool_call');
+      const host = parseFixturePollInput(write.payload.input); const envelope = JSON.parse(host.chars.trim());
+      envelope.continuationTarget.agentPath = '/root/sibling'; write.payload.input = structuredPoll(host.session_id, 'prepare-write-2', `${JSON.stringify(envelope)}\n`).payload.input;
+      input.parentRolloutJson = JSON.stringify(rows);
+      const records = JSON.parse(input.preparationRecordBytesJson); const record = JSON.parse(records[1]); record.envelope = envelope; records[1] = `${JSON.stringify(record)}\n`; input.preparationRecordBytesJson = JSON.stringify(records);
+    }],
+    ['continuation-target-activation', (input) => {
+      const records = JSON.parse(input.preparationRecordBytesJson); const record = JSON.parse(records[1]);
+      record.activation.agentPathDigest = createHash('sha256').update('/root/sibling').digest('hex'); records[1] = `${JSON.stringify(record)}\n`; input.preparationRecordBytesJson = JSON.stringify(records);
+    }],
+    ['continuation-followup-target', (input) => {
+      const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((event) => event?.payload?.name === 'followup_task');
+      const args = JSON.parse(call.payload.arguments); args.target = '/root/sibling'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows);
+    }],
+  ];
+  for (const [code, mutate] of mutations) {
+    const input = preparedContinuationFixture('named'); mutate(input);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('prepared continuation selects the exact target with two complete bindings regardless of partition order', async () => {
+  for (const siblingFirst of [false, true]) {
+    const input = preparedContinuationFixture('named');
+    const siblingAnchor = 'e'.repeat(64); const siblingCurrent = 'f'.repeat(64);
+    const sibling = createRescueBinding({ parentSessionId: parentId, executorAgentId: 'sibling-child', executorAgentType: 'zcode-rescue',
+      executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace: expectedWorkspace,
+      permissionMode: 'acceptEdits', anchorJobId: siblingAnchor, currentJobId: siblingCurrent,
+      operationId: '1'.repeat(64), now: '2026-08-10T02:00:00.000Z' });
+    const siblingPre = { ...sibling, currentJobId: siblingAnchor, updatedAt: '2026-08-10T02:00:00.000Z' };
+    const pre = JSON.parse(input.bindingPreReservationBytes); const current = JSON.parse(input.bindingPartitionBytes);
+    const preRecords = siblingFirst ? [siblingPre, ...pre.records] : [...pre.records, siblingPre];
+    const currentRecords = siblingFirst ? [sibling, ...current.records] : [...current.records, sibling];
+    input.bindingPreReservationBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: preRecords }))}\n`;
+    input.bindingPartitionBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: currentRecords }))}\n`;
+    const jobs = JSON.parse(input.jobRecordBytesJson);
+    jobs.push(`${JSON.stringify(rawJob(siblingAnchor, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
+    jobs.push(`${JSON.stringify(rawJob(siblingCurrent, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
+    input.jobRecordBytesJson = JSON.stringify(jobs);
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+    assert.equal(evidence.childThreadId, childId); assert.equal(evidence.agentPath, agentPath);
   }
 });
 
@@ -585,13 +682,38 @@ test('raw prepared continuation scans every declared public and host surface for
   }
 });
 
+test('raw prepared continuation confines the serialized selector and child ID to authorized lifecycle boundaries', async () => {
+  for (const leaked of [
+    JSON.stringify({ continuationTarget: { childId, agentPath } }),
+    childId,
+  ]) {
+    const input = preparedContinuationFixture('named'); const frames = JSON.parse(input.execFramesJson);
+    frames[1].item.extra = leaked; input.execFramesJson = JSON.stringify(frames);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak');
+  }
+});
+
 test('raw prepared continuation treats display metadata as non-authoritative while binding remains mandatory', async () => {
   const renamed = preparedContinuationFixture('named');
+  renamed.expected.agentPath = '/root/ordinary_helper';
   const parent = JSON.parse(renamed.parentRolloutJson); const child = JSON.parse(renamed.childRolloutJson);
   const spawn = parent.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments);
   args.task_name = 'ordinary_helper'; spawn.payload.arguments = JSON.stringify(args);
   for (const row of parent.filter((item) => item?.payload?.agent_path)) row.payload.agent_path = '/root/ordinary_helper';
+  const resumeWrite = parent.find((row) => row?.payload?.call_id === 'prepare-write-2' && row.payload.type === 'custom_tool_call');
+  const resumeHost = parseFixturePollInput(resumeWrite.payload.input); const resumeEnvelope = JSON.parse(resumeHost.chars.trim());
+  resumeEnvelope.continuationTarget.agentPath = '/root/ordinary_helper'; resumeWrite.payload.input = structuredPoll(resumeHost.session_id, 'prepare-write-2', `${JSON.stringify(resumeEnvelope)}\n`).payload.input;
+  const preparedOutput = parent.find((row) => row?.payload?.call_id === 'prepare-write-2' && row.payload.type === 'custom_tool_call_output');
+  preparedOutput.payload.output = capturedResult({ output: preparedAck({ version: 2, action: 'followup', target: '/root/ordinary_helper', assignment: 'zcode-rescue' }), exit_code: 0 });
+  parent.find((row) => row?.payload?.call_id === 'prepare-write-1' && row.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'spawn', taskName: 'ordinary_helper' }), exit_code: 0 });
+  const followup = parent.find((row) => row?.payload?.name === 'followup_task'); const followupArgs = JSON.parse(followup.payload.arguments); followupArgs.target = '/root/ordinary_helper'; followup.payload.arguments = JSON.stringify(followupArgs);
+  parent.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: true, target: '/root/ordinary_helper' });
   child[0].payload.source.subagent.thread_spawn.agent_path = '/root/ordinary_helper';
+  const records = JSON.parse(renamed.preparationRecordBytesJson); const initial = JSON.parse(records[0]);
+  initial.activation.taskName = 'ordinary_helper'; initial.activation.agentPathDigest = createHash('sha256').update('/root/ordinary_helper').digest('hex'); records[0] = `${JSON.stringify(initial)}\n`;
+  const continuation = JSON.parse(records[1]); continuation.envelope = resumeEnvelope;
+  continuation.activation.agentPathDigest = createHash('sha256').update('/root/ordinary_helper').digest('hex'); records[1] = `${JSON.stringify(continuation)}\n`; renamed.preparationRecordBytesJson = JSON.stringify(records);
   renamed.parentRolloutJson = JSON.stringify(parent); renamed.childRolloutJson = JSON.stringify(child);
   assert.equal((await qualifyCodexRescuePreparedContinuationEvidence(renamed)).agentPath, '/root/ordinary_helper');
   renamed.bindingPartitionBytes = '';
@@ -606,8 +728,8 @@ test('raw prepared continuation rejects metadata and job authority substitutions
     ['continuation-spawn-contract', (input) => { const rows = JSON.parse(input.parentRolloutJson); const spawn = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments); delete args.agent_type; spawn.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_role = 'default'; input.childRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_path = '/root/sibling'; input.childRolloutJson = JSON.stringify(rows); }],
-    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ agent_id: 'sibling' }); input.parentRolloutJson = JSON.stringify(rows); }],
-    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: false, target: childId }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-target-lifecycle', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ agent_id: 'sibling' }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-followup-target', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: false, target: agentPath }); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].ownerSessionId = 'foreign'; setRawJobs(input, jobs); }],
     ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].ownerTurnId = 'foreign-turn'; setRawJobs(input, jobs); }],
     ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].createdAt = 'not-a-date'; setRawJobs(input, jobs); }],
@@ -2311,8 +2433,8 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T01:01:00.500Z' },
     { ...capturedResultEvent('prepare-write-2', { output: preparedAck({ version: 2, action: 'followup', target: agentPath, assignment: route === 'named' ? 'zcode-rescue' : 'default' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
-    { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
-    { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childId }) } },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: agentPath, message }) } },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: agentPath }) } },
   ];
   for (const event of parent.slice(1)) event.turn_id = 'turn-original';
   const child = [
@@ -2367,7 +2489,8 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const thread = restoredRawCodexChild({ originWorkspace, restoredPath, agentRole });
   const preparedRoute = { version: 2, action: 'followup', target: restoredPath, assignment: agentType };
   const generationId = '9'.repeat(64); const childTurnId = 'qualification-child-turn-7'; const privateTask = 'diagnose the agent path collision without any fallback';
-  const preparationEnvelope = { version: 1, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' } };
+  const preparationEnvelope = { version: 2, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' },
+    continuationTarget: { childId, agentPath: restoredPath } };
   const preparationCreatedAt = '2026-08-10T01:00:00.550Z'; const preparationConsumedAt = '2026-08-10T01:00:00.950Z';
   const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentId, 'turn-resumed', executionWorkspace, 'rescue'])).digest('hex'),
     sessionId: parentId, turnId: 'turn-resumed', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
@@ -2413,8 +2536,8 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   };
 }
 
-function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {
-  return { id: childId, sessionId: parentId, parentThreadId: parentId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
+function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole, id = childId }) {
+  return { id, sessionId: parentId, parentThreadId: parentId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
     modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'notLoaded' }, path: null, cwd: originWorkspace,
     source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: restoredPath, agent_nickname: null, agent_role: agentRole } } },
     canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
@@ -2432,7 +2555,10 @@ function restoredAppServerTranscript(thread) {
 
 const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
 function preparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
-function preparationEnvelope(source, resume, execution) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume } }; }
+function preparationEnvelope(source, resume, execution) {
+  return { version: 2, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume },
+    continuationTarget: resume === 'resume' ? { childId, agentPath } : null };
+}
 function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([parentId, turnId, expectedWorkspace, 'rescue'])).digest('hex');
   const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
@@ -2657,6 +2783,10 @@ function structuredExecResult(command, callId, fields = {}) {
 
 function parseFixtureHostInput(source) {
   const prefix = 'const r = await tools.exec_command('; const suffix = '); text(JSON.stringify(r))\n';
+  return JSON.parse(source.slice(prefix.length, -suffix.length));
+}
+function parseFixturePollInput(source) {
+  const prefix = 'const r = await tools.write_stdin('; const suffix = '); text(JSON.stringify(r))\n';
   return JSON.parse(source.slice(prefix.length, -suffix.length));
 }
 function fixtureExecInput(value) { return `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n`; }
