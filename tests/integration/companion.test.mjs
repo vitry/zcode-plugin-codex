@@ -1842,7 +1842,7 @@ test('raw TTY v2 preparation selects one exact sibling binding and keeps its han
     permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue selected operation',
   });
   const workspace = await realpath(context.workspace);
-  const host = (candidate) => rawCodexChild({
+  const host = (/** @type {any} */ candidate) => rawCodexChild({
     id: candidate.childId, parentThreadId: parentSessionId, cwd: workspace, agentPath: candidate.agentPath,
     status: { type: 'notLoaded' },
   });
@@ -1876,7 +1876,7 @@ test('raw TTY v2 preparation selects one exact sibling binding and keeps its han
     source: { subAgent: { thread_spawn: { ...selectedHost.source.subAgent.thread_spawn, agent_path: '/root/zcode_rescue_task_9' } } } }]) {
     const driftEnv = { ...context.env, CODEX_THREAD_ID: driftedHost.id, FAKE_CODEX_THREAD_JSON: JSON.stringify(driftedHost), FAKE_ZCODE_RECORD: record };
     await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: driftEnv }),
-      (error) => ['RESCUE_PREPARATION_MISMATCH', 'RESCUE_BINDING_INVALID'].includes(error?.code));
+      (error) => error instanceof PluginError && ['RESCUE_PREPARATION_MISMATCH', 'RESCUE_BINDING_INVALID'].includes(error.code));
     assert.equal(await readFile(record, 'utf8'), '');
     assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBefore);
   }
@@ -1902,7 +1902,7 @@ test('raw TTY v2 preparation selects one exact sibling binding and keeps its han
     await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
       cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
       input: PassThrough.from([`${JSON.stringify(envelope)}\n`]),
-      dependencies: { planRescueActivation: (plannerInput) => planRescueActivation({ ...plannerInput,
+      dependencies: { planRescueActivation: (/** @type {any} */ plannerInput) => planRescueActivation({ ...plannerInput,
         listChildren: async () => [selectedHost, siblingHost] }) },
     }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
   }
