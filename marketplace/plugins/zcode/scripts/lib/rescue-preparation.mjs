@@ -15,7 +15,7 @@ import {
 import { PERMISSION_MODES } from './identity.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
-export const RESCUE_PREPARATION_VERSION = 2;
+export const RESCUE_PREPARATION_VERSION = 3;
 export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 // JSON can expand each one-byte task control character to a six-byte \uXXXX
 // escape. The fixed allowance covers the bounded continuation pair, options,
@@ -23,7 +23,8 @@ export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES * 6 + 4096;
 
 const RESCUE_PREPARATION_RECORD_VERSION = 3;
-const LEGACY_RESCUE_ENVELOPE_VERSION = 1;
+const LEGACY_TARGETLESS_RESCUE_ENVELOPE_VERSION = 1;
+const LEGACY_PAIR_RESCUE_ENVELOPE_VERSION = 2;
 const LEGACY_PREPARATION_RECORD_VERSION = 1;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
@@ -31,7 +32,8 @@ const RESUMES = new Set(['fresh', 'resume']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const V1_ENVELOPE_KEYS = Object.freeze(['options', 'source', 'task', 'version']);
 const V2_ENVELOPE_KEYS = Object.freeze([...V1_ENVELOPE_KEYS, 'continuationTarget']);
-const CONTINUATION_TARGET_KEYS = Object.freeze(['agentPath', 'childId']);
+const PAIR_CONTINUATION_TARGET_KEYS = Object.freeze(['agentPath', 'childId']);
+const PATH_CONTINUATION_TARGET_KEYS = Object.freeze(['agentPath']);
 const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
 const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
@@ -96,8 +98,9 @@ export async function readRescuePreparation(stream) {
 /** @param {unknown} value */
 export function validateRescuePreparation(value) {
   if (!plain(value)
-    || !(value.version === LEGACY_RESCUE_ENVELOPE_VERSION && sameKeys(value, V1_ENVELOPE_KEYS)
-      || value.version === RESCUE_PREPARATION_VERSION && sameKeys(value, V2_ENVELOPE_KEYS))
+    || !(value.version === LEGACY_TARGETLESS_RESCUE_ENVELOPE_VERSION && sameKeys(value, V1_ENVELOPE_KEYS)
+      || [LEGACY_PAIR_RESCUE_ENVELOPE_VERSION, RESCUE_PREPARATION_VERSION].includes(value.version)
+        && sameKeys(value, V2_ENVELOPE_KEYS))
     || !SOURCES.has(value.source)
     || typeof value.task !== 'string' || value.task.trim().length === 0
     || Buffer.byteLength(value.task) > RESCUE_TASK_MAX_BYTES
@@ -110,15 +113,17 @@ export function validateRescuePreparation(value) {
   if (value.options.effort !== undefined && !EFFORTS.has(value.options.effort)) throw invalidPreparation();
   if (value.options.model !== undefined && !validModel(value.options.model)) throw invalidPreparation();
   let continuationTarget;
-  if (value.version === RESCUE_PREPARATION_VERSION) {
+  if ([LEGACY_PAIR_RESCUE_ENVELOPE_VERSION, RESCUE_PREPARATION_VERSION].includes(value.version)) {
     if (value.continuationTarget === null) continuationTarget = null;
     else {
-      if (!validContinuationTarget(value.continuationTarget)
+      const validTarget = value.version === LEGACY_PAIR_RESCUE_ENVELOPE_VERSION
+        ? validPairContinuationTarget(value.continuationTarget)
+        : validPathContinuationTarget(value.continuationTarget);
+      if (!validTarget
         || value.options.resume !== 'resume') throw invalidPreparation();
-      continuationTarget = {
-        childId: value.continuationTarget.childId,
-        agentPath: value.continuationTarget.agentPath,
-      };
+      continuationTarget = value.version === LEGACY_PAIR_RESCUE_ENVELOPE_VERSION
+        ? { childId: value.continuationTarget.childId, agentPath: value.continuationTarget.agentPath }
+        : { agentPath: value.continuationTarget.agentPath };
     }
   }
   return {
@@ -126,7 +131,8 @@ export function validateRescuePreparation(value) {
     source: value.source,
     task: value.task,
     options: { ...value.options },
-    ...(value.version === RESCUE_PREPARATION_VERSION ? { continuationTarget } : {}),
+    ...([LEGACY_PAIR_RESCUE_ENVELOPE_VERSION, RESCUE_PREPARATION_VERSION].includes(value.version)
+      ? { continuationTarget } : {}),
   };
 }
 
@@ -871,11 +877,23 @@ function wellFormedControlFree(value) {
 }
 
 /** @param {unknown} value */
-function validContinuationTarget(value) {
-  return plain(value) && sameKeys(value, CONTINUATION_TARGET_KEYS)
+function validPairContinuationTarget(value) {
+  return plain(value) && sameKeys(value, PAIR_CONTINUATION_TARGET_KEYS)
     && safeIdentifier(value.childId, 512)
-    && typeof value.agentPath === 'string' && Buffer.byteLength(value.agentPath) <= 1024
-    && AGENT_PATH_PATTERN.test(value.agentPath);
+    && validAgentPath(value.agentPath);
+}
+
+/** @param {unknown} value */
+function validPathContinuationTarget(value) {
+  return plain(value) && sameKeys(value, PATH_CONTINUATION_TARGET_KEYS)
+    && validAgentPath(value.agentPath);
+}
+
+/** @param {unknown} value */
+function validAgentPath(value) {
+  return typeof value === 'string'
+    && Buffer.byteLength(value) <= 1024
+    && AGENT_PATH_PATTERN.test(value);
 }
 
 /** @param {unknown} value */
