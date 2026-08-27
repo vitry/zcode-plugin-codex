@@ -333,6 +333,19 @@ test('prepared continuation qualifies the exact v3 canonical path and internal l
   }
 });
 
+test('prepared continuation rejects fictional flattened subagent activity evidence', async () => {
+  const input = preparedContinuationFixture('named');
+  const parent = JSON.parse(input.parentRolloutJson);
+  const started = parent.find((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
+  const { id, agent_thread_id, agent_path, kind } = started.payload.item;
+  started.payload = { type: 'sub_agent_activity', event_id: id, agent_thread_id, agent_path, kind };
+  input.parentRolloutJson = JSON.stringify(parent);
+  await assert.rejects(
+    qualifyCodexRescuePreparedContinuationEvidence(input),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-start-count',
+  );
+});
+
 test('prepared continuation rejects each cross-pair and post-planning target mutation without sibling acceptance', async () => {
   const mutations = [
     ['continuation-target-lifecycle', (input) => {
@@ -1285,7 +1298,7 @@ test('background qualification fails closed on inline, self-printed, wrong-child
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output; } },
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'private prelude\n' }); } },
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'noisy progress\n' }); } },
-    { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.agent_thread_id = 'wrong-child'; } },
+    { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.item.agent_thread_id = 'wrong-child'; } },
     { code: 'spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
     { code: 'child-call-id', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
     { code: 'background-capability-leak', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${executionCapability}`; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
@@ -1302,7 +1315,7 @@ test('background qualification fails closed on inline, self-printed, wrong-child
 test('background qualification checks all core evidence before treating only spawn ciphertext as unqualified', () => {
   const encrypted = backgroundFixture(); const args = JSON.parse(spawnEvent(encrypted).payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(encrypted).payload.arguments = JSON.stringify(args);
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted');
-  startEvent(encrypted).payload.agent_thread_id = 'wrong-child';
+  startEvent(encrypted).payload.item.agent_thread_id = 'wrong-child';
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-rollout-id-mismatch');
   const badStdout = backgroundFixture(); const badArgs = JSON.parse(spawnEvent(badStdout).payload.arguments); badArgs.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(badStdout).payload.arguments = JSON.stringify(badArgs); childOutput(badStdout).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output;
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(badStdout, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'background-child-stdout');
@@ -1476,8 +1489,8 @@ test('shared parent-child route validation fails every trusted metadata field cl
     (input) => { parentMeta(input).payload.parent_thread_id = 'invented'; },
     (input) => { parentMeta(input).payload.thread_source = 'subagent'; },
     (input) => { parentMeta(input).payload.source = 'other'; },
-    (input) => { startEvent(input).payload.agent_thread_id = 'wrong'; },
-    (input) => { startEvent(input).payload.agent_path = '/root/wrong'; },
+    (input) => { startEvent(input).payload.item.agent_thread_id = 'wrong'; },
+    (input) => { startEvent(input).payload.item.agent_path = '/root/wrong'; },
     (input) => { childMeta(input).payload.id = 'wrong'; },
     (input) => { childMeta(input).payload.session_id = 'wrong'; },
     (input) => { childMeta(input).payload.parent_thread_id = 'wrong'; },
@@ -1630,7 +1643,7 @@ test('foreground and background parent calls own globally unique one-to-one call
     for (const background of [false, true]) {
       const input = background ? backgroundFixture() : fixture();
       spawnEvent(input).payload.call_id = callId;
-      startEvent(input).payload.event_id = callId;
+      startEvent(input).payload.item.id = callId;
       const qualify = background
         ? () => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions())
         : () => qualifyCodexRescueEvidence(input, options());
@@ -2165,7 +2178,7 @@ test('fails instead of skipping when linked child metadata has the wrong named R
 
 test('fails instead of skipping when observed child ID conflicts with an existing linked rollout', () => {
   const input = fixture();
-  startEvent(input).payload.agent_thread_id = '019fe6e0-ffff-7192-83ba-0b0cc2c48660';
+  startEvent(input).payload.item.agent_thread_id = '019fe6e0-ffff-7192-83ba-0b0cc2c48660';
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options()),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-rollout-id-mismatch',
@@ -2379,7 +2392,7 @@ function fixture(publicOutput = expectedPublicOutput) {
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
       ...parentPreparationEvents(),
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } },
-      { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
     ];
@@ -2483,8 +2496,8 @@ function setPresentation(input, nextTaskName, nextAgentPath) {
   spawn.payload.arguments = JSON.stringify(args);
   const acknowledgement = parentOutput(input, 'prepare-write-1');
   acknowledgement.payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'spawn', taskName: nextTaskName }), exit_code: 0 });
-  const previousAgentPath = startEvent(input).payload.agent_path;
-  startEvent(input).payload.agent_path = nextAgentPath;
+  const previousAgentPath = startEvent(input).payload.item.agent_path;
+  startEvent(input).payload.item.agent_path = nextAgentPath;
   childMeta(input).payload.source.subagent.thread_spawn.agent_path = nextAgentPath;
   for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message'
     && candidate.payload.recipient === '/root' && candidate.payload.author === previousAgentPath)) {
@@ -2535,7 +2548,7 @@ function choiceFixture(choice) {
     { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
     ...parentPreparationEvents(),
     structuredSpawn('spawn-1'),
-    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
+    { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } } },
     structuredWait('wait-1'),
     waitOutput('wait-1', false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
@@ -3006,7 +3019,7 @@ function toolOutput(callId, terminalText) {
 function semanticText(terminalText) { return `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${terminalText}`; }
 
 function spawnEvent(input) { return input.rollouts[0].find((event) => event.payload?.name === 'spawn_agent'); }
-function startEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'sub_agent_activity'); }
+function startEvent(input) { return input.rollouts[0].find((event) => event.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started'); }
 function childReturnEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'agent_message' && event.payload.author === agentPath); }
 function childMeta(input) { return input.rollouts[1][0]; }
 function parentMeta(input) { return input.rollouts[0][0]; }

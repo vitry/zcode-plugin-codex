@@ -58,7 +58,7 @@ export function assertRescueLauncherGate(source, { assertionPrefix = '' } = {}) 
 }
 
 const namedBoundary = '\nOnly after the preflight returned `ready`';
-const genericBoundary = '\nKeep the returned active collaboration handle as `rescueChildId`';
+const genericBoundary = '\nKeep the exact returned `task_name` as `rescueChildPath`';
 
 function routeBlock(source, start, end, label) {
   assert.ok(start >= 0, `${label} route marker must exist`);

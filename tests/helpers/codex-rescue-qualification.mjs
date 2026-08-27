@@ -40,11 +40,7 @@ const MAX_PUBLIC_PROGRESS_LINE_BYTES = 256;
 
 function subAgentActivity(event, kind) {
   const item = event?.type === 'event_msg' && event.payload?.type === 'item_completed'
-    && event.payload.item?.type === 'SubAgentActivity' ? event.payload.item
-    : event?.payload?.type === 'sub_agent_activity' ? {
-      type: 'SubAgentActivity', id: event.payload.event_id, kind: event.payload.kind,
-      agent_thread_id: event.payload.agent_thread_id, agent_path: event.payload.agent_path,
-    } : null;
+    && event.payload.item?.type === 'SubAgentActivity' ? event.payload.item : null;
   return item?.kind === kind ? item : null;
 }
 

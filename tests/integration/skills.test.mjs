@@ -1289,12 +1289,13 @@ test('installed Rescue instructions keep resume on one child and route pending f
   const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
   assert.match(source, /retain the exact canonical path in the returned result's `task_name`/);
   assert.match(source, /the child ID remains internal plugin identity/);
-  assert.match(source, /`rescueChildId` is not a Codex child thread ID and is never placed in a preparation/);
-  assert.match(source, /While that operation remains selected, do not call `spawn_agent` again after `rescueChildId` exists/);
+  assert.match(source, /returned `task_name` is both the active logical handle and canonical continuation path/);
+  assert.doesNotMatch(source, /returned active collaboration handle|rescueChildId/i);
+  assert.match(source, /While that operation remains selected, do not call `spawn_agent` again after `rescueChildPath` exists/);
   assert.match(source, /ask the user exactly once/i);
-  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildPath,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
-  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
+  assert.match(source, /select only the result or status belonging to `rescueChildPath`/);
   assert.equal(source.split(resume).length - 1, 2);
   assert.equal(source.split(fresh).length - 1, 2);
   assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);

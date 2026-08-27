@@ -217,7 +217,7 @@ test('Root automatic Rescue routing normalizes an explicit or proactive business
 
 test('active Rescue child rejoin is the first and exclusive Root action', () => {
   const source = skill('rescue');
-  const active = source.indexOf('rescueChildId');
+  const active = source.indexOf('rescueChildPath');
   const preflight = source.indexOf('role-status rescue');
   const prepare = source.indexOf('prepare rescue');
   const spawn = source.indexOf('spawn_agent({');
@@ -275,6 +275,8 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
 test('Root retains returned task_name and keeps child ID internal', () => {
   const source = skill('rescue');
   assert.match(source, /successful `spawn_agent` call[\s\S]+exact[^\n]+(?:returned|result)[^\n]+`task_name`/i);
+  assert.match(source, /returned `task_name`[^\n]+active logical handle[^\n]+canonical continuation path/i);
+  assert.doesNotMatch(source, /returned active collaboration handle|rescueChildId/i);
   assert.match(source, /retain[^\n]+unchanged[^\n]+(?:canonical )?(?:agent )?path[\s\S]+stop[\s\S]+restor[\s\S]+follow-up/i);
   assert.match(source, /child ID[^\n]+internal/i);
   assert.doesNotMatch(source, /spawn\.output\.agent_id|started\.event_id/i);
@@ -450,7 +452,7 @@ test('named and generic Rescue forwarders relay only validated coarse liveness a
     assert.match(forwarder, /status[\s\S]+does not (?:replace|complete)[\s\S]+original[\s\S]+handle/i);
     assert.match(forwarder, /return only[\s\S]+original[\s\S]+terminal[\s\S]+public stdout/i);
   }
-  assert.match(source, /update from the exact `rescueChildId`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
+  assert.match(source, /update from the exact `rescueChildPath`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
   assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
 });
 
@@ -490,10 +492,10 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
   }
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /resume[\s\S]+same-child choice continuation/i);
-  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildPath,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
-  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
-  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildId`/i);
+  assert.match(source, /select only the result or status belonging to `rescueChildPath`/);
+  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildPath`/i);
   assert.doesNotMatch(source, /followup_task\([\s\S]{0,160}(?:spawn_agent|invoke rescue)/);
   assert.match(role, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
   assert.match(role, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
