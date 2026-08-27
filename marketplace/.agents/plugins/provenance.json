@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "3678eb763803b4bf7eef5168c757df39bebebdd7",
-  "sourceSha": "3678eb763803b4bf7eef5168c757df39bebebdd7",
+  "sourceRef": "6e80dff28c783f199a91addf025a47fb3b6bf791",
+  "sourceSha": "6e80dff28c783f199a91addf025a47fb3b6bf791",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "b36545799021cad1003d033ebc6cc9acc3e205618d15b221a4a1fe242525a5d4",
+    "sha256": "ad86bd0c9911db89d41a6e461cd236163d115d7800397a0eca7625755a091da3",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -38,13 +38,13 @@
       },
       {
         "path": "plugins/zcode/README.md",
-        "size": 29103,
-        "sha256": "7c26ae4a48ca227e785ac9d4a5125489e7615380854be1259e555d93c16050f0"
+        "size": 29322,
+        "sha256": "6870212f46c4f940f3d88afe8ab831bb503de0503200dd84720cb73d02fe21fd"
       },
       {
         "path": "plugins/zcode/README.zh-CN.md",
-        "size": 26854,
-        "sha256": "f6341052adc28d268848158c8ca9f3a0507165891c65fc7201edc94d24c5d966"
+        "size": 27039,
+        "sha256": "3da414c1bd0be0f90e51a325ad95dfe2231cb50415581da8a3505d45f1d5cb14"
       },
       {
         "path": "plugins/zcode/SECURITY.md",
