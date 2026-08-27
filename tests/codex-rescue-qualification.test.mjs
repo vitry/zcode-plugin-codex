@@ -344,6 +344,51 @@ test('prepared continuation rejects each cross-pair and post-planning target mut
   }
 });
 
+test('prepared continuation derives one exact path chain instead of trusting compensated caller expectations', async () => {
+  const input = preparedContinuationFixture('named');
+  const substitutedPath = '/root/compensated_sibling';
+  input.expected.agentPath = substitutedPath;
+  const parent = JSON.parse(input.parentRolloutJson);
+  const spawn = parent.find((event) => event?.payload?.name === 'spawn_agent');
+  const spawnArgs = JSON.parse(spawn.payload.arguments); spawnArgs.task_name = 'compensated_sibling'; spawn.payload.arguments = JSON.stringify(spawnArgs);
+  for (const event of parent.filter((candidate) => candidate?.payload?.agent_path)) event.payload.agent_path = substitutedPath;
+  const resumeWrite = parent.find((event) => event?.payload?.call_id === 'prepare-write-2' && event.payload.type === 'custom_tool_call');
+  const resumeHost = parseFixturePollInput(resumeWrite.payload.input); const resumeEnvelope = JSON.parse(resumeHost.chars.trim());
+  resumeEnvelope.continuationTarget.agentPath = substitutedPath;
+  resumeWrite.payload.input = structuredPoll(resumeHost.session_id, 'prepare-write-2', `${JSON.stringify(resumeEnvelope)}\n`).payload.input;
+  const prepared = parent.find((event) => event?.payload?.call_id === 'prepare-write-2' && event.payload.type === 'custom_tool_call_output');
+  prepared.payload.output = capturedResult({ output: preparedAck({ version: 2, action: 'followup', target: substitutedPath, assignment: 'zcode-rescue' }), exit_code: 0 });
+  parent.find((event) => event?.payload?.call_id === 'prepare-write-1' && event.payload.type === 'custom_tool_call_output').payload.output =
+    capturedResult({ output: preparedAck({ version: 1, action: 'spawn', taskName: 'compensated_sibling' }), exit_code: 0 });
+  const followup = parent.find((event) => event?.payload?.name === 'followup_task'); const followupArgs = JSON.parse(followup.payload.arguments);
+  followupArgs.target = substitutedPath; followup.payload.arguments = JSON.stringify(followupArgs);
+  parent.find((event) => event?.payload?.call_id === 'followup-1' && event.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: true, target: substitutedPath });
+  input.parentRolloutJson = JSON.stringify(parent);
+  const child = JSON.parse(input.childRolloutJson); child[0].payload.source.subagent.thread_spawn.agent_path = substitutedPath; input.childRolloutJson = JSON.stringify(child);
+  const records = JSON.parse(input.preparationRecordBytesJson); const initial = JSON.parse(records[0]); const continuation = JSON.parse(records[1]);
+  initial.activation.taskName = 'compensated_sibling'; initial.activation.agentPathDigest = createHash('sha256').update(substitutedPath).digest('hex');
+  continuation.envelope = resumeEnvelope; continuation.activation.agentPathDigest = createHash('sha256').update(substitutedPath).digest('hex');
+  records[0] = `${JSON.stringify(initial)}\n`; records[1] = `${JSON.stringify(continuation)}\n`; input.preparationRecordBytesJson = JSON.stringify(records);
+
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-app-server-host');
+});
+
+test('prepared continuation requires captured app-server metadata and ambient invoke thread identity', async () => {
+  const appServerMutation = preparedContinuationFixture('named'); const transcript = JSON.parse(appServerMutation.appServerTranscriptJson);
+  transcript[3].result.data[0].source.subAgent.thread_spawn.agent_path = '/root/sibling';
+  appServerMutation.appServerTranscriptJson = JSON.stringify(transcript);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(appServerMutation),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-app-server-host');
+
+  for (const payloadType of ['custom_tool_call', 'custom_tool_call_output']) {
+    const input = preparedContinuationFixture('named'); const child = JSON.parse(input.childRolloutJson);
+    child.find((event) => event?.payload?.type === payloadType).thread_id = 'sibling-child'; input.childRolloutJson = JSON.stringify(child);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-child-ambient-identity');
+  }
+});
+
 test('prepared continuation selects the exact target with two complete bindings regardless of partition order', async () => {
   for (const siblingFirst of [false, true]) {
     const input = preparedContinuationFixture('named');
@@ -358,6 +403,18 @@ test('prepared continuation selects the exact target with two complete bindings 
     const currentRecords = siblingFirst ? [sibling, ...current.records] : [...current.records, sibling];
     input.bindingPreReservationBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: preRecords }))}\n`;
     input.bindingPartitionBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: currentRecords }))}\n`;
+    const transcript = JSON.parse(input.appServerTranscriptJson);
+    const siblingHost = restoredRawCodexChild({ originWorkspace: expectedWorkspace, restoredPath: '/root/zcode_rescue_sibling',
+      agentRole: 'zcode-rescue', id: 'sibling-child' });
+    const targetHost = transcript[3].result.data[0];
+    transcript[3].result.data = siblingFirst ? [siblingHost, targetHost] : [targetHost, siblingHost];
+    input.appServerTranscriptJson = JSON.stringify(transcript);
+    const siblingExecutor = { kind: 'subagent-executor', agentId: 'sibling-child', agentType: 'zcode-rescue', parentSessionId: parentId,
+      parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'sibling-turn', workspace: expectedWorkspace,
+      active: false, createdAt: '2026-08-09T00:00:00.000Z' };
+    input.candidateExecutorRecordBytesJson = JSON.stringify((siblingFirst
+      ? [`${JSON.stringify(siblingExecutor)}\n`, input.executorRecordBytes]
+      : [input.executorRecordBytes, `${JSON.stringify(siblingExecutor)}\n`]));
     const jobs = JSON.parse(input.jobRecordBytesJson);
     jobs.push(`${JSON.stringify(rawJob(siblingAnchor, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
     jobs.push(`${JSON.stringify(rawJob(siblingCurrent, 'turn-original', 'succeeded', { zcodeSessionId: 'sibling-session' }))}\n`);
@@ -694,6 +751,20 @@ test('raw prepared continuation confines the serialized selector and child ID to
   }
 });
 
+test('raw prepared continuation rejects child selectors in every unauthorized parent event field', async () => {
+  const mutations = [
+    (rows) => rows.push({ type: 'event_msg', turn_id: 'turn-original', payload: { type: 'agent_message', phase: 'commentary', message: childId } }),
+    (rows) => { rows.find((event) => event?.payload?.kind === 'started').payload.extra = childId; },
+    (rows) => { const result = rows.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'followup-1'); result.payload.output = JSON.stringify({ accepted: true, target: agentPath, result: childId }); },
+    (rows) => { rows[0].payload.status = JSON.stringify({ continuationTarget: { childId, agentPath } }); },
+  ];
+  for (const mutate of mutations) {
+    const input = preparedContinuationFixture('named'); const rows = JSON.parse(input.parentRolloutJson); mutate(rows); input.parentRolloutJson = JSON.stringify(rows);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak');
+  }
+});
+
 test('raw prepared continuation treats display metadata as non-authoritative while binding remains mandatory', async () => {
   const renamed = preparedContinuationFixture('named');
   renamed.expected.agentPath = '/root/ordinary_helper';
@@ -710,6 +781,9 @@ test('raw prepared continuation treats display metadata as non-authoritative whi
   const followup = parent.find((row) => row?.payload?.name === 'followup_task'); const followupArgs = JSON.parse(followup.payload.arguments); followupArgs.target = '/root/ordinary_helper'; followup.payload.arguments = JSON.stringify(followupArgs);
   parent.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: true, target: '/root/ordinary_helper' });
   child[0].payload.source.subagent.thread_spawn.agent_path = '/root/ordinary_helper';
+  const transcript = JSON.parse(renamed.appServerTranscriptJson);
+  transcript[3].result.data[0].source.subAgent.thread_spawn.agent_path = '/root/ordinary_helper';
+  renamed.appServerTranscriptJson = JSON.stringify(transcript);
   const records = JSON.parse(renamed.preparationRecordBytesJson); const initial = JSON.parse(records[0]);
   initial.activation.taskName = 'ordinary_helper'; initial.activation.agentPathDigest = createHash('sha256').update('/root/ordinary_helper').digest('hex'); records[0] = `${JSON.stringify(initial)}\n`;
   const continuation = JSON.parse(records[1]); continuation.envelope = resumeEnvelope;
@@ -2446,10 +2520,19 @@ function preparedContinuationFixture(route, execution = 'foreground') {
   ];
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:03.500Z'; child[4].timestamp = '2026-08-10T01:01:04.000Z'; child[5].timestamp = '2026-08-10T01:01:05.000Z';
   child[1].turn_id = child[2].turn_id = 'invoke-original'; child[4].turn_id = child[5].turn_id = 'invoke-continuation';
+  for (const event of child.filter((candidate) => ['custom_tool_call', 'custom_tool_call_output'].includes(candidate?.payload?.type))) event.thread_id = childId;
+  const hostChild = restoredRawCodexChild({ originWorkspace: expectedWorkspace, restoredPath: agentPath,
+    agentRole: route === 'named' ? 'zcode-rescue' : null });
   return {
     route, execution, expected: { parentSessionId: parentId, childThreadId: childId, agentPath, workspace: expectedWorkspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-original' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    appServerTranscriptJson: JSON.stringify([
+      { direction: 'request', observedAt: '2026-08-10T00:00:00.300Z', id: 1, method: 'thread/list', params: { parentThreadId: parentId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+      { direction: 'response', observedAt: '2026-08-10T00:00:00.350Z', id: 1, result: { data: [], nextCursor: null, backwardsCursor: null } },
+      { direction: 'request', observedAt: '2026-08-10T01:01:00.300Z', id: 2, method: 'thread/list', params: { parentThreadId: parentId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+      { direction: 'response', observedAt: '2026-08-10T01:01:00.350Z', id: 2, result: { data: [hostChild], nextCursor: null, backwardsCursor: null } },
+    ]),
     execFramesJson: JSON.stringify([
       { type: 'thread.started', thread_id: parentId },
       { type: 'item.completed', item: { type: 'agent_message', text: 'continuation complete' } },
@@ -2579,12 +2662,15 @@ function activeTurnRecord(sessionId, turnId, workspace) {
 
 function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) {
   const input = preparedContinuationFixture('named');
-  for (const field of ['parentRolloutJson', 'childRolloutJson', 'fakePeerJson']) {
+  for (const field of ['parentRolloutJson', 'childRolloutJson', 'fakePeerJson', 'appServerTranscriptJson']) {
     input[field] = JSON.stringify(replaceCapturedWorkspace(JSON.parse(input[field]), expectedWorkspace, executionWorkspace));
   }
   input.expected.workspace = executionWorkspace;
   input.expected.originWorkspace = originWorkspace;
   input.expected.executionWorkspace = executionWorkspace;
+  const appServerTranscript = JSON.parse(input.appServerTranscriptJson);
+  for (const rawChild of appServerTranscript.flatMap((frame) => frame?.result?.data ?? [])) rawChild.cwd = originWorkspace;
+  input.appServerTranscriptJson = JSON.stringify(appServerTranscript);
   const child = JSON.parse(input.childRolloutJson);
   for (const row of child.filter((event) => event?.payload?.type === 'custom_tool_call')) {
     const host = parseFixtureHostInput(row.payload.input);

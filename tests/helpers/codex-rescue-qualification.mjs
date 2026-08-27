@@ -92,7 +92,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || typeof input.activeTurnRecordBytes !== 'string' || typeof input.bindingAuthorityBytes !== 'string'
     || typeof input.bindingPreReservationBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
     || typeof input.jobRecordBytesJson !== 'string' || typeof input.fakePeerJson !== 'string'
-    || typeof input.execFramesJson !== 'string'
+    || typeof input.execFramesJson !== 'string' || typeof input.appServerTranscriptJson !== 'string'
     || !input.expected) {
     mismatch('continuation-raw-contract', 'Prepared continuation qualification requires bounded raw captured artifacts.');
   }
@@ -104,6 +104,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
   const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobBytes = parseArray(input.jobRecordBytesJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
   const execFrames = parseArray(input.execFramesJson, 'continuation-exec-frames');
+  const appServerTranscript = parseArray(input.appServerTranscriptJson, 'continuation-app-server');
   const rawCapture = validateLiveRawContinuationCapture(input, { parent, child, hooks, peer, expected });
   const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
   const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
@@ -156,6 +157,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
     || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
+  const hostChildren = validateContinuationAppServerTranscript(appServerTranscript, {
+    parentSessionId, childThreadId, agentPath: observedAgentPath, workspace: workspaceAuthority.originWorkspace,
+    route: input.route, preparations,
+  });
   const followupOutput = parentOutputs.find((output) => output.payload.call_id === followups[0].payload.call_id);
   let followupResult; try { followupResult = JSON.parse(followupOutput.payload.output); } catch { mismatch('continuation-call-linkage', 'Parent lifecycle outputs are malformed.'); }
   if (followup.target !== observedAgentPath || followupResult?.accepted !== true || followupResult?.target !== observedAgentPath) {
@@ -192,6 +197,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   if (preMatches.length !== 1 || matches.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue bindings do not contain one exact selected child.');
   const [preBinding] = preMatches;
   const [binding] = matches;
+  validateContinuationCandidateClosure(input, hostChildren, partition.records, executor, {
+    parentSessionId, parentTurnId: originalParentTurnId, permissionMode: expected.permissionMode,
+    workspace: workspaceAuthority.executionWorkspace,
+  });
   const preChildAuthority = rescueBindingAuthorityView(preBinding); const childAuthority = rescueBindingAuthorityView(binding);
   if (childAuthority.kind !== 'subagent-start' || childAuthority.childAgentId !== childThreadId || childAuthority.childAgentType !== executor.agentType
     || childAuthority.parentTurnId !== originalParentTurnId || childAuthority.parentPermissionMode !== expected.permissionMode
@@ -214,6 +223,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   if (reactivation.bindingKey !== preBinding.key || reactivation.operationId !== preBinding.operationId
     || reactivation.anchorJobId !== preBinding.anchorJobId || reactivation.currentJobId !== preBinding.currentJobId
     || reactivation.bindingUpdatedAt !== preBinding.updatedAt || reactivation.zcodeSessionId !== anchor.zcodeSessionId) mismatch('continuation-preparation-records', 'Consumed continuation preparation is not bound to the exact resumable operation.');
+  const privateTarget = preparationRecords[1]?.envelope?.continuationTarget;
+  if (!isDeepStrictEqual(privateTarget, { childId: childThreadId, agentPath: observedAgentPath })
+    || reactivation.executorAgentId !== privateTarget.childId
+    || reactivation.agentPathDigest !== createHash('sha256').update(privateTarget.agentPath).digest('hex')
+    || hostChildren.filter((candidate) => candidate.id === privateTarget.childId && candidate.agentPath === privateTarget.agentPath).length !== 1) {
+    mismatch('continuation-target-chain', 'Private target, host child, activation, and captured lifecycle do not form one exact chain.');
+  }
   if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== originalParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the active parent turn.');
   if (Date.parse(anchor.createdAt) > Date.parse(stops[0].timestamp) || Date.parse(preBinding.updatedAt) > Date.parse(preparationRecords[1].createdAt)
     || Date.parse(current.createdAt) < Date.parse(preparationRecords[1].createdAt) || Date.parse(binding.updatedAt) < Date.parse(current.createdAt)) mismatch('continuation-job-record', 'Raw binding and job timestamps do not match the long-running lifecycle transition.');
@@ -259,6 +275,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue'))
     || new Set(childCommands).size !== 1
     || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-child-invocations', 'Raw child rollout does not prove two exact linked invoke-prepared turns.');
+  if (calls.some((call) => call.thread_id !== childThreadId)
+    || outputs.some((output) => output.thread_id !== childThreadId)) {
+    mismatch('continuation-child-ambient-identity', 'Each invoke-prepared call and output must carry the exact ambient child thread ID.');
+  }
   for (const call of calls) {
     assertExecEnvelope(parseCapturedHostCall(call.payload.input).envelope, childCommands[0], workspaceAuthority.originWorkspace,
       'continuation-child-exec-envelope-mismatch');
@@ -275,8 +295,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const privateValues = [activeTurn.key, binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
     activeTurn.generationId, backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
-  const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames, rawCapture: rawCapture?.publicEvidence });
-  if (privateValues.some((value) => publicText.includes(value)) || publicText.includes('continuationTarget')) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
+  const publicCapture = redactAuthorizedContinuationIdentity(parent, child, childThreadId);
+  const publicText = JSON.stringify({ ...publicCapture, execFrames, rawCapture: rawCapture?.publicEvidence });
+  if (privateValues.some((value) => publicText.includes(value)) || publicText.includes(childThreadId)
+    || publicText.includes('continuationTarget')) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
     ...(workspaceAuthority.checked ? { originWorkspace: workspaceAuthority.originWorkspace, executionWorkspace: workspaceAuthority.executionWorkspace,
@@ -500,6 +522,99 @@ async function assertRestoredPreparationWithProduction(record, expected) {
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
+function validateContinuationAppServerTranscript(transcript, expected) {
+  if (transcript.length !== 4) mismatch('continuation-app-server', 'Continuation capture must contain the fresh and resume child-list request/response pairs.');
+  const listParams = { parentThreadId: expected.parentSessionId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' };
+  const hostsByGeneration = [];
+  for (let index = 0; index < transcript.length; index += 2) {
+    const request = transcript[index]; const response = transcript[index + 1]; const id = index / 2 + 1;
+    if (!isDeepStrictEqual(request, { direction: 'request', observedAt: request?.observedAt, id, method: 'thread/list', params: listParams })
+      || !isDeepStrictEqual(response, { direction: 'response', observedAt: response?.observedAt, id,
+        result: { data: response?.result?.data, nextCursor: null, backwardsCursor: null } })
+      || !Array.isArray(response?.result?.data) || response.result.data.length > 64) {
+      mismatch('continuation-app-server', 'Continuation app-server transcript does not contain two exact bounded child-list exchanges.');
+    }
+    let hosts;
+    try {
+      hosts = response.result.data.map((raw) => sanitizeCodexThreadSpawnChild(raw, expected.parentSessionId));
+      if (new Set(hosts.map((candidate) => candidate.id)).size !== hosts.length
+        || new Set(hosts.map((candidate) => candidate.agentPath)).size !== hosts.length) throw new Error('ambiguous host metadata');
+    } catch { mismatch('continuation-app-server-host', 'Continuation app-server child metadata is invalid or ambiguous.'); }
+    hostsByGeneration.push(hosts);
+  }
+  const times = transcript.map((frame) => eventTimestamp({ timestamp: frame.observedAt }));
+  if (times.some((value) => value === undefined) || times.some((value, index) => index > 0 && value <= times[index - 1])
+    || !(eventTimestamp(expected.preparations[0]) < times[0] && times[1] < eventTimestamp(expected.preparations[0]) + 1_000_000_000n
+      && eventTimestamp(expected.preparations[1]) < times[2] && times[3] < eventTimestamp(expected.preparations[1]) + 1_000_000_000n)) {
+    mismatch('continuation-app-server', 'Continuation app-server discovery is not ordered inside each preparation phase.');
+  }
+  const resumedHosts = hostsByGeneration[1];
+  if (hostsByGeneration[0].some((candidate) => candidate.id === expected.childThreadId || candidate.agentPath === expected.agentPath)) {
+    mismatch('continuation-app-server-host', 'The exact child existed before its captured spawn lifecycle.');
+  }
+  const exact = resumedHosts.filter((candidate) => candidate.id === expected.childThreadId && candidate.agentPath === expected.agentPath);
+  if (exact.length !== 1 || exact[0].cwd !== expected.workspace
+    || exact[0].agentRole !== (expected.route === 'named' ? 'zcode-rescue' : null)) {
+    mismatch('continuation-app-server-host', 'Continuation app-server metadata does not contain the exact captured lifecycle child.');
+  }
+  return resumedHosts;
+}
+
+function validateContinuationCandidateClosure(input, hosts, bindings, selectedExecutor, expected) {
+  if (hosts.length === 1 && input.candidateExecutorRecordBytesJson === undefined) return;
+  if (typeof input.candidateExecutorRecordBytesJson !== 'string'
+    || Buffer.byteLength(input.candidateExecutorRecordBytesJson) > MAX_ROLLOUT_BYTES) {
+    mismatch('continuation-candidate-executors', 'Candidate executor evidence is missing or oversized.');
+  }
+  let bytes;
+  try { bytes = JSON.parse(input.candidateExecutorRecordBytesJson); } catch { mismatch('continuation-candidate-executors', 'Candidate executor evidence is missing or malformed.'); }
+  if (!Array.isArray(bytes) || bytes.length !== hosts.length || bytes.some((value) => typeof value !== 'string'
+    || Buffer.byteLength(value) > MAX_TEXT_BYTES || !value.endsWith('\n'))) {
+    mismatch('continuation-candidate-executors', 'Candidate executor evidence is not the exact host-child closure.');
+  }
+  let executors;
+  try { executors = bytes.map((value) => JSON.parse(value)); } catch { mismatch('continuation-candidate-executors', 'Candidate executor file bytes are malformed.'); }
+  const hostIds = hosts.map((candidate) => candidate.id); const bindingIds = bindings.map((record) => rescueBindingAuthorityView(record).childAgentId);
+  const executorKeys = Object.keys(selectedExecutor).sort().join('\0');
+  if (!isDeepStrictEqual(executors.map((record) => record.agentId), hostIds)
+    || bindingIds.length !== hostIds.length || hostIds.some((id) => !bindingIds.includes(id))
+    || executors.filter((record) => record.agentId === selectedExecutor.agentId).length !== 1
+    || !executors.some((record) => isDeepStrictEqual(record, selectedExecutor))
+    || executors.some((record, index) => Object.keys(record ?? {}).sort().join('\0') !== executorKeys
+      || record.kind !== 'subagent-executor' || record.active !== false
+      || record.agentId !== hosts[index].id || record.agentType !== (hosts[index].agentRole ?? 'default')
+      || record.parentSessionId !== expected.parentSessionId || record.parentTurnId !== expected.parentTurnId
+      || record.parentPermissionMode !== expected.permissionMode || record.workspace !== expected.workspace
+      || Object.hasOwn(selectedExecutor, 'originWorkspace') && record.originWorkspace !== selectedExecutor.originWorkspace
+      || Object.hasOwn(selectedExecutor, 'parentGenerationId') && record.parentGenerationId !== selectedExecutor.parentGenerationId
+      || !boundedString(record.childTurnId) || !Number.isFinite(Date.parse(record.createdAt)))) {
+    mismatch('continuation-candidate-executors', 'Candidate host, executor, and binding evidence do not preserve one captured order and identity closure.');
+  }
+}
+
+function redactAuthorizedContinuationIdentity(parent, child, childThreadId) {
+  const parentCopy = redactValidatedPreparationInputs(parent);
+  for (const event of parentCopy) {
+    if (event?.payload?.type === 'function_call_output') {
+      let result;
+      try { result = JSON.parse(event.payload.output); } catch { continue; }
+      if (Object.keys(result ?? {}).join('\0') === 'agent_id' && result.agent_id === childThreadId) {
+        result.agent_id = '[authorized child id]'; event.payload.output = JSON.stringify(result);
+      }
+    }
+    if (event?.payload?.type === 'sub_agent_activity' && ['started', 'stopped'].includes(event.payload.kind)
+      && event.payload.agent_thread_id === childThreadId) event.payload.agent_thread_id = '[authorized child id]';
+  }
+  const childCopy = structuredClone(child);
+  for (const event of childCopy) {
+    if (event?.type === 'session_meta' && event.payload?.id === childThreadId) event.payload.id = '[authorized child id]';
+    if (['custom_tool_call', 'custom_tool_call_output'].includes(event?.payload?.type) && event.thread_id === childThreadId) {
+      event.thread_id = '[authorized child id]';
+    }
+  }
+  return { parent: parentCopy, child: childCopy };
+}
+
 function validateLiveRawContinuationCapture(input, core) {
   const fields = ['rawParentRolloutJson', 'rawChildRolloutJson', 'rawHookLifecycleJson', 'rawFakePeerJson', 'artifactHistoryJson'];
   if (fields.every((field) => input[field] === undefined)) return null;
@@ -540,7 +655,7 @@ function validateLiveRawContinuationCapture(input, core) {
   if (rawPeer.length !== 4 || rawPeer.filter((event) => event?.method === 'session/create').length !== 1 || rawPeer.filter((event) => event?.method === 'session/resume').length !== 1
     || rawPeer.filter((event) => event?.method === 'session/send').length !== 2) mismatch('continuation-raw-peer-events', 'Complete fake-peer capture contains an extra or missing request.');
   validateImmutableArtifactHistory(history, input);
-  return { publicEvidence: { parent: redactValidatedPreparationInputs(rawParent), child: rawChild } };
+  return { publicEvidence: redactAuthorizedContinuationIdentity(rawParent, rawChild, core.expected.childThreadId) };
 }
 
 function assertRawSubset(projected, raw, label) {
