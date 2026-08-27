@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "ab538d1890b3bdc7bd94156043c5de1024884b9d",
-  "sourceSha": "ab538d1890b3bdc7bd94156043c5de1024884b9d",
+  "sourceRef": "90fe7ab73ed14f5ee630ad190e1db2337ce940b9",
+  "sourceSha": "90fe7ab73ed14f5ee630ad190e1db2337ce940b9",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "0461a2462b2687e7bd8ef23ed082948e51f25658bc66d49a6b3bfc52096b07aa",
+    "sha256": "7e710487a0f71b34e1e7eab71fe827e81823b696041361baf334ddc492d9b34f",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -748,8 +748,8 @@
       },
       {
         "path": "plugins/zcode/skills/rescue/SKILL.md",
-        "size": 31870,
-        "sha256": "0cc2032fbde220078d4035f0404e738e86e8241419c699e54e02a0536b18281d"
+        "size": 31879,
+        "sha256": "7314578e10ce913f7c8e526e224c9779eb86485b336235d5d270f07a408023d4"
       },
       {
         "path": "plugins/zcode/skills/rescue/agents/openai.yaml",
