@@ -1882,7 +1882,8 @@ test('raw TTY v2 preparation selects one exact sibling binding and keeps its han
   }
 
   const selectedEnv = { ...context.env, CODEX_THREAD_ID: selected.childId,
-    FAKE_CODEX_THREAD_JSON: JSON.stringify(selectedHost), FAKE_ZCODE_RECORD: record };
+    FAKE_CODEX_THREAD_JSON: JSON.stringify(selectedHost), FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_WORKSPACE: workspace };
   const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: selectedEnv });
   assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, selected.zcodeSessionId);
   await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: selectedEnv }),
