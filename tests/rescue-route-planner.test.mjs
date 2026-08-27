@@ -730,6 +730,24 @@ test('an absent v1 continuation target remains normalized targetless compatibili
   assert.equal(planned.directive.target, host.agentPath);
 });
 
+test('planner envelope versions require their exact continuation target field before child discovery', async (t) => {
+  const cases = [
+    ['v1 rejects a present field', { version: 1, continuationTarget: null }],
+    ['v2 rejects an absent field', { version: 2 }],
+    ['v3 rejects an absent field', { version: 3 }],
+    ['unknown version rejects an absent field', { version: 99 }],
+    ['unknown version rejects a null field', { version: 99, continuationTarget: null }],
+    ['unknown version rejects a shaped field', { version: 99, continuationTarget: { agentPath: '/root/zcode_rescue_task' } }],
+  ];
+  for (const [name, envelopeFields] of cases) await t.test(name, async () => {
+    const input = await context(); let lists = 0;
+    input.envelope = { ...envelopeFields, source: 'explicit', task: 'private task', options: { resume: 'resume' } };
+    await assert.rejects(planRescueActivation({ ...input,
+      listChildren: async () => { lists += 1; return []; } }), { code: 'RESCUE_ROUTE_INVALID' });
+    assert.equal(lists, 0);
+  });
+});
+
 test('targeted exact modern v3 and legacy v1/v2 fixtures retain their activation behavior', async (t) => {
   for (const version of [3, 1, 2]) await t.test(`binding v${version}`, async () => {
     const input = await context();

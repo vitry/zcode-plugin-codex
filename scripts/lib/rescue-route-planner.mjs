@@ -153,11 +153,13 @@ function validatePlannerInput(input) {
   const continuationTarget = input?.envelope?.continuationTarget;
   const hasContinuationTarget = plain(input?.envelope)
     && Object.hasOwn(input.envelope, 'continuationTarget');
-  const validTarget = !hasContinuationTarget
-    || input.envelope.version === 2
-      && (continuationTarget === null || validPairContinuationTarget(continuationTarget))
-    || input.envelope.version === 3
-      && (continuationTarget === null || validPathContinuationTarget(continuationTarget));
+  const validTarget = input?.envelope?.version === 1
+    ? !hasContinuationTarget
+    : input?.envelope?.version === 2
+      ? hasContinuationTarget && (continuationTarget === null || validPairContinuationTarget(continuationTarget))
+      : input?.envelope?.version === 3
+        ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
+        : false;
   if (!plain(input) || typeof input.dataRoot !== 'string' || input.dataRoot.length === 0 || !plain(caller)
     || !safeId(caller.sessionId) || !safeId(caller.turnId) || typeof caller.workspace !== 'string' || caller.workspace.length === 0
     || caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0)
