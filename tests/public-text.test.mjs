@@ -40,3 +40,12 @@ test('public Rescue text rejects adoption, same-child fresh, fallback selection,
     assert.doesNotMatch(source, /atomic stop|原子 stop/i);
   }
 });
+
+test('public Rescue text does not expose a continuation selector or concurrent-writer promise', () => {
+  const root = new URL('../', import.meta.url);
+  for (const path of ['README.md', 'README.zh-CN.md', 'SECURITY.md', 'CHANGELOG.md']) {
+    const source = readFileSync(new URL(path, root), 'utf8');
+    assert.doesNotMatch(source, /--resume\s+(?:<|\[)(?:child|session|job|binding|operation|handle)/i);
+    assert.doesNotMatch(source, /(?:multiple|concurrent|多个|并发).{0,100}(?:active )?writable Rescue.{0,100}(?:same canonical workspace|同一 canonical workspace).{0,80}(?:supported|enabled|允许|支持|启用)/is);
+  }
+});
