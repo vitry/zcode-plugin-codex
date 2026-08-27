@@ -21,6 +21,7 @@ import {
   qualifyCodexRescuePreparedContinuationEvidence,
   qualifyCodexRescueRestoredChildEvidence,
   qualifyCodexRescueEvidence,
+  validateCodexContinuationLifecycleFixture,
 } from './helpers/codex-rescue-qualification.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './helpers/rescue-skill-contract.mjs';
 
@@ -49,6 +50,11 @@ test('real 0.147 and 0.148 captures expose only canonical task_name to Root', as
     const fixtureUrl = new URL(`fixtures/codex-rescue/${version}-continuation-lifecycle.json`, import.meta.url);
     const bytes = await readFile(fixtureUrl, 'utf8');
     const fixture = JSON.parse(bytes);
+    assert.deepEqual(validateCodexContinuationLifecycleFixture(fixture), {
+      parentThreadId: `parent-${version.replace('.', '')}`,
+      childThreadId: `child-${version.replace('.', '')}`,
+      agentPath: version === '0.147' ? '/root/zcode_rescue' : '/root/zcode_rescue_task',
+    });
     const spawn = fixture.parentRecords.find((record) => record?.payload?.name === 'spawn_agent');
     const output = fixture.parentRecords.find((record) => record?.payload?.type === 'function_call_output');
     const activity = fixture.parentRecords.find((record) => record?.payload?.item?.type === 'SubAgentActivity').payload.item;
@@ -63,6 +69,20 @@ test('real 0.147 and 0.148 captures expose only canonical task_name to Root', as
     assert.equal(typeof spawn.payload.arguments, 'string');
     assert.equal(typeof output.payload.output, 'string');
     assert.doesNotMatch(bytes, /"agent_id"|"event_id"|spawn\.output\.agent_id|started\.event_id/);
+  }
+});
+
+test('real lifecycle fixtures reject duplicate, reordered, wrapped, and key-drifted records', async () => {
+  const fixture = JSON.parse(await readFile(new URL('fixtures/codex-rescue/0.148-continuation-lifecycle.json', import.meta.url), 'utf8'));
+  const mutations = [
+    (value) => value.parentRecords.splice(2, 0, structuredClone(value.parentRecords[1])),
+    (value) => { [value.parentRecords[1], value.parentRecords[2]] = [value.parentRecords[2], value.parentRecords[1]]; },
+    (value) => { value.parentRecords[2] = { type: 'response_item', payload: value.parentRecords[2] }; },
+    (value) => { value.parentRecords[3].payload.extra = true; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(fixture); mutate(changed);
+    assert.throws(() => validateCodexContinuationLifecycleFixture(changed), CodexRescueEvidenceMismatchError);
   }
 });
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
@@ -1339,7 +1359,7 @@ test('background qualification rejects a production-minted capability across eve
   }
 });
 
-test('qualifies exact resume against one existing child ID and rejects same-child fresh', () => {
+test('qualifies exact resume against one existing canonical child path and rejects same-child fresh', () => {
   assert.deepEqual(qualifyCodexRescueChoiceEvidence(choiceFixture('resume'), choiceOptions('resume')), {
     parentThreadId: parentId, childThreadId: childId, agentPath, taskName, choice: 'resume',
   });
@@ -1523,8 +1543,8 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     { code: 'choice-spawn-keys', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.task = 'leak'; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
     { code: 'choice-agent-role', mutate: (input) => { childMeta(input).payload.source.subagent.thread_spawn.agent_role = null; } },
     { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume'), followupOutput('followup-2')) },
-    { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: 'sibling-child', message: choiceOptions('resume').expectedFollowupMessage }); } },
-    { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: childId, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
+    { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: '/root/sibling_child', message: choiceOptions('resume').expectedFollowupMessage }); } },
+    { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: agentPath, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
     { code: 'choice-parent-call-id', mutate: (input) => { followupResult(input).payload.call_id = 'foreign'; } },
     { code: 'choice-followup-output-order', mutate: (input) => { const output = input.rollouts[0].splice(input.rollouts[0].indexOf(followupResult(input)), 1)[0]; input.rollouts[0].splice(input.rollouts[0].indexOf(choiceFollowup(input)), 0, output); } },
     { code: 'choice-wait-count', mutate: (input) => { const waitIds = new Set(input.rollouts[0].filter((event) => event?.payload?.name === 'wait_agent').map((event) => event.payload.call_id)); input.rollouts[0] = input.rollouts[0].filter((event) => !waitIds.has(event?.payload?.call_id)); } },
@@ -1566,7 +1586,7 @@ test('qualifies the complete 0.147 generic default same-child choice continuatio
 
 test('choice qualification marks only explicitly encrypted continuation arguments unqualified', () => {
   const encrypted = choiceFixture('resume');
-  choiceFollowup(encrypted).payload.arguments = JSON.stringify({ target: childId, message: `gAAAA${'A'.repeat(80)}=` });
+  choiceFollowup(encrypted).payload.arguments = JSON.stringify({ target: agentPath, message: `gAAAA${'A'.repeat(80)}=` });
   assert.throws(
     () => qualifyCodexRescueChoiceEvidence(encrypted, choiceOptions('resume')),
     (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'choice-followup-encrypted',
@@ -1574,7 +1594,7 @@ test('choice qualification marks only explicitly encrypted continuation argument
   const wholeArguments = choiceFixture('resume'); choiceFollowup(wholeArguments).payload.arguments = `gAAAA${'A'.repeat(80)}=`;
   assert.throws(() => qualifyCodexRescueChoiceEvidence(wholeArguments, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-followup-arguments');
   const observableMismatch = choiceFixture('resume');
-  choiceFollowup(observableMismatch).payload.arguments = JSON.stringify({ target: childId, message: `gAAAA${'A'.repeat(80)}=` });
+  choiceFollowup(observableMismatch).payload.arguments = JSON.stringify({ target: agentPath, message: `gAAAA${'A'.repeat(80)}=` });
   waitResult(observableMismatch, 'wait-1').payload.call_id = 'wrong';
   assert.throws(() => qualifyCodexRescueChoiceEvidence(observableMismatch, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-parent-call-id');
   const missing = choiceFixture('resume'); const missingCall = choiceFollowup(missing); const missingOutput = followupResult(missing); missing.rollouts[0] = missing.rollouts[0].filter((event) => event !== missingCall && event !== missingOutput);
@@ -1688,6 +1708,11 @@ test('preparation qualification independently validates task and every bounded o
 
 test('spawn qualification rejects targeted resume and malformed continuation identifiers through production validation', () => {
   const invalidEnvelopes = [
+    {
+      version: 3, source: 'explicit', task: expectedPreparationEnvelope.task,
+      options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { agentPath },
+    },
     {
       version: 2, source: 'explicit', task: expectedPreparationEnvelope.task,
       options: { execution: 'foreground', resume: 'resume' },
@@ -2499,6 +2524,12 @@ function setPresentation(input, nextTaskName, nextAgentPath) {
   const previousAgentPath = startEvent(input).payload.item.agent_path;
   startEvent(input).payload.item.agent_path = nextAgentPath;
   childMeta(input).payload.source.subagent.thread_spawn.agent_path = nextAgentPath;
+  const followup = input.rollouts[0].find((event) => event?.payload?.name === 'followup_task');
+  if (followup) {
+    const argumentsValue = JSON.parse(followup.payload.arguments);
+    argumentsValue.target = nextAgentPath;
+    followup.payload.arguments = JSON.stringify(argumentsValue);
+  }
   for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message'
     && candidate.payload.recipient === '/root' && candidate.payload.author === previousAgentPath)) {
     event.payload.author = nextAgentPath;
@@ -2941,7 +2972,7 @@ function structuredSpawn(callId) {
 }
 
 function structuredFollowup(callId, choice) {
-  return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: childId, message: choiceOptions(choice).expectedFollowupMessage }) } };
+  return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: agentPath, message: choiceOptions(choice).expectedFollowupMessage }) } };
 }
 function followupOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
 

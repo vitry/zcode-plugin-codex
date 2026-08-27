@@ -80,6 +80,74 @@ export function parseCodexRolloutJsonl(value) {
   });
 }
 
+export function validateCodexContinuationLifecycleFixture(fixture) {
+  assertExactKeys(fixture, ['childSessionMetadata', 'codexVersion', 'parentRecords', 'pluginBinding', 'sourceLines'], 'continuation-fixture-schema');
+  if (!['0.147.0', '0.148.0'].includes(fixture.codexVersion)) mismatch('continuation-fixture-schema', 'Lifecycle fixture version is not qualified.');
+  if (!Array.isArray(fixture.sourceLines) || fixture.sourceLines.length !== 4
+    || fixture.sourceLines.some((line) => !Number.isSafeInteger(line) || line < 1)
+    || new Set(fixture.sourceLines).size !== fixture.sourceLines.length
+    || fixture.sourceLines.some((line, index) => index > 0 && line <= fixture.sourceLines[index - 1])) {
+    mismatch('continuation-fixture-schema', 'Lifecycle source lines must be four unique ordered records.');
+  }
+  if (!Array.isArray(fixture.parentRecords) || fixture.parentRecords.length !== 4) {
+    mismatch('continuation-fixture-sequence', 'Lifecycle fixture must contain exactly four parent records.');
+  }
+  const [metaRecord, spawnRecord, activityRecord, outputRecord] = fixture.parentRecords;
+  for (const record of fixture.parentRecords) {
+    assertExactKeys(record, ['payload', 'timestamp', 'type'], 'continuation-fixture-schema');
+    if (!Number.isFinite(Date.parse(record.timestamp))) mismatch('continuation-fixture-schema', 'Lifecycle fixture timestamp is invalid.');
+  }
+  if (fixture.parentRecords.some((record, index) => index > 0 && eventTimestamp(record) <= eventTimestamp(fixture.parentRecords[index - 1]))) {
+    mismatch('continuation-fixture-sequence', 'Lifecycle records are not in exact chronological order.');
+  }
+  if (metaRecord.type !== 'session_meta') mismatch('continuation-fixture-sequence', 'Lifecycle fixture must begin with session metadata.');
+  assertExactKeys(metaRecord.payload, ['cli_version', 'cwd', 'id', 'session_id', 'source', 'thread_source'], 'continuation-fixture-schema');
+  if (metaRecord.payload.id !== metaRecord.payload.session_id || metaRecord.payload.cli_version !== fixture.codexVersion
+    || metaRecord.payload.source !== 'cli' || metaRecord.payload.thread_source !== 'user' || !boundedString(metaRecord.payload.cwd)) {
+    mismatch('continuation-fixture-correlation', 'Lifecycle parent metadata is inconsistent.');
+  }
+  if (spawnRecord.type !== 'response_item') mismatch('continuation-fixture-sequence', 'Lifecycle spawn record wrapper is invalid.');
+  assertExactKeys(spawnRecord.payload, ['arguments', 'call_id', 'name', 'type'], 'continuation-fixture-schema');
+  if (spawnRecord.payload.type !== 'function_call' || spawnRecord.payload.name !== 'spawn_agent' || !boundedString(spawnRecord.payload.call_id)) {
+    mismatch('continuation-fixture-sequence', 'Lifecycle spawn call is invalid.');
+  }
+  const spawnArguments = parseObject(spawnRecord.payload.arguments, 'continuation-fixture-schema');
+  assertExactKeys(spawnArguments, ['agent_type', 'fork_turns', 'message', 'task_name'], 'continuation-fixture-schema');
+  if (spawnArguments.agent_type !== 'zcode-rescue' || spawnArguments.fork_turns !== 'none'
+    || !boundedString(spawnArguments.message) || !boundedString(spawnArguments.task_name)) {
+    mismatch('continuation-fixture-schema', 'Lifecycle spawn arguments are invalid.');
+  }
+  if (activityRecord.type !== 'event_msg') mismatch('continuation-fixture-sequence', 'Lifecycle activity record wrapper is invalid.');
+  assertExactKeys(activityRecord.payload, ['completed_at_ms', 'item', 'started_at_ms', 'thread_id', 'turn_id', 'type'], 'continuation-fixture-schema');
+  assertExactKeys(activityRecord.payload.item, ['agent_path', 'agent_thread_id', 'id', 'kind', 'type'], 'continuation-fixture-schema');
+  const activity = activityRecord.payload.item;
+  if (activityRecord.payload.type !== 'item_completed' || activity.type !== 'SubAgentActivity' || activity.kind !== 'started'
+    || !Number.isSafeInteger(activityRecord.payload.started_at_ms) || activityRecord.payload.completed_at_ms !== activityRecord.payload.started_at_ms
+    || activityRecord.payload.thread_id !== metaRecord.payload.id || !boundedString(activityRecord.payload.turn_id)) {
+    mismatch('continuation-fixture-sequence', 'Lifecycle started activity is invalid.');
+  }
+  if (outputRecord.type !== 'response_item') mismatch('continuation-fixture-sequence', 'Lifecycle spawn output wrapper is invalid.');
+  assertExactKeys(outputRecord.payload, ['call_id', 'output', 'type'], 'continuation-fixture-schema');
+  if (outputRecord.payload.type !== 'function_call_output') mismatch('continuation-fixture-sequence', 'Lifecycle spawn output is invalid.');
+  const spawnResult = parseObject(outputRecord.payload.output, 'continuation-fixture-schema');
+  assertExactKeys(spawnResult, ['task_name'], 'continuation-fixture-schema');
+  assertExactKeys(fixture.childSessionMetadata, ['id', 'parent_thread_id', 'source'], 'continuation-fixture-schema');
+  assertExactKeys(fixture.childSessionMetadata.source, ['subagent'], 'continuation-fixture-schema');
+  assertExactKeys(fixture.childSessionMetadata.source.subagent, ['thread_spawn'], 'continuation-fixture-schema');
+  const threadSpawn = fixture.childSessionMetadata.source.subagent.thread_spawn;
+  assertExactKeys(threadSpawn, ['agent_path', 'agent_role', 'parent_thread_id'], 'continuation-fixture-schema');
+  assertExactKeys(fixture.pluginBinding, ['agentPath', 'childAgentId'], 'continuation-fixture-schema');
+  if (activity.id !== spawnRecord.payload.call_id || outputRecord.payload.call_id !== spawnRecord.payload.call_id
+    || spawnResult.task_name !== activity.agent_path || activity.agent_path !== `/root/${spawnArguments.task_name}`
+    || activity.agent_thread_id !== fixture.childSessionMetadata.id || activity.agent_thread_id !== fixture.pluginBinding.childAgentId
+    || activity.agent_path !== threadSpawn.agent_path || activity.agent_path !== fixture.pluginBinding.agentPath
+    || fixture.childSessionMetadata.parent_thread_id !== metaRecord.payload.id || threadSpawn.parent_thread_id !== metaRecord.payload.id
+    || threadSpawn.agent_role !== spawnArguments.agent_type) {
+    mismatch('continuation-fixture-correlation', 'Lifecycle fixture identities do not correlate exactly.');
+  }
+  return { parentThreadId: metaRecord.payload.id, childThreadId: activity.agent_thread_id, agentPath: activity.agent_path };
+}
+
 export function qualifyCodexRescueEvidence(input, options) {
   return qualifyCodexRescueEvidenceCore(input, options, false);
 }
@@ -1317,7 +1385,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const followup = parseObject(followups[0].payload.arguments, 'choice-followup-arguments');
   const followupMessageEncrypted = encrypted(followup.message);
   assertExactKeys(followup, ['message', 'target'], 'choice-followup-keys');
-  if (followup.target !== childThreadId) mismatch('choice-followup-target', 'The continuation target differs from the original child ID.');
+  if (followup.target !== agentPath) mismatch('choice-followup-target', 'The continuation target differs from the original canonical child path.');
   if (!followupMessageEncrypted && followup.message !== options.expectedFollowupMessage) mismatch('choice-followup-message', 'The continuation message differs from the fixed choice contract.');
   const followupOutputs = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output' && event.payload.call_id === followups[0].payload.call_id);
   if (followupOutputs.length !== 1) mismatch('choice-followup-output-link', 'The follow-up must have exactly one linked host output.');
@@ -2043,7 +2111,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   try { payload = validateRescuePreparation(JSON.parse(options.expectedPreparationPayload)); } catch {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
-  if (payload.version === 2 && (payload.options.resume !== 'fresh' || payload.continuationTarget !== null)
+  if ([2, 3].includes(payload.version) && (payload.options.resume !== 'fresh' || payload.continuationTarget !== null)
     || payload.version === 1 && payload.options.resume !== undefined && payload.options.resume !== 'fresh') {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }

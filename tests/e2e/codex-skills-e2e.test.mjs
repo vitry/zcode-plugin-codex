@@ -2951,7 +2951,7 @@ function installedCapturedChoiceRoute(route, choice) {
     ...installedCapturedWait(`${route.name}-initial-wait`, false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
-    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: childThreadId, message: followupMessage }) } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: agentPath, message: followupMessage }) } },
     installedCapturedFunctionOutput(`${route.name}-followup`),
     installedCapturedParentRelay(agentPath, 'model-active', route.name === 'named' ? 'f' : '2', route.name === 'named' ? 'f' : '2'),
     ...installedCapturedWait(`${route.name}-continuation-wait`, false),
