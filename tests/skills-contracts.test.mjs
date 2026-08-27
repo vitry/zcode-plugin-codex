@@ -338,6 +338,19 @@ test('semantic candidate triage is explicit-only and proactive continuation neve
   }
 });
 
+test('targetless choice requires one total stopped operation as well as one semantic candidate', () => {
+  const sources = [
+    skill('rescue'),
+    readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8'),
+  ];
+  for (const source of sources) {
+    assert.match(source, /targetless[\s\S]+only when[^\n]+total retained stopped operations[^\n]+(?:exactly|==) one[^\n]+sole semantic candidate/i);
+    assert.match(source, /one semantic candidate[^\n]+total retained stopped operations[^\n]+(?:more than one|>1)[\s\S]+asks? exactly once[^\n]+before[^\n]+prepare/i);
+    assert.match(source, /(?:resume\s+(?:answer|choice)|(?:answer|choice)[^\n]+resume)[\s\S]+(?:candidate(?:'s)? )?exact pair[\s\S]+(?:fresh\s+(?:answer|choice)|(?:answer|choice)[^\n]+fresh)[\s\S]+(?:continuationTarget[^\n]+null|null target)/i);
+    assert.match(source, /Root[^\n]+(?:does not|never)[^\n]+(?:read|inspect|decide)[^\n]+private binding validity/i);
+  }
+});
+
 test('private task envelope is confined to the parent write_stdin rollout', () => {
   const source = skill('rescue');
   assert.match(source, /task[\s\S]+source[\s\S]+options[\s\S]+only[\s\S]+parent[^\n]+`write_stdin` payload/i);

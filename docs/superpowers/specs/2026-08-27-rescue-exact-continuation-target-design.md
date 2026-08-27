@@ -150,17 +150,19 @@ The zero, one, and more than one semantic-candidate branches below apply only to
 
 Zero semantic
 candidates means `fresh` with `continuationTarget: null` and no clarification.
-With more than one semantic candidate, Root asks exactly once before prepare,
+With one semantic candidate and total retained stopped operations more than one,
+Root asks exactly once before prepare whether to resume or start fresh. A resume
+answer uses that candidate's exact pair; a fresh answer uses
+`continuationTarget: null`. With more than one semantic candidate, Root asks exactly once before prepare,
 follow-up, or spawn. One answer simultaneously resolves both dimensions:
 either `fresh`, which uses `continuationTarget: null`, or `resume` plus one
 logical operation, which uses that operation's exact retained pair. Root does
 not ask a separate operation question and then a separate resume/fresh
-question. With one semantic candidate or one usable binding, the legacy
-targetless choice flow remains available: Root omits `resume`, sends
+question. The legacy targetless choice flow remains available only when the total retained stopped operations is exactly one and it is the sole semantic candidate: Root omits `resume`, sends
 `continuationTarget: null`, follows the plugin's unique route, and the selected
 child may return the same-child `needs-choice` result. This single-operation
-compatibility path cannot be used when more than one semantic candidate would
-make targetless planning ambiguous.
+compatibility path cannot be used when any additional retained stopped
+operation would make targetless planning ambiguous.
 
 Proactive routing remains outside this triage. For a proactive clear continuation, Root materializes `resume`; if its exact retained pair is unavailable, it clarifies or fails closed and never uses fresh/null as a fallback. A proactive clear independent task still materializes `fresh`.
 
@@ -170,6 +172,9 @@ repair one member from another, including by concatenating a returned task name
 with `/root/`. If its history does not identify one intended operation and both
 members from one linked lifecycle, it asks the user which prior Rescue to
 continue; the plugin never guesses.
+
+Root does not read or decide private binding validity; it counts only retained
+host lifecycle operations, while the plugin discovers and validates bindings.
 
 For a first independent operation, explicit fresh request, or targetless
 compatibility flow, Root supplies `continuationTarget: null`.
