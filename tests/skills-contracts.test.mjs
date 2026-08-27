@@ -339,9 +339,10 @@ test('semantic candidate triage is explicit-only and proactive continuation neve
 });
 
 test('targetless choice requires one total stopped operation as well as one semantic candidate', () => {
+  const spec = readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8');
   const sources = [
     skill('rescue'),
-    readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8'),
+    spec,
   ];
   for (const source of sources) {
     assert.match(source, /targetless[\s\S]+only when[^\n]+total retained stopped operations[^\n]+(?:exactly|==) one[^\n]+sole semantic candidate/i);
@@ -349,6 +350,12 @@ test('targetless choice requires one total stopped operation as well as one sema
     assert.match(source, /(?:resume\s+(?:answer|choice)|(?:answer|choice)[^\n]+resume)[\s\S]+(?:candidate(?:'s)? )?exact pair[\s\S]+(?:fresh\s+(?:answer|choice)|(?:answer|choice)[^\n]+fresh)[\s\S]+(?:continuationTarget[^\n]+null|null target)/i);
     assert.match(source, /Root[^\n]+(?:does not|never)[^\n]+(?:read|inspect|decide)[^\n]+private binding validity/i);
   }
+  const acceptance = spec.match(/## Acceptance\n\n([\s\S]+?)(?:\n## |$)/)?.[1];
+  assert.ok(acceptance, 'spec must retain an Acceptance section');
+  assert.match(acceptance, /zero semantic candidates[\s\S]{0,80}explicit independent fresh/i);
+  assert.match(acceptance, /one semantic candidate[\s\S]{0,80}total retained[\s\S]{0,80}stopped operations exactly one[\s\S]{0,80}targetless/i);
+  assert.match(acceptance, /one semantic candidate[\s\S]{0,80}total retained stopped operations more[\s\S]{0,40}than one[\s\S]+ask[^\n]+resume\/fresh[\s\S]+exact pair[^\n]+null/i);
+  assert.match(acceptance, /more than one semantic candidate[^\n]+combined operation[^\n]+resume\/fresh/i);
 });
 
 test('private task envelope is confined to the parent write_stdin rollout', () => {

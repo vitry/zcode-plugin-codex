@@ -252,10 +252,12 @@ semantics except where tests must recognize the new private envelope version.
 2. **Targetless compatibility:** the same two bindings without a target remain
    `RESCUE_CHILD_AMBIGUOUS`; one usable binding still resumes normally. Root
    never sends that ambiguous multi-operation no-choice frame: after filtering
-   retained operations by request semantics, zero candidates means fresh with
-   no question, one keeps the targetless same-child `needs-choice` flow, and
-   more than one asks one combined operation-and-resume/fresh question before
-   preparation.
+   retained operations by request semantics, zero semantic candidates means
+   explicit independent fresh. One semantic candidate with total retained
+   stopped operations exactly one uses the targetless same-child `needs-choice`
+   flow. One semantic candidate with total retained stopped operations more
+   than one asks once for resume/fresh before preparation; resume uses its
+   exact pair and fresh uses null. More than one semantic candidate asks one combined operation-and-resume/fresh question before preparation.
 3. **Cross-pair and absence:** same ID/wrong path, same path/wrong ID, missing,
    unbound, unmanaged, revoked, and ineligible targets fail without fallback,
    mutation, preparation consumption, or ZCode RPC.
