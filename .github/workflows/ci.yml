@@ -27,6 +27,8 @@ jobs:
       - name: Enforce LF line endings
         run: npm run check:line-endings
       - run: npm run check
+        env:
+          ZCODE_TEST_TIMEOUT_MULTIPLIER: ${{ matrix.os == 'windows-latest' && matrix.node == 'lts/*' && '3' || '1' }}
       - name: Clean packed production install and Node 22.13 native binding smoke
         run: node --test tests/integration/package-install.test.mjs
       - name: Production lockfile native binding smoke

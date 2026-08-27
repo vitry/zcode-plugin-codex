@@ -29,6 +29,7 @@ const EXECUTOR_ERROR_CODES = new Set([
  */
 export async function planRescueActivation(input) {
   validatePlannerInput(input);
+  const continuationTarget = input.envelope.continuationTarget ?? null;
   const listChildren = input.listChildren ?? ((/** @type {string} */ parentId) => listCodexThreadSpawnChildren(parentId, input.appServerOptions));
   const resolveStoppedExecutor = input.resolveStoppedExecutor ?? resolveRoutedStoppedForwardingExecutor;
   const resolveBinding = input.resolveBinding ?? defaultBindingResolver(input.dataRoot);
@@ -51,8 +52,16 @@ export async function planRescueActivation(input) {
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
+  let candidateChildren = hostChildren;
+  if (continuationTarget !== null) {
+    const selectedHost = hostChildren.find((host) => (
+      host.id === continuationTarget.childId && host.agentPath === continuationTarget.agentPath
+    ));
+    if (selectedHost === undefined) throw plannerError('RESCUE_BINDING_INVALID');
+    candidateChildren = [selectedHost];
+  }
   const provenCandidates = []; const persistedCandidates = []; let ineligibleCandidate = false;
-  for (const host of hostChildren) {
+  for (const host of candidateChildren) {
     const hostClass = classifyHost(host);
     if (hostClass === 'occupancy') continue;
     let resolved;
@@ -139,15 +148,28 @@ export function validateRescueRouteDirective(value) {
 /** @param {any} input */
 function validatePlannerInput(input) {
   const caller = input?.caller;
+  const continuationTarget = input?.envelope?.continuationTarget;
+  const hasContinuationTarget = plain(input?.envelope)
+    && Object.hasOwn(input.envelope, 'continuationTarget');
   if (!plain(input) || typeof input.dataRoot !== 'string' || input.dataRoot.length === 0 || !plain(caller)
     || !safeId(caller.sessionId) || !safeId(caller.turnId) || typeof caller.workspace !== 'string' || caller.workspace.length === 0
     || caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0)
     || !PERMISSION_MODES.includes(caller.permissionMode) || !plain(input.envelope) || !plain(input.envelope.options)
     || input.envelope.options.resume !== undefined && !['fresh', 'resume'].includes(input.envelope.options.resume)
+    || hasContinuationTarget && continuationTarget !== null
+      && (!validContinuationTarget(continuationTarget) || input.envelope.options.resume !== 'resume')
     || input.listChildren !== undefined && typeof input.listChildren !== 'function'
     || input.resolveStoppedExecutor !== undefined && typeof input.resolveStoppedExecutor !== 'function'
     || input.resolveBinding !== undefined && typeof input.resolveBinding !== 'function'
     || input.appServerOptions !== undefined && !plain(input.appServerOptions)) throw plannerError('RESCUE_ROUTE_INVALID');
+}
+
+/** @param {unknown} value */
+function validContinuationTarget(value) {
+  if (!plain(value)) return false;
+  const target = /** @type {Record<string, unknown>} */ (value);
+  return sameKeys(target, ['agentPath', 'childId'])
+    && boundedIdentifier(target.childId) && validAgentPath(target.agentPath);
 }
 
 /** @param {any[]} children @param {string} parentId */
@@ -280,7 +302,20 @@ function sameKeys(value, keys) { return Object.keys(value).sort().join('\0') ===
 /** @param {unknown} value */
 function safeId(value, maxBytes = 4096) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maxBytes
-    && [...value].every((character) => character.charCodeAt(0) > 31 && character.charCodeAt(0) !== 127);
+    && wellFormedControlFree(value);
+}
+/** @param {string} value */
+function wellFormedControlFree(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code >= 0x7f && code <= 0x9f) return false;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const trailing = value.charCodeAt(index + 1);
+      if (!(trailing >= 0xdc00 && trailing <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
 }
 /** @param {unknown} value */
 function boundedIdentifier(value) { return safeId(value, 512); }

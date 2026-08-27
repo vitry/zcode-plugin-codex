@@ -15,10 +15,19 @@ import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
+import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
 const MACOS_UNIX_SOCKET_PATH_MAX_BYTES = 104;
+
+test('CI timeout multiplier is bounded and defaults to one', () => {
+  assert.equal(testTimeoutMultiplier({}), 1);
+  assert.equal(testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: '' }), 1);
+  for (const value of ['1', '2', '3']) assert.equal(testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: value }), Number(value));
+  for (const value of ['0', '4', '1.5', ' 2 ', 'slow']) assert.throws(() => testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: value }), /ZCODE_TEST_TIMEOUT_MULTIPLIER/u);
+  assert.equal(scaleTestTimeout(500, { ZCODE_TEST_TIMEOUT_MULTIPLIER: '3' }), 1_500);
+});
 
 async function withTestDeadlineKeepalive(operation) {
   const keepalive = setInterval(() => {}, 1_000);
@@ -219,8 +228,8 @@ async function withClient(callback, env = {}, options = {}) {
     workspace: directory,
     launch: { command: process.execPath, args: [fixture], target: fixture },
     env: { ...process.env, FAKE_ZCODE_RECORD: record, ...env },
-    requestTimeoutMs: process.platform === 'win32' ? 2_000 : 500,
-    completionTimeoutMs: process.platform === 'win32' ? 2_000 : 500,
+    requestTimeoutMs: scaleTestTimeout(process.platform === 'win32' ? 2_000 : 500),
+    completionTimeoutMs: scaleTestTimeout(process.platform === 'win32' ? 2_000 : 500),
     ...options,
   });
   try { await callback(client, record); } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
@@ -2000,7 +2009,7 @@ test('an in-flight direct stop keeps its exact natural terminal winner after evi
 
 test('an in-flight owner release keeps its exact natural terminal winner after evidence eviction', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-inflight-eviction-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '1'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const ownerId = 'release-inflight-eviction-owner'; const sessionId = 'release-inflight-eviction-session'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; broker.sessionOwners.set(sessionId, { ownerId, socket }); const active = { socket, token: 'release-inflight-eviction-turn', baseline: 1, inputId: 'release-inflight-eviction-input' }; broker.activeSessionSockets.set(sessionId, active); broker.activeSessions.add(sessionId); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; let resolveStop; let enteredResolve; const entered = new Promise((resolvePromise) => { enteredResolve = resolvePromise; }); const protocol = { request: () => { enteredResolve(); return new Promise((resolvePromise) => { resolveStop = resolvePromise; }); }, cancelTurn() { throw new Error('natural terminal winner must not be cancelled'); } }; broker.protocol = protocol;
-  const releasing = broker.releaseOwner(socket, ownerId, []); await entered; broker.recordTerminalWinner(sessionId, protocol, active); broker.activeSessionSockets.delete(sessionId); broker.activeSessions.delete(sessionId); for (let index = 0; index < 256; index += 1) broker.recordTerminalWinner(`release-inflight-eviction-${index}`, protocol, { token: `release-inflight-eviction-token-${index}`, baseline: index, inputId: `release-inflight-eviction-input-${index}` }); assert.equal(broker.terminalWinnerEvidence.has(sessionId), false); resolveStop({}); const result = await releasing; assert.deepEqual(result.releasedSessionIds, [sessionId]); assert.deepEqual(result.failedSessionIds, []); assert.equal(broker.sessionOwners.has(sessionId), false); assert.deepEqual(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, {}); await broker.close(); await rm(directory, { recursive: true, force: true });
+  const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(2_000)); await entered; broker.recordTerminalWinner(sessionId, protocol, active); broker.activeSessionSockets.delete(sessionId); broker.activeSessions.delete(sessionId); for (let index = 0; index < 256; index += 1) broker.recordTerminalWinner(`release-inflight-eviction-${index}`, protocol, { token: `release-inflight-eviction-token-${index}`, baseline: index, inputId: `release-inflight-eviction-input-${index}` }); assert.equal(broker.terminalWinnerEvidence.has(sessionId), false); resolveStop({}); const result = await releasing; assert.deepEqual(result.releasedSessionIds, [sessionId]); assert.deepEqual(result.failedSessionIds, []); assert.equal(broker.sessionOwners.has(sessionId), false); assert.deepEqual(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, {}); await broker.close(); await rm(directory, { recursive: true, force: true });
 });
 
 test('a stop acknowledgement cannot authorize or clean a newer active route', async (t) => {

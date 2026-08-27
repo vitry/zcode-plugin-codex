@@ -492,6 +492,156 @@ test('two usable bindings without an explicit choice are ambiguous instead of pr
   await assert.rejects(planRescueActivation({ ...input, ...adapters([base, newer], values, bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
+test('an exact continuation pair selects only its binding regardless of list order, suffix, or time', async (t) => {
+  for (const variant of [
+    { name: 'newer ordinal target in forward order', reverse: false, targetBase: false },
+    { name: 'older base target in reverse order', reverse: true, targetBase: true },
+  ]) await t.test(variant.name, async () => {
+    const input = await context();
+    const base = child(input.caller.workspace, { createdAt: 400, updatedAt: 500 });
+    const ordinal = child(input.caller.workspace, { id: 'child-2', agentPath: '/root/zcode_rescue_task_2', createdAt: 100, updatedAt: 200 });
+    const selected = variant.targetBase ? base : ordinal;
+    const sibling = variant.targetBase ? ordinal : base;
+    input.envelope = { version: 2, source: 'explicit', task: 'private task', options: { resume: 'resume' },
+      continuationTarget: { childId: selected.id, agentPath: selected.agentPath } };
+    const hosts = variant.reverse ? [ordinal, base] : [base, ordinal];
+    const executorReads = []; const bindingReads = [];
+    const planned = await planRescueActivation({
+      ...input,
+      listChildren: async () => hosts,
+      resolveStoppedExecutor: async (_dataRoot, _origin, id) => {
+        executorReads.push(id);
+        throw Object.assign(new Error('not resident'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+      },
+      resolveBinding: async ({ host }) => {
+        bindingReads.push(host.id);
+        return { kind: 'bound', binding: modernBinding(input, host) };
+      },
+    });
+    assert.equal(planned.directive.target, selected.agentPath);
+    assert.deepEqual(executorReads, [selected.id]);
+    assert.deepEqual(bindingReads, [selected.id]);
+    assert.equal(executorReads.includes(sibling.id), false);
+    assert.equal(bindingReads.includes(sibling.id), false);
+  });
+});
+
+test('a targeted child never falls back to a missing, cross-paired, unmanaged, unbound, or ineligible sibling', async (t) => {
+  const variants = [
+    ['missing', { childId: 'missing', agentPath: '/root/zcode_rescue_task_9' }, 'missing'],
+    ['same ID wrong path', { childId: 'child-1', agentPath: '/root/zcode_rescue_task_9' }, 'missing'],
+    ['same path wrong ID', { childId: 'missing', agentPath: '/root/zcode_rescue_task' }, 'missing'],
+    ['unmanaged', { childId: 'unmanaged', agentPath: '/root/ordinary' }, 'bound'],
+    ['unbound', { childId: 'child-1', agentPath: '/root/zcode_rescue_task' }, 'missing'],
+    ['revoked or ineligible', { childId: 'child-1', agentPath: '/root/zcode_rescue_task' }, 'ineligible'],
+  ];
+  for (const [name, continuationTarget, targetBindingKind] of variants) await t.test(name, async () => {
+    const input = await context();
+    const exact = child(input.caller.workspace);
+    const unmanaged = child(input.caller.workspace, { id: 'unmanaged', agentPath: '/root/ordinary', agentRole: 'default' });
+    const sibling = child(input.caller.workspace, { id: 'child-2', agentPath: '/root/zcode_rescue_task_2' });
+    input.envelope = { version: 2, source: 'explicit', task: 'private task', options: { resume: 'resume' }, continuationTarget };
+    const spawned = []; const resolved = []; const bound = [];
+    await assert.rejects(planRescueActivation({
+      ...input,
+      listChildren: async () => [exact, unmanaged, sibling],
+      resolveStoppedExecutor: async (_root, _cwd, id) => {
+        resolved.push(id);
+        throw Object.assign(new Error('not resident'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+      },
+      resolveBinding: async ({ host }) => {
+        bound.push(host.id);
+        if (host.id === continuationTarget.childId) return targetBindingKind === 'bound'
+          ? { kind: 'bound', binding: modernBinding(input, host) }
+          : { kind: targetBindingKind };
+        spawned.push(host.id);
+        return { kind: 'bound', binding: modernBinding(input, host) };
+      },
+    }), { code: 'RESCUE_BINDING_INVALID' });
+    assert.deepEqual(spawned, []);
+    if (['missing', 'same ID wrong path', 'same path wrong ID'].includes(name)) {
+      assert.deepEqual(resolved, []); assert.deepEqual(bound, []);
+    }
+  });
+});
+
+test('target validation and global duplicate ambiguity happen before candidate adapter reads', async (t) => {
+  for (const options of [{ resume: 'fresh' }, {}]) await t.test(`target plus ${options.resume ?? 'omitted resume'}`, async () => {
+    const input = await context(); let lists = 0;
+    input.envelope = { version: 2, source: 'explicit', task: 'private task', options,
+      continuationTarget: { childId: 'child-1', agentPath: '/root/zcode_rescue_task' } };
+    await assert.rejects(planRescueActivation({ ...input, listChildren: async () => { lists += 1; return []; } }),
+      { code: 'RESCUE_ROUTE_INVALID' });
+    assert.equal(lists, 0);
+  });
+
+  for (const continuationTarget of [
+    {},
+    { childId: 'child-1' },
+    { childId: 'child-1', agentPath: '/root/zcode_rescue_task', extra: true },
+    { childId: '', agentPath: '/root/zcode_rescue_task' },
+    { childId: 'child\n1', agentPath: '/root/zcode_rescue_task' },
+    { childId: 'child\u00851', agentPath: '/root/zcode_rescue_task' },
+    { childId: 'child\ud8001', agentPath: '/root/zcode_rescue_task' },
+    { childId: 'child\udc001', agentPath: '/root/zcode_rescue_task' },
+    { childId: 'x'.repeat(513), agentPath: '/root/zcode_rescue_task' },
+    { childId: 'child-1', agentPath: 'root/zcode_rescue_task' },
+    { childId: 'child-1', agentPath: `/root/${'x'.repeat(1019)}` },
+  ]) await t.test('malformed direct planner target', async () => {
+    const malformed = await context(); let lists = 0;
+    malformed.envelope = { version: 2, source: 'explicit', task: 'private task', options: { resume: 'resume' }, continuationTarget };
+    await assert.rejects(planRescueActivation({ ...malformed,
+      listChildren: async () => { lists += 1; return []; } }), { code: 'RESCUE_ROUTE_INVALID' });
+    assert.equal(lists, 0);
+  });
+
+  const input = await context();
+  input.envelope = { version: 2, source: 'explicit', task: 'private task', options: { resume: 'resume' },
+    continuationTarget: { childId: 'child-1', agentPath: '/root/zcode_rescue_task' } };
+  const one = child(input.caller.workspace);
+  for (const duplicate of [
+    child(input.caller.workspace, { agentPath: '/root/zcode_rescue_task_2' }),
+    child(input.caller.workspace, { id: 'child-2' }),
+  ]) {
+    let reads = 0;
+    await assert.rejects(planRescueActivation({ ...input, listChildren: async () => [one, duplicate],
+      resolveStoppedExecutor: async () => { reads += 1; throw new Error('must not read'); },
+      resolveBinding: async () => { reads += 1; throw new Error('must not read'); } }),
+    { code: 'RESCUE_CHILD_AMBIGUOUS' });
+    assert.equal(reads, 0);
+  }
+});
+
+test('an absent v1 continuation target remains normalized targetless compatibility behavior', async () => {
+  const input = await context(); input.envelope.options = {};
+  const host = child(input.caller.workspace);
+  const planned = await planRescueActivation({ ...input,
+    ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding: modernBinding(input, host) }]])) });
+  assert.equal(planned.directive.target, host.agentPath);
+});
+
+test('targeted exact modern v3 and legacy v1/v2 fixtures retain their activation behavior', async (t) => {
+  for (const version of [3, 1, 2]) await t.test(`binding v${version}`, async () => {
+    const input = await context();
+    const host = child(input.caller.workspace, { id: `child-${version}`, agentPath: `/root/zcode_rescue_task_${version + 1}` });
+    input.envelope = { version: 2, source: 'explicit', task: 'private task', options: { resume: 'resume' },
+      continuationTarget: { childId: host.id, agentPath: host.agentPath } };
+    const binding = version === 3 ? modernBinding(input, host) : legacyHookBinding(input, host, version);
+    const resolved = { kind: 'bound', binding,
+      anchorJob: { zcodeSessionId: `session-${version}` },
+      currentJob: { zcodeSessionId: `session-${version}` } };
+    const planned = await planRescueActivation({ ...input,
+      ...adapters([host], new Map(), new Map([[host.id, resolved]])) });
+    assert.deepEqual(planned.activation, {
+      kind: 'reactivate', executorAgentId: host.id, agentPathDigest: digest(host.agentPath),
+      bindingKey: binding.key, operationId: binding.operationId,
+      anchorJobId: binding.anchorJobId, currentJobId: binding.currentJobId,
+      bindingUpdatedAt: binding.updatedAt, zcodeSessionId: `session-${version}`,
+    });
+    assert.equal(planned.directive.target, host.agentPath);
+  });
+});
+
 test('no explicit choice ignores stopped proof without an exact binding and selects the sole bound child', async () => {
   const input = await context(); input.envelope.options = {};
   const unbound = child(input.caller.workspace);

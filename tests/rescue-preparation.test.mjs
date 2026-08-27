@@ -62,9 +62,9 @@ function errorChainText(error) {
 }
 
 test('exports the versioned Rescue preparation byte bounds', () => {
-  assert.equal(RESCUE_PREPARATION_VERSION, 1);
+  assert.equal(RESCUE_PREPARATION_VERSION, 2);
   assert.equal(RESCUE_TASK_MAX_BYTES, 64 * 1024);
-  assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 + 4096);
+  assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 * 6 + 4096);
 });
 
 test('exports one canonical exact reactivation validator and defensive copy', async () => {
@@ -102,6 +102,81 @@ test('reads exactly one LF-terminated preparation envelope and defensively copie
   assert.equal(original.options.model, 'provider/model');
 });
 
+test('accepts exact targetless v1 and exact v2 continuation envelopes with defensive copies', async () => {
+  const legacy = { ...validEnvelope, options: { resume: 'resume' } };
+  assert.deepEqual(validateRescuePreparation(legacy), legacy);
+
+  for (const continuationTarget of [
+    null,
+    { childId: 'child-2', agentPath: '/root/zcode_rescue_task_2' },
+  ]) {
+    const original = {
+      version: 2,
+      source: 'explicit',
+      task: 'continue the exact operation',
+      options: { resume: 'resume', effort: 'high' },
+      continuationTarget,
+    };
+    const decoded = await readRescuePreparation(input(`${JSON.stringify(original)}\n`));
+    assert.deepEqual(decoded, original);
+    assert.notEqual(decoded, original);
+    assert.notEqual(decoded.options, original.options);
+    if (continuationTarget !== null) {
+      assert.notEqual(decoded.continuationTarget, continuationTarget);
+      assert.ok(decoded.continuationTarget !== null);
+      decoded.continuationTarget.childId = 'changed';
+      assert.equal(continuationTarget.childId, 'child-2');
+    }
+  }
+});
+
+test('rejects malformed, unsafe, and non-resume v2 continuation targets', () => {
+  const target = { childId: 'child-2', agentPath: '/root/zcode_rescue_task_2' };
+  const exact = { version: 2, source: 'explicit', task: 'x', options: { resume: 'resume' }, continuationTarget: target };
+  const invalid = [
+    { ...exact, continuationTarget: undefined },
+    { ...exact, extra: true },
+    { ...exact, continuationTarget: {} },
+    { ...exact, continuationTarget: { childId: target.childId } },
+    { ...exact, continuationTarget: { agentPath: target.agentPath } },
+    { ...exact, continuationTarget: { ...target, extra: true } },
+    { ...exact, continuationTarget: { ...target, childId: null } },
+    { ...exact, continuationTarget: { ...target, childId: '' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\n2' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\u00852' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\ud8002' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\udc002' } },
+    { ...exact, continuationTarget: { ...target, childId: 'x'.repeat(513) } },
+    { ...exact, continuationTarget: { ...target, agentPath: null } },
+    { ...exact, continuationTarget: { ...target, agentPath: '' } },
+    { ...exact, continuationTarget: { ...target, agentPath: 'root/child' } },
+    { ...exact, continuationTarget: { ...target, agentPath: '/root/../child' } },
+    { ...exact, continuationTarget: { ...target, agentPath: '/root/child\n' } },
+    { ...exact, continuationTarget: { ...target, agentPath: `/root/${'x'.repeat(1019)}` } },
+    { ...exact, options: { resume: 'fresh' } },
+    { ...exact, options: {} },
+  ];
+  for (const value of invalid) {
+    assert.throws(() => validateRescuePreparation(value), { code: 'RESCUE_PREPARATION_INVALID' });
+  }
+});
+
+test('v2 continuation targets reject duplicate members and fit the bounded transport at maxima', async () => {
+  await rejectsPreparation('{"version":2,"source":"explicit","task":"x","options":{"resume":"resume"},"continuationTarget":{"childId":"a","childId":"b","agentPath":"/root/a"}}\n');
+  await rejectsPreparation('{"version":2,"source":"explicit","task":"x","options":{"resume":"resume"},"continuationTarget":{"childId":"a","agentPath":"/root/a","agentPath":"/root/b"}}\n');
+  const maximum = {
+    version: 2,
+    source: 'explicit',
+    task: `x${'\0'.repeat(RESCUE_TASK_MAX_BYTES - 1)}`,
+    options: { resume: 'resume' },
+    continuationTarget: { childId: '\\'.repeat(512), agentPath: `/root/${'a'.repeat(1018)}` },
+  };
+  const frame = Buffer.from(`${JSON.stringify(maximum)}\n`);
+  assert.ok(frame.length <= RESCUE_ENVELOPE_MAX_BYTES);
+  assert.deepEqual(await readRescuePreparation(input(frame)), maximum);
+  await rejectsPreparation(Buffer.concat([Buffer.alloc(RESCUE_ENVELOPE_MAX_BYTES, 0x20), Buffer.from(' \n')]));
+});
+
 test('rejects malformed framing, UTF-8, duplicate keys, and envelope overflow', async () => {
   await rejectsPreparation(JSON.stringify(validEnvelope));
   await rejectsPreparation(`${JSON.stringify(validEnvelope)}\nextra`);
@@ -110,6 +185,46 @@ test('rejects malformed framing, UTF-8, duplicate keys, and envelope overflow', 
   await rejectsPreparation('{"version":1,"version":1,"source":"explicit","task":"x","options":{}}\n');
   await rejectsPreparation('{"version":1,"source":"explicit","task":"x","options":{"model":"a","model":"b"}}\n');
   await rejectsPreparation(`${' '.repeat(RESCUE_ENVELOPE_MAX_BYTES)}\n`);
+});
+
+test('deep duplicate-key scanning failures are sanitized without leaking a raw recursion error', async () => {
+  const deeplyNested = `${'['.repeat(5000)}0${']'.repeat(5000)}\n`;
+  await assert.rejects(readRescuePreparation(input(deeplyNested)), (/** @type {any} */ error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'RESCUE_PREPARATION_INVALID');
+    assert.equal(error.message, 'The Rescue preparation is invalid.');
+    assert.equal(error.cause, undefined);
+    assert.doesNotMatch(`${error.name}\n${error.stack}`, /RangeError|Maximum call stack/u);
+    return true;
+  });
+});
+
+test('v2 continuation target round trips through v3 consumption and replacement generations', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-17T00:00:00.000Z');
+  const target = { childId: 'rescue-child', agentPath: '/root/zcode_rescue_task_2' };
+  const base = { sessionId: 'target-parent', turnId: 'target-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue continue target', now };
+  const envelope = { version: 2, source: 'explicit', task: 'continue target',
+    options: { resume: 'resume' }, continuationTarget: target };
+  await store.save({ ...base, envelope, activation: reactivateActivation });
+  const first = await store.consume({ ...base, executorAgentId: 'rescue-child', activationProof: reactivateActivationProof });
+  assert.equal(first.version, 3);
+  assert.deepEqual(first.envelope, envelope);
+  assert.notEqual(first.envelope.continuationTarget, target);
+
+  const replacementEnvelope = { ...envelope, source: 'proactive', task: 'continue target again',
+    continuationTarget: { ...target } };
+  const later = new Date(now.getTime() + 1);
+  await store.save({ ...base, now: later, envelope: replacementEnvelope, activation: reactivateActivation });
+  const second = await store.consume({ ...base, now: later, executorAgentId: 'rescue-child', activationProof: reactivateActivationProof });
+  assert.equal(second.version, 3);
+  assert.equal(second.generation, 2);
+  assert.deepEqual(second.envelope, replacementEnvelope);
+  const persisted = JSON.parse(await readFile(await preparedPath(
+    dataRoot, workspaceA, base.sessionId, base.turnId,
+  ), 'utf8'));
+  assert.deepEqual(persisted.envelope, replacementEnvelope);
 });
 
 test('stream errors are always converted to a new task-free preparation error', async () => {

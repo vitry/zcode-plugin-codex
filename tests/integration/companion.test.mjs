@@ -6,9 +6,11 @@ import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, syml
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { PassThrough } from 'node:stream';
+
+import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
 import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
@@ -288,8 +290,9 @@ async function cleanupChildLossProcesses(input) {
 }
 
 /** @typedef {{kind:'fulfilled',value:any}|{kind:'rejected',error:unknown}} CompanionOutcome */
-const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = 15_000;
-const DURABLE_PROGRESS_TEST_TIMEOUT_MS = DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS + 10_000;
+const DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS = scaleTestTimeout(5_000);
+const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = scaleTestTimeout(15_000);
+const DURABLE_PROGRESS_TEST_TIMEOUT_MS = scaleTestTimeout(25_000);
 
 /** @param {unknown} value @returns {string} */
 function requireDurableProgressJobId(value) {
@@ -348,7 +351,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
       }
       throwIfExecutionSettled();
       return false;
-    }, `progress was not durably persisted before completion: ${expectedMessage}`);
+    }, `progress was not durably persisted before completion: ${expectedMessage}`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
     options.onDurableProgress?.();
     await atomicWriteJson(gate, gateRecord('release'));
     result = await settleExecution();
@@ -1828,6 +1831,85 @@ test('cross-parent resume reactivates only the exact persisted child binding and
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1);
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 2);
+});
+
+test('raw TTY v2 preparation selects one exact sibling binding and keeps its handle out of execution', async (t) => {
+  const context = await fixture(); const parentSessionId = 'exact-target-parent';
+  const selected = { childId: 'exact-target-child-2', agentPath: '/root/zcode_rescue_task_2', zcodeSessionId: 'exact-target-zcode-session-2' };
+  const sibling = { childId: 'exact-target-child-1', agentPath: '/root/zcode_rescue_task', zcodeSessionId: 'exact-target-zcode-session-1' };
+  for (const [index, candidate] of [sibling, selected].entries()) await persistCompletedExactBinding(context, {
+    parentSessionId, parentTurnId: `exact-target-origin-${index + 1}`, ...candidate, permissionMode: 'workspace-write',
+  });
+  await context.identity.beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'exact-target-prepare-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue selected operation',
+  });
+  const workspace = await realpath(context.workspace);
+  const host = (/** @type {any} */ candidate) => rawCodexChild({
+    id: candidate.childId, parentThreadId: parentSessionId, cwd: workspace, agentPath: candidate.agentPath,
+    status: { type: 'notLoaded' },
+  });
+  const selectedHost = { ...host(selected), createdAt: 1, updatedAt: 2, recencyAt: 2 };
+  const siblingHost = { ...host(sibling), createdAt: 9, updatedAt: 10, recencyAt: 10 };
+  const ttyRecord = join(context.directory, 'exact-target-prepare-tty.txt'); await writeFile(ttyRecord, '');
+  const child = spawn(process.execPath, [rescueLauncher, 'prepare', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: parentSessionId,
+      FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([siblingHost, selectedHost]),
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord },
+    stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const exit = new Promise((resolve, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }));
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await waitFor(async () => stdout === '{"type":"preparation-input-ready","command":"rescue"}\n', 'exact-target readiness was not emitted');
+  child.stdin?.write(`${JSON.stringify({ version: 2, source: 'explicit', task: 'continue selected operation',
+    options: { execution: 'foreground', resume: 'resume' },
+    continuationTarget: { childId: selected.childId, agentPath: selected.agentPath } })}\n`);
+  assert.deepEqual(await exit, { code: 0, signal: null });
+  const publicOutput = `${stdout}${stderr}`;
+  assert.equal(stderr, ''); assert.match(stdout, new RegExp(`"target":"${selected.agentPath}"`));
+  assert.doesNotMatch(publicOutput, /continuationTarget/u); assert.equal(publicOutput.includes(selected.childId), false);
+  assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
+
+  const record = join(context.directory, 'exact-target-zcode.jsonl'); await writeFile(record, '');
+  const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  for (const driftedHost of [siblingHost, { ...selectedHost,
+    source: { subAgent: { thread_spawn: { ...selectedHost.source.subAgent.thread_spawn, agent_path: '/root/zcode_rescue_task_9' } } } }]) {
+    const driftEnv = { ...context.env, CODEX_THREAD_ID: driftedHost.id, FAKE_CODEX_THREAD_JSON: JSON.stringify(driftedHost), FAKE_ZCODE_RECORD: record };
+    await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: driftEnv }),
+      (error) => error instanceof PluginError && ['RESCUE_PREPARATION_MISMATCH', 'RESCUE_BINDING_INVALID'].includes(error.code));
+    assert.equal(await readFile(record, 'utf8'), '');
+    assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBefore);
+  }
+
+  const selectedEnv = { ...context.env, CODEX_THREAD_ID: selected.childId,
+    FAKE_CODEX_THREAD_JSON: JSON.stringify(selectedHost), FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_WORKSPACE: workspace };
+  const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: selectedEnv });
+  assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, selected.zcodeSessionId);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: selectedEnv }),
+    { code: 'RESCUE_PREPARATION_CONSUMED' });
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume' && frame.params.sessionId === selected.zcodeSessionId).length, 1);
+  assert.equal(calls.some((frame) => JSON.stringify(frame).includes(sibling.zcodeSessionId)), false);
+  const zcodeWire = JSON.stringify(calls);
+  assert.doesNotMatch(zcodeWire, /continuationTarget/u); assert.equal(zcodeWire.includes(selected.childId), false);
+
+  for (const version of [1, 2]) {
+    await context.identity.beginCallerTurn({ sessionId: parentSessionId, turnId: `exact-target-targetless-v${version}`,
+      workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume ambiguous operation' });
+    const envelope = version === 1
+      ? { version, source: 'explicit', task: 'ambiguous operation', options: { resume: 'resume' } }
+      : { version, source: 'explicit', task: 'ambiguous operation', options: { resume: 'resume' }, continuationTarget: null };
+    await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+      cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+      input: PassThrough.from([`${JSON.stringify(envelope)}\n`]),
+      dependencies: { planRescueActivation: (/** @type {any} */ plannerInput) => planRescueActivation({ ...plannerInput,
+        listChildren: async () => [selectedHost, siblingHost] }) },
+    }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
+  }
 });
 
 test('historical v1 session-ended binding rejoins the exact persisted child and ZCode session', async () => {

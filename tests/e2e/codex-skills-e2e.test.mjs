@@ -17,7 +17,7 @@ import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } 
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
-import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import {
   assertCodexRescueDisplayName,
@@ -605,7 +605,8 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 2, action: 'followup', target: agentPath, assignment: agentType };
     const childTurnId = `restored-${route}-child-turn-7`;
-    const preparationEnvelope = { version: 1, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' } };
+    const preparationEnvelope = { version: 2, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { childId: childThreadId, agentPath } };
     const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task_2', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
     const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
       sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
@@ -627,7 +628,10 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
         { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.700Z', payload: { type: 'function_call', name: 'followup_task', call_id: `followup-${route}`, arguments: JSON.stringify({ target: agentPath, message: assignment }) } },
         { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.800Z', payload: { type: 'function_call_output', call_id: `followup-${route}`, output: JSON.stringify({ accepted: true, target: agentPath }) } },
       ]),
-      appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId)),
+      appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId, [
+        installedCodexThreadSpawnChild({ id: 'restored-sibling', parentThreadId: parentSessionId,
+          agentPath: '/root/zcode_rescue_task', cwd: originWorkspace, agentRole }),
+      ])),
       hookLifecycleJson: JSON.stringify([
         { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
         { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
@@ -647,22 +651,67 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
   }
 });
 
-test('synthetic captured qualification fixtures keep proactive fresh and resume routes one-shot on newly planned children', async () => {
-  for (const resume of ['fresh', 'resume']) {
-    const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
-    for (const route of routes) {
-      assert.equal(qualifyInstalledCapturedForeground(route).route, route.expectedEvidenceRoute);
-      assert.deepEqual(JSON.parse(route.preparationPayload), {
-        version: 1,
-        source: 'proactive',
-        task: `repair captured ${route.name} route`,
-        options: { execution: 'foreground', resume },
-      });
-      const emittedNeedsChoice = route.fixture.rollouts.flat().some((event) => event?.payload?.type === 'custom_tool_call_output'
-        && JSON.stringify(event.payload.output).includes('"type":"needs-choice"'));
-      assert.equal(emittedNeedsChoice, false);
-      assert.equal(route.fixture.rollouts[0].some((event) => event?.payload?.name === 'followup_task'), false);
+test('captured 2026-08-27 multiple-binding continuation selects the exact private pair instead of latest order', async () => {
+  for (const expectedTargetIndex of [0, 1]) {
+    const capture = installedPreparedContinuationCapture('named', { workspace: process.cwd() });
+    const { parentSessionId, workspace } = capture.expected;
+    const siblingAnchor = 'e'.repeat(64); const siblingCurrent = 'f'.repeat(64);
+    const pre = JSON.parse(capture.bindingPreReservationBytes); const current = JSON.parse(capture.bindingPartitionBytes);
+    let sibling; let siblingId;
+    for (let index = 0; index < 1_000; index += 1) {
+      const candidateId = `captured-sibling-${index}`;
+      const candidate = createRescueBinding({ parentSessionId, executorAgentId: candidateId, executorAgentType: 'zcode-rescue',
+        executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace,
+        permissionMode: 'acceptEdits', anchorJobId: siblingAnchor, currentJobId: siblingCurrent,
+        operationId: '1'.repeat(64), now: '2026-08-10T02:00:00.000Z' });
+      if ((candidate.key < current.records[0].key) === (expectedTargetIndex === 1)) { sibling = candidate; siblingId = candidateId; break; }
     }
+    assert.ok(sibling && siblingId, `fixture must place target at canonical index ${expectedTargetIndex}`);
+    const siblingPre = { ...sibling, currentJobId: siblingAnchor };
+    const prePartition = createRescueBindingPartition({ parentSessionId, workspace, records: [siblingPre, ...pre.records] });
+    const currentPartition = createRescueBindingPartition({ parentSessionId, workspace, records: [sibling, ...current.records] });
+    assert.equal(currentPartition.records.findIndex((record) => rescueBindingAuthorityView(record).childAgentId === capture.expected.childThreadId), expectedTargetIndex);
+    assert.equal(prePartition.records.findIndex((record) => rescueBindingAuthorityView(record).childAgentId === capture.expected.childThreadId), expectedTargetIndex);
+    capture.bindingPreReservationBytes = `${JSON.stringify(prePartition)}\n`;
+    capture.bindingPartitionBytes = `${JSON.stringify(currentPartition)}\n`;
+    const transcript = JSON.parse(capture.appServerTranscriptJson); const targetHost = transcript[3].result.data[0];
+    const siblingHost = installedCodexThreadSpawnChild({ id: siblingId, parentThreadId: parentSessionId,
+      agentPath: `/root/${siblingId.replaceAll('-', '_')}`, cwd: workspace, agentRole: 'zcode-rescue' });
+    transcript[3].result.data = expectedTargetIndex === 1 ? [siblingHost, targetHost] : [targetHost, siblingHost];
+    capture.appServerTranscriptJson = JSON.stringify(transcript);
+    const siblingExecutor = { kind: 'subagent-executor', agentId: siblingId, agentType: 'zcode-rescue', parentSessionId,
+      parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'captured-sibling-turn', workspace,
+      active: false, createdAt: '2026-08-09T00:00:00.000Z' };
+    capture.candidateExecutorRecordBytesJson = JSON.stringify(expectedTargetIndex === 1
+      ? [`${JSON.stringify(siblingExecutor)}\n`, capture.executorRecordBytes]
+      : [capture.executorRecordBytes, `${JSON.stringify(siblingExecutor)}\n`]);
+    const jobs = JSON.parse(capture.jobRecordBytesJson);
+    jobs.push(`${JSON.stringify(installedRawJob(siblingAnchor, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'captured-sibling-session' }))}\n`);
+    jobs.push(`${JSON.stringify(installedRawJob(siblingCurrent, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'captured-sibling-session' }))}\n`);
+    capture.jobRecordBytesJson = JSON.stringify(jobs);
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture, { requireCandidateClosure: true });
+    assert.equal(evidence.childThreadId, capture.expected.childThreadId);
+    assert.equal(evidence.agentPath, capture.expected.agentPath);
+    assert.equal(evidence.continuationSpawnCount, 0);
+    assert.equal(evidence.peerResumeChecked, true);
+  }
+});
+
+test('synthetic captured qualification fixtures keep proactive fresh one-shot on newly planned children', async () => {
+  const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume: 'fresh' } });
+  for (const route of routes) {
+    assert.equal(qualifyInstalledCapturedForeground(route).route, route.expectedEvidenceRoute);
+    assert.deepEqual(JSON.parse(route.preparationPayload), {
+      version: 2,
+      source: 'proactive',
+      task: `repair captured ${route.name} route`,
+      options: { execution: 'foreground', resume: 'fresh' },
+      continuationTarget: null,
+    });
+    const emittedNeedsChoice = route.fixture.rollouts.flat().some((event) => event?.payload?.type === 'custom_tool_call_output'
+      && JSON.stringify(event.payload.output).includes('"type":"needs-choice"'));
+    assert.equal(emittedNeedsChoice, false);
+    assert.equal(route.fixture.rollouts[0].some((event) => event?.payload?.name === 'followup_task'), false);
   }
 });
 
@@ -926,7 +975,8 @@ test('deterministic installed observer artifacts flow through the live continuat
   }
   const captured = await captureInstalledPreparedContinuationEvidence({ route: 'named', execution: 'foreground', parentSessionId: fixture.expected.parentSessionId,
     workspace, rollouts: [JSON.parse(fixture.parentRolloutJson), JSON.parse(fixture.childRolloutJson)], execFrames: JSON.parse(fixture.execFramesJson),
-    peer: JSON.parse(fixture.fakePeerJson), installedDataRoot: dataRoot, hookCaptureDirectory: captures });
+    peer: JSON.parse(fixture.fakePeerJson), appServerTranscript: JSON.parse(fixture.appServerTranscriptJson),
+    installedDataRoot: dataRoot, hookCaptureDirectory: captures });
   const completeHistory = JSON.parse(captured.artifactHistoryJson);
   completeHistory.push({ path: `hook-state/forward-${'a'.repeat(64)}.json`, bytes: '{"kind":"forwarding"}\n', sequence: null });
   completeHistory.push({ path: `identity/active-turns/${'b'.repeat(64)}.json`, bytes: '{"kind":"active-turn"}\n', sequence: null });
@@ -1745,6 +1795,7 @@ async function captureInstalledPreparedContinuationEvidence(input) {
     route: input.route, execution: input.execution,
     expected: { parentSessionId: input.parentSessionId, childThreadId, agentPath: start.payload.agent_path, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
     parentRolloutJson: JSON.stringify(parentProjection), childRolloutJson: JSON.stringify(childProjection),
+    appServerTranscriptJson: JSON.stringify(input.appServerTranscript),
     rawParentRolloutJson: JSON.stringify(parent), rawChildRolloutJson: JSON.stringify(child),
     execFramesJson: JSON.stringify(input.execFrames), hookLifecycleJson: JSON.stringify(lifecycle),
     rawHookLifecycleJson: JSON.stringify(hookEvents), rawFakePeerJson: JSON.stringify(input.peer),
@@ -2267,8 +2318,8 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T01:01:00.500Z' },
     { ...installedToolOutput('prepare-write-2', { output: installedPreparedAck({ version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: route === 'named' ? 'zcode-rescue' : 'default' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
-    { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
-    { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childThreadId }) } },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: '/root/zcode_rescue_task', message }) } },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: '/root/zcode_rescue_task' }) } },
   ];
   for (const event of parent.slice(1)) event.turn_id = 'turn-original';
   const command = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
@@ -2281,10 +2332,19 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
   ];
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:04.000Z'; child[4].timestamp = '2026-08-10T01:01:04.000Z'; child[5].timestamp = '2026-08-10T01:01:05.000Z';
   child[1].turn_id = child[2].turn_id = 'invoke-original'; child[4].turn_id = child[5].turn_id = 'invoke-continuation';
+  for (const event of child.filter((candidate) => ['custom_tool_call', 'custom_tool_call_output'].includes(candidate?.payload?.type))) event.thread_id = childThreadId;
+  const hostChild = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId,
+    agentPath: '/root/zcode_rescue_task', cwd: workspace, agentRole: route === 'named' ? 'zcode-rescue' : null });
   return {
     route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_task', workspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-original' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    appServerTranscriptJson: JSON.stringify([
+      { direction: 'request', observedAt: '2026-08-10T00:00:00.300Z', id: 1, method: 'thread/list', params: { parentThreadId: parentSessionId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+      { direction: 'response', observedAt: '2026-08-10T00:00:00.350Z', id: 1, result: { data: [], nextCursor: null, backwardsCursor: null } },
+      { direction: 'request', observedAt: '2026-08-10T01:01:00.300Z', id: 2, method: 'thread/list', params: { parentThreadId: parentSessionId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+      { direction: 'response', observedAt: '2026-08-10T01:01:00.350Z', id: 2, result: { data: [hostChild], nextCursor: null, backwardsCursor: null } },
+    ]),
     execFramesJson: JSON.stringify([
       { type: 'thread.started', thread_id: parentSessionId },
       { type: 'item.completed', item: { type: 'agent_message', text: 'continued' } },
@@ -2369,7 +2429,7 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
   assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
   const roleAfter = await readFile(activePath, 'utf8'); const roleStatAfter = await stat(activePath);
-  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const frame = `${JSON.stringify({ version: 2, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
   const prepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
     env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
@@ -2404,7 +2464,8 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   }
   const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
-  const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
+  const proactiveFrame = `${JSON.stringify({ version: 2, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' },
+    continuationTarget: { childId: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agentPath: '/root/zcode_rescue_task' } })}\n`;
   const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
     env: { ...launcherEnv, FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [persistedChild], nextCursor: null, backwardsCursor: null }), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
   assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
@@ -2628,6 +2689,16 @@ function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
   stopEvent.timestamp = observed.route.updatedAt; followupEvent.timestamp = new Date(secondCreated + 2).toISOString();
   spawnOutput.timestamp = new Date(firstConsumed + 2).toISOString(); followupOutput.timestamp = new Date(Date.parse(observed.preparationHistory[1].consumedAt) + 2).toISOString();
   input.parentRolloutJson = JSON.stringify(parent);
+  const appServerTranscript = JSON.parse(input.appServerTranscriptJson);
+  const prepareCalls = parent.filter((event) => event?.payload?.type === 'custom_tool_call'
+    && parseInstalledToolInput(event.payload.input).value.cmd?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
+  for (const [generation, offset] of [[0, 0], [1, 2]]) {
+    const base = Date.parse(prepareCalls[generation].timestamp);
+    appServerTranscript[offset].observedAt = new Date(base + 100).toISOString();
+    appServerTranscript[offset + 1].observedAt = new Date(base + 200).toISOString();
+  }
+  for (const rawChild of appServerTranscript.flatMap((frame) => frame?.result?.data ?? [])) rawChild.cwd = expected.originWorkspace;
+  input.appServerTranscriptJson = JSON.stringify(appServerTranscript);
   const child = JSON.parse(input.childRolloutJson);
   for (const [index, preparation] of observed.preparationHistory.entries()) {
     const invoke = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call');
@@ -2655,7 +2726,10 @@ function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, ext
   return { id, workspace, ownerSessionId, ownerTurnId, command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'acceptEdits' }, status, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:01:00.000Z', ...extra };
 }
-function installedContinuationEnvelope(source, resume) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume } }; }
+function installedContinuationEnvelope(source, resume) {
+  return { version: 2, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume },
+    continuationTarget: resume === 'resume' ? { childId: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agentPath: '/root/zcode_rescue_task' } : null };
+}
 function installedContinuationPreparationRecord(sessionId, workspace, executorAgentId, turnId, generation, source, resume, requiredExecutorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([sessionId, turnId, workspace, 'rescue'])).digest('hex');
   const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
@@ -2675,12 +2749,12 @@ function installedCodexThreadSpawnChild({ id, parentThreadId, agentPath, cwd, ag
     canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
 }
 
-function installedRestoredAppServerTranscript(thread, childThreadId) {
+function installedRestoredAppServerTranscript(thread, childThreadId, siblings = []) {
   const activated = structuredClone(thread);
   activated.updatedAt = 3; activated.recencyAt = 3; activated.status = { type: 'active', activeFlags: [] };
   return [
     { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
-    { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [...siblings, thread], nextCursor: null, backwardsCursor: null } },
     { direction: 'request', observedAt: '2026-08-10T01:00:00.910Z', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
     { direction: 'response', observedAt: '2026-08-10T01:00:00.920Z', id: 2, result: { thread: activated } },
   ];
@@ -2719,7 +2793,9 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   const command = `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-prepared rescue`;
   const preflightCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" role-status rescue`;
   const preparationCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" prepare rescue`;
-  const preparationPayload = JSON.stringify({ version: 1, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options: config.options ?? { execution: 'foreground', resume: 'fresh' } });
+  const options = config.options ?? { execution: 'foreground', resume: 'fresh' };
+  const preparationPayload = JSON.stringify({ version: 2, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options,
+    continuationTarget: null });
   const statusCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-status rescue`;
   for (const expected of [command, statusCommand,
     `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-choice rescue resume`,
