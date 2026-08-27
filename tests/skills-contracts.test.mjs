@@ -265,9 +265,34 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
-  assert.match(source, /exact envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`/i);
+  assert.match(source, /exact version-2 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
+  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 2/i);
+  assert.match(source, /version 1[^\n]+targetless[^\n]+compatibility/i);
   assert.match(source, /options[\s\S]+`execution`[\s\S]+`resume`[\s\S]+`model`[\s\S]+`effort`/i);
   assert.match(source, /omit[^\n]+absent[^\n]+(?:never|not)[^\n]+null/i);
+});
+
+test('Root retains one linked continuation handle and never manufactures or directly follows it', () => {
+  const source = skill('rescue');
+  assert.match(source, /successful `spawn_agent`[^\n]+(?:output|result)[\s\S]+exact (?:child|thread) ID[\s\S]+same (?:call|spawn)[^\n]+linked `sub_agent_activity\.started\.agent_path`/i);
+  assert.match(source, /retain[^\n]+unchanged[^\n]+pair[\s\S]+stop[\s\S]+restor[\s\S]+follow-up/i);
+  assert.match(source, /(?:must not|never)[^\n]+(?:synthesize|manufacture|derive)[^\n]+(?:agent )?path[^\n]+`taskName`/i);
+  assert.match(source, /if[^\n]+intended operation[^\n]+(?:unavailable|ambiguous)|if[^\n]+linked pair[^\n]+unavailable/i);
+  assert.match(source, /ask[^\n]+user[^\n]+clarif/i);
+  assert.match(source, /(?:must not|never)[^\n]+(?:prepare|invoke)[^\n]+(?:guess|without that clarification)/i);
+  assert.match(source, /followup_task[\s\S]+prepared\.route\.target/i);
+  assert.match(source, /(?:must not|never)[^\n]+follow[^\n]+retained (?:pair|target|handle)/i);
+});
+
+test('new Rescue preparation frames carry only a private exact continuation target', () => {
+  const source = skill('rescue');
+  assert.match(source, /`continuationTarget`[^\n]+either `null`[^\n]+exact[^\n]+`childId`[^\n]+`agentPath`/i);
+  assert.match(source, /fresh[\s\S]+continuationTarget[^\n]+`null`/i);
+  assert.match(source, /exact resume[\s\S]+continuationTarget[^\n]+retained[^\n]+pair/i);
+  assert.match(source, /only[^\n]+single[^\n]+post-readiness[^\n]+`write_stdin`[^\n]+frame/i);
+  assert.match(source, /serialized pair[\s\S]+never[\s\S]+argv[\s\S]+environment[\s\S]+assignment[\s\S]+output[\s\S]+child transcript[\s\S]+relay[\s\S]+status[\s\S]+result[\s\S]+ZCode/i);
+  const { namedSpawn, genericMessage } = assertRescueRouteContract(source);
+  for (const fixture of [namedSpawn.text, genericMessage.text]) assert.doesNotMatch(fixture, /continuationTarget|childId/);
 });
 
 test('routing precedence materializes only authoritative fresh or resume choices', () => {
