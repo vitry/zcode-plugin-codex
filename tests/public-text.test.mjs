@@ -7,14 +7,17 @@ import { boundUtf8, normalizePublicText, publicErrorMessage } from '../scripts/l
 const ENGLISH_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | Delegate investigation or edits; foreground by default. |';
 const CHINESE_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | 委派调查或修改，默认前台。 |';
 
+/** @param {string} source */
 function assertNoPublicRescueSelector(source) {
   assert.doesNotMatch(source, /--resume(?:=(?:[^\s]+)|\s+--(?:child|session|job|binding|operation|handle)\b|\s+(?:<|\[)(?:child|session|job|binding|operation|handle)[^\s>\]]*(?:>|\]))/i);
 }
 
+/** @param {string} source */
 function assertNoWritableConcurrencyPromise(source) {
   assert.doesNotMatch(source, /(?=[^\n.!?。！？]{0,300}(?:same canonical workspace|同一 canonical workspace))(?=[^\n.!?。！？]{0,300}(?:(?:multiple|concurrent|多个|并发).{0,80}writable Rescue|writable Rescue.{0,80}(?:multiple|concurrent|多个|并发)))(?=[^\n.!?。！？]{0,300}(?:supports?|supported|allows?|allowed|enables?|enabled|can run|允许|支持|启用|可以运行))[^\n.!?。！？]{1,300}/i);
 }
 
+/** @param {string} source */
 function assertNoUnconditionalBindingAmbiguity(source) {
   assert.doesNotMatch(source, /(?=[^\n.!?]{0,240}(?:multiple|two).{0,40}usable.{0,40}bindings?)(?=[^\n.!?]{0,240}ambiguous)(?=[^\n.!?]{0,240}(?:always|unconditionally|regardless|even with|for every))[^\n.!?]{1,240}/i);
   assert.doesNotMatch(source, /(?=[^\n。！？]{0,240}(?:多个|两个).{0,40}可用.{0,40}bindings?)(?=[^\n。！？]{0,240}歧义)(?=[^\n。！？]{0,240}(?:始终|无条件|无论|即使))[^\n。！？]{1,240}/i);
