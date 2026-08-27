@@ -1287,7 +1287,9 @@ test('installed Rescue instructions keep resume on one child and route pending f
   const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
   const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
   const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
-  assert.match(source, /Keep the returned child ID as `rescueChildId`/);
+  assert.match(source, /retain the exact canonical path in the returned result's `task_name`/);
+  assert.match(source, /the child ID remains internal plugin identity/);
+  assert.match(source, /`rescueChildId` is not a Codex child thread ID and is never placed in a preparation/);
   assert.match(source, /While that operation remains selected, do not call `spawn_agent` again after `rescueChildId` exists/);
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);

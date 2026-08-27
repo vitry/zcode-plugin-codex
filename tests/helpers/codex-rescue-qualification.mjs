@@ -38,6 +38,20 @@ const PUBLIC_PROGRESS_PHASES = new Set(['starting', 'running', 'waiting', 'final
 const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const MAX_PUBLIC_PROGRESS_LINE_BYTES = 256;
 
+function subAgentActivity(event, kind) {
+  const item = event?.type === 'event_msg' && event.payload?.type === 'item_completed'
+    && event.payload.item?.type === 'SubAgentActivity' ? event.payload.item
+    : event?.payload?.type === 'sub_agent_activity' ? {
+      type: 'SubAgentActivity', id: event.payload.event_id, kind: event.payload.kind,
+      agent_thread_id: event.payload.agent_thread_id, agent_path: event.payload.agent_path,
+    } : null;
+  return item?.kind === kind ? item : null;
+}
+
+function lifecycleTurnId(event) {
+  return event?.payload?.turn_id ?? event?.turn_id;
+}
+
 export class CodexRescueUnqualifiedError extends Error {
   constructor(code, message, evidence) { super(message); this.name = 'CodexRescueUnqualifiedError'; this.code = code; this.evidence = evidence; }
 }
@@ -112,8 +126,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
   const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
   const parentOutputs = parent.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
-  const starts = parent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
-  const stops = parent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  const starts = parent.filter((event) => subAgentActivity(event, 'started'));
+  const stops = parent.filter((event) => subAgentActivity(event, 'stopped'));
   if (spawns.length !== 1) mismatch('continuation-spawn-count', 'Captured continuation must contain one original spawn only.');
   if (starts.length !== 1) mismatch('continuation-start-count', 'Captured continuation must contain one original SubagentStart only.');
   if (stops.length !== 1) mismatch('continuation-stop-count', 'Captured continuation must contain one SubagentStop only.');
@@ -136,12 +150,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || input.route === 'generic' && Object.hasOwn(spawn, 'agent_type')) mismatch('continuation-spawn-contract', 'Raw spawn route contract is invalid.');
   const spawnOutput = parentOutputs.find((output) => output.payload.call_id === spawns[0].payload.call_id);
   let spawnResult; try { spawnResult = JSON.parse(spawnOutput?.payload?.output); } catch { mismatch('continuation-target-lifecycle', 'The spawn output is not a valid exact child handle.'); }
-  const linkedStarts = starts.filter((event) => event.payload.event_id === spawns[0].payload.call_id
-    && event.payload.agent_thread_id === spawnResult?.agent_id);
-  if (linkedStarts.length !== 1 || spawnResult?.agent_id !== childThreadId) mismatch('continuation-target-lifecycle', 'Spawn output and started activity do not form one exact linked child handle.');
-  if (starts[0].payload.event_id !== spawns[0].payload.call_id || starts[0].payload.agent_thread_id !== childThreadId
-    || stops[0].payload.agent_thread_id !== childThreadId || starts[0].payload.parent_turn_id !== originalParentTurnId
-    || stops[0].payload.parent_turn_id !== originalParentTurnId) mismatch('continuation-start-count', 'Captured lifecycle does not link the exact original child.');
+  const start = subAgentActivity(starts[0], 'started'); const stop = subAgentActivity(stops[0], 'stopped');
+  if (Object.keys(spawnResult ?? {}).join('\0') !== 'task_name' || spawnResult.task_name !== start?.agent_path
+    || start?.id !== spawns[0].payload.call_id || start.agent_thread_id !== childThreadId) {
+    mismatch('continuation-target-lifecycle', 'Root-visible task_name and trusted internal activity do not form one exact linked child handle.');
+  }
+  if (stop?.agent_thread_id !== childThreadId || lifecycleTurnId(starts[0]) !== originalParentTurnId
+    || lifecycleTurnId(stops[0]) !== originalParentTurnId) mismatch('continuation-start-count', 'Captured lifecycle does not link the exact original child.');
   if (followup.message !== expectedMessage || spawn.message !== expectedMessage) mismatch('continuation-followup-message', 'Captured assignments are not the route-specific exact original message.');
   const preparationTimes = preparations.map(eventTimestamp).sort();
   if (!(preparationTimes[0] < eventTimestamp(spawns[0]) && eventTimestamp(spawns[0]) < eventTimestamp(starts[0])
@@ -151,15 +166,15 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     && parent.indexOf(starts[0]) < parent.indexOf(stops[0]) && parent.indexOf(stops[0]) < parent.indexOf(preparations[1])
     && parent.indexOf(preparations[1]) < parent.indexOf(followups[0]))) mismatch('continuation-event-order', 'Captured raw parent event order is invalid.');
   const parentTurnEvents = [preparations[0], spawns[0], starts[0], stops[0], preparations[1], followups[0]];
-  if (parentTurnEvents.some((event) => event?.turn_id !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
+  if (parentTurnEvents.some((event) => lifecycleTurnId(event) !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
   const activeTurn = validateContinuationActiveTurn(input.activeTurnRecordBytes, { ...expected, originalParentTurnId });
   const workspaceAuthority = activeTurn.version === 3
     ? await validateContinuationWorkspaceBinding(input, { ...expected, childTurnId: executorChildTurnId(input.executorRecordBytes), originalParentTurnId }, activeTurn)
     : { originWorkspace: expected.workspace, executionWorkspace: expected.workspace, generationId: undefined, checked: false };
   const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution, route: input.route }, activeTurn, requireLongLifecycle);
-  const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
+  const observedAgentPath = boundedString(start.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
-    || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
+    || stop.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
   const hostChildren = validateContinuationAppServerTranscript(appServerTranscript, {
     parentSessionId, childThreadId, agentPath: observedAgentPath, workspace: workspaceAuthority.originWorkspace,
     route: input.route, preparations,
@@ -227,10 +242,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || reactivation.anchorJobId !== preBinding.anchorJobId || reactivation.currentJobId !== preBinding.currentJobId
     || reactivation.bindingUpdatedAt !== preBinding.updatedAt || reactivation.zcodeSessionId !== anchor.zcodeSessionId) mismatch('continuation-preparation-records', 'Consumed continuation preparation is not bound to the exact resumable operation.');
   const privateTarget = preparationRecords[1]?.envelope?.continuationTarget;
-  if (!isDeepStrictEqual(privateTarget, { childId: childThreadId, agentPath: observedAgentPath })
-    || reactivation.executorAgentId !== privateTarget.childId
+  if (!isDeepStrictEqual(privateTarget, { agentPath: observedAgentPath })
+    || reactivation.executorAgentId !== childThreadId
     || reactivation.agentPathDigest !== createHash('sha256').update(privateTarget.agentPath).digest('hex')
-    || hostChildren.filter((candidate) => candidate.id === privateTarget.childId && candidate.agentPath === privateTarget.agentPath).length !== 1) {
+    || hostChildren.filter((candidate) => candidate.id === childThreadId && candidate.agentPath === privateTarget.agentPath).length !== 1) {
     mismatch('continuation-target-chain', 'Private target, host child, activation, and captured lifecycle do not form one exact chain.');
   }
   if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== originalParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the active parent turn.');
@@ -336,8 +351,8 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
 
   const original = parent.filter((event) => event?.turn_id === expected.originalParentTurnId);
   const originalSpawns = namedCalls(original, 'spawn_agent'); const originalOutputs = original.filter((event) => event?.payload?.type === 'function_call_output');
-  const starts = original.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
-  const stops = original.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  const starts = original.filter((event) => subAgentActivity(event, 'started'));
+  const stops = original.filter((event) => subAgentActivity(event, 'stopped'));
   if (originalSpawns.length !== 1 || originalOutputs.length !== 1 || starts.length !== 1 || stops.length !== 1 || original.length !== 4) mismatch('restored-child-history', 'Historical spawn provenance must contain one exact spawn, output, start, and stop.');
   const originalSpawn = originalSpawns[0]; const spawnArgs = parseObject(originalSpawn.payload.arguments, 'restored-child-history');
   const taskName = expected.agentPath.slice('/root/'.length); const namedKeys = ['agent_type', 'fork_turns', 'message', 'task_name']; const genericKeys = ['fork_turns', 'message', 'task_name'];
@@ -346,13 +361,14 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const historicalAssignment = route === 'named' ? expectedNamedRescueMessage
     : route === 'generic' ? expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expected.launcherCommand) : null;
   let spawnResult; try { spawnResult = JSON.parse(originalOutputs[0].payload.output); } catch { mismatch('restored-child-history', 'Historical spawn output is malformed.'); }
+  const start = subAgentActivity(starts[0], 'started'); const stop = subAgentActivity(stops[0], 'stopped');
   const historicalTimes = [originalSpawn, originalOutputs[0], starts[0], stops[0]].map(eventTimestamp);
   if (!route || spawnArgs.fork_turns !== 'none' || spawnArgs.task_name !== taskName || spawnArgs.message !== historicalAssignment
-    || Object.keys(spawnResult ?? {}).join('\0') !== 'agent_id' || spawnResult.agent_id !== expected.childThreadId
-    || originalOutputs[0].payload.call_id !== originalSpawn.payload.call_id || starts[0].payload.event_id !== originalSpawn.payload.call_id
-    || starts[0].payload.agent_thread_id !== expected.childThreadId || stops[0].payload.agent_thread_id !== expected.childThreadId
-    || starts[0].payload.agent_path !== expected.agentPath || stops[0].payload.agent_path !== expected.agentPath
-    || starts[0].payload.parent_turn_id !== expected.originalParentTurnId || stops[0].payload.parent_turn_id !== expected.originalParentTurnId
+    || Object.keys(spawnResult ?? {}).join('\0') !== 'task_name' || spawnResult.task_name !== expected.agentPath
+    || originalOutputs[0].payload.call_id !== originalSpawn.payload.call_id || start.id !== originalSpawn.payload.call_id
+    || start.agent_thread_id !== expected.childThreadId || stop.agent_thread_id !== expected.childThreadId
+    || start.agent_path !== expected.agentPath || stop.agent_path !== expected.agentPath
+    || lifecycleTurnId(starts[0]) !== expected.originalParentTurnId || lifecycleTurnId(stops[0]) !== expected.originalParentTurnId
     || historicalTimes.some((value) => value === undefined) || !(historicalTimes[0] < historicalTimes[1] && historicalTimes[0] < historicalTimes[2]
       && historicalTimes[1] < historicalTimes[3] && historicalTimes[2] < historicalTimes[3])
     || !(parent.indexOf(originalSpawn) < parent.indexOf(originalOutputs[0]) && parent.indexOf(originalSpawn) < parent.indexOf(starts[0])
@@ -364,7 +380,7 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const currentCustomCalls = current.filter((event) => event?.payload?.type === 'custom_tool_call'); const currentCustomOutputs = current.filter((event) => event?.payload?.type === 'custom_tool_call_output');
   const currentFunctions = current.filter((event) => event?.payload?.type === 'function_call'); const currentFunctionOutputs = current.filter((event) => event?.payload?.type === 'function_call_output');
   if (parent.length !== 13 || current.length !== 8 || currentCustomCalls.length !== 3 || currentCustomOutputs.length !== 3 || currentFunctions.length !== 1 || currentFunctionOutputs.length !== 1
-    || currentFunctions[0].payload.name !== 'followup_task' || current.some((event) => event?.payload?.type === 'sub_agent_activity') || calls.length !== 1 || spawns.length !== 1) {
+    || currentFunctions[0].payload.name !== 'followup_task' || current.some((event) => subAgentActivity(event, 'started') || subAgentActivity(event, 'stopped')) || calls.length !== 1 || spawns.length !== 1) {
     mismatch('restored-child-current-events', 'The resumed phase must contain only Role readiness, one TTY prepare, one follow-up, and their exact outputs.');
   }
   const allCalls = [...originalSpawns, ...currentCustomCalls, ...currentFunctions, ...child.filter((event) => event?.payload?.type === 'custom_tool_call')];
@@ -392,9 +408,9 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const exactPreparedLine = `${JSON.stringify({ type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: expected.agentPath,
     assignment: Object.hasOwn(spawnArgs, 'agent_type') ? 'zcode-rescue' : 'default' } })}\n`;
   if (preparedOutput.output !== exactPreparedLine) mismatch('restored-child-directive', 'Prepared follow-up directive is not linked to the exact original path.');
-  if (preparationEnvelope.version !== 2 || !isDeepStrictEqual(preparationEnvelope.continuationTarget,
-    { childId: expected.childThreadId, agentPath: expected.agentPath })) {
-    mismatch('restored-child-target', 'Restored preparation does not carry the exact retained lifecycle pair.');
+  if (preparationEnvelope.version !== 3 || !isDeepStrictEqual(preparationEnvelope.continuationTarget,
+    { agentPath: expected.agentPath })) {
+    mismatch('restored-child-target', 'Restored preparation does not carry the exact retained canonical path.');
   }
 
   const followupCall = currentFunctions[0]; const followup = parseObject(followupCall.payload.arguments, 'restored-child-followup');
@@ -610,15 +626,10 @@ function validateContinuationCandidateClosure(input, hosts, bindings, selectedEx
 function redactAuthorizedContinuationIdentity(parent, child, childThreadId) {
   const parentCopy = redactValidatedPreparationInputs(parent);
   for (const event of parentCopy) {
-    if (event?.payload?.type === 'function_call_output') {
-      let result;
-      try { result = JSON.parse(event.payload.output); } catch { continue; }
-      if (Object.keys(result ?? {}).join('\0') === 'agent_id' && result.agent_id === childThreadId) {
-        result.agent_id = '[authorized child id]'; event.payload.output = JSON.stringify(result);
-      }
+    const activity = event?.payload?.item?.type === 'SubAgentActivity' ? event.payload.item : null;
+    if (activity && ['started', 'stopped'].includes(activity.kind) && activity.agent_thread_id === childThreadId) {
+      activity.agent_thread_id = '[authorized child id]';
     }
-    if (event?.payload?.type === 'sub_agent_activity' && ['started', 'stopped'].includes(event.payload.kind)
-      && event.payload.agent_thread_id === childThreadId) event.payload.agent_thread_id = '[authorized child id]';
   }
   const childCopy = structuredClone(child);
   for (const event of childCopy) {
@@ -645,8 +656,8 @@ function validateLiveRawContinuationCapture(input, core) {
   const rawParentCommands = rawParent.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
   if (rawParentCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue')).length !== 2
     || rawParentCommands.filter((host) => host.kind === 'write_stdin').length !== 2
-    || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length !== 1
-    || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped').length !== 1) mismatch('continuation-raw-parent-events', 'Complete parent capture duplicates or omits a required lifecycle event.');
+    || rawParent.filter((event) => subAgentActivity(event, 'started')).length !== 1
+    || rawParent.filter((event) => subAgentActivity(event, 'stopped')).length !== 1) mismatch('continuation-raw-parent-events', 'Complete parent capture duplicates or omits a required lifecycle event.');
   const rawChildCommands = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
   if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue')).length !== 2
     || rawChildCommands.filter((host) => host.kind === 'write_stdin').length > MAX_CHILD_POLLS) mismatch('continuation-raw-child-events', 'Complete child capture duplicates or omits invoke-prepared evidence.');
@@ -818,16 +829,14 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
     mismatch('spawn-contract-mismatch', 'The native spawn task or context mode differs from the Rescue contract.');
   }
 
-  const starts = parent.filter((event) => event?.type === 'event_msg'
-    && event.payload?.type === 'sub_agent_activity'
-    && event.payload.kind === 'started');
+  const starts = parent.filter((event) => subAgentActivity(event, 'started'));
   if (starts.length === 0) mismatch('child-start-unavailable', 'The parent rollout did not expose a child start event.');
   if (starts.length !== 1) mismatch('child-start-count', 'The parent rollout contains more than one child start event.');
-  const start = starts[0].payload;
+  const start = subAgentActivity(starts[0], 'started');
   const childThreadId = boundedString(start.agent_thread_id);
   const agentPath = boundedString(start.agent_path);
   if (!childThreadId || !agentPath) mismatch('child-identity-unavailable', 'The child start event omits its thread ID or agent path.');
-  if (start.event_id !== spawn.call_id) mismatch('spawn-start-link-mismatch', 'The child start event does not link to the spawn call.');
+  if (start.id !== spawn.call_id) mismatch('spawn-start-link-mismatch', 'The child start event does not link to the spawn call.');
 
   const childCandidates = rollouts.filter((events) => sessionMeta(events)?.id === childThreadId);
   if (childCandidates.length === 0) {
@@ -1275,12 +1284,13 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (!taskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
   if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
   const spawnIndex = parent.indexOf(spawns[0]);
-  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const starts = parent.filter((event) => subAgentActivity(event, 'started'));
   if (starts.length !== 1) mismatch('choice-start-count', 'Choice continuation must expose exactly one child start.');
   const start = starts[0];
-  const childThreadId = boundedString(start.payload.agent_thread_id);
-  const agentPath = boundedString(start.payload.agent_path);
-  if (!childThreadId || !agentPath || start.payload.event_id !== spawns[0].payload.call_id) {
+  const activity = subAgentActivity(start, 'started');
+  const childThreadId = boundedString(activity?.agent_thread_id);
+  const agentPath = boundedString(activity?.agent_path);
+  if (!childThreadId || !agentPath || activity.id !== spawns[0].payload.call_id) {
     mismatch('choice-child-identity', 'The choice flow does not link one exact child ID to the initial spawn.');
   }
   const startIndex = parent.indexOf(start);
@@ -1300,7 +1310,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const childSessionMeta = child.filter((event) => event?.type === 'session_meta');
   if (childSessionMeta.length !== 1 || child.indexOf(childSessionMeta[0]) !== 0) mismatch('choice-child-execution-boundary', 'The child rollout must begin with exactly one session_meta record.');
   const spawnMeta = meta?.source?.subagent?.thread_spawn;
-  validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: start.payload, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
+  validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: activity, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
   validateForwarderChildEvents(child, options);
   if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
     mismatch('choice-agent-role', 'The retained child Role metadata differs from the selected route.');
@@ -1839,8 +1849,8 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     if (!chars.endsWith('\n') || chars.slice(0, -1).includes('\n')) mismatch('continuation-preparation-route', 'Preparation is not one LF-terminated envelope.');
     let envelope; try { envelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('continuation-preparation-route', 'Production preparation parser rejected the raw LF envelope.'); }
     if (envelope.source !== specification.source || envelope.options.resume !== specification.resume || (envelope.options.execution ?? 'foreground') !== expected.execution) mismatch('continuation-preparation-route', 'Preparation source or exact route is invalid.');
-    const expectedTarget = generationIndex === 0 ? null : { childId: expected.childThreadId, agentPath: expected.agentPath };
-    if (envelope.version !== 2 || !isDeepStrictEqual(envelope.continuationTarget, expectedTarget)) {
+    const expectedTarget = generationIndex === 0 ? null : { agentPath: expected.agentPath };
+    if (envelope.version !== 3 || !isDeepStrictEqual(envelope.continuationTarget, expectedTarget)) {
       mismatch('continuation-target-preparation', 'Preparation does not retain the exact linked lifecycle target.');
     }
     const record = parsedRecords[generationIndex];

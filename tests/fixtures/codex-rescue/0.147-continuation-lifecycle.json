@@ -1,0 +1,12 @@
+{
+  "codexVersion": "0.147.0",
+  "sourceLines": [1, 120, 121, 122],
+  "parentRecords": [
+    {"type":"session_meta","timestamp":"2026-08-15T01:23:44.514Z","payload":{"id":"parent-0147","session_id":"parent-0147","cwd":"/workspace/project","cli_version":"0.147.0","source":"cli","thread_source":"user"}},
+    {"type":"response_item","timestamp":"2026-08-15T01:26:21.868Z","payload":{"type":"function_call","name":"spawn_agent","call_id":"spawn-0147","arguments":"{\"agent_type\":\"zcode-rescue\",\"fork_turns\":\"none\",\"message\":\"neutral prepared forwarder assignment\",\"task_name\":\"zcode_rescue\"}"}},
+    {"type":"event_msg","timestamp":"2026-08-15T01:26:21.937Z","payload":{"type":"item_completed","thread_id":"parent-0147","turn_id":"turn-0147","item":{"type":"SubAgentActivity","id":"spawn-0147","kind":"started","agent_thread_id":"child-0147","agent_path":"/root/zcode_rescue"},"started_at_ms":1786757181937,"completed_at_ms":1786757181937}},
+    {"type":"response_item","timestamp":"2026-08-15T01:26:21.963Z","payload":{"type":"function_call_output","call_id":"spawn-0147","output":"{\"task_name\":\"/root/zcode_rescue\"}"}}
+  ],
+  "childSessionMetadata":{"id":"child-0147","parent_thread_id":"parent-0147","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-0147","agent_path":"/root/zcode_rescue","agent_role":"zcode-rescue"}}}},
+  "pluginBinding":{"childAgentId":"child-0147","agentPath":"/root/zcode_rescue"}
+}
