@@ -34,10 +34,19 @@ An **exact continuation target** is the private pair:
 }
 ```
 
-Root forms this pair only from one linked lifecycle: the child/thread ID
-returned by the successful `spawn_agent` call and that same spawn's
-`sub_agent_activity.started.agent_path` host record. It must not synthesize the
-path from a task name. Root retains the unchanged pair across follow-up,
+Root forms this pair only after exactly correlating one successful
+`spawn_agent` call, its output, and one `sub_agent_activity.started` record
+through both equalities:
+
+```text
+started.event_id == spawn.call_id
+started.agent_thread_id == spawn.output.agent_id
+```
+
+The retained child ID is `spawn.output.agent_id`; the retained path is the
+matched started record's `agent_path`. Either record may arrive first, so Root
+waits for its unique counterpart before retaining the pair. Missing,
+duplicate, or mismatched output/activity counterparts fail closed. Root must not pair a partial, unmatched, or mismatched lifecycle, and it must never guess, derive, or synthesize the path from `taskName` or another presentation value. Root retains the unchanged pair across follow-up,
 stopping, restoration, and later conversation turns with the logical Rescue
 operation. The pair is a selector, not authority:
 the plugin must independently rediscover the exact parent child and validate
@@ -132,6 +141,20 @@ For an exact resume, Root:
    existing preparation PTY only after the readiness line.
 5. Executes only the route directive returned by the plugin.
 
+Before preparation, an explicit request with neither `--resume` nor `--fresh`
+is classified by the number of retained stopped operations that could match
+its semantics. With multiple retained stopped operations, Root asks exactly
+once before prepare, follow-up, or spawn. One answer simultaneously resolves
+both dimensions: either `fresh`, which uses `continuationTarget: null`, or
+`resume` plus one logical operation, which uses that operation's exact retained
+pair. Root does not ask a separate operation question and then a separate
+resume/fresh question. With exactly one retained stopped operation or one
+usable binding, the legacy targetless choice flow remains available: Root
+omits `resume`, sends `continuationTarget: null`, follows the plugin's unique
+route, and the selected child may return the same-child `needs-choice` result.
+This single-operation compatibility path cannot be used when multiple retained
+stopped operations would make targetless planning ambiguous.
+
 Root does not put the pair in commentary, the public Rescue command, launcher
 argv, child assignment, or a ZCode prompt. Root also does not manufacture or
 repair one member from another, including by concatenating a returned task name
@@ -213,7 +236,10 @@ semantics except where tests must recognize the new private envelope version.
    for child 2 follows only child 2 and resumes its original ZCode session.
    Reversing child order, timestamps, names, and suffixes does not change it.
 2. **Targetless compatibility:** the same two bindings without a target remain
-   `RESCUE_CHILD_AMBIGUOUS`; one usable binding still resumes normally.
+   `RESCUE_CHILD_AMBIGUOUS`; one usable binding still resumes normally. Root
+   never sends that ambiguous multi-operation no-choice frame: it asks one
+   combined operation-and-resume/fresh question before preparation, while the
+   single-operation targetless same-child `needs-choice` flow remains intact.
 3. **Cross-pair and absence:** same ID/wrong path, same path/wrong ID, missing,
    unbound, unmanaged, revoked, and ineligible targets fail without fallback,
    mutation, preparation consumption, or ZCode RPC.
