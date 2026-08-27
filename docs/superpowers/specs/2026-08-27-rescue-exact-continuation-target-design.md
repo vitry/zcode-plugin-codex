@@ -144,7 +144,11 @@ For an exact resume, Root:
 Before preparation, an explicit request with neither `--resume` nor `--fresh`
 is classified by counting only retained stopped operations whose logical
 operations could match the complete request semantics. These are semantic
-candidates; unrelated retained operations do not count. Zero semantic
+candidates; unrelated retained operations do not count.
+
+The zero, one, and more than one semantic-candidate branches below apply only to an explicit no-choice request.
+
+Zero semantic
 candidates means `fresh` with `continuationTarget: null` and no clarification.
 With more than one semantic candidate, Root asks exactly once before prepare,
 follow-up, or spawn. One answer simultaneously resolves both dimensions:
@@ -157,6 +161,8 @@ targetless choice flow remains available: Root omits `resume`, sends
 child may return the same-child `needs-choice` result. This single-operation
 compatibility path cannot be used when more than one semantic candidate would
 make targetless planning ambiguous.
+
+Proactive routing remains outside this triage. For a proactive clear continuation, Root materializes `resume`; if its exact retained pair is unavailable, it clarifies or fails closed and never uses fresh/null as a fallback. A proactive clear independent task still materializes `fresh`.
 
 Root does not put the pair in commentary, the public Rescue command, launcher
 argv, child assignment, or a ZCode prompt. Root also does not manufacture or

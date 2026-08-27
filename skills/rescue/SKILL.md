@@ -59,11 +59,12 @@ Normalize `task` from the complete request semantics into a non-empty business o
 Apply this precedence before preparation:
 
 - An explicit `--fresh` or `--resume` is authoritative.
-- Count only retained stopped operations whose logical operations could match the complete request semantics; call these semantic candidates. Unrelated retained operations are not candidates.
-- With zero semantic candidates, materialize `fresh` with `continuationTarget: null` and do not ask for clarification.
+- The zero, one, and more than one semantic-candidate branches below apply only to an explicit no-choice request.
+- For an explicit no-choice request, count only retained stopped operations whose logical operations could match the complete request semantics; call these semantic candidates. Unrelated retained operations are not candidates.
+- For that explicit no-choice request, with zero semantic candidates, materialize `fresh` with `continuationTarget: null` and do not ask for clarification.
 - For an explicit request with no choice (`--fresh` or `--resume`) and more than one semantic candidate, ask exactly once before prepare, followup, or spawn. One answer must simultaneously resolve both the operation and `resume` or `fresh`: the answer chooses resume with one logical operation's exact retained pair, or the answer chooses fresh with `continuationTarget: null`. Do not split this into an operation question followed by a resume/fresh question.
 - For an explicit request with no choice and one semantic candidate or one usable binding, preserve the targetless compatibility flow: omit `resume`, use `continuationTarget: null`, follow only the plugin's unique route, and if that child returns the same-child `needs-choice`, ask exactly once using the continuation protocol below.
-- For a proactive clear continuation, materialize `resume` as `resume` in the prepare envelope. For a proactive clear independent task, materialize `resume` as `fresh` in the prepare envelope. A proactive clear route must include either `fresh` or `resume`.
+- For a proactive clear continuation, materialize `resume` as `resume` in the prepare envelope. If its exact retained pair is unavailable, clarify or fail closed; never use fresh/null as a fallback. For a proactive clear independent task, materialize `resume` as `fresh` in the prepare envelope. A proactive clear route must include either `fresh` or `resume`.
 - For any other proactive genuinely ambiguous route, ask exactly once before running prepare, followup, or spawn, then materialize the answer. Do not ask when the complete request semantics make continuation or independence clear.
 
 ## Parent preflight and private preparation

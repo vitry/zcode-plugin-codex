@@ -327,6 +327,17 @@ test('routing precedence materializes only authoritative fresh or resume choices
   assert.match(source, /proactive[\s\S]+must include[\s\S]+(?:`fresh` or `resume`|`fresh` or `resume`)/i);
 });
 
+test('semantic candidate triage is explicit-only and proactive continuation never falls back to fresh', () => {
+  const sources = [
+    skill('rescue'),
+    readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8'),
+  ];
+  for (const source of sources) {
+    assert.match(source, /(?:zero|0)[^\n]+(?:one|1)[^\n]+(?:more than one|>1)[^\n]+(?:triage|branches)[^\n]+(?:only|entirely)[^\n]+explicit no-choice/i);
+    assert.match(source, /proactive clear continuation[\s\S]+exact (?:retained )?pair[^\n]+unavailable[^\n]+(?:clarif|fail)[^\n]+never[^\n]+fresh(?:\/null| fallback)?/i);
+  }
+});
+
 test('private task envelope is confined to the parent write_stdin rollout', () => {
   const source = skill('rescue');
   assert.match(source, /task[\s\S]+source[\s\S]+options[\s\S]+only[\s\S]+parent[^\n]+`write_stdin` payload/i);
