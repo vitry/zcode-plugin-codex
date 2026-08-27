@@ -23,6 +23,7 @@ export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES * 6 + 4096;
 
 const RESCUE_PREPARATION_RECORD_VERSION = 3;
+const LEGACY_RESCUE_ENVELOPE_VERSION = 1;
 const LEGACY_PREPARATION_RECORD_VERSION = 1;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
@@ -92,7 +93,7 @@ export async function readRescuePreparation(stream) {
 /** @param {unknown} value */
 export function validateRescuePreparation(value) {
   if (!plain(value)
-    || !(value.version === LEGACY_PREPARATION_RECORD_VERSION && sameKeys(value, V1_ENVELOPE_KEYS)
+    || !(value.version === LEGACY_RESCUE_ENVELOPE_VERSION && sameKeys(value, V1_ENVELOPE_KEYS)
       || value.version === RESCUE_PREPARATION_VERSION && sameKeys(value, V2_ENVELOPE_KEYS))
     || !SOURCES.has(value.source)
     || typeof value.task !== 'string' || value.task.trim().length === 0
