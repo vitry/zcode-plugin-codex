@@ -185,6 +185,8 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(english, /plugin.{0,100}(?:discovers|resolves).{0,100}child ID.{0,100}(?:internally|inside)/is);
   assert.match(english, /canonical path.{0,100}(?:selector|narrows selection).{0,100}(?:not authority|grants no authority)/is);
   assert.match(english, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:validate|validation)/is);
+  assert.match(english, /multiple eligible siblings.{0,180}exact version-3 selector.{0,180}only the sibling.{0,120}canonical agent path.{0,180}only that sibling's complete binding.{0,120}original ZCode session/is);
+  assert.match(english, /targetless\/null compatibility route.{0,160}only when exactly one complete binding is eligible/is);
   assert.match(english, /targetless.{0,100}multiple usable bindings.{0,100}fail closed/is);
   assert.match(english, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous.{0,100}fail closed/is);
   assert.match(english, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
@@ -195,6 +197,8 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(chinese, /插件(?=[\s\S]{0,180}(?:发现|解析))(?=[\s\S]{0,180}child ID)(?=[\s\S]{0,180}(?:内部|插件内))/i);
   assert.match(chinese, /canonical path.{0,100}(?:selector|收窄选择).{0,100}(?:不是 authority|不授予 authority)/is);
   assert.match(chinese, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:验证|校验)/is);
+  assert.match(chinese, /多个合格 sibling.{0,180}精确 version-3 selector.{0,180}只解析.{0,120}canonical agent path.{0,180}只恢复该 sibling.{0,120}完整 binding.{0,120}原始 ZCode session/is);
+  assert.match(chinese, /targetless\/null 兼容路由.{0,160}仅在.{0,120}唯一 complete binding 合格/is);
   assert.match(chinese, /不带 target.{0,100}多个可用 binding.{0,100}fail closed/is);
   assert.match(chinese, /没有精确 private selector.{0,100}两个可用 binding.{0,100}歧义.{0,100}fail closed/is);
   assert.match(chinese, /version 2.{0,120}child ID.{0,80}path 对.{0,120}读取兼容/is);
