@@ -136,9 +136,11 @@ async function routedExecutorFixture(t, label) {
   return { origin, data, target, start, caller, originDirectory, targetDirectory, routePath, executorPath };
 }
 
-async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {} }) {
+async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {}, executor }) {
   const store = createStateStore({ dataRoot: data });
-  let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reservation = { workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+  let value = executor === undefined ? await store.reserveJob(reservation)
+    : (await store.reserveFreshRescueJob({ workspace: cwd, reservation, executor })).job;
   const worker = { childPid: 999_999, workerLeaseId: 'd'.repeat(64) };
   value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, ...peerEnv } });
@@ -150,6 +152,18 @@ async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId,
   });
   value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds: ['message-user-history', 'message-assistant-history'] });
   return { store, job: value };
+}
+
+async function exactBindingRecordBytes(data, cwd, childAgentId) {
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+  for (const entry of await readdir(storage.directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name)) continue;
+    const partition = JSON.parse(await readFile(join(storage.directory, entry.name), 'utf8'));
+    const record = partition.records.find((candidate) => candidate.childAuthority?.childAgentId === childAgentId
+      || candidate.executorAgentId === childAgentId);
+    if (record) return Buffer.from(JSON.stringify(record));
+  }
+  throw new Error(`missing exact binding for ${childAgentId}`);
 }
 
 async function writeGateConfig(data, cwd, value) { const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); await mkdir(join(storage.directory, 'config'), { recursive: true }); await writeFile(join(storage.directory, 'config/review-gate.json'), JSON.stringify(value)); }
@@ -1052,11 +1066,20 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
 test('SessionEnd settles its writable job before generic owner release and preserves siblings', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'settlement-order.jsonl'); const control = join(data, 'recovery-control.json');
   await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
-  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'settled-owner', remoteSessionId: 'settled-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control } });
+  const executor = { agentId: 'settled-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId: 'settled-owner', parentTurnId: 'turn-settled-owner', parentPermissionMode: 'workspace-write', workspace: cwd };
+  const store = createStateStore({ dataRoot: data });
+  const siblingExecutor = { ...executor, agentId: 'settled-sibling-child', parentTurnId: 'settled-sibling-turn' };
+  const siblingBinding = await store.reserveFreshRescueJob({ workspace: cwd, reservation: { workspace: cwd, ownerSessionId: 'settled-owner', ownerTurnId: 'settled-sibling-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: siblingExecutor });
+  await store.finishJob(cwd, siblingBinding.job.id, ['queued'], 'failed', { exitCode: 1 });
+  const siblingBindingBefore = await exactBindingRecordBytes(data, cwd, siblingExecutor.agentId);
+  const { job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'settled-owner', remoteSessionId: 'settled-remote', executor, peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control } });
   let sibling = await store.reserveJob({ workspace: cwd, ownerSessionId: 'sibling-owner', ownerTurnId: 'sibling-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'default' } });
   sibling = await store.transitionJob(cwd, sibling.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'sibling-remote' });
   const ended = await runHook('session-end-hook.mjs', { session_id: 'settled-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0, ended.stderr); assert.equal((await store.readJob(cwd, job.id)).status, 'cancelled'); assert.equal((await store.readJob(cwd, sibling.id)).status, 'running');
+  const closed = JSON.parse((await exactBindingRecordBytes(data, cwd, executor.agentId)).toString('utf8'));
+  assert.equal(closed.currentJobId, job.id); assert.equal(closed.state, 'closed'); assert.equal(closed.closeReason, 'cancel');
+  assert.deepEqual(await exactBindingRecordBytes(data, cwd, siblingExecutor.agentId), siblingBindingBefore);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); const readIndex = calls.findIndex((call) => call.method === 'session/read' && call.params?.sessionId === 'settled-remote'); const stopIndex = calls.findIndex((call) => call.method === 'session/stop' && call.params?.sessionId === 'settled-remote');
   assert.ok(readIndex >= 0 && stopIndex > readIndex, 'durable read/stop settlement must precede generic release cleanup'); assert.ok(!calls.some((call) => call.params?.sessionId === 'sibling-remote'));
 });

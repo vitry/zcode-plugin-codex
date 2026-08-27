@@ -428,7 +428,7 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
     assert.equal(role.split(message).length - 1, 1, `Role must accept the exact continuation once: ${message}`);
   }
   assert.match(source, /ask the user exactly once/i);
-  assert.match(source, /named and generic[\s\S]+same-child choice continuation/i);
+  assert.match(source, /resume[\s\S]+same-child choice continuation/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
   assert.match(source, /select only the result or status belonging to `rescueChildId`/);
@@ -443,6 +443,17 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
     assert.match(fixture, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
     assert.match(fixture, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
   }
+  assert.match(source, /`parent-replan`[\s\S]+parent[\s\S]+prepare[\s\S]+new[\s\S]+spawn/i);
+  assert.match(source, /fresh[\s\S]+old child[\s\S]+no ZCode|old child[\s\S]+no ZCode[\s\S]+fresh/i);
+  assert.doesNotMatch(source, /Present success stdout verbatim[\s\S]+never recover by spawning or executing again\./i);
+});
+
+test('fresh Rescue routing treats every persisted child as occupancy and always prescribes a new child', () => {
+  const source = skill('rescue');
+  assert.match(source, /Fresh or independent operation[\s\S]+all existing[\s\S]+occupied[\s\S]+collision-free[\s\S]+spawn/i);
+  assert.match(source, /never[\s\S]+follow[\s\S]+reactivate[\s\S]+adopt[\s\S]+existing/i);
+  assert.doesNotMatch(source, /companion may reactivate and follow up a qualified stopped Rescue child/i);
+  assert.doesNotMatch(source, /prefers the managed base child/i);
 });
 
 function escapeRegExp(value) {

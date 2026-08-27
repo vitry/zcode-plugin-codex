@@ -50,7 +50,8 @@ export async function planRescueActivation(input) {
   if (!Array.isArray(children) || children.length > MAX_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
-  const provenCandidates = []; const legacyCandidates = [];
+  if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
+  const provenCandidates = []; const persistedCandidates = []; let ineligibleCandidate = false;
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
     if (hostClass === 'occupancy') continue;
@@ -58,13 +59,13 @@ export async function planRescueActivation(input) {
     try { resolved = await resolveStoppedExecutor(input.dataRoot, host.cwd, host.id); }
     catch (error) {
       if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') {
-        if (hostClass === 'generic') continue;
-        if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
-        if (binding.kind === 'missing') legacyCandidates.push({ binding: null, host });
-        else legacyCandidates.push({ binding: validatePersistedBinding(binding.binding, {
-          caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
-        }), host });
+        if (binding.kind === 'missing') continue;
+        if (binding.kind === 'ineligible') { ineligibleCandidate = true; continue; }
+        if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
+        persistedCandidates.push({ kind: /** @type {'persisted'} */ ('persisted'), binding: validatePersistedBinding(binding.binding, {
+          caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: true,
+        }), resolvedBinding: binding, host });
         continue;
       }
       throw sanitizeExecutorError(error);
@@ -74,37 +75,45 @@ export async function planRescueActivation(input) {
     provenCandidates.push(candidate);
   }
 
-  let selected = null;
-  if (resume) {
-    const bound = [];
-    for (const candidate of provenCandidates) {
-      const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
-      if (binding.kind === 'bound') bound.push(candidate);
-    }
-    for (const candidate of legacyCandidates) if (candidate.binding !== null) bound.push(candidate);
-    if (bound.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-    selected = bound[0] ?? null;
-    if (selected === null) {
-      const unboundLegacy = legacyCandidates.filter((candidate) => candidate.binding === null);
-      if (unboundLegacy.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-      selected = unboundLegacy[0] ?? null;
-    }
-  } else if (provenCandidates.length > 0) {
-    selected = preferredCandidate(provenCandidates);
-  } else if (legacyCandidates.length > 0) {
-    selected = preferredCandidate(legacyCandidates);
+  const usable = [];
+  for (const candidate of provenCandidates) {
+    const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
+    if (binding.kind === 'ineligible') { ineligibleCandidate = true; continue; }
+    if (binding.kind === 'bound') usable.push({ ...candidate, resolvedBinding: binding });
   }
+  for (const candidate of persistedCandidates) usable.push(candidate);
+  if (usable.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
+  const selected = usable[0] ?? null;
 
   if (selected !== null) {
-    const modernBinding = selected.binding && rescueBindingAuthorityView(selected.binding).kind === 'subagent-start';
-    const activation = selected.executor || modernBinding
-      ? { kind: 'reactivate', executorAgentId: selected.executor?.agentId ?? selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) }
-      : selected.binding
-        ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
-        : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
-    const assignment = selected.executor?.agentType ?? 'zcode-rescue';
+    let activation; let assignment;
+    if (selected.kind === 'executor') {
+      activation = reactivateActivation(selected.executor.agentId, selected.host.agentPath, (/** @type {any} */ (selected)).resolvedBinding);
+      assignment = selected.executor.agentType;
+    } else {
+      activation = reactivateActivation(selected.host.id, selected.host.agentPath, selected.resolvedBinding);
+      assignment = 'zcode-rescue';
+    }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
+  if (resume || ineligibleCandidate) throw plannerError('RESCUE_BINDING_INVALID');
+  return spawnPlan(hostChildren);
+}
+
+/** Preserve the exact planner-selected binding CAS when its joined jobs are available. @param {string} executorAgentId @param {string} agentPath @param {any} resolved */
+function reactivateActivation(executorAgentId, agentPath, resolved) {
+  const base = { kind: 'reactivate', executorAgentId, agentPathDigest: pathDigest(agentPath) };
+  if (resolved?.kind !== 'bound' || !resolved.binding || !resolved.anchorJob || !resolved.currentJob) return base;
+  const zcodeSessionId = resolved.anchorJob.zcodeSessionId;
+  if (typeof zcodeSessionId !== 'string' || zcodeSessionId.length === 0
+    || resolved.currentJob.zcodeSessionId !== zcodeSessionId) throw plannerError('RESCUE_BINDING_INVALID');
+  return { ...base, bindingKey: resolved.binding.key, operationId: resolved.binding.operationId,
+    anchorJobId: resolved.binding.anchorJobId, currentJobId: resolved.binding.currentJobId,
+    bindingUpdatedAt: resolved.binding.updatedAt, zcodeSessionId };
+}
+
+/** @param {any[]} hostChildren */
+function spawnPlan(hostChildren) {
   const occupied = new Set(hostChildren.map((host) => host.agentPath));
   const taskName = allocateTaskName(occupied);
   const agentPath = `/root/${taskName}`;
@@ -162,18 +171,14 @@ function classifyHost(host) {
   return 'occupancy';
 }
 
-/** @param {any[]} candidates */
-function preferredCandidate(candidates) {
-  return candidates.find((candidate) => candidate.host.agentPath === BASE_AGENT_PATH) ?? [...candidates].sort(compareNewest)[0];
-}
-
 /** @param {Function} resolveBinding @param {any} input */
 async function resolveExactBinding(resolveBinding, input) {
   let binding;
   try { binding = await resolveBinding(input); }
   catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (!binding || !['missing', 'bound'].includes(binding.kind)
+  if (!binding || !['missing', 'bound', 'ineligible'].includes(binding.kind)
     || binding.kind === 'missing' && !sameKeys(binding, ['kind'])
+    || binding.kind === 'ineligible' && !sameKeys(binding, ['kind'])
     || binding.kind === 'bound' && !plain(binding.binding)) throw plannerError('RESCUE_BINDING_INVALID');
   return binding;
 }
@@ -195,11 +200,14 @@ function validatePersistedBinding(binding, expected) {
       workspace: expected.executionWorkspace,
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (![1, 2, 3].includes(valid.version) || valid.key !== expectedKey
-    || valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')
+  const exactState = valid.version === 3 ? valid.state === 'active'
+    : [1, 2].includes(valid.version) && valid.state === 'closed' && valid.closeReason === 'session-ended';
+  const expectedAgentType = expected.host.agentRole === 'zcode-rescue' ? 'zcode-rescue'
+    : expected.host.agentRole === null ? 'default' : null;
+  if (!exactState || valid.key !== expectedKey
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
     || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
-    || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'
+    || authority.childAgentId !== expected.host.id || expectedAgentType === null || authority.childAgentType !== expectedAgentType
     || authority.kind === 'codex-legacy-adoption' && (authority.originWorkspace !== expected.originWorkspace
       || authority.originWorkspace !== expected.host.cwd || authority.executionWorkspace !== expected.executionWorkspace
       || authority.agentPathDigest !== pathDigest(expected.host.agentPath))
@@ -222,13 +230,13 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
   const roleMatches = found.agentType === 'zcode-rescue' && host.agentRole === 'zcode-rescue'
     || found.agentType === 'default' && host.agentRole === null;
   if (!roleMatches) throw plannerError('EXECUTOR_ROLE_UNAPPROVED');
-  return { executor: { ...found }, host };
+  return { kind: /** @type {'executor'} */ ('executor'), executor: { ...found }, host };
 }
 
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return async (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => {
+  return async (/** @type {any} */ { caller, executor, host, executionWorkspace }) => {
     const lookup = {
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
@@ -239,14 +247,15 @@ function defaultBindingResolver(dataRoot) {
       executorParentTurnId: executor.parentTurnId,
       executorParentPermissionMode: executor.parentPermissionMode,
     } : {}),
-    ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
+    permissionMode: caller.permissionMode,
     };
     let migrationProof;
     const proof = await store.readRescueBindingMigrationProof({
       workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
       childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
-      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
+      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath, permissionMode: caller.permissionMode,
     });
+    if (proof.kind === 'ineligible') return { kind: 'ineligible' };
     if (proof.kind === 'proof') migrationProof = proof.migrationProof;
     return store.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
   };
@@ -262,8 +271,6 @@ function allocateTaskName(occupied) {
   throw plannerError('RESCUE_CHILD_AMBIGUOUS');
 }
 
-/** @param {any} left @param {any} right */
-function compareNewest(left, right) { return right.host.createdAt - left.host.createdAt || right.host.id.localeCompare(left.host.id); }
 /** @param {string} value */
 function pathDigest(value) { return createHash('sha256').update(value).digest('hex'); }
 /** @param {unknown} value */

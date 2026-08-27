@@ -151,65 +151,37 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
 });
 
-test('release docs distinguish Hook recovery from one-shot named legacy adoption', () => {
+test('release docs limit migration to one exact v1/v2 session-ended binding', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');
   const security = read('SECURITY.md');
   const changelog = read('CHANGELOG.md');
 
-  assert.match(english, /executor-backed stopped child.{0,160}Hook-proven recovery/is);
-  assert.match(english, /older plugin.{0,220}named `zcode-rescue` child.{0,180}adopted once/is);
-  assert.match(english, /current parent turn.{0,220}execution worktree.{0,180}permission snapshot.{0,180}one-shot preparation/is);
-  assert.match(english, /never fabricate.{0,140}(?:`SubagentStart`|executor|route)/is);
-  assert.match(english, /`default` and `explorer` children.{0,160}occupancy-only/is);
-  assert.match(english, /30-minute.{0,180}(?:capability window|TTL).{0,180}not a lifetime/is);
-  assert.match(english, /active Rescue child.{0,120}rejoin/is);
-  assert.match(english, /neither.{0,100}30-minute age.{0,100}(?:name|path) collision.{0,120}(?:authority|authorizes)/is);
-  assert.match(english, /(?:plugin|Companion).{0,100}during preparation.{0,180}discover.{0,120}persisted Codex children/is);
-  assert.match(english, /follow-up.{0,100}strict version two.{0,140}fixed assignment/is);
-  assert.match(english, /spawn.{0,100}strict version one.{0,140}(?:without (?:an )?|no )assignment/is);
-  assert.match(english, /named.{0,100}generic.{0,140}schema negotiation/is);
-  assert.doesNotMatch(english, /Root receives and executes only the task-free version-two directive/i);
-  assert.doesNotMatch(english, /Root discovers the parent's persisted Codex children/i);
-
-  assert.match(chinese, /具有 executor 证据的已停止 child.{0,180}Hook-proven 恢复/is);
-  assert.match(chinese, /旧版插件.{0,220}具名 `zcode-rescue`.{0,180}一次性 adoption/is);
-  assert.match(chinese, /当前 parent turn.{0,220}execution worktree.{0,180}permission 快照.{0,180}一次性 preparation/is);
-  assert.match(chinese, /绝不会伪造.{0,140}(?:`SubagentStart`|executor|route)/is);
-  assert.match(chinese, /`default` 与 `explorer` children.{0,160}只占用路径/is);
-  assert.match(chinese, /TTL.{0,180}一次性 capability 窗口.{0,180}不是.{0,120}生命期/is);
-  assert.match(chinese, /活动的 Rescue child.{0,120}重新加入/is);
-  assert.match(chinese, /30 分钟 age.{0,100}(?:名称|路径)碰撞.{0,120}(?:都不|均不).{0,80}(?:授权|权威)/is);
-  assert.match(chinese, /(?:插件|Companion).{0,100}preparation 期间.{0,180}发现.{0,120}持久化 Codex children/is);
-  assert.match(chinese, /follow-up.{0,100}strict version two.{0,140}固定 assignment/is);
-  assert.match(chinese, /spawn.{0,100}strict version one.{0,140}(?:不含|没有) assignment/is);
-  assert.match(chinese, /named.{0,100}generic.{0,140}schema negotiation/is);
-  assert.doesNotMatch(chinese, /Root 只接收并执行.{0,100}不含 task 的 version-two directive/is);
-  assert.doesNotMatch(chinese, /Root 会发现该 parent 的持久化 Codex children/i);
-
-  assert.match(security, /`childAuthority` union.{0,220}`subagent-start`.{0,120}`codex-legacy-adoption`/is);
-  assert.match(security, /transient in-process brands.{0,180}(?:clones|replay).{0,180}cannot publish state/is);
-  assert.match(security, /zero job reservation.{0,180}Hook fabrication/is);
-  assert.match(security, /(?:30-minute age|collision).{0,180}(?:must not|never).{0,100}(?:authority|authorize)/is);
-  assert.match(changelog, /legacy plugin sessions.{0,220}no surviving Hook executor.{0,220}adopted once/is);
-  assert.match(changelog, /`default` or `explorer`.{0,220}`EXECUTOR_ROLE_UNAPPROVED`.{0,220}occupancy-only/is);
+  for (const source of [english, security, changelog]) {
+    assert.match(source, /v1\/v2|version (?:one|two)/i);
+    assert.match(source, /session-ended/i);
+    assert.match(source, /notLoaded/i);
+    assert.match(source, /jobs-only.{0,120}(?:never|not|no)|(?:never|not|no).{0,120}jobs-only/is);
+  }
+  assert.match(chinese, /v1\/v2/); assert.match(chinese, /session-ended/); assert.match(chinese, /notLoaded/);
+  assert.match(chinese, /jobs-only.{0,120}(?:不|绝不|不能)/is);
+  for (const source of [english, chinese, security]) {
+    assert.match(source, /zcode_rescue_task_2/);
+    assert.match(source, /ambiguous|歧义/i);
+    assert.match(source, /(?:base|latest).{0,120}(?:never|not|不|绝不)/is);
+  }
 });
 
-test('release docs distinguish a fresh ZCode operation from allocating a fresh Codex child', () => {
+test('release docs require fresh to use a newly planned child', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');
 
-  assert.match(english, /`--fresh`.{0,220}new independent ZCode operation.{0,180}(?:reactivate|follow up).{0,180}stopped Rescue child/is);
-  assert.match(english, /managed base.{0,140}newest compatible.{0,160}spawn.{0,100}none/is);
-  assert.match(english, /reusing.{0,100}Codex child.{0,180}(?:does not|never).{0,80}resume.{0,100}prior ZCode (?:binding|session)/is);
-  assert.match(english, /collision.{0,100}(?:never|not).{0,80}authority/is);
-  assert.doesNotMatch(english, /`--fresh` always[^.]{0,120}(?:new|spawn)[^.]{0,60}(?:Rescue )?child/i);
-
-  assert.match(chinese, /`--fresh`.{0,220}新的独立 ZCode 操作.{0,180}(?:恢复|follow up).{0,180}已停止(?:的)? Rescue child/is);
-  assert.match(chinese, /受管 base.{0,140}最新兼容.{0,160}(?:都没有|不存在).{0,100}spawn/is);
-  assert.match(chinese, /复用.{0,100}Codex child.{0,180}不会.{0,80}resume.{0,100}先前的 ZCode (?:binding|session)/is);
-  assert.match(chinese, /碰撞.{0,100}(?:绝不|不是).{0,80}(?:权威|授权)/is);
-  assert.doesNotMatch(chinese, /`--fresh` 始终[^。]{0,120}(?:新建|spawn)[^。]{0,60}child/i);
+  assert.match(english, /`--fresh`.{0,220}(?:new|newly spawned).{0,120}(?:Rescue )?child/is);
+  assert.match(english, /parent-replan.{0,180}spawn/is);
+  assert.match(english, /never.{0,120}(?:same-child replacement|reactivate|follow up)/is);
+  assert.match(chinese, /`--fresh`.{0,220}(?:新建|新规划|新的).{0,120}child/is);
+  assert.match(chinese, /parent-replan.{0,180}spawn/is);
+  assert.match(chinese, /绝不.{0,140}(?:同 child 替换|reactivate|follow up)/is);
 });
 
 test('reactivation spec records the bounded Codex global-list foreign-row compatibility rule', () => {
@@ -289,7 +261,7 @@ test('release docs define automatic immutable Rescue worktree late binding', () 
   assert.match(english, /immutable.{0,100}(?:turn|target)/i);
   assert.match(english, /child.{0,100}(?:cannot|must not).{0,80}claim/i);
   assert.match(english, /Stop.{0,200}new prompt.{0,200}(?:revoke|replace)/is);
-  assert.match(english, /SessionEnd.{0,200}runtime ownership loss.{0,240}preserv(?:e|ing).{0,120}resumable bindings/is);
+  assert.match(english, /SessionEnd.{0,200}runtime ownership loss.{0,240}preserv(?:e|ing).{0,160}(?:completed|session-ended).{0,160}resumable/is);
   assert.match(chinese, /origin workspace.{0,200}execution workspace/is);
   assert.match(chinese, /第一次可信的 `?prepare rescue`?.{0,200}自动绑定/is);
   assert.match(chinese, /不需要手动 handoff/i);
@@ -297,7 +269,7 @@ test('release docs define automatic immutable Rescue worktree late binding', () 
   assert.match(chinese, /同一 turn.{0,100}不可变/is);
   assert.match(chinese, /child.{0,100}不能.{0,80}claim/i);
   assert.match(chinese, /Stop.{0,200}新 prompt.{0,200}(?:撤销|替换)/is);
-  assert.match(chinese, /SessionEnd.{0,200}runtime ownership.{0,240}保留.{0,120}可恢复 binding/is);
+  assert.match(chinese, /SessionEnd.{0,200}runtime ownership.{0,240}保留.{0,160}(?:已完成|session-ended).{0,160}可恢复/is);
   for (const source of [security, changelog, authorityAdr, bindingAdr]) {
     assert.match(source, /origin workspace.{0,220}execution workspace/is);
     assert.match(source, /same canonical Git common[- ]dir/i);
@@ -599,17 +571,20 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
 });
 
-test('release guidance documents exact stopped-child binding, lifecycle, upgrade, and legacy behavior bilingually', () => {
+test('release guidance documents exact resume, bounded SessionEnd settlement, and one-send recovery bilingually', () => {
   const english = read('README.md'); const chinese = read('README.zh-CN.md');
   for (const source of [english, chinese]) {
     assert.match(source, /anchorJobId|anchor job/i);
     assert.match(source, /currentJobId|current job/i);
     assert.match(source, /same (?:stopped )?(?:Rescue )?child|同一(?:个)?已停止的 Rescue child/i);
     assert.match(source, /no second `?SubagentStart`?|不会.*第二次 `?SubagentStart`?/i);
-    assert.match(source, /legacy[\s\S]+(?:adopt|采用|接纳)/i);
-    assert.match(source, /permission[\s\S]+fresh|权限[\s\S]+fresh/i);
-    assert.match(source, /SessionEnd[\s\S]+(?:preserv|保留)[\s\S]+(?:resumable|可恢复)[\s\S]+binding/i);
-    assert.match(source, /invalid[\s\S]+binding[\s\S]+fail closed|无效[\s\S]+binding[\s\S]+fail closed/i);
+    assert.match(source, /original (?:non-empty )?`?zcodeSessionId`?|原始(?:非空)? `?zcodeSessionId`?/i);
+    assert.match(source, /SessionEnd[\s\S]+(?:completed|已完成)[\s\S]+(?:session-ended)[\s\S]+(?:resumable|可恢复)/i);
+    assert.match(source, /confirmed[\s\S]+exact active[\s\S]+cancel[\s\S]+close|确认[\s\S]+精确 active[\s\S]+取消[\s\S]+关闭/i);
+    assert.match(source, /status[\s\S]+result[\s\S]+one send|status[\s\S]+result[\s\S]+一次 send/i);
+    assert.match(source, /stale-stop final guard|过期 stop 的最终 guard/i);
+    assert.doesNotMatch(source, /atomic stop|原子 stop/i);
+    assert.match(source, /(?:incomplete|contradictory)[\s\S]+evidence[\s\S]+fail(?:s)? closed|(?:不完整|矛盾)证据[\s\S]+fail closed/i);
     assert.match(source, /upgrade-required|升级.*required|需要升级/i);
   }
   const security = read('SECURITY.md'); const changelog = read('CHANGELOG.md'); const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');

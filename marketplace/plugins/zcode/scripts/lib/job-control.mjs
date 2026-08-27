@@ -177,8 +177,12 @@ async function performCancellation(input, attempts, election) {
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
+  const observedStop = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling);
+  if (observedStop?.kind === 'stale') return observedStop.job;
   try {
     if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
+    const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling, observedStop?.guard);
+    if (revalidated?.kind === 'stale') return revalidated.job;
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
     const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
@@ -196,6 +200,16 @@ async function performCancellation(input, attempts, election) {
     }
   }
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
+}
+
+/** @param {any} store @param {string} workspace @param {any} job @param {any} [expected] @param {string} [zcodeSessionId] */
+export async function revalidateBoundRescueStop(store, workspace, job, expected, zcodeSessionId = job.zcodeSessionId) {
+  if (job.command !== 'rescue' || job.readOnly !== false || job.rescueReservationKind !== 'bound') return null;
+  if (typeof store.revalidateBoundRescueStop !== 'function') return { kind: 'stale', job: await store.readJob(workspace, job.id) };
+  return store.revalidateBoundRescueStop({ workspace, jobId: job.id, ownerSessionId: job.ownerSessionId,
+    status: job.status, ...(zcodeSessionId === undefined ? {} : { zcodeSessionId }),
+    ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+    ...(expected === undefined ? {} : { expected }) });
 }
 
 /** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */

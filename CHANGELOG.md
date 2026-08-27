@@ -1,14 +1,15 @@
 # Changelog
 
-- Fixed persistent Rescue child rejoin so modern Hook-backed bindings retain the exact agent path and can rejoin unloaded or resident Codex children after runtime records disappear. Explicit cancel now closes only the exact child operation, same-child fresh replacement retains a durable `fresh` supersession record, stale migration proofs fail operation CAS, and SessionEnd remains non-revoking.
+- Fixed Rescue routing so persisted children continue only through one exact binding and fresh work always gets a new child.
 
 All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
-- Fixed legacy plugin sessions that already contained `/root/zcode_rescue_task` but no surviving Hook executor: an exact unloaded named Codex child can now be adopted once after current parent-turn, permission, origin/worktree, path, and preparation reproof. The durable version-two binding records `codex-legacy-adoption` explicitly; no historical Hook executor, route, or `SubagentStart` is fabricated, and first `resume`, `fresh`, and either pending choice keep the same child.
+- Fixed exact Rescue binding migration: only one complete v1/v2 `closed/session-ended` binding may migrate, independent app-server `notLoaded` is accepted only with the complete exact join, and `/root/zcode_rescue_task_2` resumes its original non-empty `zcodeSessionId` without base/latest fallback. Jobs-only and host-only adoption are rejected; ambiguity and contradictory evidence fail closed before mutation or RPC.
+- Changed fresh Rescue so it always parent-replans and collision-free spawns a new child, which creates one new ZCode session. It never reactivates, follows, or replaces an old child; existing sibling bindings remain unchanged.
+- Narrowed `SessionEnd` preservation to exact completed/no-active-attempt bindings and exact v1/v2 `session-ended` candidates. Confirmed exact active cancellation may close only that operation; unacknowledged stop retains the guard. Foreground/background response loss recovers through status/result and durable artifacts with one accepted send and no resend, while the stale-stop final guard prevents a losing cancellation from stopping or closing a newer operation.
 - Fixed ordinary `default` or `explorer` subagents aborting an otherwise valid Rescue continuation with `EXECUTOR_ROLE_UNAPPROVED`: ordinary rows are now occupancy-only, while an exact bound ordinal Rescue child remains eligible for resume. Generic `default` Rescue compatibility still requires its exact real executor provenance.
-- Fixed pending choice compatibility for adopted children: first-adoption `resume` or `fresh` creates the matching adoption authority, while a bound choice continuation preserves its durable adoption authority unchanged.
 - Fixed restored empty-preview Codex children disappearing from Rescue collision planning: preparation now uses the exact parent relationship query, treats host-only rows as occupancy without granting follow-up authority, and fails closed when that API is unsupported instead of retrying or guessing a colliding spawn.
 - Added persisted stopped Rescue child recovery before replacement spawn: the plugin restores the original Codex thread and history by joining sanitized app-server identity with private executor provenance, rejoins already active children, and never treats age or a name/path collision as authority.
 - Restored compatibility with the legacy PR #39 Rescue route: after origin-to-worktree binding, a child launched or resumed from the conversation root can resolve the immutable execution target. This qualification does not broaden authority beyond that bound target.

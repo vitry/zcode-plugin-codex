@@ -637,6 +637,44 @@ test('orphan Transfer stops a known remote session before failure and retains it
   }
 });
 
+for (const execution of ['foreground', 'background']) {
+  test(`${execution} accepted send survives a lost worker response through status and result recovery`, async (t) => {
+    const fixture = await context(); const control = join(fixture.root, `${execution}-response-loss-control.json`); const record = join(fixture.root, `${execution}-response-loss-record.jsonl`);
+    await Promise.all([writeFile(control, JSON.stringify({ mode: 'active' })), writeFile(record, '')]);
+    const env = { ...fixture.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+    let args = ['rescue', '--fresh', `${execution} response loss`]; let authorization = { callerContext: fixture.callerContext };
+    let jobId;
+    if (execution === 'background') {
+      const reserved = await runCompanion([...args.slice(0, 1), '--background', ...args.slice(1)], { cwd: fixture.workspace, env, authorization });
+      jobId = reserved.job.id; args = reserved.privateInvocation; authorization = { executionCapability: reserved.executionCapability, jobId };
+    }
+    const child = spawn(process.execPath, [companionCli, ...args], { cwd: fixture.workspace, env, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'ignore'], shell: false });
+    let exited = false; const childExit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+    /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify(authorization)}\n`);
+    const store = createStateStore({ dataRoot: fixture.dataRoot });
+    const running = jobId
+      ? await waitForJob(store, fixture.workspace, jobId, (job) => job.status === 'running' && typeof job.inputId === 'string')
+      : await waitForJob({ readJob: async () => (await store.listOwnedJobs(fixture.workspace, 'owner')).at(-1) }, fixture.workspace, undefined, (job) => job?.status === 'running' && typeof job.inputId === 'string');
+    jobId = running.id;
+    t.after(async () => { if (!exited) { try { child.kill('SIGKILL'); } catch { /* already exited */ } await childExit.catch(() => {}); } await cleanupRecoveryFixture(fixture); });
+    child.kill('SIGKILL'); await childExit;
+    await writeFile(control, JSON.stringify({ mode: 'completed' }));
+
+    const status = await runCompanion(['status', jobId], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } });
+    assert.equal(status.job.status, 'succeeded', execution);
+    const result = await runCompanion(['result', jobId], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } });
+    assert.equal(result.result, 'done', execution);
+    const recovered = await store.readJob(fixture.workspace, jobId); const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    assert.equal(recovered.status, 'succeeded', execution); assert.equal(typeof recovered.resultArtifact, 'string', execution);
+    assert.equal(await readFile(join((await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace })).directory, recovered.resultArtifact), 'utf8'), 'done', execution);
+    assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1, `${execution}: exactly one accepted send`);
+    assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1, `${execution}: recovery must not create a fresh session`);
+    assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 0, `${execution}: recovery must not resend through resume`);
+    assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 0, `${execution}: completed recovery must not roll back remotely`);
+    assert.deepEqual((await store.listOwnedJobs(fixture.workspace, 'owner')).map((job) => job.id), [jobId], `${execution}: recovery must retain the same owned job`);
+  });
+}
+
 test('a crashed real background worker reconciles remote terminal state without failing remote active work', async (t) => {
   for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'failed'], ['missing', 'failed']]) {
     const fixture = await context(); const control = join(fixture.root, 'recovery-control.json'); await writeFile(control, JSON.stringify({ mode: 'active' }));

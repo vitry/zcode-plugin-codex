@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync, unlinkSync } from 'node:fs';
 import { lstat, open, opendir, realpath } from 'node:fs/promises';
-import { isAbsolute, join, normalize, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import {
@@ -37,6 +37,8 @@ const V2_RECORD_KEYS = Object.freeze([
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key',
   'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace',
 ]);
+const PENDING_FRESH_V2_RECORD_KEYS = Object.freeze([...V2_RECORD_KEYS, 'pendingFreshProvenance']);
+const PENDING_FRESH_PROVENANCE_KEYS = Object.freeze(['executorAgentId', 'originatingTurnId']);
 const V3_RECORD_KEYS = Object.freeze([
   'activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt',
   'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source',
@@ -44,14 +46,13 @@ const V3_RECORD_KEYS = Object.freeze([
 ]);
 const SPAWN_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'kind', 'taskName']);
 const REACTIVATE_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'executorAgentId', 'kind']);
+const EXACT_REACTIVATE_ACTIVATION_KEYS = Object.freeze([
+  ...REACTIVATE_ACTIVATION_KEYS, 'anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId',
+  'operationId', 'zcodeSessionId',
+]);
 const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
 const LEGACY_ADOPT_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'childThreadId', 'kind']);
 const LEGACY_BOUND_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']);
-const consumedLegacyActivationAuthorities = new WeakMap();
-const brandedLegacyChildAuthorities = new WeakMap();
-const issuedLegacyChildAuthorities = new WeakMap();
-const consumedLegacyChildAuthorities = new WeakSet();
-const LEGACY_AUTHORITY_FACTORY_KEYS = Object.freeze(['authorizingParentGenerationId', 'executionWorkspace', 'originWorkspace']);
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -111,77 +112,32 @@ export function hasRecordedRescueMarker(prompt) {
 
 /** Derive authority only from the exact validated receipt returned by consume(). @param {unknown} value */
 export function deriveConsumedLegacyActivationAuthorityId(value) {
-  let domain;
-  try { domain = consumedLegacyActivationAuthorities.get(/** @type {object} */ (value)); }
-  catch { throw invalidPreparation(); }
-  if (domain === undefined) throw invalidPreparation();
-  return createHash('sha256').update(JSON.stringify(domain)).digest('hex');
+  void value; throw invalidPreparation();
 }
 
 /** Create an unforgeable in-process authority from one genuine consumed legacy receipt. @param {unknown} receipt @param {unknown} input */
 export function createConsumedLegacyChildAuthority(receipt, input) {
-  let domain;
-  try { domain = consumedLegacyActivationAuthorities.get(/** @type {object} */ (receipt)); }
-  catch { throw invalidPreparation(); }
-  if (domain === undefined || !plain(input) || !sameKeys(input, LEGACY_AUTHORITY_FACTORY_KEYS)
-    || !digest(input.authorizingParentGenerationId) || !canonicalWorkspace(input.originWorkspace)
-    || !canonicalWorkspace(input.executionWorkspace)) throw invalidPreparation();
-  const consumed = /** @type {any} */ (receipt); const activation = consumed.activation;
-  if (!plain(activation) || !['legacy-adopt', 'legacy-bound'].includes(activation.kind)
-    || consumed.workspace !== input.executionWorkspace || !safeIdentifier(consumed.executorAgentId)
-    || !safeIdentifier(consumed.sessionId, 4096) || !safeIdentifier(consumed.turnId, 4096)
-    || !PERMISSION_MODES.includes(consumed.permissionMode)) throw invalidPreparation();
-  const issued = issuedLegacyChildAuthorities.get(/** @type {object} */ (receipt));
-  if (issued !== undefined) {
-    if (issued.authorizingParentGenerationId !== input.authorizingParentGenerationId
-      || issued.originWorkspace !== input.originWorkspace || issued.executionWorkspace !== input.executionWorkspace) throw invalidPreparation();
-    return issued;
-  }
-  const authorityId = createHash('sha256').update(JSON.stringify(domain)).digest('hex');
-  const stable = {
-    ...(activation.kind === 'legacy-adopt'
-      ? { kind: 'codex-legacy-adoption', authorityId }
-      : { kind: 'codex-legacy-continuation', preparationAuthorityId: authorityId, bindingKey: activation.bindingKey }),
-    childAgentId: consumed.executorAgentId,
-    childAgentType: 'zcode-rescue',
-    authorizingParentTurnId: consumed.turnId,
-    authorizingParentGenerationId: input.authorizingParentGenerationId,
-    authorizingPermissionMode: consumed.permissionMode,
-    originWorkspace: input.originWorkspace,
-    executionWorkspace: input.executionWorkspace,
-    agentPathDigest: activation.agentPathDigest,
-  };
-  const authority = Object.freeze(stable);
-  brandedLegacyChildAuthorities.set(authority, Object.freeze({ authority, parentSessionId: consumed.sessionId }));
-  issuedLegacyChildAuthorities.set(/** @type {object} */ (receipt), authority);
-  return authority;
+  void receipt; void input; throw invalidPreparation();
 }
 
 /** Read one authority only if it retains the exact factory-issued object identity. @param {unknown} value */
 export function readConsumedLegacyChildAuthority(value) {
-  return readConsumedLegacyChildAuthorityContext(value).authority;
+  void value; throw invalidPreparation();
 }
 
-/** Read the private parent session retained outside the persisted authority schema. @param {unknown} value */
+/** Read the private parent session retained outside the persisted authority schema. @param {unknown} value @returns {any} */
 export function readConsumedLegacyChildAuthorityContext(value) {
-  let context;
-  try { context = brandedLegacyChildAuthorities.get(/** @type {object} */ (value)); }
-  catch { throw invalidPreparation(); }
-  if (context === undefined) throw invalidPreparation();
-  return context;
+  void value; throw invalidPreparation();
 }
 
 /** Consume one issued authority exactly once before any StateStore publication. @param {unknown} value */
 export function consumeConsumedLegacyChildAuthority(value) {
-  return consumeConsumedLegacyChildAuthorityContext(value).authority;
+  void value; throw invalidPreparation();
 }
 
 /** Consume one private branded context exactly once. @param {unknown} value */
 export function consumeConsumedLegacyChildAuthorityContext(value) {
-  const context = readConsumedLegacyChildAuthorityContext(value);
-  if (consumedLegacyChildAuthorities.has(context.authority)) throw invalidPreparation();
-  consumedLegacyChildAuthorities.add(context.authority);
-  return context;
+  void value; throw invalidPreparation();
 }
 
 /** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
@@ -219,29 +175,43 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           if (occupied) {
             const current = await readPreparedRecord(storage, path, key, false);
             const kind = recordKind(current);
-            const boundResume = envelope.source === 'proactive'
-              && envelope.options.resume === 'resume'
-              && current.sessionId === input.sessionId
+            const sameConsumedTurn = current.sessionId === input.sessionId
               && current.turnId === input.turnId
               && current.workspace === storage.workspacePath
               && current.permissionMode === input.permissionMode
               && current.consumedAt !== null
               && safeIdentifier(current.executorAgentId)
               && createdAt >= Date.parse(current.consumedAt);
-            if (!boundResume) throw preparationError(
+            const boundResume = envelope.source === 'proactive'
+              && envelope.options.resume === 'resume'
+              && kind !== 'pending-fresh'
+              && sameConsumedTurn;
+            const freshReplan = envelope.options.resume === 'fresh'
+              && kind === 'pending-fresh'
+              && exactPendingFreshEnvelope(current.envelope, envelope)
+              && sameConsumedTurn;
+            if (!boundResume && !freshReplan) throw preparationError(
               'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
             );
-            generation = kind === 'legacy' ? 2 : current.generation + 1;
-            if (!Number.isSafeInteger(generation)) throw invalidPreparation();
-            requiredExecutorAgentId = current.executorAgentId;
-            if (input.activation !== undefined) {
+            if (freshReplan) {
+              if (input.activation === undefined) throw invalidPreparation();
               activation = validateActivation(input.activation);
-              const legacyActivation = /** @type {any} */ (activation);
-              if (activation.kind === 'legacy-bound') {
-                if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
-              } else {
-                if (activation.kind === 'legacy-adopt') throw invalidPreparation();
-                activation = null;
+              if (activation.kind !== 'spawn') throw invalidPreparation();
+            } else {
+              generation = kind === 'legacy' ? 2 : current.generation + 1;
+              if (!Number.isSafeInteger(generation)) throw invalidPreparation();
+              requiredExecutorAgentId = current.executorAgentId;
+              if (input.activation !== undefined) {
+                activation = validateActivation(input.activation);
+                const legacyActivation = /** @type {any} */ (activation);
+                if (activation.kind === 'legacy-bound') {
+                  if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+                } else if (activation.kind === 'reactivate' && exactReactivateActivation(activation)) {
+                  if ((/** @type {any} */ (activation)).executorAgentId !== requiredExecutorAgentId) throw invalidPreparation();
+                } else {
+                  if (activation.kind === 'legacy-adopt') throw invalidPreparation();
+                  activation = null;
+                }
               }
             }
           } else {
@@ -267,6 +237,9 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             permissionMode: input.permissionMode,
             source: envelope.source,
             envelope,
+            ...(recordVersion === 2 && input.pendingFreshProvenance !== undefined
+              ? { pendingFreshProvenance: { ...input.pendingFreshProvenance } }
+              : {}),
             ...(recordVersion === RESCUE_PREPARATION_RECORD_VERSION ? { activation } : {}),
             generation,
             requiredExecutorAgentId,
@@ -315,13 +288,13 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.',
           );
         }
-        if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)
-          && input.beforeLegacyConsume !== undefined) await input.beforeLegacyConsume();
+        if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) throw invalidPreparation();
         const consumedAt = timestamp(input.now);
         if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
         if (consumedAt >= Date.parse(record.expiresAt)) throw preparationError(
           'RESCUE_PREPARATION_EXPIRED', 'The Rescue preparation has expired.',
         );
+        if (input.beforeConsume !== undefined) await input.beforeConsume(cloneRecord(record));
         const consumed = {
           ...record,
           envelope: validateRescuePreparation(record.envelope),
@@ -329,15 +302,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           executorAgentId: input.executorAgentId,
         };
         await atomicWriteJson(path, consumed, { privateRoot: storage.privateRoot });
-        let receipt = cloneRecord(consumed);
-        if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) {
-          const domain = record.activation.kind === 'legacy-adopt'
-            ? ['rescue-legacy-adoption-authority-v1', consumed.key, consumed.executorAgentId, consumed.generation, consumed.createdAt]
-            : ['rescue-legacy-bound-authority-v1', consumed.key, consumed.executorAgentId, consumed.generation, consumed.createdAt, record.activation.bindingKey];
-          receipt = freezeLegacyReceipt(receipt);
-          consumedLegacyActivationAuthorities.set(receipt, Object.freeze(domain));
-        }
-        return receipt;
+        return cloneRecord(consumed);
       });
     },
 
@@ -527,6 +492,8 @@ function validRecord(record, key, workspace) {
     && Date.parse(record.consumedAt) < Date.parse(record.expiresAt)
     && (kind === 'legacy' || record.requiredExecutorAgentId === null
       || record.executorAgentId === record.requiredExecutorAgentId)
+    && (kind !== 'pending-fresh'
+      || record.executorAgentId === record.pendingFreshProvenance.executorAgentId)
     && (kind !== 'current' || record.activation === null
       || record.activation.kind === 'reactivate' && record.executorAgentId === record.activation.executorAgentId
       || ['legacy-adopt', 'legacy-bound'].includes(record.activation.kind)
@@ -534,14 +501,16 @@ function validRecord(record, key, workspace) {
       || !['reactivate', 'legacy-adopt', 'legacy-bound'].includes(record.activation.kind));
 }
 
-/** @param {any} record @returns {'legacy'|'v2'|'current'|null} */
+/** @param {any} record @returns {'legacy'|'v2'|'pending-fresh'|'current'|null} */
 function recordKind(record) {
   if (!plain(record)) return null;
   if (record.version === RESCUE_PREPARATION_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
   if (record.version === 2) {
-    if (!sameKeys(record, V2_RECORD_KEYS)
-      || !validGenerationBinding(record)) return null;
-    return 'v2';
+    if (!validGenerationBinding(record)) return null;
+    if (sameKeys(record, V2_RECORD_KEYS)) return 'v2';
+    if (sameKeys(record, PENDING_FRESH_V2_RECORD_KEYS)
+      && validPendingFreshProvenance(record.pendingFreshProvenance, record.turnId)) return 'pending-fresh';
+    return null;
   }
   if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V3_RECORD_KEYS)
     || !validActivationForGeneration(record)) return null;
@@ -561,8 +530,9 @@ function validActivationForGeneration(record) {
   }
   return record.requiredExecutorAgentId !== null
     && (record.activation === null || validActivation(record.activation)
-      && record.activation.kind === 'legacy-bound'
-      && record.activation.childThreadId === record.requiredExecutorAgentId);
+      && (record.activation.kind === 'legacy-bound' && record.activation.childThreadId === record.requiredExecutorAgentId
+        || record.activation.kind === 'reactivate' && exactReactivateActivation(record.activation)
+        && record.activation.executorAgentId === record.requiredExecutorAgentId));
 }
 
 /** @param {any} record */
@@ -574,12 +544,34 @@ function validGenerationBinding(record) {
       : record.requiredExecutorAgentId !== null);
 }
 
+/** @param {unknown} value @param {string} turnId */
+function validPendingFreshProvenance(value, turnId) {
+  return plain(value) && sameKeys(value, PENDING_FRESH_PROVENANCE_KEYS)
+    && safeIdentifier(value.executorAgentId) && nonempty(value.originatingTurnId)
+    && value.originatingTurnId !== turnId;
+}
+
+/** @param {any} original @param {any} replanned */
+function exactPendingFreshEnvelope(original, replanned) {
+  if (original.version !== replanned.version || original.source !== replanned.source
+    || original.task !== replanned.task || original.options.resume !== undefined
+    || replanned.options.resume !== 'fresh') return false;
+  const originalKeys = Object.keys(original.options);
+  const replannedKeys = Object.keys(replanned.options);
+  return replannedKeys.length === originalKeys.length + 1
+    && originalKeys.every((key) => Object.hasOwn(replanned.options, key)
+      && replanned.options[key] === original.options[key]);
+}
+
 /** @param {any} input */
 function validateSaveInput(input) {
   if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId)
     || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode)
     || typeof input.recordedPrompt !== 'string' || Buffer.byteLength(input.recordedPrompt) > RESCUE_TASK_MAX_BYTES
-    || input.signal !== undefined && !(input.signal instanceof AbortSignal)) {
+    || input.signal !== undefined && !(input.signal instanceof AbortSignal)
+    || input.pendingFreshProvenance !== undefined
+      && (input.activation !== undefined
+        || !validPendingFreshProvenance(input.pendingFreshProvenance, input.turnId))) {
     throw invalidPreparation();
   }
   timestamp(input.now);
@@ -589,7 +581,8 @@ function validateSaveInput(input) {
 function validateConsumeInput(input) {
   validateTurnInput(input);
   if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)
-    || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function') {
+    || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function'
+    || input.beforeConsume !== undefined && typeof input.beforeConsume !== 'function') {
     throw invalidPreparation();
   }
   timestamp(input.now);
@@ -599,13 +592,12 @@ function validateConsumeInput(input) {
 function validateActivation(value) {
   if (!validActivation(value)) throw invalidPreparation();
   const activation = /** @type {any} */ (value);
+  if (['legacy-adopt', 'legacy-bound'].includes(activation.kind)) throw invalidPreparation();
   if (activation.kind === 'spawn') return {
     kind: activation.kind, taskName: activation.taskName, agentPathDigest: activation.agentPathDigest,
   };
-  if (activation.kind === 'reactivate') return {
-      kind: activation.kind,
-      executorAgentId: activation.executorAgentId,
-      agentPathDigest: activation.agentPathDigest,
+  if (activation.kind === 'reactivate') return canonicalExactReactivateActivation(activation) ?? {
+    kind: activation.kind, executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest,
   };
   return {
     kind: activation.kind,
@@ -622,7 +614,9 @@ function validActivation(value) {
     return sameKeys(value, SPAWN_ACTIVATION_KEYS) && safeIdentifier(value.taskName);
   }
   if (value.kind === 'reactivate') {
-    return sameKeys(value, REACTIVATE_ACTIVATION_KEYS) && safeIdentifier(value.executorAgentId);
+    return (sameKeys(value, REACTIVATE_ACTIVATION_KEYS) || sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS))
+      && safeIdentifier(value.executorAgentId) && (!sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS)
+        || exactReactivateActivation(value));
   }
   if (value.kind === 'legacy-adopt') {
     return sameKeys(value, LEGACY_ADOPT_ACTIVATION_KEYS) && safeIdentifier(value.childThreadId);
@@ -632,6 +626,23 @@ function validActivation(value) {
       && /^[a-f0-9]{64}$/u.test(value.bindingKey);
   }
   return false;
+}
+
+/** @param {any} value */
+function exactReactivateActivation(value) {
+  return canonicalExactReactivateActivation(value) !== null;
+}
+
+/** @param {any} value */
+export function canonicalExactReactivateActivation(value) {
+  return plain(value) && sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS)
+    && value.kind === 'reactivate' && safeIdentifier(value.executorAgentId) && /^[a-f0-9]{64}$/u.test(value.agentPathDigest)
+    && [value.bindingKey, value.operationId, value.anchorJobId, value.currentJobId].every((item) => /^[a-f0-9]{64}$/u.test(item))
+    && validDate(value.bindingUpdatedAt) && safeIdentifier(value.zcodeSessionId)
+    ? { kind: value.kind, executorAgentId: value.executorAgentId, agentPathDigest: value.agentPathDigest,
+        bindingKey: value.bindingKey, operationId: value.operationId, anchorJobId: value.anchorJobId,
+        currentJobId: value.currentJobId, bindingUpdatedAt: value.bindingUpdatedAt, zcodeSessionId: value.zcodeSessionId }
+    : null;
 }
 
 /** @param {any} activation @param {unknown} proof @param {string} executorAgentId */
@@ -801,14 +812,6 @@ function cloneRecord(record) {
   };
 }
 
-/** @param {any} receipt */
-function freezeLegacyReceipt(receipt) {
-  Object.freeze(receipt.envelope.options);
-  Object.freeze(receipt.envelope);
-  Object.freeze(receipt.activation);
-  return Object.freeze(receipt);
-}
-
 /** @param {string} path */
 async function exists(path) {
   try { await lstat(path); return true; } catch (error) {
@@ -829,15 +832,6 @@ function safeIdentifier(value, maximumBytes = 512) {
       const code = /** @type {number} */ (character.codePointAt(0));
       return code <= 31 || code === 127;
     });
-}
-
-/** @param {unknown} value */
-function digest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
-
-/** @param {unknown} value */
-function canonicalWorkspace(value) {
-  return typeof value === 'string' && isAbsolute(value) && normalize(value) === value
-    && Buffer.byteLength(value) <= 4096 && !/[\0\r\n]/u.test(value);
 }
 
 /** @param {unknown} value */

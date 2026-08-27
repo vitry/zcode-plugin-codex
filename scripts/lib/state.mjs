@@ -14,8 +14,6 @@ import {
 } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
-import { consumePendingLegacyChildAuthorityContext, readPendingLegacyChildAuthorityContext } from './invocation.mjs';
-import { consumeConsumedLegacyChildAuthorityContext, readConsumedLegacyChildAuthorityContext } from './rescue-preparation.mjs';
 import {
   closeRescueBinding,
   createRescueBindingAuthority,
@@ -24,7 +22,6 @@ import {
   readRescueBindingAuthorityFile,
   readRescueBindingPartitionFile,
   rescueBindingAuthorityView,
-  rescueBindingFreshSuperseded,
   rescueBindingKey,
   rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
@@ -134,7 +131,34 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, () => resolveBindingForResumeLocked(storage, bindingIdentity(input, storage.workspacePath), input.migrationProof));
     },
 
-    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,childAgentType:string,originWorkspace:string,executionWorkspace:string,agentPathDigest?:string,agentPath?:string}} input */
+    /** Revalidate the reserved exact continuation immediately before session/resume. @param {any} input */
+    async validateReservedRescueContinuation(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId)
+        || !isDigest(input.jobId) || !isDigest(input.candidateJobId) || !isSafeIdentifier(input.resumeSessionId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const job = await readExactBindingJob(storage, input.jobId);
+        if (job.ownerSessionId !== input.parentSessionId || job.workspace !== storage.workspacePath
+          || job.command !== 'rescue' || job.status !== 'queued') throw invalidRescueBinding();
+        const prior = job.rescueContinuationOrigin?.priorBinding ?? job.rescueMigrationRollback?.priorBinding;
+        if (!prior) throw invalidRescueBinding();
+        const expected = validateRescueBinding(prior);
+        const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
+        const binding = snapshot.records.get(expected.key) ?? null;
+        const reservedBinding = job.rescueExecutionClaim?.binding;
+        if (!binding || binding.state !== 'active' || binding.operationId !== expected.operationId
+          || binding.anchorJobId !== expected.anchorJobId || binding.currentJobId !== job.id
+          || binding.permissionMode !== job.permissionSnapshot.permissionMode || binding.workspace !== storage.workspacePath
+          || input.candidateJobId !== expected.anchorJobId || !reservedBinding
+          || !sameExactBinding(binding, reservedBinding)) throw staleRescueBinding();
+        const anchor = await readExactBindingJob(storage, expected.anchorJobId);
+        validateAnchorJob(anchor, input.parentSessionId, storage.workspacePath);
+        if (anchor.zcodeSessionId !== input.resumeSessionId) throw staleRescueBinding();
+        return { resumeSessionId: input.resumeSessionId };
+      });
+    },
+
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,childAgentType:string,originWorkspace:string,executionWorkspace:string,permissionMode?:string,agentPathDigest?:string,agentPath?:string}} input */
     async readRescueBindingMigrationProof(input) {
       validateBindingMigrationLookup(input);
       const storage = await jobStorage(dataRoot, input.workspace);
@@ -142,15 +166,36 @@ export function createStateStore(options) {
         const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
         const binding = snapshot.records.get(rescueBindingKey(input)) ?? null;
         if (binding === null) return { kind: 'missing' };
+        if (binding.state === 'active') {
+          const resolved = await resolveBindingJobsLocked(storage, binding);
+          validateAnchorJob(resolved.currentJob, binding.parentSessionId, storage.workspacePath);
+        } else if (binding.closeReason === 'session-ended') {
+          await resolveMigrationBindingJobsLocked(storage, binding);
+        } else {
+          const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
+          const currentJob = binding.currentJobId === binding.anchorJobId ? anchorJob : await readExactBindingJob(storage, binding.currentJobId);
+          if ([anchorJob, currentJob].some((job) => job.ownerSessionId !== binding.parentSessionId || job.workspace !== storage.workspacePath
+            || job.command !== 'rescue' || !TERMINAL_STATUSES.has(job.status)
+            || (job.status === 'succeeded' || job.startedAt !== undefined) && !isSafeIdentifier(job.zcodeSessionId))) throw invalidRescueBinding();
+          const anchorSessionId = isSafeIdentifier(anchorJob.zcodeSessionId) ? anchorJob.zcodeSessionId : null;
+          const currentSessionId = isSafeIdentifier(currentJob.zcodeSessionId) ? currentJob.zcodeSessionId : null;
+          if (anchorSessionId !== currentSessionId) throw invalidRescueBinding();
+        }
         const authority = rescueBindingAuthorityView(binding);
+        const nonmatching = input.permissionMode !== undefined && binding.permissionMode !== input.permissionMode
+          || authority.childAgentType !== input.childAgentType
+          || authority.kind === 'codex-legacy-adoption' && (authority.originWorkspace !== input.originWorkspace
+            || authority.executionWorkspace !== input.executionWorkspace || authority.agentPathDigest !== input.agentPathDigest)
+          || authority.kind === 'subagent-start' && authority.agentPath !== undefined && authority.agentPath !== input.agentPath;
+        if (nonmatching) return { kind: 'ineligible' };
         if (binding.state === 'active') return { kind: 'bound' };
-        if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
+        if (binding.closeReason !== 'session-ended') return { kind: 'ineligible' };
+        if (![1, 2].includes(binding.version)) throw invalidRescueBinding();
         const migrationProof = migrationProofForBinding(binding, input);
         if (migrationProof.childAgentId !== input.executorAgentId || migrationProof.childAgentType !== input.childAgentType
           || migrationProof.originWorkspace !== input.originWorkspace || migrationProof.executionWorkspace !== input.executionWorkspace
           || authority.kind === 'codex-legacy-adoption' && migrationProof.agentPathDigest !== input.agentPathDigest
-          || authority.kind === 'subagent-start' && migrationProof.agentPath !== input.agentPath) throw invalidRescueBinding();
-        await resolveBindingJobsLocked(storage, binding);
+          || authority.kind === 'subagent-start' && migrationProof.agentPath !== input.agentPath) return { kind: 'ineligible' };
         return { kind: 'proof', migrationProof };
       });
     },
@@ -168,6 +213,36 @@ export function createStateStore(options) {
       });
     },
 
+    /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
+     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any}} input */
+    async revalidateBoundRescueStop(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isDigest(input.jobId)
+        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(input.status)
+        || input.zcodeSessionId !== undefined && !isSafeIdentifier(input.zcodeSessionId)
+        || input.status !== 'queued' && input.zcodeSessionId === undefined
+        || input.workerLeaseId !== undefined && !isDigest(input.workerLeaseId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const job = await readExactBindingJob(storage, input.jobId);
+        const sameTarget = job.id === input.jobId && job.ownerSessionId === input.ownerSessionId
+          && job.command === 'rescue' && job.readOnly === false && job.rescueReservationKind === 'bound'
+          && job.status === input.status && (job.status === 'queued' ? job.zcodeSessionId === undefined : job.zcodeSessionId === input.zcodeSessionId)
+          && job.workerLeaseId === input.workerLeaseId;
+        if (!sameTarget) return { kind: 'stale', job: structuredClone(job) };
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
+        if (matches.length !== 1 || matches[0].state !== 'active') return { kind: 'stale', job: structuredClone(job) };
+        const binding = matches[0]; const guard = {
+          operationId: binding.operationId, bindingKey: binding.key, bindingUpdatedAt: binding.updatedAt,
+          currentJobId: binding.currentJobId, workerLeaseId: job.workerLeaseId ?? null,
+        };
+        if (input.expected !== undefined && (!isPlainJsonObject(input.expected)
+          || Object.keys(input.expected).sort().join(',') !== 'bindingKey,bindingUpdatedAt,currentJobId,operationId,workerLeaseId'
+          || JSON.stringify(input.expected) !== JSON.stringify(guard))) return { kind: 'stale', job: structuredClone(job) };
+        return { kind: 'current', job: structuredClone(job), guard };
+      });
+    },
+
     /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveFreshRescueJob(input) {
       validateRescueReservationInput(input);
@@ -182,14 +257,14 @@ export function createStateStore(options) {
         if (input.expectedOperationId !== undefined
           && (!(readOnlyPrevious?.state === 'active' || readOnlyPrevious?.state === 'closed' && readOnlyPrevious.closeReason === 'session-ended') || readOnlyPrevious.operationId !== input.expectedOperationId
             || readOnlyPrevious.anchorJobId !== input.expectedAnchorJobId || readOnlyPrevious.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
+        if (readOnlyPrevious !== null) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const job = makeReservedJob(storage, jobs, input.reservation, 'bound');
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
-          superseded: readOnlyPrevious && (readOnlyPrevious.state === 'active' || readOnlyPrevious.closeReason === 'session-ended') ? rescueBindingFreshSuperseded(readOnlyPrevious, createdAt)
-            : readOnlyPrevious?.version === 3 ? readOnlyPrevious.superseded : [] });
+          superseded: [] });
         const closedGcCutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
         const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, binding.key, closedGcCutoff);
         const plannedAfterSnapshot = bindingSnapshotWith(plannedBeforeSnapshot, binding);
@@ -206,7 +281,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,migrationProof?:RescueMigrationProof}} input */
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof}} input */
     async reserveBoundRescueContinuation(input) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
@@ -223,7 +298,11 @@ export function createStateStore(options) {
         }, input.migrationProof);
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId
           || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
-          || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
+          || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId
+          || input.expectedBindingKey !== undefined && resolved.binding.key !== input.expectedBindingKey
+          || input.expectedBindingUpdatedAt !== undefined && resolved.binding.updatedAt !== input.expectedBindingUpdatedAt
+          || input.expectedResumeSessionId !== undefined && resolved.anchorJob.zcodeSessionId !== input.expectedResumeSessionId
+          || input.expectedResumeSessionId !== undefined && resolved.currentJob.zcodeSessionId !== input.expectedResumeSessionId) throw staleRescueBinding();
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
@@ -399,50 +478,7 @@ export function createStateStore(options) {
 
     /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,candidateJobId:string}} input */
     async adoptRescueCandidate(input) {
-      validateRescueReservationInput(input);
-      if (!isDigest(input.candidateJobId)) throw invalidRescueBinding();
-      const storage = await jobStorage(dataRoot, input.workspace);
-      return withFileLock(storage.lockPath, async () => {
-        const lockIdentity = await captureStateLockIdentity(storage);
-        const permissionMode = /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode;
-        const preview = reservationBindingContext(input, storage.workspacePath, permissionMode);
-        if (!['hook', 'adoption'].includes(preview.kind)) throw invalidRescueBinding();
-        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
-        const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
-        validateAnchorJob(anchorJob, preview.identity.parentSessionId, storage.workspacePath);
-        const readOnlySnapshot = await readBindingPartitionSnapshot(storage, preview.identity.parentSessionId, true, true);
-        if (readOnlySnapshot.records.has(rescueBindingKey(preview.identity))) throw invalidRescueBinding();
-        const previewAuthority = authorityForReservation(preview, null, input.reservation, storage.workspacePath, false);
-        const previewBase = createRescueBinding({ ...preview.identity, childAuthority: previewAuthority,
-          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex'), superseded: [] });
-        const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, previewBase.key, Date.now() - RESCUE_BINDING_CLOSED_GC_MS);
-        ensureProspectiveBindingCapacity(storage, preview.identity.parentSessionId,
-          bindingSnapshotWith(plannedBeforeSnapshot, previewBase), bindingPartitionMaxBytes);
-        const context = reservationBindingContext(input, storage.workspacePath, permissionMode, true);
-        const childAuthority = authorityForReservation(context, null, input.reservation, storage.workspacePath, false);
-        if (JSON.stringify(context.identity) !== JSON.stringify(preview.identity)
-          || JSON.stringify(childAuthority) !== JSON.stringify(previewAuthority)) throw invalidRescueBinding();
-        const exactIdentity = context.identity; await ensureOwnerIndex(storage, jobs);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound');
-        const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
-        if (existing !== null) throw invalidRescueBinding();
-        const base = createRescueBinding({ ...exactIdentity, childAuthority,
-          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex'), superseded: [] });
-        const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
-        ensureProspectiveBindingCapacity(storage, base.parentSessionId, baseSnapshot, bindingPartitionMaxBytes);
-        await publicationCheckpoint(publicationHook, 'adopt:base-binding');
-        await writeBindingPartitionGuarded(storage, base.parentSessionId, beforeSnapshot, baseSnapshot, lockIdentity);
-        const binding = validateRescueBinding({ ...base, currentJobId: reservedJob.id, updatedAt: new Date(Math.max(Date.now(), Date.parse(base.updatedAt))).toISOString() });
-        const job = { ...reservedJob, rescueContinuationOrigin: {
-          kind: 'legacy-adoption', priorBinding: structuredClone(base), binding: structuredClone(binding),
-        } };
-        await publishJobRecord(storage, job, { lockIdentity, expectedSnapshot: baseSnapshot, publicationHook, route: 'adopt', parentSessionId: base.parentSessionId });
-        const afterSnapshot = bindingSnapshotWith(baseSnapshot, binding);
-        await publicationCheckpoint(publicationHook, 'adopt:current-advance');
-        await writeBindingPartitionGuarded(storage, binding.parentSessionId, baseSnapshot, afterSnapshot, lockIdentity);
-        await publicationCheckpoint(publicationHook, 'adopt:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
-        return { job, binding, anchorJob };
-      });
+      void input; throw invalidRescueBinding();
     },
 
     /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,operationId:string,reason:'session-ended'|'invalidated'|'cancel'}} input */
@@ -1022,18 +1058,19 @@ async function resolveBindingForResumeLocked(storage, expected, migrationProof) 
   }
   if (binding === null) return { kind: 'missing' };
   if (migrationProof !== undefined && binding.state === 'active') throw staleRescueBinding();
+  if (migrationProof !== undefined && ![1, 2].includes(binding.version)) throw invalidRescueBinding();
   if (migrationProof !== undefined) validateMigrationProofForBinding(binding, expected, migrationProof);
   if (binding.state !== 'active') {
     if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
     validateMigrationProofForBinding(binding, expected, migrationProof);
-    return resolveBindingJobsLocked(storage, binding);
+    return resolveMigrationBindingJobsLocked(storage, binding);
   }
   return await resolveBindingJobsLocked(storage, binding);
 }
 
 /** @param {any} binding @param {{agentPath?:string}|undefined} proof @param {string} currentJobId @param {string} updatedAt */
 function migratedActiveBinding(binding, proof, currentJobId, updatedAt) {
-  if (binding.version === 3) return validateRescueBinding({ ...binding, state: 'active', currentJobId, updatedAt, closedAt: null, closeReason: null });
+  if (![1, 2].includes(binding.version) || binding.state !== 'closed' || binding.closeReason !== 'session-ended') throw invalidRescueBinding();
   const authority = rescueBindingAuthorityView(binding);
   const childAuthority = authority.kind === 'subagent-start'
     ? { ...authority, agentPath: proof?.agentPath }
@@ -1491,6 +1528,18 @@ async function resolveBindingJobsLocked(storage, binding) {
   return { kind: 'bound', operationId: binding.operationId, anchorJob: structuredClone(anchorJob), currentJob: structuredClone(currentJob), binding: { ...binding } };
 }
 
+/** A migration candidate has no writable current attempt and retains one original non-empty session. @param {any} storage @param {any} binding */
+async function resolveMigrationBindingJobsLocked(storage, binding) {
+  if (![1, 2].includes(binding.version) || binding.state !== 'closed' || binding.closeReason !== 'session-ended') throw invalidRescueBinding();
+  const resolved = await resolveBindingJobsLocked(storage, binding);
+  const { anchorJob, currentJob } = resolved;
+  if (!isSafeIdentifier(anchorJob.zcodeSessionId) || !isSafeIdentifier(currentJob.zcodeSessionId)
+    || anchorJob.zcodeSessionId !== currentJob.zcodeSessionId
+    || !TERMINAL_STATUSES.has(anchorJob.status) || anchorJob.status === 'cancelled'
+    || !TERMINAL_STATUSES.has(currentJob.status) || currentJob.status === 'cancelled') throw invalidRescueBinding();
+  return resolved;
+}
+
 /** @param {any} binding @param {any} expected @param {RescueMigrationProof|undefined} proof */
 function validateMigrationProofForBinding(binding, expected, proof) {
   if (!isPlainJsonObject(proof) || proof.parentSessionId !== expected.parentSessionId
@@ -1612,15 +1661,12 @@ async function prepareBindingSlot(storage, identity, lockIdentity, options = {})
   return { record: null, snapshot };
 }
 
-const LEGACY_CONTINUATION_KEYS = Object.freeze([
-  'agentPathDigest', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
-  'bindingKey', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace', 'preparationAuthorityId',
-]);
-
 /** @param {any} input @param {string} workspace @param {string} permissionMode @param {boolean} [consumeAuthority] */
 function reservationBindingContext(input, workspace, permissionMode, consumeAuthority = false) {
   const hasExecutor = input?.executor !== undefined; const hasAuthority = input?.authority !== undefined;
   if (hasExecutor === hasAuthority) throw invalidRescueBinding();
+  if (hasAuthority) throw invalidRescueBinding();
+  void consumeAuthority;
   if (hasExecutor) {
     if (!isPlainJsonObject(input.executor)) throw invalidRescueBinding();
     validateExecutorBindingInput(input.executor);
@@ -1638,68 +1684,24 @@ function reservationBindingContext(input, workspace, permissionMode, consumeAuth
       ...(childAuthority.agentPath === undefined ? {} : { executorAgentPath: childAuthority.agentPath }),
     } };
   }
-  if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
-  let trustedContext;
-  try { trustedContext = consumeAuthority
-    ? consumeConsumedLegacyChildAuthorityContext(input.authority) : readConsumedLegacyChildAuthorityContext(input.authority); }
-  catch {
-    try { trustedContext = consumeAuthority
-      ? consumePendingLegacyChildAuthorityContext(input.authority) : readPendingLegacyChildAuthorityContext(input.authority); }
-    catch { throw invalidRescueBinding(); }
-  }
-  if (trustedContext.parentSessionId !== input.reservation.ownerSessionId) throw invalidRescueBinding();
-  const trustedAuthority = trustedContext.authority;
-  if (trustedAuthority.kind === 'codex-legacy-adoption') {
-    const childAuthority = validateRescueBindingChildAuthority(trustedAuthority, workspace);
-    return { kind: 'adoption', childAuthority, identity: {
-      parentSessionId: trustedContext.parentSessionId, executorAgentId: childAuthority.childAgentId, workspace, permissionMode,
-    } };
-  }
-  const authority = trustedAuthority;
-  if (authority.kind !== 'codex-legacy-continuation'
-    || Object.keys(authority).sort().join('\0') !== [...LEGACY_CONTINUATION_KEYS].sort().join('\0')
-    || !isDigest(authority.preparationAuthorityId) || !isDigest(authority.bindingKey)
-    || !isNonEmptyString(authority.childAgentId) || authority.childAgentType !== 'zcode-rescue'
-    || !isNonEmptyString(authority.authorizingParentTurnId) || !isDigest(authority.authorizingParentGenerationId)
-    || !PERMISSION_MODES.includes(authority.authorizingPermissionMode)
-    || !isNonEmptyString(authority.originWorkspace) || authority.executionWorkspace !== workspace
-    || !isDigest(authority.agentPathDigest)) throw invalidRescueBinding();
-  return { kind: 'continuation', authority: structuredClone(authority), identity: {
-    parentSessionId: trustedContext.parentSessionId, executorAgentId: authority.childAgentId, workspace, permissionMode,
-  } };
+  throw invalidRescueBinding();
 }
 
 /** @param {any} context @param {any} previous @param {any} reservation @param {string} workspace @param {boolean} allowPermissionReplacement */
 function authorityForReservation(context, previous, reservation, workspace, allowPermissionReplacement) {
-  if (context.kind === 'hook') {
-    if (previous === null) return context.childAuthority;
-    const durable = rescueBindingAuthorityView(previous);
-    if (durable.kind === 'codex-legacy-adoption') {
-      if (durable.childAgentId !== context.childAuthority.childAgentId
-        || durable.childAgentType !== context.childAuthority.childAgentType
-        || context.childAuthority.parentTurnId !== reservation.ownerTurnId
-        || context.childAuthority.parentPermissionMode !== reservation.permissionSnapshot.permissionMode) throw invalidRescueBinding();
-      return durable;
-    }
-    if (!sameHookAuthority(durable, context.childAuthority)) throw invalidRescueBinding();
-    return durable.agentPath === undefined ? context.childAuthority : durable;
-  }
-  if (context.kind === 'adoption') {
-    if (previous !== null || context.childAuthority.authorizingParentTurnId !== reservation.ownerTurnId
-      || context.childAuthority.authorizingPermissionMode !== reservation.permissionSnapshot.permissionMode
-      || context.childAuthority.executionWorkspace !== workspace) throw invalidRescueBinding();
-    return context.childAuthority;
-  }
-  if (previous === null || previous.state !== 'active' && !(allowPermissionReplacement && previous.state === 'closed' && previous.closeReason === 'session-ended')
-    || previous.key !== context.authority.bindingKey
-    || context.authority.authorizingParentTurnId !== reservation.ownerTurnId
-    || context.authority.authorizingPermissionMode !== reservation.permissionSnapshot.permissionMode
-    || !allowPermissionReplacement && previous.permissionMode !== context.authority.authorizingPermissionMode) throw invalidRescueBinding();
+  if (context.kind !== 'hook') throw invalidRescueBinding();
+  if (previous === null) return context.childAuthority;
   const durable = rescueBindingAuthorityView(previous);
-  if (durable.kind !== 'codex-legacy-adoption' || durable.childAgentId !== context.authority.childAgentId
-    || durable.childAgentType !== context.authority.childAgentType || durable.originWorkspace !== context.authority.originWorkspace
-    || durable.executionWorkspace !== context.authority.executionWorkspace || durable.agentPathDigest !== context.authority.agentPathDigest) throw invalidRescueBinding();
-  return durable;
+  if (durable.kind === 'codex-legacy-adoption') {
+    if (durable.childAgentId !== context.childAuthority.childAgentId
+      || durable.childAgentType !== context.childAuthority.childAgentType
+      || context.childAuthority.parentTurnId !== reservation.ownerTurnId
+      || context.childAuthority.parentPermissionMode !== reservation.permissionSnapshot.permissionMode) throw invalidRescueBinding();
+    return durable;
+  }
+  if (!sameHookAuthority(durable, context.childAuthority)) throw invalidRescueBinding();
+  void workspace; void allowPermissionReplacement;
+  return durable.agentPath === undefined ? context.childAuthority : durable;
 }
 
 /** @param {any} left @param {any} right */
@@ -1716,21 +1718,13 @@ function sameDirectoryIdentity(left, right) { return left.isDirectory() && right
 function validateRescueReservationInput(input) {
   if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isPlainJsonObject(input.reservation)) throw invalidRescueBinding();
   validateReservation(input.reservation);
-  const hasExecutor = input.executor !== undefined; const hasAuthority = input.authority !== undefined;
-  if (hasExecutor === hasAuthority) throw invalidRescueBinding();
-  if (hasExecutor) validateExecutorBindingInput(input.executor);
-  else if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
+  if (input.executor === undefined || input.authority !== undefined) throw invalidRescueBinding();
+  validateExecutorBindingInput(input.executor);
   if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
     || input.workspace !== input.reservation.workspace
-    || hasExecutor && (!['zcode-rescue', 'default'].includes(input.executor.agentType)
-      || input.workspace !== input.executor.workspace || input.reservation.ownerSessionId !== input.executor.parentSessionId)) throw invalidRescueBinding();
-  const context = reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
-  if (context.kind !== 'hook') {
-    const authority = context.kind === 'adoption' ? context.childAuthority : context.authority;
-    if (authority.authorizingParentTurnId !== input.reservation.ownerTurnId
-      || authority.authorizingPermissionMode !== input.reservation.permissionSnapshot.permissionMode
-      || authority.executionWorkspace !== input.workspace) throw invalidRescueBinding();
-  }
+    || !['zcode-rescue', 'default'].includes(input.executor.agentType)
+    || input.workspace !== input.executor.workspace || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
+  reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
 }
 
 /** Optional exact snapshot used only by a previously presented bound choice. @param {any} input */
@@ -1770,12 +1764,14 @@ function validateBindingMigrationProof(proof) {
 
 /** @param {any} input */
 function validateBindingMigrationLookup(input) {
+  const keys = Object.keys(input ?? {}).filter((key) => key !== 'permissionMode');
   if (!isPlainJsonObject(input) || ![
     ['agentPathDigest', 'childAgentType', 'executionWorkspace', 'executorAgentId', 'originWorkspace', 'parentSessionId', 'workspace'],
     ['agentPath', 'childAgentType', 'executionWorkspace', 'executorAgentId', 'originWorkspace', 'parentSessionId', 'workspace'],
     ['agentPath', 'agentPathDigest', 'childAgentType', 'executionWorkspace', 'executorAgentId', 'originWorkspace', 'parentSessionId', 'workspace'],
-  ].some((keys) => Object.keys(input).sort().join('\0') === keys.sort().join('\0'))
+  ].some((candidate) => keys.sort().join('\0') === candidate.sort().join('\0'))
     || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.executorAgentId) || !['zcode-rescue', 'default'].includes(input.childAgentType)
+    || input.permissionMode !== undefined && !PERMISSION_MODES.includes(input.permissionMode)
     || input.agentPathDigest !== undefined && !isDigest(input.agentPathDigest)
     || input.agentPath !== undefined && !validAgentPath(input.agentPath)
     || typeof input.workspace !== 'string' || typeof input.originWorkspace !== 'string'

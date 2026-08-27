@@ -141,7 +141,7 @@ function assertInstalledRescueQualificationSource(source) {
     'const proactivePeer =',
     'captureInstalledPreparedContinuationEvidence({',
     'qualifyCodexRescuePreparedContinuationEvidence(preparedCapture);',
-    "for (const choice of ['resume', 'fresh'])",
+    "for (const choice of ['resume'])",
   ], 'credentialed prepared continuation qualification');
   assert.doesNotMatch(installedQualification, /expected(?:TaskName|AgentPath)\s*:/u, 'installed qualification must not pin model-selected display identity');
   const foreground = exactSourceRegion(installedQualification,
@@ -588,25 +588,25 @@ test('synthetic captured qualification fixtures cover named and generic Codex 0.
   }
 });
 
-test('captured restored-child qualification reactivates the unloaded original path without collision or spawn', async (t) => {
+test('captured exact task_2 qualification resumes the notLoaded original path and session without fallback', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-e2e-restored-child-')); t.after(() => rm(temporary, { recursive: true, force: true }));
   const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
   await mkdir(originDirectory); await git(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
   await git(['add', 'fixture.txt'], originDirectory); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
   await git(['worktree', 'add', '-qb', 'e2e-restored-target', targetDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
-  const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task';
+  const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task_2';
   const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response: agent path collision diagnosed';
   for (const route of ['named', 'generic']) {
     const expected = { parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
-      originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
+      originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput, zcodeSessionId: 'exact-task-2-session' };
     const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
     const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 2, action: 'followup', target: agentPath, assignment: agentType };
     const childTurnId = `restored-${route}-child-turn-7`;
     const preparationEnvelope = { version: 1, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' } };
-    const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
+    const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task_2', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
     const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
       sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
       generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') },
@@ -638,13 +638,16 @@ test('captured restored-child qualification reactivates the unloaded original pa
         { ...installedToolCall(`invoke-${route}`, installedExecInput(`${launcherCommand} invoke-prepared rescue`, { workdir: originWorkspace })), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:00.900Z' },
         { ...installedToolOutput(`invoke-${route}`, { output: publicOutput, exit_code: 0 }), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:01.000Z' },
       ]),
-      fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: publicOutput } }]),
+      fakePeerJson: JSON.stringify([
+        { method: 'session/resume', params: { sessionId: 'exact-task-2-session', workspace: { workspacePath: executionWorkspace } } },
+        { method: 'session/send', params: { sessionId: 'exact-task-2-session', response: publicOutput } },
+      ]),
     });
     assert.equal(evidence.route, route); assert.equal(evidence.childThreadId, childThreadId); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0); assert.equal(evidence.collisionCount, 0);
   }
 });
 
-test('synthetic captured qualification fixtures keep proactive clear fresh and resume routes one-shot', async () => {
+test('synthetic captured qualification fixtures keep proactive fresh and resume routes one-shot on newly planned children', async () => {
   for (const resume of ['fresh', 'resume']) {
     const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
     for (const route of routes) {
@@ -690,10 +693,10 @@ test('synthetic captured qualification wiring mutations fail only the mutated fo
   }
 });
 
-test('synthetic captured qualification fixtures cover both named and generic choice segments', async () => {
+test('synthetic captured qualification fixtures cover named and generic exact-resume choice segments', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
-    for (const requested of ['resume', 'fresh']) {
+    for (const requested of ['resume']) {
       const choice = installedCapturedChoiceRoute(route, requested);
       const evidence = qualifyInstalledCapturedChoice(choice);
       assert.equal(evidence.progressRelayChecked, true);
@@ -1211,7 +1214,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(preparedEvidence.continuationSpawnCount, 0); assert.equal(preparedEvidence.peerResumeChecked, true);
   t.diagnostic(`qualified same-parent-turn Rescue continuation: ${preparedEvidence.route}/${preparedEvidence.childThreadId}`);
 
-  for (const choice of ['resume', 'fresh']) {
+  for (const choice of ['resume']) {
     await writeFile(zcodeRecord, '');
     const pendingSegment = await runHeldChoiceSegment(`${choice}-initial`, expectedCommand,
       (segmentEnv) => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, segmentEnv, 240_000));
@@ -2299,7 +2302,11 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: [binding] }))}\n`,
     preparationRecordBytesJson: JSON.stringify([
       `${JSON.stringify(installedContinuationPreparationRecord(parentSessionId, workspace, childThreadId, 'turn-original', 1, 'explicit', 'fresh', null))}\n`,
-      `${JSON.stringify(installedContinuationPreparationRecord(parentSessionId, workspace, childThreadId, 'turn-original', 2, 'proactive', 'resume', childThreadId))}\n`,
+      `${JSON.stringify(installedContinuationPreparationRecord(parentSessionId, workspace, childThreadId, 'turn-original', 2, 'proactive', 'resume', childThreadId, {
+        kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex'),
+        bindingKey: binding.key, operationId: binding.operationId, anchorJobId: binding.anchorJobId, currentJobId: preReservationBinding.currentJobId,
+        bindingUpdatedAt: preReservationBinding.updatedAt, zcodeSessionId: 'zcode-session-original',
+      }))}\n`,
     ]),
     jobRecordBytesJson: JSON.stringify([
       `${JSON.stringify(installedRawJob(anchorJobId, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original', updatedAt: '2026-08-10T00:00:05.000Z' }))}\n`,
@@ -2649,12 +2656,12 @@ function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, ext
     permissionSnapshot: { permissionMode: 'acceptEdits' }, status, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:01:00.000Z', ...extra };
 }
 function installedContinuationEnvelope(source, resume) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume } }; }
-function installedContinuationPreparationRecord(sessionId, workspace, executorAgentId, turnId, generation, source, resume, requiredExecutorAgentId) {
+function installedContinuationPreparationRecord(sessionId, workspace, executorAgentId, turnId, generation, source, resume, requiredExecutorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([sessionId, turnId, workspace, 'rescue'])).digest('hex');
   const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
   const expiresAt = generation === 1 ? '2026-08-10T00:30:00.600Z' : '2026-08-10T01:31:00.600Z';
   const consumedAt = generation === 1 ? '2026-08-10T00:00:03.000Z' : '2026-08-10T01:01:04.000Z';
-  const activation = generation === 1 ? { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex') } : null;
+  const activation = generation === 1 ? { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex') } : reactivation;
   return { version: 3, key, sessionId, turnId, workspace, permissionMode: 'acceptEdits', source, envelope: installedContinuationEnvelope(source, resume),
     generation, requiredExecutorAgentId, activation, createdAt, expiresAt, consumedAt, executorAgentId };
 }
