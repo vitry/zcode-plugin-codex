@@ -177,30 +177,46 @@ test('release docs publish exact private Rescue continuation without a public se
   const chinese = read('README.zh-CN.md');
   const security = read('SECURITY.md');
   const changelog = read('CHANGELOG.md');
+  const bindingAdr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
 
   assert.match(english, /`--resume` remains an argument-free public choice/i);
-  assert.match(english, /Root privately retains.{0,180}exact host child ID.{0,80}(?:agent )?path pair/is);
-  assert.match(english, /pair.{0,100}(?:selector|narrows selection).{0,100}(?:not authority|grants no authority)/is);
+  assert.match(english, /Root privately retains(?=[\s\S]{0,200}`task_name`)(?=[\s\S]{0,200}successful `spawn_agent`)(?=[\s\S]{0,260}canonical (?:agent )?path)/i);
+  assert.match(english, /private version-3 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(english, /plugin.{0,100}(?:discovers|resolves).{0,100}child ID.{0,100}(?:internally|inside)/is);
+  assert.match(english, /canonical path.{0,100}(?:selector|narrows selection).{0,100}(?:not authority|grants no authority)/is);
   assert.match(english, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:validate|validation)/is);
   assert.match(english, /targetless.{0,100}multiple usable bindings.{0,100}fail closed/is);
   assert.match(english, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous.{0,100}fail closed/is);
+  assert.match(english, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
 
   assert.match(chinese, /`--resume` 仍是无参数的公开选择/);
-  assert.match(chinese, /Root 私下保留.{0,180}精确 host child ID.{0,80}(?:agent )?path 对/is);
-  assert.match(chinese, /这对值.{0,100}(?:selector|收窄选择).{0,100}(?:不是 authority|不授予 authority)/is);
+  assert.match(chinese, /Root 私下保留(?=[\s\S]{0,200}`task_name`)(?=[\s\S]{0,200}成功 `spawn_agent`)(?=[\s\S]{0,260}canonical (?:agent )?path)/i);
+  assert.match(chinese, /private version-3 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(chinese, /插件(?=[\s\S]{0,180}(?:发现|解析))(?=[\s\S]{0,180}child ID)(?=[\s\S]{0,180}(?:内部|插件内))/i);
+  assert.match(chinese, /canonical path.{0,100}(?:selector|收窄选择).{0,100}(?:不是 authority|不授予 authority)/is);
   assert.match(chinese, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:验证|校验)/is);
   assert.match(chinese, /不带 target.{0,100}多个可用 binding.{0,100}fail closed/is);
   assert.match(chinese, /没有精确 private selector.{0,100}两个可用 binding.{0,100}歧义.{0,100}fail closed/is);
+  assert.match(chinese, /version 2.{0,120}child ID.{0,80}path 对.{0,120}读取兼容/is);
 
-  assert.match(security, /authorized private version-2 preparation frame/i);
-  assert.match(security, /original linked host lifecycle.{0,120}only exceptions/is);
+  assert.match(security, /authorized private version-3 preparation frame.{0,160}`[^`]*agentPath[^`]*`/is);
+  assert.match(security, /host child ID.{0,120}(?:discovered|resolved).{0,120}exact parent/is);
+  assert.match(security, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
   assert.match(security, /no additional propagation.{0,180}(?:argv|environment).{0,180}(?:status|result|ZCode)/is);
-  assert.match(security, /cross-paired.{0,80}(?:drift|changed).{0,100}fail closed/is);
+  assert.match(security, /path or identity drift.{0,100}fail closed/is);
   assert.match(security, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous/is);
 
-  assert.match(changelog, /multiple usable Rescue bindings.{0,160}exact child ID\/path pair/is);
+  assert.match(changelog, /multiple usable Rescue bindings.{0,180}canonical `task_name` path/is);
+  assert.match(changelog, /version-3.{0,100}`[^`]*agentPath[^`]*`.{0,160}child ID.{0,120}(?:internal|inside the plugin)/is);
   assert.match(changelog, /targetless.{0,100}ambiguous.{0,100}fail closed/is);
   assert.match(changelog, /one active writable Rescue.{0,100}canonical workspace.{0,100}unchanged/is);
+
+  assert.match(bindingAdr, /Root retains(?=[\s\S]{0,180}`task_name`)(?=[\s\S]{0,180}canonical)/i);
+  assert.match(bindingAdr, /Root neither receives nor supplies the host child ID/i);
+  assert.match(bindingAdr, /plugin.{0,160}obtains.{0,100}child ID internally/is);
+  assert.match(bindingAdr, /one canonical workspace admits at most one active writable Rescue/i);
+  assert.match(bindingAdr, /parallel Rescue throughput.{0,160}separate isolation and admission design/is);
+  assert.match(bindingAdr, /continuation fix neither authorizes nor implements that change/i);
 });
 
 test('future writable-concurrency ADR remains absent from real package and marketplace artifacts', { timeout: 360_000 }, async (t) => {
