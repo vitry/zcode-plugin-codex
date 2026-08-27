@@ -142,18 +142,21 @@ For an exact resume, Root:
 5. Executes only the route directive returned by the plugin.
 
 Before preparation, an explicit request with neither `--resume` nor `--fresh`
-is classified by the number of retained stopped operations that could match
-its semantics. With multiple retained stopped operations, Root asks exactly
-once before prepare, follow-up, or spawn. One answer simultaneously resolves
-both dimensions: either `fresh`, which uses `continuationTarget: null`, or
-`resume` plus one logical operation, which uses that operation's exact retained
-pair. Root does not ask a separate operation question and then a separate
-resume/fresh question. With exactly one retained stopped operation or one
-usable binding, the legacy targetless choice flow remains available: Root
-omits `resume`, sends `continuationTarget: null`, follows the plugin's unique
-route, and the selected child may return the same-child `needs-choice` result.
-This single-operation compatibility path cannot be used when multiple retained
-stopped operations would make targetless planning ambiguous.
+is classified by counting only retained stopped operations whose logical
+operations could match the complete request semantics. These are semantic
+candidates; unrelated retained operations do not count. Zero semantic
+candidates means `fresh` with `continuationTarget: null` and no clarification.
+With more than one semantic candidate, Root asks exactly once before prepare,
+follow-up, or spawn. One answer simultaneously resolves both dimensions:
+either `fresh`, which uses `continuationTarget: null`, or `resume` plus one
+logical operation, which uses that operation's exact retained pair. Root does
+not ask a separate operation question and then a separate resume/fresh
+question. With one semantic candidate or one usable binding, the legacy
+targetless choice flow remains available: Root omits `resume`, sends
+`continuationTarget: null`, follows the plugin's unique route, and the selected
+child may return the same-child `needs-choice` result. This single-operation
+compatibility path cannot be used when more than one semantic candidate would
+make targetless planning ambiguous.
 
 Root does not put the pair in commentary, the public Rescue command, launcher
 argv, child assignment, or a ZCode prompt. Root also does not manufacture or
@@ -237,9 +240,11 @@ semantics except where tests must recognize the new private envelope version.
    Reversing child order, timestamps, names, and suffixes does not change it.
 2. **Targetless compatibility:** the same two bindings without a target remain
    `RESCUE_CHILD_AMBIGUOUS`; one usable binding still resumes normally. Root
-   never sends that ambiguous multi-operation no-choice frame: it asks one
-   combined operation-and-resume/fresh question before preparation, while the
-   single-operation targetless same-child `needs-choice` flow remains intact.
+   never sends that ambiguous multi-operation no-choice frame: after filtering
+   retained operations by request semantics, zero candidates means fresh with
+   no question, one keeps the targetless same-child `needs-choice` flow, and
+   more than one asks one combined operation-and-resume/fresh question before
+   preparation.
 3. **Cross-pair and absence:** same ID/wrong path, same path/wrong ID, missing,
    unbound, unmanaged, revoked, and ineligible targets fail without fallback,
    mutation, preparation consumption, or ZCode RPC.

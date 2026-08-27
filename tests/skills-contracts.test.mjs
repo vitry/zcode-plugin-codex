@@ -313,15 +313,17 @@ test('new Rescue preparation frames carry only a private exact continuation targ
 test('routing precedence materializes only authoritative fresh or resume choices', () => {
   const source = skill('rescue');
   assert.match(source, /explicit `--fresh` or `--resume`[^\n]+authoritative/i);
-  assert.match(source, /explicit[\s\S]+no choice[\s\S]+multiple retained stopped operations[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+followup[\s\S]+spawn/i);
+  assert.match(source, /count[^\n]+retained stopped operations[^\n]+(?:could|that) match[^\n]+(?:request|complete request)[^\n]+semantics/i);
+  assert.match(source, /zero semantic candidates[\s\S]+fresh[\s\S]+(?:do not|without)[^\n]+ask/i);
+  assert.match(source, /one semantic candidate[\s\S]+targetless[\s\S]+same-child `needs-choice`[\s\S]+ask exactly once/i);
+  assert.match(source, /explicit[\s\S]+no choice[\s\S]+more than one semantic candidate[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+followup[\s\S]+spawn/i);
   assert.match(source, /one answer[\s\S]+(?:both|simultaneously)[\s\S]+operation[\s\S]+`resume` or `fresh`/i);
   assert.match(source, /answer[^\n]+resume[^\n]+exact[^\n]+pair[\s\S]+answer[^\n]+fresh[^\n]+continuationTarget[^\n]+null/i);
-  assert.match(source, /single (?:retained stopped operation|usable binding)[\s\S]+targetless[\s\S]+same-child `needs-choice`[\s\S]+ask exactly once/i);
   assert.match(source, /proactive[\s\S]+clear continuation[\s\S]+prepare[\s\S]+`resume`/i);
   assert.match(source, /clear independent[\s\S]+prepare[\s\S]+`fresh`/i);
   assert.match(source, /proactive genuinely ambiguous[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+spawn/i);
   assert.doesNotMatch(source, /For a genuinely ambiguous route/i);
-  assert.match(source, /explicit[\s\S]+no route[\s\S]+omit[^\n]+`resume`/i);
+  assert.doesNotMatch(source, /explicit[\s\S]+no route[\s\S]+omit[^\n]+`resume`/i);
   assert.match(source, /proactive[\s\S]+must include[\s\S]+(?:`fresh` or `resume`|`fresh` or `resume`)/i);
 });
 
