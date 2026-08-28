@@ -46,7 +46,6 @@ test('maps missing, unreadable, oversized, malformed, symlinked, and invalid con
   /** @type {Array<[string,()=>Promise<string>]>} */
   const cases = [
     ['missing', async () => mkdtemp(join(tmpdir(), 'zcode-runtime-config-missing-'))],
-    ['unreadable', async () => { const home = await configFixture(JSON.stringify({ model: { main: 'provider/model' } })); await chmod(join(home, '.zcode', 'cli', 'config.json'), 0o000); return home; }],
     ['oversized', async () => configFixture(JSON.stringify({ model: { main: `provider/${'x'.repeat(256)}` }, token: secret }))],
     ['malformed', async () => configFixture(`{"token":"${secret}",`) ],
     ['invalid main', async () => configFixture(JSON.stringify({ model: { main: 'missing-slash' }, apiKey: secret }))],
@@ -59,6 +58,10 @@ test('maps missing, unreadable, oversized, malformed, symlinked, and invalid con
       await symlink(target, join(directory, 'config.json')); return home;
     }],
   ];
+  if (process.platform !== 'win32') cases.splice(1, 0, ['unreadable', async () => {
+    const home = await configFixture(JSON.stringify({ model: { main: 'provider/model' } }));
+    await chmod(join(home, '.zcode', 'cli', 'config.json'), 0o000); return home;
+  }]);
 
   for (const [name, createHome] of cases) await t.test(name, async () => {
     const home = await createHome();

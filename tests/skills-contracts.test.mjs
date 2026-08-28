@@ -40,6 +40,7 @@ const directJobSkillContracts = {
     invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke cancel` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
   },
 };
+const directJobPartitionContract = 'Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.';
 function skill(name) {
   return readFileSync(new URL(`skills/${name}/SKILL.md`, root), 'utf8');
 }
@@ -123,11 +124,11 @@ test('skills use their fixed installed entrypoint without exposing private proto
 test('direct job Skills preserve one lifecycle-authoritative job partition without changing invocation syntax', () => {
   for (const name of ['status', 'result', 'cancel']) {
     const source = skill(name);
-    assert.match(source, /one lifecycle-authoritative current job partition/i);
-    assert.match(source, /origin workspace.{0,160}exact (?:bound )?(?:execution )?target/is);
-    assert.match(source, /preserv(?:e|es|ed)(?: it)? privately across later turns/i);
-    assert.match(source, /never scan or merge workspace partitions/i);
-    assert.match(source, /explicit job ID.{0,180}(?:cannot|does not).{0,100}(?:cross-partition|owner authority)/is);
+    assert.deepEqual(source.split('\n').filter((line) => line.includes('same selected target partition')), [directJobPartitionContract]);
+    assert.throws(() => {
+      const split = source.replace('resolves to the same selected target partition', 'may resolve to different partitions');
+      assert.deepEqual(split.split('\n').filter((line) => line.includes('same selected target partition')), [directJobPartitionContract]);
+    });
     assertDirectJobSkillPublicContract(source, name);
 
     const { usage, invocation } = directJobSkillContracts[name];

@@ -4745,7 +4745,7 @@ test('unsupported CLI recovery tuple does not materialize, retry, fall back, or 
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.deepEqual(requests.filter((request) => request.method === 'session/setModel').map((request) => request.params.model), [{ providerId: 'unsupported', modelId: 'model' }]);
   assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
-  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
 });
 
 test('warm, other-warning, and missing-config resumes do not perform CLI recovery setModel', async () => {
@@ -4761,7 +4761,7 @@ test('warm, other-warning, and missing-config resumes do not perform CLI recover
     const resumed = await companion(context, ['rescue', '--resume', `resume ${scenario}`], env);
     const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(requests.some((request) => request.method === 'session/setModel'), false, scenario);
-    assert.equal(requests.filter((request) => request.method === 'session/send').length, 1, scenario);
+    assert.equal(requests.filter((request) => request.method === 'session/send').length, scenario === 'missing-config' ? 0 : 1, scenario);
     if (scenario === 'warm') assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
     else { assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_REQUEST_FAILED'); assert.equal(resumed.json.error.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE'); }
   }

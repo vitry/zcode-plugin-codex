@@ -11,4 +11,4 @@ Resolve the plugin root as the directory two directories above this `SKILL.md`; 
 
 Run in the current turn; never launch a built-in subagent. Present the companion output verbatim. Never describe cancellation as successful unless the returned state does; preserve stop failures and exact `$zcode:status` recovery commands.
 
-The companion resolves one lifecycle-authoritative current job partition from the origin workspace or its exact bound execution target and preserves it privately across later turns. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.
+Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.

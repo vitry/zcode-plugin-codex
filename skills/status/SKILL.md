@@ -13,4 +13,4 @@ Run in the current turn; never launch a built-in subagent. Present the companion
 
 Status is the durable recovery surface after a parent turn, Rescue child, or Codex process is lost. Semantic progress is a bounded public preview, not raw child output, and owner-only result/cancel rules still apply; `--all` exposes only redacted other-owner metadata. Before uninstall, use status/result/cancel to settle owned jobs: uninstall does not automatically erase durable job records or stable plugin data.
 
-The companion resolves one lifecycle-authoritative current job partition from the origin workspace or its exact bound execution target and preserves it privately across later turns. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.
+Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.

@@ -801,6 +801,7 @@ async function readGlobalState(storage, sessionId, validatePaths) {
     if (validatePaths) {
       await assertPersistedCanonicalWorkspace(active.originWorkspace);
       if (active.executionWorkspace !== null) await assertPersistedCanonicalWorkspace(active.executionWorkspace);
+      if (active.recoveryWorkspace !== undefined) await assertPersistedCanonicalWorkspace(active.recoveryWorkspace);
     }
   }
   return { active, ledger, activePath, sessionPath };

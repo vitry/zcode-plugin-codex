@@ -688,15 +688,26 @@ test('warm resume and a different lastError type never resolve or apply runtime 
   }
 });
 
-test('missing or rejected recovery skips effort and preserves the authoritative send failure with one send', async () => {
+test('missing or rejected recovery preserves runtime-unavailable and fails before effort or send', async () => {
   for (const resolver of [undefined, async () => { throw new PluginError('ZCODE_RUNTIME_MODEL_CONFIG_INVALID', 'config unavailable'); }]) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-    const sendError = new PluginError('ZCODE_RUNTIME_MODEL_UNAVAILABLE', 'runtime model unavailable');
-    const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', sendError });
+    const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
     const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high', resumeSessionId: 'zs-cold-resume', ...(resolver ? { resolveRuntimeRecoveryModel: resolver } : {}) }).catch((error) => error);
-    assert.equal(caught, sendError); assert.equal(fixture.sends(), 1); assert.equal(fixture.calls.filter((call) => call === 'send').length, 1);
+    assert.equal(caught.code, 'ZCODE_REQUEST_FAILED'); assert.equal(caught.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
+    assert.equal(fixture.sends(), 0); assert.equal(fixture.calls.filter((call) => call === 'send').length, 0);
     assert.equal(fixture.calls.some((call) => call.startsWith('effort:')), false);
   }
+});
+
+test('cold recovery that remains runtime-unavailable fails before effort or send', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', setModelDoesNotMaterialize: true });
+  const caught = await executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high',
+    resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryModel: async () => ({ providerId: 'cli', modelId: 'main' }),
+  }).catch((error) => error);
+  assert.equal(caught.code, 'ZCODE_REQUEST_FAILED'); assert.equal(caught.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
+  assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls, ['resume', 'setModel:cli/main', 'close']);
 });
 
 test('cold recovery setModel rejection is authoritative and prevents send', async () => {

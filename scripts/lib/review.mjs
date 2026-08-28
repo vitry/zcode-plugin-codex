@@ -119,11 +119,13 @@ export async function executeJob(input) {
     let runtimeModelMaterialized = !runtimeRecoveryRequired; let recoveryModel = selectedModel;
     if (runtimeRecoveryRequired && !recoveryModel && input.resolveRuntimeRecoveryModel) {
       try { recoveryModel = await boundedStep(input.resolveRuntimeRecoveryModel, input.signal); }
-      catch (error) { input.signal?.throwIfAborted(); void error; }
+      catch { input.signal?.throwIfAborted(); throw runtimeModelUnavailable(snapshot); }
     }
-    if (runtimeRecoveryRequired && validRecoveryModel(recoveryModel)) {
+    if (runtimeRecoveryRequired && !validRecoveryModel(recoveryModel)) throw runtimeModelUnavailable(snapshot);
+    if (runtimeRecoveryRequired) {
       snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
       runtimeModelMaterialized = snapshot.projection?.lastError?.type !== 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+      if (!runtimeModelMaterialized) throw runtimeModelUnavailable(snapshot);
     }
     else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
     if (input.effort && runtimeModelMaterialized) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
@@ -465,4 +467,12 @@ function errorCode(error) { return error && typeof error === 'object' && 'code' 
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
 /** @param {any} model */
 function validRecoveryModel(model) { return typeof model?.providerId === 'string' && model.providerId.length > 0 && typeof model?.modelId === 'string' && model.modelId.length > 0; }
+/** @param {any} snapshot */
+function runtimeModelUnavailable(snapshot) {
+  const message = publicErrorMessage(snapshot?.projection?.lastError?.message) ?? 'ZCode runtime model is unavailable.';
+  return new PluginError('ZCODE_REQUEST_FAILED', `ZCode session/resume failed: ${message}`, {
+    category: 'runtime', remedy: 'Configure a supported ZCode CLI model and retry the resume.',
+    details: { method: 'session/resume', remoteCode: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' },
+  });
+}
 function artifactError() { return new PluginError('RESULT_ARTIFACT_INVALID', 'Result artifact path is outside the private result store.', { category: 'storage', remedy: 'Restore the job record with a scoped result artifact.' }); }

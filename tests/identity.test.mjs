@@ -788,6 +788,29 @@ test('job workspace selection rejects stale authority and workspaces outside the
   assert.equal(await readFile(activePath, 'utf8'), newerBytes);
 });
 
+test('job workspace selection rejects a stale recovery workspace without repairing private state', async () => {
+  const { dataRoot, identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+  const base = {
+    sessionId: 'job-selection-stale-recovery', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: new Date().toISOString(), sessionSource: 'startup',
+  };
+  await identity.beginCallerTurn({ ...base, turnId: 'rescue-turn', prompt: 'rescue' });
+  await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
+  await identity.beginCallerTurn({ ...base, turnId: 'selection-turn', prompt: 'select' });
+  const authority = await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'preview' });
+  const activePath = await globalActivePath(dataRoot, base.sessionId);
+  await rename(execution, `${execution}-moved`);
+  const before = await readFile(activePath, 'utf8');
+  const expected = {
+    sessionId: authority.sessionId, turnId: authority.turnId, generationId: authority.generationId,
+    originWorkspace: authority.originWorkspace, workspace: origin,
+  };
+  await assert.rejects(identity.selectJobWorkspace(expected), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  let called = false;
+  await assert.rejects(identity.withSelectedJobWorkspace(expected, async () => { called = true; }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  assert.equal(called, false); assert.equal(await readFile(activePath, 'utf8'), before);
+});
+
 test('selected job workspace durable callbacks reject stale authority and release the lifecycle lock on failure', async () => {
   const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
   const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
