@@ -340,9 +340,10 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const installedIdentity = createIdentityStore({ dataRoot: boundPluginData });
   const installedState = createStateStore({ dataRoot: boundPluginData });
   const boundSessionId = 'installed-bound-session';
+  const boundSessionStartedAt = new Date().toISOString();
   await installedIdentity.beginCallerTurn({
     sessionId: boundSessionId, turnId: 'installed-bound-turn', workspace: canonicalOrigin, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
-    sessionStartedAt: '2026-08-28T08:00:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: boundSessionStartedAt, sessionSource: 'startup',
   });
   await installedIdentity.resolveActiveTurn({ sessionId: boundSessionId, workspace: canonicalTarget, workspaceBinding: 'claim' });
   const targetJob = await installedState.reserveJob({ workspace: canonicalTarget, ownerSessionId: boundSessionId, ownerTurnId: 'installed-bound-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });

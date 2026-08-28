@@ -541,12 +541,13 @@ test('linked worktree binding previews without mutation then claims once and req
 });
 
 test('effective workspace resolution is atomic, read-only, and projects the authoritative job partition', async (t) => {
+  const sessionStartedAt = new Date().toISOString();
   await t.test('unbound lifecycle accepts only origin without mutation', async () => {
     const { dataRoot, identity, root } = await fixture();
     const { origin, execution } = await linkedWorktreeFixture(root);
     await identity.beginCallerTurn({
       sessionId: 'session-effective', turnId: 'turn-effective', workspace: origin, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
     const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
@@ -567,7 +568,7 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
     await execFile('git', ['worktree', 'add', '-q', '-b', 'execution-sibling', sibling], { cwd: origin });
     await identity.beginCallerTurn({
       sessionId: 'session-effective', turnId: 'turn-effective', workspace: origin, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     await identity.resolveActiveTurn({ sessionId: 'session-effective', workspace: execution, workspaceBinding: 'claim' });
     const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
@@ -592,7 +593,7 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
     await assert.rejects(identity.resolveActiveTurn({ sessionId: 'legacy-effective', workspace: workspaceB, workspaceBinding: 'effective' }), { code: 'ACTIVE_TURN_NOT_FOUND' });
     await identity.beginCallerTurn({
       sessionId: 'corrupt-effective', turnId: 'corrupt-turn', workspace: workspaceA, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     const activePath = await globalActivePath(dataRoot, 'corrupt-effective');
     const record = JSON.parse(await readFile(activePath, 'utf8')); record.executionWorkspace = workspaceB;
@@ -606,7 +607,7 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
     const { origin, execution } = await linkedWorktreeFixture(root);
     await identity.beginCallerTurn({
       sessionId: 'contradictory-effective', turnId: 'contradictory-turn', workspace: origin, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     const activePath = await globalActivePath(dataRoot, 'contradictory-effective');
     const sessionPath = await globalSessionPath(dataRoot, 'contradictory-effective');

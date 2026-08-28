@@ -1123,9 +1123,10 @@ test('direct job commands resolve a bound lifecycle to its execution workspace f
   const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const store = createStateStore({ dataRoot: ctx.dataRoot });
   const sessionId = 'effective-owner';
+  const sessionStartedAt = new Date().toISOString();
   await identity.beginCallerTurn({
     sessionId, turnId: 'effective-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId, workspace: execution, workspaceBinding: 'claim' });
   const target = await store.reserveJob({ workspace: execution, ownerSessionId: sessionId, ownerTurnId: 'effective-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
@@ -1149,7 +1150,7 @@ test('direct job commands resolve a bound lifecycle to its execution workspace f
   const activate = async (prompt, turnId) => {
     await identity.beginCallerTurn({
       sessionId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt,
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     await identity.resolveActiveTurn({ sessionId, workspace: execution, workspaceBinding: 'claim' });
   };
@@ -1201,9 +1202,10 @@ test('direct running cancel stops and closes the bound Rescue only in its execut
   const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const store = createStateStore({ dataRoot: ctx.dataRoot });
   const sessionId = 'effective-cancel-owner';
+  const sessionStartedAt = new Date().toISOString();
   await identity.beginCallerTurn({
     sessionId, turnId: 'effective-cancel-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:cancel',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
   const reservation = {
@@ -1243,7 +1245,7 @@ test('direct running cancel stops and closes the bound Rescue only in its execut
 
   await identity.beginCallerTurn({
     sessionId, turnId: 'effective-queued-cancel-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:cancel',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
   const queuedExecutor = { ...executor, agentId: 'effective-queued-cancel-child', parentTurnId: 'effective-queued-cancel-turn' };
@@ -1251,7 +1253,7 @@ test('direct running cancel stops and closes the bound Rescue only in its execut
   const queued = (await store.reserveFreshRescueJob({ workspace: canonicalExecution, reservation: queuedReservation, executor: queuedExecutor })).job;
   await identity.beginCallerTurn({
     sessionId, turnId: 'effective-queued-cancel-explicit-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:cancel ${queued.id}`,
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
   const queuedOutput = await runDirectInvocation(['invoke', 'cancel'], { cwd: canonicalExecution, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
@@ -1269,9 +1271,10 @@ test('effective job mode stays narrow and unbound direct commands retain same-wo
   await run('git', ['worktree', 'add', '-q', '-b', 'effective-scope', execution], ctx.workspace);
   const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const sessionStartedAt = new Date().toISOString();
   await identity.beginCallerTurn({
     sessionId: 'effective-unbound', turnId: 'effective-unbound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt, sessionSource: 'startup',
   });
   const unbound = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'effective-unbound', ownerTurnId: 'effective-unbound-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
   const unboundOutput = await runDirectInvocation(['invoke', 'status'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'effective-unbound' } });
@@ -1281,7 +1284,7 @@ test('effective job mode stays narrow and unbound direct commands retain same-wo
   for (const command of ['review', 'adversarial-review', 'transfer']) {
     await identity.beginCallerTurn({
       sessionId: 'effective-scope-owner', turnId: `effective-scope-${command}`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:${command} --wait`,
-      sessionStartedAt: '2026-08-20T12:00:00.000Z', sessionSource: 'startup',
+      sessionStartedAt, sessionSource: 'startup',
     });
     await identity.resolveActiveTurn({ sessionId: 'effective-scope-owner', workspace: execution, workspaceBinding: 'claim' });
     await assert.rejects(runDirectInvocation(['invoke', command], { cwd: execution, env: { ...ctx.env, CODEX_THREAD_ID: 'effective-scope-owner' } }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
