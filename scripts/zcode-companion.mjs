@@ -368,8 +368,17 @@ export async function runDirectInvocation(argv, runtime = {}) {
     executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
   }
   const jobCommand = ['status', 'result', 'cancel'].includes(command);
-  const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : jobCommand ? { workspaceBinding: 'effective' } : {}) }); const invocations = createInvocationStore({ dataRoot });
-  const invocationWorkspace = command === 'rescue' || jobCommand ? caller.workspace : cwd;
+  const jobCreator = ['review', 'adversarial-review', 'transfer'].includes(command);
+  let caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : jobCommand ? { workspaceBinding: 'effective' } : jobCreator ? { workspaceBinding: 'preview' } : {}) });
+  if (jobCreator && caller.generationId !== undefined) {
+    await runtime.dependencies?.testOnlyBeforeJobWorkspaceSelection?.(caller);
+    caller = await identity.selectJobWorkspace({
+      sessionId: caller.sessionId, turnId: caller.turnId, generationId: caller.generationId,
+      originWorkspace: caller.originWorkspace, workspace: cwd,
+    });
+  }
+  const invocations = createInvocationStore({ dataRoot });
+  const invocationWorkspace = command === 'rescue' || jobCommand || jobCreator ? caller.workspace : cwd;
   if (command === 'rescue' && (entry === 'invoke' || entry === 'invoke-choice' && executor?.active)) assertExecutorMatchesCaller(executor, caller);
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') {

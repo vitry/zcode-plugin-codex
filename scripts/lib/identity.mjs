@@ -152,6 +152,8 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         generationId = duplicate ? existing.generationId : randomBytes(32).toString('hex');
         if (!duplicate && existing !== null) replacedTurn = replacedTurnMetadata(existing);
         const recoveryWorkspace = existing !== null && existing.originWorkspace === storage.workspacePath
+          && ledger !== null && ledger.endedAt === null
+          && ledger.sessionStartedAt === input.sessionStartedAt && ledger.sessionSource === input.sessionSource
           ? existing.executionWorkspace ?? existing.recoveryWorkspace ?? null
           : null;
         const knownWorkspaces = appendKnownWorkspace(
@@ -272,6 +274,42 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         if (expected.workspaceBinding === 'preview') return publicActiveTurn(state.active, candidate, true);
         const bound = await persistClaim(state, candidate, publicationSeam, global.directory);
         return publicActiveTurn(bound, candidate, true);
+      });
+    },
+
+    /** Select the exact workspace partition observed by jobs created for one proved lifecycle authority. @param {{sessionId:string,turnId:string,generationId:string,originWorkspace:string,workspace:string}} expected */
+    async selectJobWorkspace(expected) {
+      validateJobWorkspaceSelection(expected);
+      const [originWorkspace, candidate] = await Promise.all([
+        canonicalWorkspace(expected.originWorkspace), canonicalWorkspace(expected.workspace),
+      ]);
+      const global = await globalIdentityStorage(dataRoot);
+      return withFileLock(sessionLockPath(global, expected.sessionId), async () => {
+        const state = await readGlobalState(global, expected.sessionId, true);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.turnId !== expected.turnId || state.active.generationId !== expected.generationId
+          || state.active.originWorkspace !== originWorkspace) {
+          throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        }
+        if (!lifecycleRecordsConsistent(state.active, state.ledger)) throw invalidAuthorizationRecord('identity session');
+        if (!state.ledger.knownWorkspaces.includes(candidate)) throw workspaceIneligible();
+        if (state.active.executionWorkspace !== null && state.active.executionWorkspace !== candidate) throw workspaceIneligible();
+
+        let selected = state.active;
+        if (state.active.executionWorkspace === null) {
+          if (candidate === originWorkspace && state.active.recoveryWorkspace !== undefined) {
+            selected = { ...state.active };
+            delete selected.recoveryWorkspace;
+          } else if (candidate !== originWorkspace && state.active.recoveryWorkspace !== candidate) {
+            selected = { ...state.active, recoveryWorkspace: candidate };
+          }
+          if (selected !== state.active) {
+            await publicationSeam?.('before-job-workspace-select-write');
+            await atomicWriteJson(state.activePath, selected, { privateRoot: global.directory });
+            await publicationSeam?.('after-job-workspace-select-write');
+          }
+        }
+        return publicActiveTurn(selected, candidate, selected.executionWorkspace !== null);
       });
     },
 
@@ -1190,6 +1228,15 @@ function validateCallerInput(input) {
 function validateActiveExpected(input) {
   if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)
     || input.workspaceBinding !== undefined && !['preview', 'claim', 'execution', 'effective'].includes(input.workspaceBinding)) throw invalidIdentityInput();
+}
+
+/** @param {any} input */
+function validateJobWorkspaceSelection(input) {
+  if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES)
+    || !isBoundedString(input.turnId, MAX_ID_BYTES) || !isDigest(input.generationId)
+    || !isBoundedString(input.originWorkspace, MAX_PATH_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)) {
+    throw invalidIdentityInput();
+  }
 }
 
 /** @param {any} input */

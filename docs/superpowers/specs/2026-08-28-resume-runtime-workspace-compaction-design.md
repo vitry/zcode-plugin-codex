@@ -207,7 +207,10 @@ the field remain valid.
 
 Under the existing session lock, a non-duplicate replacement carries
 `existing.executionWorkspace ?? existing.recoveryWorkspace` only when the
-session and canonical origin are unchanged. A cross-origin replacement carries
+canonical origin is unchanged, the existing ledger is live, and its exact
+`sessionStartedAt` and `sessionSource` equal the incoming lifecycle proof. An
+ended cleanup tombstone therefore cannot donate an old target to a strictly
+newer same-origin resume. A cross-origin or different-proof replacement carries
 nothing. A duplicate retains its existing record. A current-turn claim may
 therefore select a different eligible target normally; `executionWorkspace`
 takes precedence immediately, and the following same-origin replacement
@@ -225,13 +228,31 @@ partitions.
 
 ### Command scope and propagation
 
-Only direct `status`, `result`, and `cancel` use the new mode. Review,
-adversarial review, transfer, setup, and Rescue preparation keep their current
-workspace contracts.
+Direct `status`, `result`, and `cancel` use the read-only effective mode. Before
+any direct non-Rescue job creator (`review`, `adversarial-review`, or `transfer`)
+persists a pending choice or reserves a job, it first captures the current
+turn, generation, session, and origin through read-only preview and submits
+that exact authority plus the canonical ambient workspace to one locked
+IdentityStore selection operation. The public argv does not change. Setup and
+Rescue preparation keep their current contracts, and Rescue claim remains the
+only authority that may set `executionWorkspace`.
 
-The direct invocation resolves the caller once and passes
-`caller.workspace` as the effective workspace through every downstream
-operation, including:
+The selector requires a live, internally consistent ledger containing the
+requested workspace and exact active authority. It is idempotent. Selecting the
+origin removes `recoveryWorkspace`; selecting a non-origin member stores that
+exact target. A non-null `executionWorkspace` is never changed or overridden,
+and a conflicting creator is rejected before pending persistence or job
+reservation. A delayed invocation holding an older generation cannot retarget
+a newer prompt. Selection remains deterministic if later reservation fails.
+
+The private recovery pointer is therefore the most recently selected
+authoritative job partition: either the latest eligible direct creator's exact
+workspace or, when Rescue has claimed the current turn, Rescue's immutable
+execution target. Pending-choice creation and `invoke-choice` consume the same
+selected partition.
+
+After observation or selection, direct invocation passes the one settled
+`caller.workspace` through every downstream operation, including:
 
 - pending invocation creation and consumption;
 - job lookup, latest selection, `--all`, waiting, and result artifacts;
@@ -241,9 +262,10 @@ operation, including:
 - exact Rescue binding closure after cancellation.
 
 The plugin never merges origin and target partitions and never scans all
-workspace partitions. An explicit job ID does not weaken owner-session or
-canonical-workspace confinement. `--all` remains a view of one authoritative
-workspace partition.
+workspace partitions. An explicit historical job ID remains confined to the
+currently selected canonical partition; it cannot reach an older origin or
+Rescue target partition. `--all` remains a view of one authoritative workspace
+partition.
 
 ## Compact launcher rehydration
 

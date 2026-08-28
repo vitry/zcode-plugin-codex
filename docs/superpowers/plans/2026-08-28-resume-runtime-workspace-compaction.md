@@ -4,7 +4,7 @@
 
 **Goal:** Make cold ZCode session resume materialize its configured runtime exactly once, make direct job commands use the lifecycle-authoritative execution workspace, and restore the trusted Rescue launcher after mid-turn Codex compaction.
 
-**Architecture:** Add three narrow seams: a secret-safe lazy ZCode CLI model reader used only for an exact cold-resume warning, an atomic read-only IdentityStore `effective` workspace mode used only by status/result/cancel, and compact-only launcher context rendering in the existing SessionStart hook. Preserve all current public syntax, persisted schemas, ownership boundaries, and fail-closed behavior.
+**Architecture:** Add narrow seams for a secret-safe lazy ZCode CLI model reader, an atomic read-only `effective` observer mode, an exact locked job-creator partition selector, and compact-only launcher context rendering. Preserve all current public syntax, persisted schemas, ownership boundaries, and fail-closed behavior.
 
 **Tech Stack:** Node.js 22.13 ESM, native `node:test`, existing JSON-RPC ZCode client, Codex lifecycle hooks, npm marketplace snapshot builder, ESLint, TypeScript check mode.
 
@@ -24,8 +24,8 @@
 
 ### Effective workspace
 
-- Modify `scripts/lib/identity.mjs`: add atomic read-only `workspaceBinding: 'effective'`.
-- Modify `scripts/zcode-companion.mjs`: apply the mode only to status/result/cancel and propagate `caller.workspace` everywhere.
+- Modify `scripts/lib/identity.mjs`: add atomic read-only `workspaceBinding: 'effective'`, exact live-proof recovery carry, and the locked idempotent job-workspace selector.
+- Modify `scripts/zcode-companion.mjs`: apply effective mode to observers, select the partition before non-Rescue creator pending/reservation work, and propagate `caller.workspace` everywhere.
 - Modify `tests/identity.test.mjs`: identity-mode unit matrix.
 - Modify `tests/integration/skills.test.mjs`: origin/target/foreign direct-command integration matrix.
 - Modify `tests/integration/marketplace-install.test.mjs`: installed local-marketplace smoke coverage.
@@ -331,6 +331,59 @@ git add scripts/lib/identity.mjs scripts/zcode-companion.mjs \
   tests/integration/marketplace-install.test.mjs
 git commit -m "fix: resolve bound job workspace"
 ```
+
+## Task 2A: Make the most recently selected job partition authoritative
+
+**Files:**
+
+- Modify: `scripts/lib/identity.mjs`
+- Modify: `scripts/zcode-companion.mjs`
+- Modify: `tests/identity.test.mjs`
+- Modify: `tests/integration/skills.test.mjs`
+
+- [x] **Step 1: Add the interrupted-cleanup carry regression**
+
+Create a bound execution target, inject failure immediately after cleanup writes
+the ended tombstone, and begin a strictly newer same-origin resume proof. Assert
+that the new active record has no `recoveryWorkspace`, effective resolution
+selects origin, and the old target is ineligible.
+
+- [x] **Step 2: Require an exact live ledger proof before carry**
+
+Carry `existing.executionWorkspace ?? existing.recoveryWorkspace` only when
+the canonical origin matches, `ledger.endedAt === null`, and the ledger's exact
+`sessionStartedAt` and `sessionSource` equal the incoming proof. Preserve
+duplicate and same-proof pending-publication recovery.
+
+- [x] **Step 3: Add the locked selector unit matrix**
+
+Exercise origin clearing, exact non-origin selection, no recovery-pointer public
+projection, idempotent retry without rewrite, ledger non-member rejection,
+stale generation rejection, and a conflicting non-null execution claim.
+
+- [x] **Step 4: Implement exact job workspace selection**
+
+Add `IdentityStore.selectJobWorkspace()` with exact
+`sessionId`/`turnId`/`generationId`/`originWorkspace` authority. Canonicalize
+the requested paths, operate under the existing session lock, require a live
+consistent ledger containing the target, clear recovery at origin, store the
+exact member otherwise, and never modify `executionWorkspace`.
+
+- [x] **Step 5: Wire all non-Rescue direct creators before durable work**
+
+For `review`, `adversarial-review`, and `transfer`, resolve `preview`, then call
+the selector with ambient cwd before pending-choice persistence or reservation.
+Use the selected caller workspace for both `invoke` and `invoke-choice`.
+Status/result/cancel keep `effective`; Rescue keeps `execution`; public argv is
+unchanged.
+
+- [x] **Step 6: Add end-to-end partition lifecycle tests**
+
+Prove Rescue target to next origin creator to later status/result/cancel stays
+in origin, old target and explicit historical IDs are not merged, retarget
+failure creates no job, reservation failure leaves the selected pointer,
+pending choice uses the same partition, delayed older invocation is fenced,
+same-turn execution conflict rejects, and exact retries are idempotent.
 
 ## Task 3: Rehydrate the launcher after compact SessionStart
 
