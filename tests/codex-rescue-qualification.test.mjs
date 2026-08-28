@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -21,6 +21,7 @@ import {
   qualifyCodexRescuePreparedContinuationEvidence,
   qualifyCodexRescueRestoredChildEvidence,
   qualifyCodexRescueEvidence,
+  validateCodexContinuationLifecycleFixture,
 } from './helpers/codex-rescue-qualification.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './helpers/rescue-skill-contract.mjs';
 
@@ -43,6 +44,47 @@ const expectedSemanticProgress = Object.freeze({
   lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
 });
 const backgroundJobId = 'b'.repeat(64);
+
+test('real 0.147 and 0.148 captures expose only canonical task_name to Root', async () => {
+  for (const version of ['0.147', '0.148']) {
+    const fixtureUrl = new URL(`fixtures/codex-rescue/${version}-continuation-lifecycle.json`, import.meta.url);
+    const bytes = await readFile(fixtureUrl, 'utf8');
+    const fixture = JSON.parse(bytes);
+    assert.deepEqual(validateCodexContinuationLifecycleFixture(fixture), {
+      parentThreadId: `parent-${version.replace('.', '')}`,
+      childThreadId: `child-${version.replace('.', '')}`,
+      agentPath: version === '0.147' ? '/root/zcode_rescue' : '/root/zcode_rescue_task',
+    });
+    const spawn = fixture.parentRecords.find((record) => record?.payload?.name === 'spawn_agent');
+    const output = fixture.parentRecords.find((record) => record?.payload?.type === 'function_call_output');
+    const activity = fixture.parentRecords.find((record) => record?.payload?.item?.type === 'SubAgentActivity').payload.item;
+    const spawnResult = JSON.parse(output.payload.output);
+
+    assert.deepEqual(Object.keys(spawnResult), ['task_name']);
+    assert.equal(spawnResult.task_name, activity.agent_path);
+    assert.equal(activity.id, spawn.payload.call_id);
+    assert.equal(activity.agent_thread_id, fixture.childSessionMetadata.id);
+    assert.equal(activity.agent_thread_id, fixture.pluginBinding.childAgentId);
+    assert.equal(activity.agent_path, fixture.pluginBinding.agentPath);
+    assert.equal(typeof spawn.payload.arguments, 'string');
+    assert.equal(typeof output.payload.output, 'string');
+    assert.doesNotMatch(bytes, /"agent_id"|"event_id"|spawn\.output\.agent_id|started\.event_id/);
+  }
+});
+
+test('real lifecycle fixtures reject duplicate, reordered, wrapped, and key-drifted records', async () => {
+  const fixture = JSON.parse(await readFile(new URL('fixtures/codex-rescue/0.148-continuation-lifecycle.json', import.meta.url), 'utf8'));
+  const mutations = [
+    (value) => value.parentRecords.splice(2, 0, structuredClone(value.parentRecords[1])),
+    (value) => { [value.parentRecords[1], value.parentRecords[2]] = [value.parentRecords[2], value.parentRecords[1]]; },
+    (value) => { value.parentRecords[2] = { type: 'response_item', payload: value.parentRecords[2] }; },
+    (value) => { value.parentRecords[3].payload.extra = true; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(fixture); mutate(changed);
+    assert.throws(() => validateCodexContinuationLifecycleFixture(changed), CodexRescueEvidenceMismatchError);
+  }
+});
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
 const executionCapability = 'qualification-capability-sentinel-private';
 
@@ -91,7 +133,7 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(executorBeforeStarted)).route, 'named');
   const startBeforeOutput = structuredClone(input); const interleaved = JSON.parse(startBeforeOutput.parentRolloutJson);
   const spawnOutputIndex = interleaved.findIndex((event) => event?.payload?.call_id === 'spawn-original' && event.payload.type === 'function_call_output');
-  const startIndex = interleaved.findIndex((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const startIndex = interleaved.findIndex((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
   interleaved[startIndex].timestamp = '2026-08-10T00:00:00.150Z';
   [interleaved[spawnOutputIndex], interleaved[startIndex]] = [interleaved[startIndex], interleaved[spawnOutputIndex]];
   startBeforeOutput.parentRolloutJson = JSON.stringify(interleaved);
@@ -102,7 +144,6 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(siblingFirst)).agentPath, restoredPath);
 
   for (const mutate of [
-    (envelope) => { envelope.continuationTarget.childId = 'sibling-child'; },
     (envelope) => { envelope.continuationTarget.agentPath = '/root/sibling'; },
   ]) {
     const changed = structuredClone(input); const rows = JSON.parse(changed.parentRolloutJson);
@@ -164,7 +205,7 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
 
   for (const kind of ['started', 'stopped']) {
     const changed = structuredClone(input); const rows = JSON.parse(changed.parentRolloutJson);
-    changed.parentRolloutJson = JSON.stringify(rows.filter((event) => !(event?.payload?.type === 'sub_agent_activity' && event.payload.kind === kind)));
+    changed.parentRolloutJson = JSON.stringify(rows.filter((event) => !(event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === kind)));
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-history');
   }
@@ -288,12 +329,12 @@ test('qualifies named and generic foreground/background continuation in one acti
   }
 });
 
-test('prepared continuation qualifies the exact v2 lifecycle pair and route path in either linked event order', async () => {
+test('prepared continuation qualifies the exact v3 canonical path and internal lifecycle in either linked event order', async () => {
   for (const reverseLifecycleOrder of [false, true]) {
     const input = preparedContinuationFixture('named');
     const parent = JSON.parse(input.parentRolloutJson);
     if (reverseLifecycleOrder) {
-      const startedIndex = parent.findIndex((event) => event?.payload?.kind === 'started');
+      const startedIndex = parent.findIndex((event) => event?.payload?.item?.kind === 'started');
       const outputIndex = parent.findIndex((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'spawn-1');
       [parent[startedIndex], parent[outputIndex]] = [parent[outputIndex], parent[startedIndex]];
     }
@@ -305,11 +346,24 @@ test('prepared continuation qualifies the exact v2 lifecycle pair and route path
     const writes = calls.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.call_id?.startsWith('prepare-write-'));
     const fresh = JSON.parse(parseFixturePollInput(writes[0].payload.input).chars.trim());
     const resume = JSON.parse(parseFixturePollInput(writes[1].payload.input).chars.trim());
-    assert.deepEqual(fresh, { version: 2, source: 'explicit', task: 'repair fixture', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null });
-    assert.deepEqual(resume.continuationTarget, { childId, agentPath });
+    assert.deepEqual(fresh, { version: 3, source: 'explicit', task: 'repair fixture', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null });
+    assert.deepEqual(resume.continuationTarget, { agentPath });
     const followup = calls.find((event) => event?.payload?.name === 'followup_task');
     assert.equal(JSON.parse(followup.payload.arguments).target, agentPath);
   }
+});
+
+test('prepared continuation rejects fictional flattened subagent activity evidence', async () => {
+  const input = preparedContinuationFixture('named');
+  const parent = JSON.parse(input.parentRolloutJson);
+  const started = parent.find((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
+  const { id, agent_thread_id, agent_path, kind } = started.payload.item;
+  started.payload = { type: 'sub_agent_activity', event_id: id, agent_thread_id, agent_path, kind };
+  input.parentRolloutJson = JSON.stringify(parent);
+  await assert.rejects(
+    qualifyCodexRescuePreparedContinuationEvidence(input),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-start-count',
+  );
 });
 
 test('prepared continuation rejects each cross-pair and post-planning target mutation without sibling acceptance', async () => {
@@ -317,7 +371,7 @@ test('prepared continuation rejects each cross-pair and post-planning target mut
     ['continuation-target-lifecycle', (input) => {
       const rows = JSON.parse(input.parentRolloutJson);
       const output = rows.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'spawn-1');
-      output.payload.output = JSON.stringify({ agent_id: 'sibling-child' });
+      output.payload.output = JSON.stringify({ task_name: '/root/sibling' });
       input.parentRolloutJson = JSON.stringify(rows);
     }],
     ['continuation-target-preparation', (input) => {
@@ -351,7 +405,8 @@ test('prepared continuation derives one exact path chain instead of trusting com
   const parent = JSON.parse(input.parentRolloutJson);
   const spawn = parent.find((event) => event?.payload?.name === 'spawn_agent');
   const spawnArgs = JSON.parse(spawn.payload.arguments); spawnArgs.task_name = 'compensated_sibling'; spawn.payload.arguments = JSON.stringify(spawnArgs);
-  for (const event of parent.filter((candidate) => candidate?.payload?.agent_path)) event.payload.agent_path = substitutedPath;
+  parent.find((event) => event?.payload?.call_id === 'spawn-1' && event.payload.type === 'function_call_output').payload.output = JSON.stringify({ task_name: substitutedPath });
+  for (const event of parent.filter((candidate) => candidate?.payload?.item?.type === 'SubAgentActivity')) event.payload.item.agent_path = substitutedPath;
   const resumeWrite = parent.find((event) => event?.payload?.call_id === 'prepare-write-2' && event.payload.type === 'custom_tool_call');
   const resumeHost = parseFixturePollInput(resumeWrite.payload.input); const resumeEnvelope = JSON.parse(resumeHost.chars.trim());
   resumeEnvelope.continuationTarget.agentPath = substitutedPath;
@@ -670,13 +725,13 @@ test('prepared continuation qualification rejects normalized claims and fails cl
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence({ valid: true, peerResumeChecked: true }),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-raw-contract');
   const mutations = [
-    ['continuation-start-count', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push(rows.find((row) => row?.payload?.kind === 'started')); input.parentRolloutJson = JSON.stringify(rows); }],
-    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'stopped').timestamp = '2026-08-10T00:00:01.500Z'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-start-count', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push(rows.find((row) => row?.payload?.item?.kind === 'started')); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.item?.kind === 'stopped').timestamp = '2026-08-10T00:00:01.500Z'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson).filter((row) => !(row?.payload?.type === 'function_call_output' && row.payload.call_id === 'spawn-1')); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-followup-target', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'followup_task'); const args = JSON.parse(call.payload.arguments); args.target = 'sibling'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-parent-turns', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.name === 'followup_task').turn_id = 'turn-replaced'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(call.payload.arguments); args.task_name = 'sibling_task'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
-    ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'started').payload.agent_path = '/root/sibling_task'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-target-lifecycle', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.item?.kind === 'started').payload.item.agent_path = '/root/sibling_task'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-turns', (input) => { const rows = JSON.parse(input.childRolloutJson); for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call')) row.turn_id = 'one-turn'; for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call_output')) row.turn_id = 'one-turn'; input.childRolloutJson = JSON.stringify(rows); }],
     ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').params.sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[3].id = rows[2].id; input.fakePeerJson = JSON.stringify(rows); }],
@@ -781,7 +836,7 @@ test('raw prepared continuation confines the serialized selector and child ID to
 test('raw prepared continuation rejects child selectors in every unauthorized parent event field', async () => {
   const mutations = [
     (rows) => rows.push({ type: 'event_msg', turn_id: 'turn-original', payload: { type: 'agent_message', phase: 'commentary', message: childId } }),
-    (rows) => { rows.find((event) => event?.payload?.kind === 'started').payload.extra = childId; },
+    (rows) => { rows.find((event) => event?.payload?.item?.kind === 'started').payload.item.extra = childId; },
     (rows) => { const result = rows.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'followup-1'); result.payload.output = JSON.stringify({ accepted: true, target: agentPath, result: childId }); },
     (rows) => { rows[0].payload.status = JSON.stringify({ continuationTarget: { childId, agentPath } }); },
   ];
@@ -798,7 +853,8 @@ test('raw prepared continuation treats display metadata as non-authoritative whi
   const parent = JSON.parse(renamed.parentRolloutJson); const child = JSON.parse(renamed.childRolloutJson);
   const spawn = parent.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments);
   args.task_name = 'ordinary_helper'; spawn.payload.arguments = JSON.stringify(args);
-  for (const row of parent.filter((item) => item?.payload?.agent_path)) row.payload.agent_path = '/root/ordinary_helper';
+  parent.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ task_name: '/root/ordinary_helper' });
+  for (const row of parent.filter((item) => item?.payload?.item?.type === 'SubAgentActivity')) row.payload.item.agent_path = '/root/ordinary_helper';
   const resumeWrite = parent.find((row) => row?.payload?.call_id === 'prepare-write-2' && row.payload.type === 'custom_tool_call');
   const resumeHost = parseFixturePollInput(resumeWrite.payload.input); const resumeEnvelope = JSON.parse(resumeHost.chars.trim());
   resumeEnvelope.continuationTarget.agentPath = '/root/ordinary_helper'; resumeWrite.payload.input = structuredPoll(resumeHost.session_id, 'prepare-write-2', `${JSON.stringify(resumeEnvelope)}\n`).payload.input;
@@ -829,7 +885,7 @@ test('raw prepared continuation rejects metadata and job authority substitutions
     ['continuation-spawn-contract', (input) => { const rows = JSON.parse(input.parentRolloutJson); const spawn = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments); delete args.agent_type; spawn.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_role = 'default'; input.childRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_path = '/root/sibling'; input.childRolloutJson = JSON.stringify(rows); }],
-    ['continuation-target-lifecycle', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ agent_id: 'sibling' }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-target-lifecycle', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ task_name: '/root/sibling' }); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-followup-target', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: false, target: agentPath }); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].ownerSessionId = 'foreign'; setRawJobs(input, jobs); }],
     ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].ownerTurnId = 'foreign-turn'; setRawJobs(input, jobs); }],
@@ -867,7 +923,7 @@ test('raw prepared continuation accounts for every event and preserves captured 
     ['continuation-job-identity', (input) => { const jobs = rawJobs(input); jobs.push(rawJob('f'.repeat(64), 'foreign-turn', 'failed')); setRawJobs(input, jobs); }],
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.push({ method: 'session/list', result: [] }); input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[0].error = { code: -1 }; input.fakePeerJson = JSON.stringify(rows); }],
-    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); const start = rows.findIndex((row) => row?.payload?.kind === 'started'); const stop = rows.findIndex((row) => row?.payload?.kind === 'stopped'); [rows[start], rows[stop]] = [rows[stop], rows[start]]; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); const start = rows.findIndex((row) => row?.payload?.item?.kind === 'started'); const stop = rows.findIndex((row) => row?.payload?.item?.kind === 'stopped'); [rows[start], rows[stop]] = [rows[stop], rows[start]]; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-order', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[1].timestamp = '2026-08-10T00:00:11.500Z'; input.childRolloutJson = JSON.stringify(rows); }],
   ];
   for (const [code, mutate] of mutations) { const input = preparedContinuationFixture('named'); mutate(input);
@@ -1262,7 +1318,7 @@ test('background qualification fails closed on inline, self-printed, wrong-child
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output; } },
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'private prelude\n' }); } },
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'noisy progress\n' }); } },
-    { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.agent_thread_id = 'wrong-child'; } },
+    { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.item.agent_thread_id = 'wrong-child'; } },
     { code: 'spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
     { code: 'child-call-id', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
     { code: 'background-capability-leak', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${executionCapability}`; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
@@ -1279,7 +1335,7 @@ test('background qualification fails closed on inline, self-printed, wrong-child
 test('background qualification checks all core evidence before treating only spawn ciphertext as unqualified', () => {
   const encrypted = backgroundFixture(); const args = JSON.parse(spawnEvent(encrypted).payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(encrypted).payload.arguments = JSON.stringify(args);
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted');
-  startEvent(encrypted).payload.agent_thread_id = 'wrong-child';
+  startEvent(encrypted).payload.item.agent_thread_id = 'wrong-child';
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-rollout-id-mismatch');
   const badStdout = backgroundFixture(); const badArgs = JSON.parse(spawnEvent(badStdout).payload.arguments); badArgs.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(badStdout).payload.arguments = JSON.stringify(badArgs); childOutput(badStdout).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output;
   assert.throws(() => qualifyCodexRescueBackgroundEvidence(badStdout, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'background-child-stdout');
@@ -1303,7 +1359,7 @@ test('background qualification rejects a production-minted capability across eve
   }
 });
 
-test('qualifies exact resume against one existing child ID and rejects same-child fresh', () => {
+test('qualifies exact resume against one existing canonical child path and rejects same-child fresh', () => {
   assert.deepEqual(qualifyCodexRescueChoiceEvidence(choiceFixture('resume'), choiceOptions('resume')), {
     parentThreadId: parentId, childThreadId: childId, agentPath, taskName, choice: 'resume',
   });
@@ -1453,8 +1509,8 @@ test('shared parent-child route validation fails every trusted metadata field cl
     (input) => { parentMeta(input).payload.parent_thread_id = 'invented'; },
     (input) => { parentMeta(input).payload.thread_source = 'subagent'; },
     (input) => { parentMeta(input).payload.source = 'other'; },
-    (input) => { startEvent(input).payload.agent_thread_id = 'wrong'; },
-    (input) => { startEvent(input).payload.agent_path = '/root/wrong'; },
+    (input) => { startEvent(input).payload.item.agent_thread_id = 'wrong'; },
+    (input) => { startEvent(input).payload.item.agent_path = '/root/wrong'; },
     (input) => { childMeta(input).payload.id = 'wrong'; },
     (input) => { childMeta(input).payload.session_id = 'wrong'; },
     (input) => { childMeta(input).payload.parent_thread_id = 'wrong'; },
@@ -1487,8 +1543,8 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     { code: 'choice-spawn-keys', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.task = 'leak'; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
     { code: 'choice-agent-role', mutate: (input) => { childMeta(input).payload.source.subagent.thread_spawn.agent_role = null; } },
     { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume'), followupOutput('followup-2')) },
-    { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: 'sibling-child', message: choiceOptions('resume').expectedFollowupMessage }); } },
-    { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: childId, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
+    { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: '/root/sibling_child', message: choiceOptions('resume').expectedFollowupMessage }); } },
+    { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: agentPath, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
     { code: 'choice-parent-call-id', mutate: (input) => { followupResult(input).payload.call_id = 'foreign'; } },
     { code: 'choice-followup-output-order', mutate: (input) => { const output = input.rollouts[0].splice(input.rollouts[0].indexOf(followupResult(input)), 1)[0]; input.rollouts[0].splice(input.rollouts[0].indexOf(choiceFollowup(input)), 0, output); } },
     { code: 'choice-wait-count', mutate: (input) => { const waitIds = new Set(input.rollouts[0].filter((event) => event?.payload?.name === 'wait_agent').map((event) => event.payload.call_id)); input.rollouts[0] = input.rollouts[0].filter((event) => !waitIds.has(event?.payload?.call_id)); } },
@@ -1530,7 +1586,7 @@ test('qualifies the complete 0.147 generic default same-child choice continuatio
 
 test('choice qualification marks only explicitly encrypted continuation arguments unqualified', () => {
   const encrypted = choiceFixture('resume');
-  choiceFollowup(encrypted).payload.arguments = JSON.stringify({ target: childId, message: `gAAAA${'A'.repeat(80)}=` });
+  choiceFollowup(encrypted).payload.arguments = JSON.stringify({ target: agentPath, message: `gAAAA${'A'.repeat(80)}=` });
   assert.throws(
     () => qualifyCodexRescueChoiceEvidence(encrypted, choiceOptions('resume')),
     (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'choice-followup-encrypted',
@@ -1538,7 +1594,7 @@ test('choice qualification marks only explicitly encrypted continuation argument
   const wholeArguments = choiceFixture('resume'); choiceFollowup(wholeArguments).payload.arguments = `gAAAA${'A'.repeat(80)}=`;
   assert.throws(() => qualifyCodexRescueChoiceEvidence(wholeArguments, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-followup-arguments');
   const observableMismatch = choiceFixture('resume');
-  choiceFollowup(observableMismatch).payload.arguments = JSON.stringify({ target: childId, message: `gAAAA${'A'.repeat(80)}=` });
+  choiceFollowup(observableMismatch).payload.arguments = JSON.stringify({ target: agentPath, message: `gAAAA${'A'.repeat(80)}=` });
   waitResult(observableMismatch, 'wait-1').payload.call_id = 'wrong';
   assert.throws(() => qualifyCodexRescueChoiceEvidence(observableMismatch, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-parent-call-id');
   const missing = choiceFixture('resume'); const missingCall = choiceFollowup(missing); const missingOutput = followupResult(missing); missing.rollouts[0] = missing.rollouts[0].filter((event) => event !== missingCall && event !== missingOutput);
@@ -1607,7 +1663,7 @@ test('foreground and background parent calls own globally unique one-to-one call
     for (const background of [false, true]) {
       const input = background ? backgroundFixture() : fixture();
       spawnEvent(input).payload.call_id = callId;
-      startEvent(input).payload.event_id = callId;
+      startEvent(input).payload.item.id = callId;
       const qualify = background
         ? () => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions())
         : () => qualifyCodexRescueEvidence(input, options());
@@ -1652,6 +1708,11 @@ test('preparation qualification independently validates task and every bounded o
 
 test('spawn qualification rejects targeted resume and malformed continuation identifiers through production validation', () => {
   const invalidEnvelopes = [
+    {
+      version: 3, source: 'explicit', task: expectedPreparationEnvelope.task,
+      options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { agentPath },
+    },
     {
       version: 2, source: 'explicit', task: expectedPreparationEnvelope.task,
       options: { execution: 'foreground', resume: 'resume' },
@@ -2142,7 +2203,7 @@ test('fails instead of skipping when linked child metadata has the wrong named R
 
 test('fails instead of skipping when observed child ID conflicts with an existing linked rollout', () => {
   const input = fixture();
-  startEvent(input).payload.agent_thread_id = '019fe6e0-ffff-7192-83ba-0b0cc2c48660';
+  startEvent(input).payload.item.agent_thread_id = '019fe6e0-ffff-7192-83ba-0b0cc2c48660';
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options()),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-rollout-id-mismatch',
@@ -2356,7 +2417,7 @@ function fixture(publicOutput = expectedPublicOutput) {
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
       ...parentPreparationEvents(),
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } },
-      { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
     ];
@@ -2460,9 +2521,15 @@ function setPresentation(input, nextTaskName, nextAgentPath) {
   spawn.payload.arguments = JSON.stringify(args);
   const acknowledgement = parentOutput(input, 'prepare-write-1');
   acknowledgement.payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'spawn', taskName: nextTaskName }), exit_code: 0 });
-  const previousAgentPath = startEvent(input).payload.agent_path;
-  startEvent(input).payload.agent_path = nextAgentPath;
+  const previousAgentPath = startEvent(input).payload.item.agent_path;
+  startEvent(input).payload.item.agent_path = nextAgentPath;
   childMeta(input).payload.source.subagent.thread_spawn.agent_path = nextAgentPath;
+  const followup = input.rollouts[0].find((event) => event?.payload?.name === 'followup_task');
+  if (followup) {
+    const argumentsValue = JSON.parse(followup.payload.arguments);
+    argumentsValue.target = nextAgentPath;
+    followup.payload.arguments = JSON.stringify(argumentsValue);
+  }
   for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message'
     && candidate.payload.recipient === '/root' && candidate.payload.author === previousAgentPath)) {
     event.payload.author = nextAgentPath;
@@ -2512,7 +2579,7 @@ function choiceFixture(choice) {
     { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
     ...parentPreparationEvents(),
     structuredSpawn('spawn-1'),
-    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
+    { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } } },
     structuredWait('wait-1'),
     waitOutput('wait-1', false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
@@ -2561,9 +2628,9 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { ...structuredPoll(71, 'prepare-write-1', `${JSON.stringify(preparationEnvelope('explicit', 'fresh', execution))}\n`), timestamp: '2026-08-10T00:00:00.500Z' },
     { ...capturedResultEvent('prepare-write-1', { output: preparedAck({ version: 1, action: 'spawn', taskName }), exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: taskName, message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childId }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath } } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ task_name: agentPath }) } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-1', agent_thread_id: childId, agent_path: agentPath } } },
     { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T01:01:00.500Z' },
@@ -2633,8 +2700,8 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const thread = restoredRawCodexChild({ originWorkspace, restoredPath, agentRole });
   const preparedRoute = { version: 2, action: 'followup', target: restoredPath, assignment: agentType };
   const generationId = '9'.repeat(64); const childTurnId = 'qualification-child-turn-7'; const privateTask = 'diagnose the agent path collision without any fallback';
-  const preparationEnvelope = { version: 2, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' },
-    continuationTarget: { childId, agentPath: restoredPath } };
+  const preparationEnvelope = { version: 3, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' },
+    continuationTarget: { agentPath: restoredPath } };
   const preparationCreatedAt = '2026-08-10T01:00:00.550Z'; const preparationConsumedAt = '2026-08-10T01:00:00.950Z';
   const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentId, 'turn-resumed', executionWorkspace, 'rescue'])).digest('hex'),
     sessionId: parentId, turnId: 'turn-resumed', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
@@ -2649,9 +2716,9 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
     parentRolloutJson: JSON.stringify([
       { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user' } },
       { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-original', arguments: JSON.stringify(spawnArguments) } },
-      { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: 'spawn-original', output: JSON.stringify({ agent_id: childId }) } },
-      { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-original', agent_thread_id: childId, agent_path: restoredPath, parent_turn_id: 'turn-original' } },
-      { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: restoredPath, parent_turn_id: 'turn-original' } },
+      { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: 'spawn-original', output: JSON.stringify({ task_name: restoredPath }) } },
+      { type: 'event_msg', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-original', agent_thread_id: childId, agent_path: restoredPath } } },
+      { type: 'event_msg', turn_id: 'turn-original', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-original', agent_thread_id: childId, agent_path: restoredPath } } },
       { ...structuredExecResult(roleCommand, 'role-restored', { workdir: executionWorkspace }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.100Z' },
       { ...capturedResultEvent('role-restored', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.200Z' },
       { ...structuredExecResult(prepareCommand, 'prepare-restored', { workdir: executionWorkspace, tty: true }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.300Z' },
@@ -2700,8 +2767,8 @@ function restoredAppServerTranscript(thread) {
 const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
 function preparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
 function preparationEnvelope(source, resume, execution) {
-  return { version: 2, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume },
-    continuationTarget: resume === 'resume' ? { childId, agentPath } : null };
+  return { version: 3, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume },
+    continuationTarget: resume === 'resume' ? { agentPath } : null };
 }
 function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([parentId, turnId, expectedWorkspace, 'rescue'])).digest('hex');
@@ -2905,7 +2972,7 @@ function structuredSpawn(callId) {
 }
 
 function structuredFollowup(callId, choice) {
-  return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: childId, message: choiceOptions(choice).expectedFollowupMessage }) } };
+  return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: agentPath, message: choiceOptions(choice).expectedFollowupMessage }) } };
 }
 function followupOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
 
@@ -2983,7 +3050,7 @@ function toolOutput(callId, terminalText) {
 function semanticText(terminalText) { return `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${terminalText}`; }
 
 function spawnEvent(input) { return input.rollouts[0].find((event) => event.payload?.name === 'spawn_agent'); }
-function startEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'sub_agent_activity'); }
+function startEvent(input) { return input.rollouts[0].find((event) => event.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started'); }
 function childReturnEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'agent_message' && event.payload.author === agentPath); }
 function childMeta(input) { return input.rollouts[1][0]; }
 function parentMeta(input) { return input.rollouts[0][0]; }

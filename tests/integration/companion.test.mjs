@@ -1833,7 +1833,7 @@ test('cross-parent resume reactivates only the exact persisted child binding and
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 2);
 });
 
-test('raw TTY v2 preparation selects one exact sibling binding and keeps its handle out of execution', async (t) => {
+test('private v3 canonical path resumes only the selected original session', async (t) => {
   const context = await fixture(); const parentSessionId = 'exact-target-parent';
   const selected = { childId: 'exact-target-child-2', agentPath: '/root/zcode_rescue_task_2', zcodeSessionId: 'exact-target-zcode-session-2' };
   const sibling = { childId: 'exact-target-child-1', agentPath: '/root/zcode_rescue_task', zcodeSessionId: 'exact-target-zcode-session-1' };
@@ -1864,9 +1864,9 @@ test('raw TTY v2 preparation selects one exact sibling binding and keeps its han
   const exit = new Promise((resolve, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }));
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   await waitFor(async () => stdout === '{"type":"preparation-input-ready","command":"rescue"}\n', 'exact-target readiness was not emitted');
-  child.stdin?.write(`${JSON.stringify({ version: 2, source: 'explicit', task: 'continue selected operation',
+  child.stdin?.write(`${JSON.stringify({ version: 3, source: 'explicit', task: 'continue selected operation',
     options: { execution: 'foreground', resume: 'resume' },
-    continuationTarget: { childId: selected.childId, agentPath: selected.agentPath } })}\n`);
+    continuationTarget: { agentPath: selected.agentPath } })}\n`);
   assert.deepEqual(await exit, { code: 0, signal: null });
   const publicOutput = `${stdout}${stderr}`;
   assert.equal(stderr, ''); assert.match(stdout, new RegExp(`"target":"${selected.agentPath}"`));

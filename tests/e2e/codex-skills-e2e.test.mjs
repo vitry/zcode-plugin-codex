@@ -84,12 +84,12 @@ function installedRescueChoiceFacts(rollouts, parentThreadId, requireFollowup) {
   const parent = parentCandidates[0];
   const calls = (name) => parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
   const spawns = calls('spawn_agent'); const followups = calls('followup_task');
-  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
   assert.equal(spawns.length, 1, 'choice linkage must expose exactly one original spawn');
   assert.equal(starts.length, 1, 'choice linkage must expose exactly one original child start');
   assert.equal(followups.length, requireFollowup ? 1 : 0, `choice linkage must expose ${requireFollowup ? 'one continuation follow-up' : 'no follow-up before resume'}`);
   const spawnArgs = JSON.parse(spawns[0].payload.arguments);
-  const taskName = spawnArgs.task_name; const agentPath = starts[0].payload.agent_path; const childThreadId = starts[0].payload.agent_thread_id;
+  const taskName = spawnArgs.task_name; const agentPath = starts[0].payload.item.agent_path; const childThreadId = starts[0].payload.item.agent_thread_id;
   assert.ok(typeof taskName === 'string' && typeof agentPath === 'string' && typeof childThreadId === 'string', 'choice linkage rollout must expose all original child identity fields');
   const childCandidates = rollouts.filter((events) => Array.isArray(events)
     && events.some((event) => event?.type === 'session_meta' && event.payload?.id === childThreadId));
@@ -118,7 +118,7 @@ function assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId
   for (const field of ['taskName', 'agentPath', 'childThreadId']) {
     assert.equal(post[field], pendingIdentity[field], `post-continuation ${field} must match the pending snapshot`);
   }
-  assert.equal(post.followupTarget, pendingIdentity.childThreadId, 'post-continuation follow-up target must match the pending snapshot child ID');
+  assert.equal(post.followupTarget, pendingIdentity.agentPath, 'post-continuation follow-up target must match the pending snapshot canonical path');
 }
 
 function installedRescueQualificationBody(source) {
@@ -605,8 +605,8 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 2, action: 'followup', target: agentPath, assignment: agentType };
     const childTurnId = `restored-${route}-child-turn-7`;
-    const preparationEnvelope = { version: 2, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' },
-      continuationTarget: { childId: childThreadId, agentPath } };
+    const preparationEnvelope = { version: 3, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' },
+      continuationTarget: { agentPath } };
     const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task_2', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
     const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
       sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
@@ -616,9 +616,9 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
       parentRolloutJson: JSON.stringify([
         { type: 'session_meta', payload: { id: parentSessionId } },
         { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: `spawn-${route}`, arguments: JSON.stringify(spawnArgs) } },
-        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: `spawn-${route}`, output: JSON.stringify({ agent_id: childThreadId }) } },
-        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: `spawn-${route}`, agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
-        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: `spawn-${route}`, output: JSON.stringify({ task_name: agentPath }) } },
+        { type: 'event_msg', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'old-turn', item: { type: 'SubAgentActivity', kind: 'started', id: `spawn-${route}`, agent_thread_id: childThreadId, agent_path: agentPath } } },
+        { type: 'event_msg', turn_id: 'old-turn', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'old-turn', item: { type: 'SubAgentActivity', kind: 'stopped', id: `stop-${route}`, agent_thread_id: childThreadId, agent_path: agentPath } } },
         { ...installedToolCall(`role-${route}`, installedExecInput(`${launcherCommand} role-status rescue`, { workdir: executionWorkspace })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.100Z' },
         { ...installedToolOutput(`role-${route}`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.200Z' },
         { ...installedToolCall(`prepare-${route}`, installedExecInput(`${launcherCommand} prepare rescue`, { workdir: executionWorkspace, tty: true })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.300Z' },
@@ -702,7 +702,7 @@ test('synthetic captured qualification fixtures keep proactive fresh one-shot on
   for (const route of routes) {
     assert.equal(qualifyInstalledCapturedForeground(route).route, route.expectedEvidenceRoute);
     assert.deepEqual(JSON.parse(route.preparationPayload), {
-      version: 2,
+      version: 3,
       source: 'proactive',
       task: `repair captured ${route.name} route`,
       options: { execution: 'foreground', resume: 'fresh' },
@@ -1243,7 +1243,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.ok(proactiveParent, 'same-turn proactive continuation parent rollout is missing');
   assert.equal(new Set(proactiveParent.filter((event) => event?.payload?.name === 'spawn_agent').map((event) => event.turn_id)).size, 1, 'same-turn continuation must have one parent prompt identity');
   assert.equal(proactiveParent.filter((event) => event?.payload?.name === 'spawn_agent').length, 1, 'same-turn continuation must retain only the original spawn');
-  assert.equal(proactiveParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length, 1, 'same-turn continuation must expose no second SubagentStart');
+  assert.equal(proactiveParent.filter((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started').length, 1, 'same-turn continuation must expose no second SubagentStart');
   assert.equal(proactiveParent.filter((event) => event?.payload?.name === 'followup_task').length, 1, 'same-turn continuation must follow up the exact stopped child once');
   const proactivePeer = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const sends = proactivePeer.filter((call) => call.method === 'session/send'); const resumed = proactivePeer.filter((call) => call.method === 'session/resume');
@@ -1608,14 +1608,32 @@ test('installed Rescue choice linkage rejects post-continuation identity drift f
     [
       { type: 'session_meta', payload: { id: parentThreadId } },
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
-      { type: 'event_msg', payload: { type: 'sub_agent_activity', kind: 'started', agent_path: '/root/zcode_rescue_drifted', agent_thread_id: pendingIdentity.childThreadId } },
-      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.childThreadId }) } },
+      { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: 'turn', item: { type: 'SubAgentActivity', id: 'spawn', kind: 'started', agent_path: '/root/zcode_rescue_drifted', agent_thread_id: pendingIdentity.childThreadId } } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.agentPath }) } },
     ],
     [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_drifted' } } } } }],
   ];
   assert.throws(
     () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
     /pending snapshot/u,
+  );
+});
+
+test('installed Rescue choice linkage routes the retained child by canonical path', () => {
+  const parentThreadId = 'parent-thread';
+  const pendingIdentity = { taskName: 'zcode_rescue_fix_progress', agentPath: '/root/zcode_rescue_fix_progress', childThreadId: 'child-thread' };
+  const evidence = { ...pendingIdentity };
+  const postRollouts = [
+    [
+      { type: 'session_meta', payload: { id: parentThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
+      { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: 'turn', item: { type: 'SubAgentActivity', id: 'spawn', kind: 'started', agent_path: pendingIdentity.agentPath, agent_thread_id: pendingIdentity.childThreadId } } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.agentPath }) } },
+    ],
+    [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: pendingIdentity.agentPath } } } } }],
+  ];
+  assert.doesNotThrow(
+    () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
   );
 });
 
@@ -1713,14 +1731,14 @@ async function captureInstalledPreparedContinuationEvidence(input) {
   const parent = input.rollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === input.parentSessionId));
   assert.ok(parent, 'raw continuation capture requires the exact parent rollout');
   const spawn = parent.find((event) => event?.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
-  const start = parent.find((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
-  const stop = parent.find((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  const start = parent.find((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
+  const stop = parent.find((event) => event?.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'stopped');
   const followup = parent.find((event) => event?.payload?.type === 'function_call' && event.payload.name === 'followup_task');
   assert.ok(spawn && start && stop && followup, 'raw continuation capture requires spawn/start/stop/follow-up lifecycle events');
-  const childThreadId = start.payload.agent_thread_id;
+  const childThreadId = start.payload.item.agent_thread_id;
   const child = input.rollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === childThreadId));
   assert.ok(child, 'raw continuation capture requires the exact retained child rollout');
-  const originalParentTurnId = start.payload.parent_turn_id;
+  const originalParentTurnId = start.payload.turn_id ?? start.turn_id;
   const continuationParentTurnId = followup.turn_id;
   assert.ok(originalParentTurnId && continuationParentTurnId === originalParentTurnId, 'raw continuation capture requires one exact active parent turn');
 
@@ -1793,7 +1811,7 @@ async function captureInstalledPreparedContinuationEvidence(input) {
   const peerProjection = [creates[0], sends[0], resumes[0], sends[1]];
   return {
     route: input.route, execution: input.execution,
-    expected: { parentSessionId: input.parentSessionId, childThreadId, agentPath: start.payload.agent_path, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
+    expected: { parentSessionId: input.parentSessionId, childThreadId, agentPath: start.payload.item.agent_path, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
     parentRolloutJson: JSON.stringify(parentProjection), childRolloutJson: JSON.stringify(childProjection),
     appServerTranscriptJson: JSON.stringify(input.appServerTranscript),
     rawParentRolloutJson: JSON.stringify(parent), rawChildRolloutJson: JSON.stringify(child),
@@ -2031,7 +2049,7 @@ function nativeRouteEvidence(rollouts, parentThreadId) {
   const parent = rollouts.find((events) => events.find((event) => event?.type === 'session_meta')?.payload?.id === parentThreadId);
   if (!parent) return undefined;
   const spawns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
-  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.item?.type === 'SubAgentActivity' && event.payload.item.kind === 'started');
   if (spawns.length === 0 || starts.length === 0) return undefined;
   const waitCalls = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'wait_agent');
   const completedCallIds = new Set(parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output').map((event) => event.payload.call_id));
@@ -2311,9 +2329,9 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { ...installedToolCall('prepare-write-1', installedPreparationInput(71, `${JSON.stringify(installedContinuationEnvelope('explicit', 'fresh'))}\n`)), timestamp: '2026-08-10T00:00:00.500Z' },
     { ...installedToolOutput('prepare-write-1', { output: installedPreparedAck({ version: 1, action: 'spawn', taskName: 'zcode_rescue_task' }), exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_task', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task', parent_turn_id: 'turn-original' } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childThreadId }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task', parent_turn_id: 'turn-original' } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task' } } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ task_name: '/root/zcode_rescue_task' }) } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task' } } },
     { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T01:01:00.500Z' },
@@ -2429,7 +2447,7 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
   assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
   const roleAfter = await readFile(activePath, 'utf8'); const roleStatAfter = await stat(activePath);
-  const frame = `${JSON.stringify({ version: 2, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
+  const frame = `${JSON.stringify({ version: 3, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
   const prepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
     env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
@@ -2464,8 +2482,8 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   }
   const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
-  const proactiveFrame = `${JSON.stringify({ version: 2, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' },
-    continuationTarget: { childId: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agentPath: '/root/zcode_rescue_task' } })}\n`;
+  const proactiveFrame = `${JSON.stringify({ version: 3, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' },
+    continuationTarget: { agentPath: '/root/zcode_rescue_task' } })}\n`;
   const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
     env: { ...launcherEnv, FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [persistedChild], nextCursor: null, backwardsCursor: null }), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
   assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
@@ -2681,8 +2699,8 @@ function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
   }
   const firstCreated = Date.parse(observed.preparationHistory[0].createdAt); const firstConsumed = Date.parse(observed.preparationHistory[0].consumedAt);
   const secondCreated = Date.parse(observed.preparationHistory[1].createdAt);
-  const spawnEvent = parent.find((event) => event?.payload?.name === 'spawn_agent'); const startEvent = parent.find((event) => event?.payload?.kind === 'started');
-  const stopEvent = parent.find((event) => event?.payload?.kind === 'stopped'); const followupEvent = parent.find((event) => event?.payload?.name === 'followup_task');
+  const spawnEvent = parent.find((event) => event?.payload?.name === 'spawn_agent'); const startEvent = parent.find((event) => event?.payload?.item?.kind === 'started');
+  const stopEvent = parent.find((event) => event?.payload?.item?.kind === 'stopped'); const followupEvent = parent.find((event) => event?.payload?.name === 'followup_task');
   const spawnOutput = parent.find((event) => event?.payload?.call_id === 'spawn-1' && event.payload.type === 'function_call_output');
   const followupOutput = parent.find((event) => event?.payload?.call_id === 'followup-1' && event.payload.type === 'function_call_output');
   spawnEvent.timestamp = new Date(firstCreated + 2).toISOString(); startEvent.timestamp = new Date(firstCreated + 3).toISOString();
@@ -2727,8 +2745,8 @@ function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, ext
     permissionSnapshot: { permissionMode: 'acceptEdits' }, status, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:01:00.000Z', ...extra };
 }
 function installedContinuationEnvelope(source, resume) {
-  return { version: 2, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume },
-    continuationTarget: resume === 'resume' ? { childId: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agentPath: '/root/zcode_rescue_task' } : null };
+  return { version: 3, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume },
+    continuationTarget: resume === 'resume' ? { agentPath: '/root/zcode_rescue_task' } : null };
 }
 function installedContinuationPreparationRecord(sessionId, workspace, executorAgentId, turnId, generation, source, resume, requiredExecutorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([sessionId, turnId, workspace, 'rescue'])).digest('hex');
@@ -2794,7 +2812,7 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   const preflightCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" role-status rescue`;
   const preparationCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" prepare rescue`;
   const options = config.options ?? { execution: 'foreground', resume: 'fresh' };
-  const preparationPayload = JSON.stringify({ version: 2, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options,
+  const preparationPayload = JSON.stringify({ version: 3, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options,
     continuationTarget: null });
   const statusCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-status rescue`;
   for (const expected of [command, statusCommand,
@@ -2835,7 +2853,7 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
     installedToolCall(`${name}-prepare-write`, installedPreparationInput(name === 'named' ? 171 : 181, `${preparationPayload}\n`)),
     installedToolOutput(`${name}-prepare-write`, { output: installedPreparedAck({ version: 1, action: 'spawn', taskName }), exit_code: 0 }),
     { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
-    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } },
+    { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: `${name}-turn`, item: { type: 'SubAgentActivity', id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } } },
     installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
     ...installedCapturedWait(`${name}-wait-1`, true),
     installedCapturedParentRelay(agentPath, 'tool-active', name === 'named' ? 'b' : 'd', name === 'named' ? 'a' : 'c'),
@@ -2912,8 +2930,8 @@ function installedCapturedChoiceRoute(route, choice) {
   const childThreadId = route.fixture.rollouts[1][0].payload.id;
   const childMeta = structuredClone(route.fixture.rollouts[1][0]);
   const spawn = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent'));
-  const start = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.type === 'sub_agent_activity'));
-  const agentPath = start.payload.agent_path;
+  const start = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.item?.type === 'SubAgentActivity'));
+  const agentPath = start.payload.item.agent_path;
   const choiceCommand = `node "${route.installedRoot}/skills/rescue/launcher.mjs" invoke-choice rescue ${choice}`;
   const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
   const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: `captured-${route.name}-session` }, choices: ['--resume', '--fresh'] })}\n`;
@@ -2951,7 +2969,7 @@ function installedCapturedChoiceRoute(route, choice) {
     ...installedCapturedWait(`${route.name}-initial-wait`, false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
-    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: childThreadId, message: followupMessage }) } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: agentPath, message: followupMessage }) } },
     installedCapturedFunctionOutput(`${route.name}-followup`),
     installedCapturedParentRelay(agentPath, 'model-active', route.name === 'named' ? 'f' : '2', route.name === 'named' ? 'f' : '2'),
     ...installedCapturedWait(`${route.name}-continuation-wait`, false),

@@ -217,7 +217,7 @@ test('Root automatic Rescue routing normalizes an explicit or proactive business
 
 test('active Rescue child rejoin is the first and exclusive Root action', () => {
   const source = skill('rescue');
-  const active = source.indexOf('rescueChildId');
+  const active = source.indexOf('rescueChildPath');
   const preflight = source.indexOf('role-status rescue');
   const prepare = source.indexOf('prepare rescue');
   const spawn = source.indexOf('spawn_agent({');
@@ -265,47 +265,45 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
-  assert.match(source, /exact version-2 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
-  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 2/i);
-  assert.match(source, /version 1[^\n]+targetless[^\n]+compatibility/i);
+  assert.match(source, /exact version-3 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
+  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 3/i);
+  assert.match(source, /versions? 1 and 2[^\n]+compatibility/i);
   assert.match(source, /options[\s\S]+`execution`[\s\S]+`resume`[\s\S]+`model`[\s\S]+`effort`/i);
   assert.match(source, /omit[^\n]+absent[^\n]+(?:never|not)[^\n]+null/i);
 });
 
-test('Root retains one linked continuation handle and never manufactures or directly follows it', () => {
+test('Root retains returned task_name and keeps child ID internal', () => {
   const source = skill('rescue');
-  assert.match(source, /successful `spawn_agent` call[\s\S]+spawn\.output\.agent_id[\s\S]+same started record[^\n]+`agent_path`/i);
-  assert.match(source, /retain[^\n]+unchanged[^\n]+pair[\s\S]+stop[\s\S]+restor[\s\S]+follow-up/i);
+  assert.match(source, /successful `spawn_agent` call[\s\S]+exact[^\n]+(?:returned|result)[^\n]+`task_name`/i);
+  assert.match(source, /returned `task_name`[^\n]+active logical handle[^\n]+canonical continuation path/i);
+  assert.doesNotMatch(source, /returned active collaboration handle|rescueChildId/i);
+  assert.match(source, /retain[^\n]+unchanged[^\n]+(?:canonical )?(?:agent )?path[\s\S]+stop[\s\S]+restor[\s\S]+follow-up/i);
+  assert.match(source, /child ID[^\n]+internal/i);
+  assert.doesNotMatch(source, /spawn\.output\.agent_id|started\.event_id/i);
+  assert.match(source, /never ask the user for a child ID/i);
   assert.match(source, /(?:must not|never)[^\n]+(?:synthesize|manufacture|derive)[^\n]+(?:agent )?path[^\n]+`taskName`/i);
-  assert.match(source, /if[^\n]+intended operation[^\n]+(?:unavailable|ambiguous)|if[^\n]+linked pair[^\n]+unavailable/i);
+  assert.match(source, /if[^\n]+intended operation[^\n]+(?:unavailable|ambiguous)|if[^\n]+(?:canonical )?path[^\n]+unavailable/i);
   assert.match(source, /ask[^\n]+user[^\n]+clarif/i);
   assert.match(source, /(?:must not|never)[^\n]+(?:prepare|invoke)[^\n]+(?:guess|without that clarification)/i);
   assert.match(source, /followup_task[\s\S]+prepared\.route\.target/i);
-  assert.match(source, /(?:must not|never)[^\n]+follow[^\n]+retained (?:pair|target|handle)/i);
+  assert.match(source, /(?:must not|never)[^\n]+follow[^\n]+retained (?:path|target|handle)/i);
 });
 
-test('Root pairs spawn output and started activity only through both host correlation fields', () => {
-  const sources = [
-    skill('rescue'),
-    readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8'),
-  ];
-  for (const source of sources) {
-    assert.match(source, /started\.event_id\s*==\s*spawn[^\n]+call_id/i);
-    assert.match(source, /started\.agent_thread_id\s*==\s*spawn[^\n]+(?:output|result)[^\n]+agent_id/i);
-    assert.match(source, /(?:either|whichever)[^\n]+arrives? first[\s\S]+wait[^\n]+unique[^\n]+counterpart/i);
-    assert.match(source, /missing[\s\S]+duplicate[\s\S]+mismatch[\s\S]+fail closed/i);
-    assert.match(source, /(?:must not|never)[^\n]+pair[^\n]+(?:partial|unmatched|mismatched)/i);
-    assert.match(source, /(?:must not|never)[^\n]+(?:guess|derive|synthesize)[^\n]+path[^\n]+`taskName`/i);
-  }
+test('Root never depends on internal activity correlation', () => {
+  const source = skill('rescue');
+  assert.match(source, /Root[^\n]+does not[^\n]+(?:read|inspect|depend on)[^\n]+(?:internal )?activity/i);
+  assert.match(source, /(?:must not|never)[^\n]+(?:guess|derive|synthesize)[^\n]+path[^\n]+`taskName`/i);
+  assert.doesNotMatch(source, /started\.(?:event_id|agent_thread_id)|spawn\.(?:output|result)\.agent_id/i);
 });
 
 test('new Rescue preparation frames carry only a private exact continuation target', () => {
   const source = skill('rescue');
-  assert.match(source, /`continuationTarget`[^\n]+either `null`[^\n]+exact[^\n]+`childId`[^\n]+`agentPath`/i);
+  assert.match(source, /`continuationTarget`[^\n]+either `null`[^\n]+exact[^\n]+agentPath/i);
+  assert.doesNotMatch(source, /`continuationTarget`[^\n]+`childId`/i);
   assert.match(source, /fresh[\s\S]+continuationTarget[^\n]+`null`/i);
-  assert.match(source, /exact resume[\s\S]+continuationTarget[^\n]+retained[^\n]+pair/i);
+  assert.match(source, /exact resume[\s\S]+continuationTarget[^\n]+retained[^\n]+(?:canonical )?path/i);
   assert.match(source, /only[^\n]+single[^\n]+post-readiness[^\n]+`write_stdin`[^\n]+frame/i);
-  assert.match(source, /serialized pair[\s\S]+never[\s\S]+argv[\s\S]+environment[\s\S]+assignment[\s\S]+output[\s\S]+child transcript[\s\S]+relay[\s\S]+status[\s\S]+result[\s\S]+ZCode/i);
+  assert.match(source, /serialized (?:selector|target)[\s\S]+never[\s\S]+argv[\s\S]+environment[\s\S]+assignment[\s\S]+output[\s\S]+child transcript[\s\S]+relay[\s\S]+status[\s\S]+result[\s\S]+ZCode/i);
   const { namedSpawn, genericMessage } = assertRescueRouteContract(source);
   for (const fixture of [namedSpawn.text, genericMessage.text]) assert.doesNotMatch(fixture, /continuationTarget|childId/);
 });
@@ -319,7 +317,7 @@ test('routing precedence materializes only authoritative fresh or resume choices
   assert.match(source, /one semantic candidate[\s\S]+targetless[\s\S]+same-child `needs-choice`[\s\S]+ask exactly once/i);
   assert.match(source, /explicit[\s\S]+no choice[\s\S]+more than one semantic candidate[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+followup[\s\S]+spawn/i);
   assert.match(source, /one answer[\s\S]+(?:both|simultaneously)[\s\S]+operation[\s\S]+`resume` or `fresh`/i);
-  assert.match(source, /answer[^\n]+resume[^\n]+exact[^\n]+pair[\s\S]+answer[^\n]+fresh[^\n]+continuationTarget[^\n]+null/i);
+  assert.match(source, /answer[^\n]+resume[^\n]+exact[^\n]+(?:canonical )?path[\s\S]+answer[^\n]+fresh[^\n]+continuationTarget[^\n]+null/i);
   assert.match(source, /proactive[\s\S]+clear continuation[\s\S]+prepare[\s\S]+`resume`/i);
   assert.match(source, /clear independent[\s\S]+prepare[\s\S]+`fresh`/i);
   assert.match(source, /proactive genuinely ambiguous[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+spawn/i);
@@ -330,34 +328,21 @@ test('routing precedence materializes only authoritative fresh or resume choices
 });
 
 test('semantic candidate triage is explicit-only and proactive continuation never falls back to fresh', () => {
-  const sources = [
-    skill('rescue'),
-    readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8'),
-  ];
+  const sources = [skill('rescue')];
   for (const source of sources) {
     assert.match(source, /(?:zero|0)[^\n]+(?:one|1)[^\n]+(?:more than one|>1)[^\n]+(?:triage|branches)[^\n]+(?:only|entirely)[^\n]+explicit no-choice/i);
-    assert.match(source, /proactive clear continuation[\s\S]+exact (?:retained )?pair[^\n]+unavailable[^\n]+(?:clarif|fail)[^\n]+never[^\n]+fresh(?:\/null| fallback)?/i);
+    assert.match(source, /proactive clear continuation[\s\S]+exact retained canonical path[^\n]+unavailable[^\n]+(?:clarif|fail)[^\n]+never[^\n]+fresh(?:\/null| fallback)?/i);
   }
 });
 
 test('targetless choice requires one total stopped operation as well as one semantic candidate', () => {
-  const spec = readFileSync(new URL('docs/superpowers/specs/2026-08-27-rescue-exact-continuation-target-design.md', root), 'utf8');
-  const sources = [
-    skill('rescue'),
-    spec,
-  ];
+  const sources = [skill('rescue')];
   for (const source of sources) {
     assert.match(source, /targetless[\s\S]+only when[^\n]+total retained stopped operations[^\n]+(?:exactly|==) one[^\n]+sole semantic candidate/i);
     assert.match(source, /one semantic candidate[^\n]+total retained stopped operations[^\n]+(?:more than one|>1)[\s\S]+asks? exactly once[^\n]+before[^\n]+prepare/i);
-    assert.match(source, /(?:resume\s+(?:answer|choice)|(?:answer|choice)[^\n]+resume)[\s\S]+(?:candidate(?:'s)? )?exact pair[\s\S]+(?:fresh\s+(?:answer|choice)|(?:answer|choice)[^\n]+fresh)[\s\S]+(?:continuationTarget[^\n]+null|null target)/i);
+    assert.match(source, /(?:resume\s+(?:answer|choice)|(?:answer|choice)[^\n]+resume)[\s\S]+(?:candidate(?:'s)? )?exact retained canonical path[\s\S]+(?:fresh\s+(?:answer|choice)|(?:answer|choice)[^\n]+fresh)[\s\S]+(?:continuationTarget[^\n]+null|null target)/i);
     assert.match(source, /Root[^\n]+(?:does not|never)[^\n]+(?:read|inspect|decide)[^\n]+private binding validity/i);
   }
-  const acceptance = spec.match(/## Acceptance\n\n([\s\S]+?)(?:\n## |$)/)?.[1];
-  assert.ok(acceptance, 'spec must retain an Acceptance section');
-  assert.match(acceptance, /zero semantic candidates[\s\S]{0,80}explicit independent fresh/i);
-  assert.match(acceptance, /one semantic candidate[\s\S]{0,80}total retained[\s\S]{0,80}stopped operations exactly one[\s\S]{0,80}targetless/i);
-  assert.match(acceptance, /one semantic candidate[\s\S]{0,80}total retained stopped operations more[\s\S]{0,40}than one[\s\S]+ask[^\n]+resume\/fresh[\s\S]+exact pair[^\n]+null/i);
-  assert.match(acceptance, /more than one semantic candidate[^\n]+combined operation[^\n]+resume\/fresh/i);
 });
 
 test('private task envelope is confined to the parent write_stdin rollout', () => {
@@ -467,7 +452,7 @@ test('named and generic Rescue forwarders relay only validated coarse liveness a
     assert.match(forwarder, /status[\s\S]+does not (?:replace|complete)[\s\S]+original[\s\S]+handle/i);
     assert.match(forwarder, /return only[\s\S]+original[\s\S]+terminal[\s\S]+public stdout/i);
   }
-  assert.match(source, /update from the exact `rescueChildId`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
+  assert.match(source, /update from the exact `rescueChildPath`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
   assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
 });
 
@@ -507,10 +492,10 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
   }
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /resume[\s\S]+same-child choice continuation/i);
-  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildPath,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
-  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
-  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildId`/i);
+  assert.match(source, /select only the result or status belonging to `rescueChildPath`/);
+  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildPath`/i);
   assert.doesNotMatch(source, /followup_task\([\s\S]{0,160}(?:spawn_agent|invoke rescue)/);
   assert.match(role, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
   assert.match(role, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));

@@ -54,9 +54,11 @@ export async function planRescueActivation(input) {
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
   let candidateChildren = hostChildren;
   if (continuationTarget !== null) {
-    const selectedHost = hostChildren.find((host) => (
-      host.id === continuationTarget.childId && host.agentPath === continuationTarget.agentPath
-    ));
+    const selectedHost = input.envelope.version === 3
+      ? hostChildren.find((host) => host.agentPath === continuationTarget.agentPath)
+      : hostChildren.find((host) => (
+        host.id === continuationTarget.childId && host.agentPath === continuationTarget.agentPath
+      ));
     if (selectedHost === undefined) throw plannerError('RESCUE_BINDING_INVALID');
     candidateChildren = [selectedHost];
   }
@@ -151,13 +153,20 @@ function validatePlannerInput(input) {
   const continuationTarget = input?.envelope?.continuationTarget;
   const hasContinuationTarget = plain(input?.envelope)
     && Object.hasOwn(input.envelope, 'continuationTarget');
+  const validTarget = input?.envelope?.version === 1
+    ? !hasContinuationTarget
+    : input?.envelope?.version === 2
+      ? hasContinuationTarget && (continuationTarget === null || validPairContinuationTarget(continuationTarget))
+      : input?.envelope?.version === 3
+        ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
+        : false;
   if (!plain(input) || typeof input.dataRoot !== 'string' || input.dataRoot.length === 0 || !plain(caller)
     || !safeId(caller.sessionId) || !safeId(caller.turnId) || typeof caller.workspace !== 'string' || caller.workspace.length === 0
     || caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0)
     || !PERMISSION_MODES.includes(caller.permissionMode) || !plain(input.envelope) || !plain(input.envelope.options)
     || input.envelope.options.resume !== undefined && !['fresh', 'resume'].includes(input.envelope.options.resume)
-    || hasContinuationTarget && continuationTarget !== null
-      && (!validContinuationTarget(continuationTarget) || input.envelope.options.resume !== 'resume')
+    || !validTarget
+    || hasContinuationTarget && continuationTarget !== null && input.envelope.options.resume !== 'resume'
     || input.listChildren !== undefined && typeof input.listChildren !== 'function'
     || input.resolveStoppedExecutor !== undefined && typeof input.resolveStoppedExecutor !== 'function'
     || input.resolveBinding !== undefined && typeof input.resolveBinding !== 'function'
@@ -165,11 +174,18 @@ function validatePlannerInput(input) {
 }
 
 /** @param {unknown} value */
-function validContinuationTarget(value) {
+function validPairContinuationTarget(value) {
   if (!plain(value)) return false;
   const target = /** @type {Record<string, unknown>} */ (value);
   return sameKeys(target, ['agentPath', 'childId'])
     && boundedIdentifier(target.childId) && validAgentPath(target.agentPath);
+}
+
+/** @param {unknown} value */
+function validPathContinuationTarget(value) {
+  if (!plain(value)) return false;
+  const target = /** @type {Record<string, unknown>} */ (value);
+  return sameKeys(target, ['agentPath']) && validAgentPath(target.agentPath);
 }
 
 /** @param {any[]} children @param {string} parentId */
