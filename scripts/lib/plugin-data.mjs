@@ -85,6 +85,7 @@ function runtimeEntryIdentity(pluginRoot, codexHome, entryPath) {
   if (!relativeEntry) throw invalidRoot();
   let rawRoot = rawEntry;
   for (let index = 0; index < relativeEntry.length; index += 1) rawRoot = dirname(rawRoot);
+  if (resolve(join(rawRoot, ...relativeEntry)) !== rawEntry) throw invalidRoot();
   if (canonicalPath(rawRoot) !== ownedRoot) throw invalidRoot();
   const lexicalRoot = join(canonicalPath(dirname(rawRoot)), basename(rawRoot));
   const cache = canonicalPath(join(codexHome, 'plugins', 'cache'));

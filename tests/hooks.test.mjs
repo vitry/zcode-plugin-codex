@@ -16,7 +16,7 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
-import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
+import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
 import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
@@ -115,6 +115,15 @@ async function workspace() {
   return { cwd, data, env: { PLUGIN_DATA: data } };
 }
 
+async function installHookRuntime(pluginRoot) {
+  await mkdir(pluginRoot, { recursive: true });
+  for (const directory of ['hooks', 'scripts']) await cp(join(root, directory), join(pluginRoot, directory), { recursive: true });
+  await mkdir(join(pluginRoot, 'skills/rescue'), { recursive: true });
+  const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
+  await mkdir(join(pluginRoot, 'node_modules'), { recursive: true });
+  await symlink(dependency, join(pluginRoot, 'node_modules/fs-native-extensions'), 'dir');
+}
+
 async function addLinkedWorktree(cwd, name = 'late-bind-target') {
   const target = await mkdtemp(join(tmpdir(), 'zpc-hooks-linked-parent-'));
   await rm(target, { recursive: true, force: true });
@@ -187,6 +196,7 @@ test('default hooks/hooks.json registers bounded native lifecycle hooks without 
     else assert.equal(Object.hasOwn(hook, 'additionalContextLimit'), false, `${eventName} cannot emit additionalContext`);
   }
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
+  assert.equal(hooks.hooks.SessionStart[0].hooks[0].additionalContextLimit, SESSION_START_ADDITIONAL_CONTEXT_LIMIT);
   assert.equal(hooks.hooks.UserPromptSubmit[0].hooks[0].additionalContextLimit, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
@@ -267,6 +277,36 @@ test('unsafe compact launcher provenance emits only the fixed launcher error aft
   assert.equal(result.json?.hookSpecificOutput?.additionalContext, '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}');
   assert.doesNotMatch(result.stdout, /launcherCommand|companion lifecycle is active/);
   assert.equal(await isOwnedSession(data, { session_id: 'unsafe-compact', cwd }), true);
+});
+
+test('compact SessionStart executes from exact ordinary and cache-symlink installs but rejects wrong or foreign lexical entries', async () => {
+  const { cwd, data } = await workspace();
+  const temporary = await mkdtemp(join(tmpdir(), 'zpc-compact-installed-'));
+  const codexHome = join(temporary, 'codex-home');
+  const copied = join(codexHome, 'plugins/cache/vitry/zcode/0.2.0');
+  await installHookRuntime(copied);
+  const input = { session_id: 'installed-compact', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'compact' };
+  const copiedResult = await runHook(join(copied, 'hooks/session-lifecycle-hook.mjs'), input, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.equal(copiedResult.code, 0, copiedResult.stderr);
+  assert.equal(copiedResult.json?.hookSpecificOutput?.additionalContext,
+    `[zcode-rescue-launcher] ${JSON.stringify({ version: 1, launcherCommand: `node "${join(copied, 'skills/rescue/launcher.mjs')}"` })}`);
+
+  const linked = join(codexHome, 'plugins/cache/vitry/zcode/0.3.0');
+  await mkdir(dirname(linked), { recursive: true }); await symlink(root, linked, 'dir');
+  const linkedResult = await runHook(join(linked, 'hooks/session-lifecycle-hook.mjs'), { ...input, session_id: 'linked-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.equal(linkedResult.code, 0, linkedResult.stderr);
+  assert.equal(linkedResult.json?.hookSpecificOutput?.additionalContext,
+    `[zcode-rescue-launcher] ${JSON.stringify({ version: 1, launcherCommand: `node "${join(linked, 'skills/rescue/launcher.mjs')}"` })}`);
+
+  const wrongEntry = join(copied, 'hooks/wrong-session-lifecycle-hook.mjs');
+  await symlink(join(copied, 'hooks/session-lifecycle-hook.mjs'), wrongEntry);
+  const wrong = await runHook(wrongEntry, { ...input, session_id: 'wrong-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.notEqual(wrong.code, 0); assert.equal(wrong.stdout, ''); assert.match(wrong.stderr, /PLUGIN_DATA_ROOT_INVALID/);
+
+  const foreignEntry = join(temporary, 'foreign-session-lifecycle-hook.mjs');
+  await symlink(join(copied, 'hooks/session-lifecycle-hook.mjs'), foreignEntry);
+  const foreign = await runHook(foreignEntry, { ...input, session_id: 'foreign-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.notEqual(foreign.code, 0); assert.equal(foreign.stdout, ''); assert.match(foreign.stderr, /PLUGIN_DATA_ROOT_INVALID/);
 });
 
 test('two sessions in one workspace get isolated caller capabilities, permission snapshots and baselines', async () => {
