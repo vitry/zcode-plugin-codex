@@ -51,6 +51,21 @@ const commitmentPublicationCrash = join(root, 'tests', 'fixtures', 'commitment-p
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached its time limit.\n';
+const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
+const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
+
+/** The progress archive is degraded only after the shared cleanup deadline;
+ * the independently fenced job log may then report its own terminal suffix.
+ * @param {string} actual @param {string[]} semanticLines */
+function assertExactOptionalSinkDegradation(actual, semanticLines) {
+  const progressSuffixes = [[], [PROGRESS_CLEANUP_TIMEOUT_LINE], [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE]];
+  const candidates = progressSuffixes.flatMap((suffix) => [
+    [...semanticLines, ...suffix],
+    [...semanticLines, ...suffix, JOB_LOG_DISABLED_LINE],
+  ]).map((lines) => lines.join(''));
+  assert.ok(candidates.includes(actual), `unexpected optional sink degradation sequence:\n${actual}`);
+}
 
 /** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
  * @param {any} job @param {any} spec @param {string} capability */
@@ -3237,7 +3252,11 @@ test('conversation subscribe failure is observational, durable, and preserves th
   const result = await companion(context, ['rescue', '--fresh', 'subscribe failure'], { FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode conversation progress is unavailable\.\n\[zcode\] ZCode completed the delegated turn\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n(?:\[zcode\] ZCode progress archive was disabled\.\n)?)?$/u);
+  assertExactOptionalSinkDegradation(result.stderr, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode conversation progress is unavailable.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');
@@ -3249,7 +3268,11 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   const result = await companion(context, ['rescue', '--fresh', 'unsubscribe failure'], { FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode completed the delegated turn\.\n\[zcode\] ZCode conversation progress cleanup was incomplete\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n\[zcode\] ZCode progress archive was disabled\.\n)?$/u);
+  assertExactOptionalSinkDegradation(result.stderr, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+  ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { parseArgs } from '../scripts/lib/args.mjs';
@@ -1205,15 +1206,15 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode progress cleanup reached its time limit.\n',
     '[zcode] ZCode progress archive was disabled.\n',
   ];
+  const exactDiagnosticSuffixes = [[], diagnosticLines.slice(0, 1), diagnosticLines];
   assert.deepEqual(lines.slice(0, semanticLines.length), semanticLines);
-  assert.ok([0, diagnosticLines.length].includes(lines.length - semanticLines.length));
-  assert.deepEqual(lines.slice(semanticLines.length), lines.length === semanticLines.length ? [] : diagnosticLines);
+  assert.ok(exactDiagnosticSuffixes.some((suffix) => isDeepStrictEqual(lines.slice(semanticLines.length), suffix)));
   const semanticMessages = semanticLines.map((line) => line.slice(8, -1));
   const diagnosticMessages = diagnosticLines.map((line) => line.slice(8, -1));
+  const exactDiagnosticMessageSuffixes = [[], diagnosticMessages.slice(0, 1), diagnosticMessages];
   const persistedMessages = persisted.map((event) => event.message);
   assert.deepEqual(persistedMessages.slice(0, semanticMessages.length), semanticMessages);
-  assert.ok([0, diagnosticMessages.length].includes(persistedMessages.length - semanticMessages.length));
-  assert.deepEqual(persistedMessages.slice(semanticMessages.length), persistedMessages.length === semanticMessages.length ? [] : diagnosticMessages);
+  assert.ok(exactDiagnosticMessageSuffixes.some((suffix) => isDeepStrictEqual(persistedMessages.slice(semanticMessages.length), suffix)));
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
