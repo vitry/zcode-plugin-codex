@@ -4715,14 +4715,37 @@ test('cold resume reads only isolated HOME and performs resume then setModel the
   };
   const initial = await companion(context, ['rescue', '--fresh', 'establish cold candidate'], env);
   assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
-  const resumed = await companion(context, ['rescue', '--resume', 'materialize cold runtime'], env);
+  const resumed = await companion(context, ['rescue', '--resume', '--effort', 'high', 'materialize cold runtime'], env);
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  const recovery = requests.filter((request) => ['session/resume', 'session/setModel', 'session/send'].includes(request.method));
-  assert.deepEqual(recovery.map((request) => request.method), ['session/resume', 'session/setModel', 'session/send']);
-  assert.deepEqual(recovery[1].params.model, { providerId: 'fake', modelId: 'model' });
-  assert.equal(recovery.filter((request) => request.method === 'session/send').length, 1);
+  const resumeIndex = requests.findIndex((request) => request.method === 'session/resume');
+  assert.deepEqual(requests.slice(resumeIndex, resumeIndex + 3).map((request) => request.method), ['session/resume', 'session/setModel', 'session/setThoughtLevel']);
+  assert.deepEqual(requests[resumeIndex + 1].params.model, { providerId: 'fake', modelId: 'model' });
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+  assert.ok(requests.findIndex((request) => request.method === 'v4/conversation/subscribe') > resumeIndex + 2);
   assert.doesNotMatch(`${resumed.stdout}${resumed.stderr}${resumed.internal}`, /PRIVATE_CLI_TOKEN/);
+
+  await rm(join(isolatedHome, '.zcode', 'cli', 'config.json')); await writeFile(record, '');
+  const warmAgain = await companion(context, ['rescue', '--resume', 'same-process warm runtime'], env);
+  assert.equal(warmAgain.code, 0, `${warmAgain.stderr}${warmAgain.stdout}`);
+  const warmRequests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(warmRequests.some((request) => request.method === 'session/setModel'), false);
+  assert.equal(warmRequests.filter((request) => request.method === 'session/send').length, 1);
+});
+
+test('unsupported CLI recovery tuple does not materialize, retry, fall back, or send twice', async () => {
+  const context = await fixture(); const record = join(context.directory, 'unsupported-cold-resume.jsonl');
+  const isolatedHome = join(context.directory, 'unsupported-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' } }));
+  const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' };
+  const initial = await companion(context, ['rescue', '--fresh', 'establish unsupported candidate'], env);
+  assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+  const resumed = await companion(context, ['rescue', '--resume', '--effort', 'high', 'unsupported recovery'], env);
+  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.details?.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', JSON.stringify(resumed.json));
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(requests.filter((request) => request.method === 'session/setModel').map((request) => request.params.model), [{ providerId: 'unsupported', modelId: 'model' }]);
+  assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
 });
 
 test('warm, other-warning, and missing-config resumes do not perform CLI recovery setModel', async () => {

@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,lazyResolveRuntimeRecoveryModel?:()=>Promise<{providerId:string,modelId:string}|undefined>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryModel?:()=>Promise<{providerId:string,modelId:string}|undefined>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -114,6 +114,19 @@ export async function executeJob(input) {
     }, input.signal);
     const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
     sessionId = activeSessionId;
+    const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
+    const runtimeRecoveryRequired = input.resumeSessionId !== undefined && snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+    let runtimeModelMaterialized = !runtimeRecoveryRequired; let recoveryModel = selectedModel;
+    if (runtimeRecoveryRequired && !recoveryModel && input.resolveRuntimeRecoveryModel) {
+      try { recoveryModel = await boundedStep(input.resolveRuntimeRecoveryModel, input.signal); }
+      catch (error) { input.signal?.throwIfAborted(); void error; }
+    }
+    if (runtimeRecoveryRequired && validRecoveryModel(recoveryModel)) {
+      snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
+      runtimeModelMaterialized = snapshot.projection?.lastError?.type !== 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+    }
+    else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
+    if (input.effort && runtimeModelMaterialized) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     conversationObserver = createDeferredConversationProgressObserver({ sessionId: activeSessionId, workspace });
     reporter = createProgressReporter({
       sessionId: activeSessionId,
@@ -138,16 +151,6 @@ export async function executeJob(input) {
         await conversationObserver.bind(conversationSubscription.subscriptionId);
       } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();
-    const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
-    const runtimeRecoveryRequired = input.resumeSessionId !== undefined && snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
-    let recoveryModel = selectedModel;
-    if (runtimeRecoveryRequired && !recoveryModel && input.lazyResolveRuntimeRecoveryModel) {
-      try { recoveryModel = await boundedStep(input.lazyResolveRuntimeRecoveryModel, input.signal); }
-      catch (error) { input.signal?.throwIfAborted(); void error; }
-    }
-    if (runtimeRecoveryRequired && validRecoveryModel(recoveryModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
-    else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
-    if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {

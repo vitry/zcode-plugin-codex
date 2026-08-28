@@ -471,8 +471,8 @@ input.on('line', async (line) => {
     case 'session/resume':
       resumeCount += 1;
       if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
-      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), settings: settings(), messages: [], ...(process.env.FAKE_ZCODE_COLD_RESUME_MODEL ? { runtimeMaterialized: false } : {}) });
-      else if (process.env.FAKE_ZCODE_COLD_RESUME_MODEL) sessions.get(p.sessionId).runtimeMaterialized = false;
+      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), settings: settings(), messages: [], ...(process.env.FAKE_ZCODE_COLD_RESUME_MODEL ? { runtimeMaterialized: false, coldResumeObserved: true } : {}) });
+      else if (process.env.FAKE_ZCODE_COLD_RESUME_MODEL && sessions.get(p.sessionId).coldResumeObserved !== true) { sessions.get(p.sessionId).runtimeMaterialized = false; sessions.get(p.sessionId).coldResumeObserved = true; }
       send({ id: message.id, result: snapshotForMethod('session/resume', p.sessionId) });
       break;
     case 'session/list': {
