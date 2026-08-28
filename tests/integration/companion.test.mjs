@@ -4706,6 +4706,44 @@ test('model selection is applied at create time when resolvable and after live c
   assert.ok(requests.some((request) => request.method === 'session/setModel' && request.params.model.providerId === 'fake'));
 });
 
+test('cold resume reads only isolated HOME and performs resume then setModel then one send', async () => {
+  const context = await fixture(); const record = join(context.directory, 'cold-resume.jsonl');
+  const isolatedHome = join(context.directory, 'isolated-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'fake/model' }, providerOptions: { token: 'PRIVATE_CLI_TOKEN' } }));
+  const env = {
+    HOME: isolatedHome, USERPROFILE: join(context.directory, 'wrong-userprofile'), FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model',
+  };
+  const initial = await companion(context, ['rescue', '--fresh', 'establish cold candidate'], env);
+  assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+  const resumed = await companion(context, ['rescue', '--resume', 'materialize cold runtime'], env);
+  assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const recovery = requests.filter((request) => ['session/resume', 'session/setModel', 'session/send'].includes(request.method));
+  assert.deepEqual(recovery.map((request) => request.method), ['session/resume', 'session/setModel', 'session/send']);
+  assert.deepEqual(recovery[1].params.model, { providerId: 'fake', modelId: 'model' });
+  assert.equal(recovery.filter((request) => request.method === 'session/send').length, 1);
+  assert.doesNotMatch(`${resumed.stdout}${resumed.stderr}${resumed.internal}`, /PRIVATE_CLI_TOKEN/);
+});
+
+test('warm, other-warning, and missing-config resumes do not perform CLI recovery setModel', async () => {
+  for (const scenario of ['warm', 'other-warning', 'missing-config']) {
+    const context = await fixture();
+    const isolatedHome = join(context.directory, `${scenario}-home`); await mkdir(isolatedHome);
+    const record = join(context.directory, `${scenario}.jsonl`);
+    const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record,
+      ...(scenario === 'warm' ? {} : { FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' }),
+      ...(scenario === 'other-warning' ? { FAKE_ZCODE_COLD_LAST_ERROR_TYPE: 'ZCODE_OTHER_FAILURE' } : {}) };
+    const initial = await companion(context, ['rescue', '--fresh', `establish ${scenario}`], env);
+    assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+    const resumed = await companion(context, ['rescue', '--resume', `resume ${scenario}`], env);
+    const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(requests.some((request) => request.method === 'session/setModel'), false, scenario);
+    assert.equal(requests.filter((request) => request.method === 'session/send').length, 1, scenario);
+    if (scenario === 'warm') assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
+    else { assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_REQUEST_FAILED'); assert.equal(resumed.json.error.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE'); }
+  }
+});
+
 test('result extraction accepts mixed visible output and rejects reasoning-only or invalid structured output', async () => {
   const mixedContext = await fixture(); const mixed = await companion(mixedContext, ['review'], { FAKE_ZCODE_RESULT_MODE: 'mixed' });
   assert.equal(mixed.code, 0, `${mixed.stderr}${mixed.stdout}`); assert.deepEqual(JSON.parse(mixed.json.result), { findings: [] }); assert.doesNotMatch(mixed.json.result, /private reasoning|ignored/);

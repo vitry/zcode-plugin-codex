@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,lazyResolveRuntimeRecoveryModel?:()=>Promise<{providerId:string,modelId:string}|undefined>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -139,7 +139,14 @@ export async function executeJob(input) {
       } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
-    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
+    const runtimeRecoveryRequired = input.resumeSessionId !== undefined && snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+    let recoveryModel = selectedModel;
+    if (runtimeRecoveryRequired && !recoveryModel && input.lazyResolveRuntimeRecoveryModel) {
+      try { recoveryModel = await boundedStep(input.lazyResolveRuntimeRecoveryModel, input.signal); }
+      catch (error) { input.signal?.throwIfAborted(); void error; }
+    }
+    if (runtimeRecoveryRequired && validRecoveryModel(recoveryModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
+    else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
     if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
@@ -453,4 +460,6 @@ function isInterruption(error) { return error instanceof PluginError && error.co
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
+/** @param {any} model */
+function validRecoveryModel(model) { return typeof model?.providerId === 'string' && model.providerId.length > 0 && typeof model?.modelId === 'string' && model.modelId.length > 0; }
 function artifactError() { return new PluginError('RESULT_ARTIFACT_INVALID', 'Result artifact path is outside the private result store.', { category: 'storage', remedy: 'Restore the job record with a scoped result artifact.' }); }
