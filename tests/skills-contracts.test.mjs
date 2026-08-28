@@ -99,6 +99,19 @@ test('skills use their fixed installed entrypoint without exposing private proto
   }
 });
 
+test('direct job Skills preserve one lifecycle-authoritative job partition without changing invocation syntax', () => {
+  for (const name of ['status', 'result', 'cancel']) {
+    const source = skill(name);
+    assert.match(source, /one lifecycle-authoritative current job partition/i);
+    assert.match(source, /origin workspace.{0,160}exact (?:bound )?(?:execution )?target/is);
+    assert.match(source, /preserv(?:e|es|ed)(?: it)? privately across later turns/i);
+    assert.match(source, /never scan or merge workspace partitions/i);
+    assert.match(source, /explicit job ID.{0,180}(?:cannot|does not).{0,100}(?:cross-partition|owner authority)/is);
+    assert.match(source, new RegExp(`\\$zcode:${name} ${hints[name].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.match(source, new RegExp(`node "<plugin-root>/scripts/zcode-companion\\.mjs" invoke ${name}`));
+  }
+});
+
 test('public skills enforce authorization and do not expose removed flags', () => {
   for (const name of expected) {
     const source = skill(name);

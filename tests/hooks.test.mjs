@@ -119,6 +119,7 @@ async function installHookRuntime(pluginRoot) {
   await mkdir(pluginRoot, { recursive: true });
   for (const directory of ['hooks', 'scripts']) await cp(join(root, directory), join(pluginRoot, directory), { recursive: true });
   await mkdir(join(pluginRoot, 'skills/rescue'), { recursive: true });
+  await cp(join(root, 'skills/rescue/launcher.mjs'), join(pluginRoot, 'skills/rescue/launcher.mjs'));
   const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
   await mkdir(join(pluginRoot, 'node_modules'), { recursive: true });
   await symlink(dependency, join(pluginRoot, 'node_modules/fs-native-extensions'), 'dir');
