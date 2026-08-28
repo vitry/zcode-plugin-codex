@@ -26,8 +26,29 @@ const hints = {
   cancel: '[job-id]',
   setup: '[--enable-review-gate | --disable-review-gate]',
 };
+const directJobSkillContracts = {
+  status: {
+    usage: 'Invoke as `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`. Require an explicit job ID with `--wait`; accept a timeout only with `--wait`. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke status` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+  result: {
+    usage: 'Invoke as `$zcode:result [job-id]`; without an ID, allow the companion to select the latest eligible owned job. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke result` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+  cancel: {
+    usage: 'Invoke as `$zcode:cancel [job-id]`; without an ID, allow the companion to select the latest eligible owned job. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke cancel` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+};
 function skill(name) {
   return readFileSync(new URL(`skills/${name}/SKILL.md`, root), 'utf8');
+}
+
+function assertDirectJobSkillPublicContract(source, name) {
+  const contract = directJobSkillContracts[name];
+  const lines = source.split('\n');
+  assert.deepEqual(lines.filter((line) => line.startsWith('Invoke as ')), [contract.usage]);
+  assert.deepEqual(lines.filter((line) => line.includes('run exactly the constant command')), [contract.invocation]);
 }
 
 function assertRescueNamingContract(source) {
@@ -107,8 +128,13 @@ test('direct job Skills preserve one lifecycle-authoritative job partition witho
     assert.match(source, /preserv(?:e|es|ed)(?: it)? privately across later turns/i);
     assert.match(source, /never scan or merge workspace partitions/i);
     assert.match(source, /explicit job ID.{0,180}(?:cannot|does not).{0,100}(?:cross-partition|owner authority)/is);
-    assert.match(source, new RegExp(`\\$zcode:${name} ${hints[name].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-    assert.match(source, new RegExp(`node "<plugin-root>/scripts/zcode-companion\\.mjs" invoke ${name}`));
+    assertDirectJobSkillPublicContract(source, name);
+
+    const { usage, invocation } = directJobSkillContracts[name];
+    assert.throws(() => assertDirectJobSkillPublicContract(source.replace(usage, `${usage} --foreign`), name));
+    assert.throws(() => assertDirectJobSkillPublicContract(source.replace(invocation, `${invocation} --foreign`), name));
+    assert.throws(() => assertDirectJobSkillPublicContract(`${source}\n${usage}\n`, name));
+    assert.throws(() => assertDirectJobSkillPublicContract(`${source}\n${invocation}\n`, name));
   }
 });
 

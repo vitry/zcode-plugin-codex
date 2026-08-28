@@ -739,9 +739,26 @@ test('release guidance documents cold runtime, lifecycle partition, and compact 
     assert.match(source, /(?:one active writable Rescue per canonical workspace|每个 canonical workspace 只能有一个 active writable Rescue)[\s\S]{0,80}(?:unchanged|保持不变)/i);
   }
 
-  assert.match(security, /cold resume runtime recovery/i);
-  assert.match(security, /one lifecycle-authoritative workspace partition/i);
-  assert.match(security, /compact SessionStart/i);
+  assert.match(english, /Only after `session\/resume` returns the exact snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`, and only when neither an explicit `--model` nor the workspace model policy supplies a tuple/i);
+  assert.match(chinese, /仅当 `session\/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`，并且显式 `--model` 与 workspace 模型策略都没有提供 tuple/);
+  assert.match(english, /From either the eligible origin workspace or the exact bound execution target, they operate on that selected target partition/i);
+  assert.match(chinese, /从合格的 origin workspace 或精确绑定目标调用时，它们都只操作选中的 target 分区/);
+
+  const securityColdBoundary = security.split('\n').find((line) => line.includes('Cold resume runtime recovery')) ?? '';
+  assert.match(securityColdBoundary, /only after the exact runtime-unavailable snapshot warning when explicit and workspace policy are absent/i);
+  assert.match(securityColdBoundary, /never exposes raw config, provider options, endpoints, keys, or tokens/i);
+  assert.match(securityColdBoundary, /invalid or unsupported recovery remains a bounded failure without fresh fallback, resend, replacement, or config mutation/i);
+
+  const securityPartitionBoundary = security.split('\n').find((line) => line.includes('Direct status, result, and cancel')) ?? '';
+  assert.match(securityPartitionBoundary, /selected from the origin or its exact bound target and preserved privately across later turns/i);
+  assert.match(securityPartitionBoundary, /Creators select that same partition before persistence or reservation/i);
+  assert.match(securityPartitionBoundary, /No command scans or merges partitions/i);
+  assert.match(securityPartitionBoundary, /explicit job ID grants neither cross-partition nor owner authority/i);
+
+  const securityCompactBoundary = security.split('\n').find((line) => line.includes('Compact SessionStart')) ?? '';
+  assert.match(securityCompactBoundary, /same executing instance's bounded launcher descriptor without creating a turn or granting authority/i);
+  assert.match(securityCompactBoundary, /Ordinary SessionStart sources remain generic and rely on UserPromptSubmit/i);
+  assert.match(securityCompactBoundary, /unsafe provenance emits only the fixed launcher error/i);
   assert.match(changelog, /cold resumed ZCode session/i);
   assert.match(changelog, /lifecycle-authoritative job partition/i);
   assert.match(changelog, /compact `SessionStart`/i);
