@@ -540,6 +540,68 @@ test('linked worktree binding previews without mutation then claims once and req
   assert.deepEqual(JSON.parse(await readFile(sessionPath, 'utf8')).knownWorkspaces, [await realpath(origin), await realpath(execution)]);
 });
 
+test('effective workspace resolution is atomic, read-only, and projects the authoritative job partition', async (t) => {
+  await t.test('unbound lifecycle accepts only origin without mutation', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    await identity.beginCallerTurn({
+      sessionId: 'session-effective', turnId: 'turn-effective', workspace: origin, permissionMode: 'default',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    });
+    const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
+    const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
+    const caller = await identity.resolveActiveTurn({ sessionId: 'session-effective', workspace: origin, workspaceBinding: 'effective' });
+    assert.equal(caller.workspace, await realpath(origin));
+    assert.equal(caller.executionWorkspace, undefined);
+    await assert.rejects(
+      identity.resolveActiveTurn({ sessionId: 'session-effective', workspace: execution, workspaceBinding: 'effective' }),
+      { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' },
+    );
+    assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
+  });
+
+  await t.test('bound lifecycle projects origin and exact target to target and rejects sibling and unrelated', async () => {
+    const { dataRoot, identity, root, workspaceA } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    const sibling = join(root, 'execution-sibling');
+    await execFile('git', ['worktree', 'add', '-q', '-b', 'execution-sibling', sibling], { cwd: origin });
+    await identity.beginCallerTurn({
+      sessionId: 'session-effective', turnId: 'turn-effective', workspace: origin, permissionMode: 'default',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    });
+    await identity.resolveActiveTurn({ sessionId: 'session-effective', workspace: execution, workspaceBinding: 'claim' });
+    const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
+    const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
+    const canonicalExecution = await realpath(execution);
+    for (const workspace of [origin, execution]) {
+      const caller = await identity.resolveActiveTurn({ sessionId: 'session-effective', workspace, workspaceBinding: 'effective' });
+      assert.equal(caller.workspace, canonicalExecution);
+      assert.equal(caller.executionWorkspace, canonicalExecution);
+    }
+    for (const workspace of [sibling, workspaceA]) {
+      await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-effective', workspace, workspaceBinding: 'effective' }),
+        { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+    }
+    assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
+  });
+
+  await t.test('corrupt lifecycle fails closed and legacy remains exact-workspace', async () => {
+    const { dataRoot, identity, workspaceA, workspaceB } = await fixture();
+    await identity.beginCallerTurn({ sessionId: 'legacy-effective', turnId: 'legacy-turn', workspace: workspaceA, permissionMode: 'default' });
+    assert.equal((await identity.resolveActiveTurn({ sessionId: 'legacy-effective', workspace: workspaceA, workspaceBinding: 'effective' })).workspace, await realpath(workspaceA));
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'legacy-effective', workspace: workspaceB, workspaceBinding: 'effective' }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+    await identity.beginCallerTurn({
+      sessionId: 'corrupt-effective', turnId: 'corrupt-turn', workspace: workspaceA, permissionMode: 'default',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    });
+    const activePath = await globalActivePath(dataRoot, 'corrupt-effective');
+    const record = JSON.parse(await readFile(activePath, 'utf8')); record.executionWorkspace = workspaceB;
+    await atomicWriteJson(activePath, record);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'corrupt-effective', workspace: workspaceA, workspaceBinding: 'effective' }),
+      { code: 'AUTHORIZATION_RECORD_INVALID' });
+  });
+});
+
 test('competing linked worktree claims atomically bind one immutable target', async () => {
   const { identity, root } = await fixture();
   const { origin, execution } = await linkedWorktreeFixture(root);

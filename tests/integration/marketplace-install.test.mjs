@@ -317,6 +317,45 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(direct.stdout, '\nModel policy: default=ZCode default; aliases=none\n');
   assert.equal(direct.internal, '');
 
+  const boundOrigin = join(temporary, 'bound-origin');
+  const boundTarget = join(temporary, 'bound-target');
+  await mkdir(boundOrigin);
+  await writeFile(join(boundOrigin, 'tracked.txt'), 'base\n');
+  for (const args of [
+    ['init', '-q'],
+    ['add', 'tracked.txt'],
+    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'],
+    ['worktree', 'add', '-q', '-b', 'installed-effective-workspace', boundTarget],
+  ]) {
+    const result = await runProcess({ command: 'git', args: [] }, { cwd: boundOrigin, args, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024 });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  }
+  const canonicalOrigin = await realpath(boundOrigin);
+  const canonicalTarget = await realpath(boundTarget);
+  const boundCodexHome = join(temporary, 'bound-codex-home');
+  await mkdir(boundCodexHome);
+  const boundPluginData = join(await realpath(boundCodexHome), 'plugins', 'data', 'zcode-vitry');
+  const { createIdentityStore } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'identity.mjs')).href);
+  const { createStateStore } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'state.mjs')).href);
+  const installedIdentity = createIdentityStore({ dataRoot: boundPluginData });
+  const installedState = createStateStore({ dataRoot: boundPluginData });
+  const boundSessionId = 'installed-bound-session';
+  await installedIdentity.beginCallerTurn({
+    sessionId: boundSessionId, turnId: 'installed-bound-turn', workspace: canonicalOrigin, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
+    sessionStartedAt: '2026-08-28T08:00:00.000Z', sessionSource: 'startup',
+  });
+  await installedIdentity.resolveActiveTurn({ sessionId: boundSessionId, workspace: canonicalTarget, workspaceBinding: 'claim' });
+  const targetJob = await installedState.reserveJob({ workspace: canonicalTarget, ownerSessionId: boundSessionId, ownerTurnId: 'installed-bound-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const originDecoy = await installedState.reserveJob({ workspace: canonicalOrigin, ownerSessionId: boundSessionId, ownerTurnId: 'installed-bound-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const installedCompanion = join(installedRoot, 'scripts', 'zcode-companion.mjs');
+  const boundDirect = await runChild(process.execPath, [installedCompanion, 'invoke', 'status'], {
+    cwd: canonicalOrigin, env: { ...hookEnv, ZCODE_DATA_ROOT: boundPluginData, CODEX_THREAD_ID: boundSessionId },
+  });
+  assert.equal(boundDirect.code, 0, boundDirect.stderr || boundDirect.stdout);
+  assert.equal(boundDirect.spawnargs[1], installedCompanion);
+  assert.match(boundDirect.stdout, new RegExp(targetJob.id));
+  assert.doesNotMatch(boundDirect.stdout, new RegExp(originDecoy.id));
+
   const setupRecord = join(temporary, 'setup-requests.jsonl');
   await writeFile(setupRecord, '');
   const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-1', config: {} }] };

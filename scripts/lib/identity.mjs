@@ -206,7 +206,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       return input.lifecycleResult ? { token, replacedTurn } : token;
     },
 
-    /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,workspaceBinding?:'preview'|'claim'|'execution',now?:Date|number|string}} expected @returns {Promise<any>} */
+    /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,workspaceBinding?:'preview'|'claim'|'execution'|'effective',now?:Date|number|string}} expected @returns {Promise<any>} */
     async resolveActiveTurn(expected) {
       validateActiveExpected(expected); const candidate = await canonicalWorkspace(expected.workspace); const global = await globalIdentityStorage(dataRoot);
       const lifecycleLockPath = sessionLockPath(global, expected.sessionId);
@@ -219,6 +219,14 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         if (mode === undefined) {
           if (candidate !== active.originWorkspace) throw workspaceIneligible();
           return { kind: 'resolved', caller: publicActiveTurn(active, candidate, false) };
+        }
+        if (mode === 'effective') {
+          if (active.executionWorkspace === null) {
+            if (candidate !== active.originWorkspace) throw workspaceIneligible();
+            return { kind: 'resolved', caller: publicActiveTurn(active, active.originWorkspace, false) };
+          }
+          if (candidate !== active.originWorkspace && candidate !== active.executionWorkspace) throw workspaceIneligible();
+          return { kind: 'resolved', caller: publicActiveTurn(active, active.executionWorkspace, true) };
         }
         if (mode === 'execution') {
           if (active.executionWorkspace === null
@@ -1159,7 +1167,7 @@ function validateCallerInput(input) {
 /** @param {any} input */
 function validateActiveExpected(input) {
   if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)
-    || input.workspaceBinding !== undefined && !['preview', 'claim', 'execution'].includes(input.workspaceBinding)) throw invalidIdentityInput();
+    || input.workspaceBinding !== undefined && !['preview', 'claim', 'execution', 'effective'].includes(input.workspaceBinding)) throw invalidIdentityInput();
 }
 
 /** @param {any} input */

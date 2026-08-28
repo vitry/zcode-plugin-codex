@@ -131,7 +131,7 @@ export async function runCompanion(argv, runtime = {}) {
       return { job };
     }
     runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
-    const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
+    const client = await (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
     const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
     try {
       const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
@@ -367,11 +367,13 @@ export async function runDirectInvocation(argv, runtime = {}) {
       : await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId);
     executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
   }
-  const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
+  const jobCommand = ['status', 'result', 'cancel'].includes(command);
+  const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : jobCommand ? { workspaceBinding: 'effective' } : {}) }); const invocations = createInvocationStore({ dataRoot });
+  const invocationWorkspace = command === 'rescue' || jobCommand ? caller.workspace : cwd;
   if (command === 'rescue' && (entry === 'invoke' || entry === 'invoke-choice' && executor?.active)) assertExecutorMatchesCaller(executor, caller);
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') {
-    invocation = await invocations.consumePending({ sessionId, workspace: command === 'rescue' ? caller.workspace : cwd, command, choice,
+    invocation = await invocations.consumePending({ sessionId, workspace: invocationWorkspace, command, choice,
       ...(executorAgentId === undefined ? {} : { executorAgentId }), ...(command === 'rescue' ? {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
         originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace,
@@ -390,16 +392,16 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     invocation = parseRecordedInvocation(command, caller.prompt);
     if (requiresExecutionChoice(command, invocation.argv)) {
-      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: command === 'rescue' ? caller.workspace : cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: invocationWorkspace, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : cwd, env, caller: executionCaller, executor,
+  const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : invocationWorkspace, env, caller: executionCaller, executor,
     legacyActivation: false, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies,
     progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') {
     if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
-    else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
+    else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: invocationWorkspace, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
   }
   return output;
 }
