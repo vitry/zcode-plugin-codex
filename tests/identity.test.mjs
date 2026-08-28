@@ -600,6 +600,26 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
     await assert.rejects(identity.resolveActiveTurn({ sessionId: 'corrupt-effective', workspace: workspaceA, workspaceBinding: 'effective' }),
       { code: 'AUTHORIZATION_RECORD_INVALID' });
   });
+
+  await t.test('canonical execution target absent from the session ledger fails closed without mutation', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    await identity.beginCallerTurn({
+      sessionId: 'contradictory-effective', turnId: 'contradictory-turn', workspace: origin, permissionMode: 'default',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    });
+    const activePath = await globalActivePath(dataRoot, 'contradictory-effective');
+    const sessionPath = await globalSessionPath(dataRoot, 'contradictory-effective');
+    const record = JSON.parse(await readFile(activePath, 'utf8'));
+    record.executionWorkspace = await realpath(execution);
+    await atomicWriteJson(activePath, record);
+    const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
+    await assert.rejects(
+      identity.resolveActiveTurn({ sessionId: 'contradictory-effective', workspace: origin, workspaceBinding: 'effective' }),
+      { code: 'AUTHORIZATION_RECORD_INVALID' },
+    );
+    assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
+  });
 });
 
 test('competing linked worktree claims atomically bind one immutable target', async () => {

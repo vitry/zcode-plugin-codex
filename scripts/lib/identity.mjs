@@ -221,6 +221,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
           return { kind: 'resolved', caller: publicActiveTurn(active, candidate, false) };
         }
         if (mode === 'effective') {
+          if (!lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
           if (active.executionWorkspace === null) {
             if (candidate !== active.originWorkspace) throw workspaceIneligible();
             return { kind: 'resolved', caller: publicActiveTurn(active, active.originWorkspace, false) };
