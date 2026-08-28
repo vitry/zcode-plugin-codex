@@ -486,6 +486,8 @@ input.on('line', async (line) => {
     }
     case 'session/stop': {
       stopCount += 1;
+      const stopDelayOnceMs = Number(process.env.FAKE_ZCODE_STOP_DELAY_ONCE_MS ?? 0);
+      if (stopCount === 1 && Number.isSafeInteger(stopDelayOnceMs) && stopDelayOnceMs > 0) await new Promise((resolve) => setTimeout(resolve, stopDelayOnceMs));
       if (process.env.FAKE_ZCODE_STOP_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_STOP_GATE_REACHED, 'blocked');
       while (process.env.FAKE_ZCODE_STOP_GATE && (await readFile(process.env.FAKE_ZCODE_STOP_GATE, 'utf8').catch(() => '')).trim() !== 'release') await new Promise((resolve) => setTimeout(resolve, 5));
       if (process.env.FAKE_ZCODE_STOP_ERROR_ONCE === '1' && stopCount === 1) { send({ id: message.id, error: { code: -32099, message: 'fixture first stop failed' } }); break; }
