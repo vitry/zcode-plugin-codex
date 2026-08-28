@@ -10,6 +10,7 @@ const LAUNCHER_DESCRIPTOR_PREFIX = '[zcode-rescue-launcher] ';
 const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 export const USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT = 1800;
+export const SESSION_START_ADDITIONAL_CONTEXT_LIMIT = 1200;
 export const RESCUE_UNREAD_JOB_LIMIT = 5;
 export const RESCUE_LAUNCHER_ERROR_CONTEXT = '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}';
 
@@ -41,13 +42,19 @@ export function renderRescueLauncherCommand(launcherPath, { platform = process.p
 
 /** Render the bounded owned-parent lifecycle context. @param {string} launcherCommand @param {{id:string,status:string}[]} jobs */
 export function renderRescueUserPromptContext(launcherCommand, jobs = []) {
+  return renderRescueUserPromptContextWithinLimit(launcherCommand, jobs, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
+}
+
+/** Render lifecycle context within one explicit hook-event byte budget. @param {string} launcherCommand @param {{id:string,status:string}[]} jobs @param {number} additionalContextLimit */
+export function renderRescueUserPromptContextWithinLimit(launcherCommand, jobs, additionalContextLimit) {
   if (typeof launcherCommand !== 'string' || !Array.isArray(jobs) || jobs.length > RESCUE_UNREAD_JOB_LIMIT
-    || jobs.some((job) => !job || typeof job !== 'object' || !/^[a-f0-9]{64}$/u.test(job.id) || !TERMINAL_JOB_STATUSES.has(job.status))) {
+    || jobs.some((job) => !job || typeof job !== 'object' || !/^[a-f0-9]{64}$/u.test(job.id) || !TERMINAL_JOB_STATUSES.has(job.status))
+    || !Number.isSafeInteger(additionalContextLimit) || additionalContextLimit < 1 || additionalContextLimit > USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT) {
     throw contextError();
   }
   const descriptor = launcherDescriptor(launcherCommand);
   const context = jobs.length ? `${descriptor}\n${jobNotice(jobs)}` : descriptor;
-  if (Buffer.byteLength(context) > USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT) throw contextError();
+  if (Buffer.byteLength(context) > additionalContextLimit) throw contextError();
   return context;
 }
 

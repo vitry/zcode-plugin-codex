@@ -10,3 +10,5 @@ Invoke as `$zcode:result [job-id]`; without an ID, allow the companion to select
 Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke result` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.
 
 Run in the current turn; never launch a built-in subagent. Present the complete companion output verbatim, including findings, paths, line numbers, parse errors, and exact `$zcode:status` recovery commands.
+
+Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.
