@@ -173,6 +173,44 @@ test('uses an explicit exact tuple and preserves a model id containing slashes',
   assert.deepEqual(runtime.provider.models, [{ modelId: 'family/model/variant', label: 'Variant' }]);
 });
 
+test('omits the optional provider label when provider.name is absent', async () => {
+  const home = await completeConfigFixture((config) => {
+    delete config.provider.bigmodel.name;
+    return config;
+  });
+  const runtime = await readZCodeCliRuntimeModel({
+    home, now: () => 1, revision: () => 'revision-1',
+  });
+  assert.equal(Object.hasOwn(runtime.provider, 'label'), false);
+});
+
+test('omits optional model labels when selected and unselected model names are absent', async () => {
+  const home = await completeConfigFixture((config) => {
+    delete config.provider.bigmodel.models['GLM-5.2'].name;
+    delete config.provider.bigmodel.models['glm-4.7'].name;
+    return config;
+  });
+  const runtime = await readZCodeCliRuntimeModel({
+    home, now: () => 1, revision: () => 'revision-1',
+  });
+  assert.deepEqual(runtime.provider.models.map(({ modelId, label }) => ({ modelId, label })), [
+    { modelId: 'GLM-5.2', label: undefined },
+    { modelId: 'glm-4.7', label: undefined },
+  ]);
+  assert.equal(runtime.provider.models.every((model) => !Object.hasOwn(model, 'label')), true);
+});
+
+test('allows openai-compatible providers without an optional baseURL', async () => {
+  const home = await completeConfigFixture((config) => {
+    delete config.provider.bigmodel.options.baseURL;
+    return config;
+  });
+  const runtime = await readZCodeCliRuntimeModel({
+    home, now: () => 1, revision: () => 'revision-1',
+  });
+  assert.equal(Object.hasOwn(runtime.provider, 'baseURL'), false);
+});
+
 test('runtime resolver falls back from HOME to USERPROFILE', async () => {
   const home = await completeConfigFixture();
   const runtime = await readZCodeCliRuntimeModel({
@@ -209,6 +247,21 @@ test('preserves finite JSON numbers in supported provider options', async () => 
   assert.deepEqual(runtime.provider.providerOptions, { temperature: 0.25 });
 });
 
+test('preserves bounded JSON arrays in supported provider options', async () => {
+  const home = await completeConfigFixture((config) => {
+    config.provider.bigmodel.options.providerOptions = {
+      stop: ['END'], nested: [{ enabled: true }],
+    };
+    return config;
+  });
+  const runtime = await readZCodeCliRuntimeModel({
+    home, now: () => 1, revision: () => 'revision-1',
+  });
+  assert.deepEqual(runtime.provider.providerOptions, {
+    stop: ['END'], nested: [{ enabled: true }],
+  });
+});
+
 test('rejects invalid runtime shapes, values, selection, and collection bounds with one fixed error', async (t) => {
   /** @type {Array<[string,(config:any)=>void]>} */
   const invalidCases = [
@@ -217,7 +270,6 @@ test('rejects invalid runtime shapes, values, selection, and collection bounds w
     ['unsupported kind', (config) => { config.provider.bigmodel.kind = 'private-kind'; }],
     ['invalid source', (config) => { config.provider.bigmodel.source = 'remote'; }],
     ['invalid api format', (config) => { config.provider.bigmodel.options.apiFormat = 'private-format'; }],
-    ['missing required base url', (config) => { delete config.provider.bigmodel.options.baseURL; }],
     ['missing required api key', (config) => { delete config.provider.bigmodel.options.apiKey; }],
     ['invalid options array', (config) => { config.provider.bigmodel.options = []; }],
     ['invalid headers', (config) => { config.provider.bigmodel.options.headers = { Authorization: 3 }; }],
@@ -225,6 +277,9 @@ test('rejects invalid runtime shapes, values, selection, and collection bounds w
       /** @type {any} */
       let value = {}; config.provider.bigmodel.options.providerOptions = value;
       for (let index = 0; index < 20; index += 1) { value.next = {}; value = value.next; }
+    }],
+    ['oversized provider options array', (config) => {
+      config.provider.bigmodel.options.providerOptions = { stop: Array.from({ length: 257 }, () => 'END') };
     }],
     ['invalid model metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].supportsTools = 'yes'; }],
     ['invalid reasoning metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].reasoning.levels = [{}]; }],

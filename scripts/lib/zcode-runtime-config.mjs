@@ -79,9 +79,9 @@ function normalizeModelRef(value) {
 /** @param {Record<string,any>} raw @param {string} providerId @param {string} selectedModelId */
 function normalizeProvider(raw, providerId, selectedModelId) {
   const kind = raw.kind;
-  const label = raw.name;
+  const label = optionalText(raw.name);
   const source = raw.source ?? 'user';
-  if (!PROVIDER_KINDS.has(kind) || !boundedText(label) || !PROVIDER_SOURCES.has(source)) throw runtimeModelConfigError();
+  if (!PROVIDER_KINDS.has(kind) || !PROVIDER_SOURCES.has(source)) throw runtimeModelConfigError();
   const options = raw.options === undefined ? {} : raw.options;
   if (!plain(options)) throw runtimeModelConfigError();
   const models = boundedRecord(raw.models, MAX_MODELS, 1);
@@ -97,11 +97,11 @@ function normalizeProvider(raw, providerId, selectedModelId) {
   const providerOptions = optionalJsonRecord(options.providerOptions);
   const logoUrl = optionalText(options.logoUrl);
   const modelsDevProviderId = optionalText(options.modelsDevProviderId);
-  if (kind === 'openai-compatible' && baseURL === undefined) throw runtimeModelConfigError();
   if (apiKeyRequired === true && apiKey === undefined) throw runtimeModelConfigError();
 
   return {
-    providerId, kind, label, source,
+    providerId, kind, source,
+    ...(label === undefined ? {} : { label }),
     ...(apiFormat === undefined ? {} : { apiFormat }),
     ...(baseURL === undefined ? {} : { baseURL }),
     ...(apiKey === undefined ? {} : { apiKey: { source: 'inline', value: apiKey } }),
@@ -116,7 +116,8 @@ function normalizeProvider(raw, providerId, selectedModelId) {
 
 /** @param {string} modelId @param {unknown} raw */
 function normalizeModel(modelId, raw) {
-  if (!boundedText(modelId) || !plain(raw) || !boundedText(raw.name)) throw runtimeModelConfigError();
+  if (!boundedText(modelId) || !plain(raw)) throw runtimeModelConfigError();
+  const label = optionalText(raw.name);
   const description = optionalText(raw.description);
   const contextWindow = optionalPositiveInteger(raw.contextWindow);
   const maxOutputTokens = optionalPositiveInteger(raw.maxOutputTokens);
@@ -128,7 +129,8 @@ function normalizeModel(modelId, raw) {
   const providerOptions = optionalJsonRecord(raw.providerOptions);
   const disabledReason = optionalText(raw.disabledReason);
   return {
-    modelId, label: raw.name,
+    modelId,
+    ...(label === undefined ? {} : { label }),
     ...(description === undefined ? {} : { description }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
@@ -196,6 +198,10 @@ function checkedJsonValue(value, depth, state) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw runtimeModelConfigError();
     return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_RECORD_ENTRIES) throw runtimeModelConfigError();
+    return value.map((entry) => checkedJsonValue(entry, depth + 1, state));
   }
   if (!plain(value)) throw runtimeModelConfigError();
   const entries = Object.entries(value);
