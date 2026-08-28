@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "1596d6733ab2a2eac60eb3d9ab1631fec4684a3f",
-  "sourceSha": "1596d6733ab2a2eac60eb3d9ab1631fec4684a3f",
+  "sourceRef": "6e29c40f4185e8d7456358f0fd2f3f6f1e9c6be5",
+  "sourceSha": "6e29c40f4185e8d7456358f0fd2f3f6f1e9c6be5",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "f9023513ce8a19e127248f1f746ce131494f625e33772a8fcbbf4835f9f2a9cf",
+    "sha256": "6c9a0cd9400350bc8ad90f491d388c2ece08948d59a1036eb1d3b3d190533cab",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -698,8 +698,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-client.mjs",
-        "size": 36991,
-        "sha256": "9104777a42d8ba2cf71bd949265786df670c76d0b873d07fd058072bdc0120e9"
+        "size": 37055,
+        "sha256": "0799fd138d05ca17111e29e3203680d6ce5b50e72d3fb6c78be00ab5d679dd3c"
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-discovery.mjs",
@@ -723,8 +723,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-broker.mjs",
-        "size": 101443,
-        "sha256": "a4418d115874865a3467483c39cdeb6e960d4a3eeb4babd6a2a914557f7b818d"
+        "size": 101491,
+        "sha256": "6938b855f5a581a852d48f14f9404f8a3f1852dea5d0b3b0338fc441f744b3c6"
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
