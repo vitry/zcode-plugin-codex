@@ -4,7 +4,7 @@
 
 **Goal:** Make direct status, result, and cancel operate on the lifecycle-authoritative Rescue execution workspace from either eligible origin or exact target.
 
-**Architecture:** Add an atomic, read-only IdentityStore `effective` workspace mode distinct from Rescue `execution` and `claim`. Resolve once in direct invocation and propagate the returned workspace through every job, artifact, broker, cancellation, and binding operation.
+**Architecture:** Add an atomic, read-only IdentityStore `effective` workspace mode distinct from Rescue `execution` and `claim`. A backward-readable optional private lifecycle-v3 recovery pointer preserves exact job observation across same-session/same-origin prompt replacement without inheriting per-turn Rescue execution authority. Resolve once in direct invocation and propagate the returned workspace through every job, artifact, broker, cancellation, and binding operation.
 
 **Tech Stack:** Node.js 22.13 ESM, native `node:test`, lifecycle v3 identity store, durable workspace-scoped state.
 
@@ -24,19 +24,41 @@
 
 ```js
 if (mode === 'effective') {
-  if (active.executionWorkspace === null) {
+  if (!lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
+  const effectiveWorkspace = active.executionWorkspace ?? active.recoveryWorkspace ?? active.originWorkspace;
+  if (effectiveWorkspace === active.originWorkspace) {
     if (candidate !== active.originWorkspace) throw workspaceIneligible();
     return { kind: 'resolved', caller: publicActiveTurn(active, active.originWorkspace, false) };
   }
-  if (candidate !== active.originWorkspace && candidate !== active.executionWorkspace) {
+  if (candidate !== active.originWorkspace && candidate !== effectiveWorkspace) {
     throw workspaceIneligible();
   }
-  return { kind: 'resolved', caller: publicActiveTurn(active, active.executionWorkspace, true) };
+  return { kind: 'resolved', caller: publicActiveTurn(active, effectiveWorkspace, active.executionWorkspace !== null) };
 }
 ```
 
 - [ ] Do not change `execution`, `preview`, `claim`, `persistClaim`, or legacy behavior.
 - [ ] Run focused IdentityStore tests; verify GREEN.
+
+#### Cross-turn recovery amendment
+
+- [ ] Write tests first proving a real same-origin prompt replacement resets
+  `executionWorkspace` yet status/result/cancel still select the prior exact
+  target without a manual claim.
+- [ ] Extend lifecycle v3 with an optional private `recoveryWorkspace`; accept
+  historical records without it and never expose it through public caller
+  projections.
+- [ ] Under the existing lifecycle lock, carry
+  `existing.executionWorkspace ?? existing.recoveryWorkspace ?? null` only for
+  same-session, same-origin replacement. Duplicates retain existing state and
+  cross-origin replacement carries nothing.
+- [ ] In `effective` only, prefer current execution, then validated recovery,
+  then origin. Require the recovery pointer to be canonical and included in
+  `knownWorkspaces`; malformed or contradictory state fails closed without
+  mutation.
+- [ ] Prove a new current-turn claim remains allowed, takes precedence, and is
+  the pointer carried by the following replacement. Never infer a target from
+  the ledger or scan partitions.
 
 ### Task 2: Direct command propagation
 

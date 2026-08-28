@@ -1194,6 +1194,58 @@ test('direct job commands resolve a bound lifecycle to its execution workspace f
   }
 });
 
+test('real prompt replacement preserves only private job observation routing for direct commands', async (t) => {
+  for (const command of ['status', 'result', 'cancel']) await t.test(command, async () => {
+    const ctx = await fixture(t);
+    const execution = join(ctx.directory, `hook-recovery-${command}`);
+    await run('git', ['worktree', 'add', '-q', '-b', `hook-recovery-${command}`, execution], ctx.workspace);
+    const canonicalExecution = await realpath(execution);
+    const sessionId = `hook-recovery-${command}-owner`;
+    const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+      cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+      input: { session_id: sessionId, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+    });
+    assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+    const submit = (turnId, prompt) => runChild(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+      cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+      input: { session_id: sessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt },
+    });
+    const first = await submit('hook-recovery-first-turn', '$zcode:rescue --fresh establish target');
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+
+    const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+    const store = createStateStore({ dataRoot: ctx.dataRoot });
+    await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
+    const target = await store.reserveJob({ workspace: canonicalExecution, ownerSessionId: sessionId, ownerTurnId: 'hook-recovery-first-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+    const decoy = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: sessionId, ownerTurnId: 'hook-recovery-first-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+    if (command === 'result') {
+      const artifact = await writeResultArtifact({ dataRoot: ctx.dataRoot, workspace: canonicalExecution, jobId: target.id, contents: 'hook-recovered-result' });
+      await store.transitionJob(canonicalExecution, target.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'hook-recovery-result-session' });
+      await store.finishJob(canonicalExecution, target.id, ['running'], 'succeeded', { resultArtifact: artifact, exitCode: 0 });
+    }
+    const prompt = command === 'status' ? '$zcode:status --all' : `$zcode:${command} ${target.id}`;
+    const second = await submit('hook-recovery-second-turn', prompt);
+    assert.equal(second.code, 0, second.stderr || second.stdout);
+    const preview = await identity.resolveActiveTurn({ sessionId, workspace: ctx.workspace, workspaceBinding: 'preview' });
+    assert.equal(preview.executionWorkspace, null);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId, workspace: ctx.workspace, workspaceBinding: 'execution' }),
+      { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+
+    const output = await runDirectInvocation(['invoke', command], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+    if (command === 'status') {
+      assert.deepEqual(output.jobs.map((job) => job.id), [target.id]);
+      assert.ok(output.jobs.every((job) => job.id !== decoy.id));
+    } else if (command === 'result') {
+      assert.equal(output.job.id, target.id);
+      assert.equal(output.result, 'hook-recovered-result');
+    } else {
+      assert.equal(output.job.id, target.id);
+      assert.equal(output.job.status, 'cancelled');
+      assert.equal((await store.readJob(ctx.workspace, decoy.id)).status, 'queued');
+    }
+  });
+});
+
 test('direct running cancel stops and closes the bound Rescue only in its execution workspace', async (t) => {
   const ctx = await fixture(t);
   const execution = join(ctx.directory, 'cancel-execution-worktree');

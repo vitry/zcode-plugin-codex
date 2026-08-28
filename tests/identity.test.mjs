@@ -621,6 +621,103 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
     );
     assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
   });
+
+  await t.test('same-origin replacement recovers observation target while remaining execution-unbound', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    const replacementTarget = join(root, 'replacement-execution');
+    await execFile('git', ['worktree', 'add', '-q', '-b', 'replacement-execution', replacementTarget], { cwd: origin });
+    const base = {
+      sessionId: 'replacement-effective', workspace: origin, permissionMode: 'default', sessionStartedAt, sessionSource: 'startup',
+    };
+    await identity.beginCallerTurn({ ...base, turnId: 'first-turn', prompt: 'first' });
+    await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
+    const secondInput = { ...base, turnId: 'second-turn', prompt: 'second' };
+    await identity.beginCallerTurn(secondInput);
+    const activePath = await globalActivePath(dataRoot, base.sessionId);
+    const replacement = JSON.parse(await readFile(activePath, 'utf8'));
+    assert.equal(replacement.executionWorkspace, null);
+    assert.equal(replacement.recoveryWorkspace, await realpath(execution));
+    const effective = await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'effective' });
+    assert.equal(effective.workspace, await realpath(execution));
+    assert.equal(effective.executionWorkspace, undefined);
+    assert.equal(effective.recoveryWorkspace, undefined);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'execution' }),
+      { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+    await identity.beginCallerTurn(secondInput);
+    const duplicate = JSON.parse(await readFile(activePath, 'utf8'));
+    assert.equal(duplicate.generationId, replacement.generationId);
+    assert.equal(duplicate.executionWorkspace, null);
+    assert.equal(duplicate.recoveryWorkspace, await realpath(execution));
+
+    await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: replacementTarget, workspaceBinding: 'claim' });
+    assert.equal((await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'effective' })).workspace,
+      await realpath(replacementTarget));
+    assert.equal((await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: replacementTarget, workspaceBinding: 'effective' })).workspace,
+      await realpath(replacementTarget));
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'effective' }),
+      { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+    await identity.beginCallerTurn({ ...base, turnId: 'third-turn', prompt: 'third' });
+    const next = JSON.parse(await readFile(activePath, 'utf8'));
+    assert.equal(next.executionWorkspace, null);
+    assert.equal(next.recoveryWorkspace, await realpath(replacementTarget));
+    assert.equal((await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'effective' })).workspace,
+      await realpath(replacementTarget));
+  });
+
+  await t.test('cross-origin replacement does not carry recovery and historical v3 remains valid', async () => {
+    const { dataRoot, identity, root, workspaceA } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    const base = { sessionId: 'cross-origin-effective', permissionMode: 'default', sessionStartedAt, sessionSource: 'startup' };
+    await identity.beginCallerTurn({ ...base, turnId: 'origin-turn', workspace: origin, prompt: 'origin' });
+    await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
+    await identity.beginCallerTurn({ ...base, turnId: 'other-origin-turn', workspace: workspaceA, prompt: 'other origin' });
+    const record = JSON.parse(await readFile(await globalActivePath(dataRoot, base.sessionId), 'utf8'));
+    assert.equal(record.executionWorkspace, null);
+    assert.equal(Object.hasOwn(record, 'recoveryWorkspace'), false);
+    assert.equal((await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: workspaceA, workspaceBinding: 'effective' })).workspace,
+      await realpath(workspaceA));
+  });
+
+  await t.test('contradictory recovery pointer fails closed without mutation', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    await identity.beginCallerTurn({
+      sessionId: 'corrupt-recovery-effective', turnId: 'corrupt-recovery-turn', workspace: origin, permissionMode: 'default',
+      sessionStartedAt, sessionSource: 'startup',
+    });
+    const activePath = await globalActivePath(dataRoot, 'corrupt-recovery-effective');
+    const sessionPath = await globalSessionPath(dataRoot, 'corrupt-recovery-effective');
+    const record = JSON.parse(await readFile(activePath, 'utf8'));
+    record.recoveryWorkspace = await realpath(execution);
+    await atomicWriteJson(activePath, record);
+    const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
+    await assert.rejects(
+      identity.resolveActiveTurn({ sessionId: 'corrupt-recovery-effective', workspace: origin, workspaceBinding: 'effective' }),
+      { code: 'AUTHORIZATION_RECORD_INVALID' },
+    );
+    assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
+  });
+
+  await t.test('malformed recovery pointer fails closed without mutation', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin } = await linkedWorktreeFixture(root);
+    await identity.beginCallerTurn({
+      sessionId: 'malformed-recovery-effective', turnId: 'malformed-recovery-turn', workspace: origin, permissionMode: 'default',
+      sessionStartedAt, sessionSource: 'startup',
+    });
+    const activePath = await globalActivePath(dataRoot, 'malformed-recovery-effective');
+    const sessionPath = await globalSessionPath(dataRoot, 'malformed-recovery-effective');
+    const record = JSON.parse(await readFile(activePath, 'utf8'));
+    record.recoveryWorkspace = 42;
+    await atomicWriteJson(activePath, record);
+    const before = [await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')];
+    await assert.rejects(
+      identity.resolveActiveTurn({ sessionId: 'malformed-recovery-effective', workspace: origin, workspaceBinding: 'effective' }),
+      { code: 'AUTHORIZATION_RECORD_INVALID' },
+    );
+    assert.deepEqual([await readFile(activePath, 'utf8'), await readFile(sessionPath, 'utf8')], before);
+  });
 });
 
 test('competing linked worktree claims atomically bind one immutable target', async () => {
@@ -1072,6 +1169,45 @@ test('begin retry preserves a pending generation when ledger publication failed'
   const pendingGeneration = JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId;
   await createIdentityStore({ dataRoot }).beginCallerTurn(input);
   assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId, pendingGeneration);
+});
+
+test('replacement retry repairs a pending recovery publication without restoring execution authority', async () => {
+  const { dataRoot, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+  const identity = createIdentityStore({ dataRoot });
+  const base = /** @type {any} */ ({
+    sessionId: 'session-recovery-retry', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+  });
+  await identity.beginCallerTurn({ ...base, turnId: 'first-turn', prompt: 'first', now: '2026-08-20T12:00:00.000Z' });
+  await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
+  const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, base.sessionId), 'utf8'));
+  const replacement = { ...base, turnId: 'second-turn', prompt: 'second', now: new Date(Date.parse(ledger.updatedAt) + 1_000).toISOString() };
+  let injected = false;
+  const failing = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (!injected && point === 'after-begin-pending-write') { injected = true; throw new Error('injected recovery publication gap'); }
+    },
+  });
+  await assert.rejects(failing.beginCallerTurn(replacement), /injected recovery publication gap/);
+  const activePath = await globalActivePath(dataRoot, base.sessionId);
+  const pending = JSON.parse(await readFile(activePath, 'utf8'));
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.executionWorkspace, null);
+  assert.equal(pending.recoveryWorkspace, await realpath(execution));
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'effective' }),
+    { code: 'ACTIVE_TURN_NOT_FOUND' });
+
+  await identity.beginCallerTurn(replacement);
+  const repaired = JSON.parse(await readFile(activePath, 'utf8'));
+  assert.equal(repaired.generationId, pending.generationId);
+  assert.equal(repaired.status, 'active');
+  assert.equal(repaired.executionWorkspace, null);
+  assert.equal(repaired.recoveryWorkspace, await realpath(execution));
+  assert.equal((await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'effective' })).workspace,
+    await realpath(execution));
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: origin, workspaceBinding: 'execution' }),
+    { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
 });
 
 test('a conflicting trusted begin supersedes an orphan pending lifecycle and exact retry rotates only its caller token', async () => {

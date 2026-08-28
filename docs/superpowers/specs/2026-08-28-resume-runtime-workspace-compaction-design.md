@@ -196,6 +196,33 @@ under the existing identity lock so a binding cannot race between separate
 origin and execution probes. This mode is read-only: it performs no late
 binding claim, Git probing for a new target, caller rotation, or state repair.
 
+### Cross-turn job-observation recovery amendment
+
+`executionWorkspace` remains authority for one exact active turn. A replacement
+`UserPromptSubmit` still publishes `executionWorkspace: null`, so Rescue
+`preview`, `claim`, and `execution` retain their existing per-turn contracts.
+To let generic job observation survive that replacement, lifecycle v3 accepts
+one optional private `recoveryWorkspace` field. Historical v3 records without
+the field remain valid.
+
+Under the existing session lock, a non-duplicate replacement carries
+`existing.executionWorkspace ?? existing.recoveryWorkspace` only when the
+session and canonical origin are unchanged. A cross-origin replacement carries
+nothing. A duplicate retains its existing record. A current-turn claim may
+therefore select a different eligible target normally; `executionWorkspace`
+takes precedence immediately, and the following same-origin replacement
+carries that newly claimed target.
+
+Only `effective` reads the recovery pointer. It selects current execution,
+then recovery, then origin, and accepts cwd only at the origin or that exact
+selected target. The pointer must be canonical and present in the session
+workspace ledger under the same lock. Malformed or contradictory state fails
+closed without repair. No public caller projection exposes the pointer; only
+the effective `caller.workspace` reflects its target. Other identity modes,
+legacy lifecycle, Rescue authority, jobs, bindings, and public commands do not
+change. The implementation never infers from the ledger or scans workspace
+partitions.
+
 ### Command scope and propagation
 
 Only direct `status`, `result`, and `cancel` use the new mode. Review,
@@ -261,7 +288,9 @@ closed rather than silently deduplicating or selecting one.
 
 ## Compatibility and migration
 
-- No persisted schema migration is required for any of the three fixes.
+- No required migration or version bump applies to existing persisted state.
+  Lifecycle v3 gains only the optional private, backward-readable
+  `recoveryWorkspace` field described above; historical v3 bytes remain valid.
 - Existing jobs, bindings, continuation envelope versions, ZCode session IDs,
   and marketplace-qualified plugin data roots remain valid.
 - Fresh sessions retain current model selection and do not read CLI config
@@ -380,8 +409,11 @@ marketplace installation configuration.
    enter the unchanged Rescue gate.
 7. Ordinary SessionStart sources do not duplicate the UserPromptSubmit
    descriptor, and unsafe or ambiguous launcher contexts still fail closed.
-8. No persisted schema, public command argument, binding identity, concurrency
-   policy, Codex source, or ZCode source changes.
+8. No required persisted-state migration, public command argument, binding
+   identity, concurrency policy, Codex source, or ZCode source changes. The
+   only persisted-shape exception is the optional backward-readable private
+   lifecycle-v3 `recoveryWorkspace` field used for exact cross-turn job
+   observation; it grants no Rescue execution authority.
 9. Source, installed marketplace snapshot, bilingual documentation, security
    contract, and qualification fixtures agree.
 10. The PR CI matrix completes successfully.
