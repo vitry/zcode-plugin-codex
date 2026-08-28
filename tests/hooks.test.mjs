@@ -17,7 +17,7 @@ import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeB
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -52,6 +52,12 @@ async function privateTreeSnapshot(directory) {
     else found[relative].bytes = (await readFile(path)).toString('base64');
   };
   await visit(directory); return found;
+}
+
+async function privateFileSnapshot(directory) {
+  return Object.fromEntries(Object.entries(await privateTreeSnapshot(directory))
+    .filter(([, metadata]) => metadata.type === 'file')
+    .map(([path, metadata]) => [path, { mode: metadata.mode, size: metadata.size, bytes: metadata.bytes }]));
 }
 
 async function assertPrivateRoutedError(action, code, secrets) {
@@ -194,6 +200,73 @@ test('hook input rejects oversized, malformed, extra-field and wrong-event input
     const result = await runHook('session-lifecycle-hook.mjs', { cwd }, { ...env, PLUGIN_DATA: data }, { raw });
     assert.notEqual(result.code, 0); assert.equal(result.stdout, ''); assert.doesNotMatch(result.stderr, /x{100}|transcript/);
   }
+});
+
+test('compact SessionStart restores one byte-identical launcher without changing active turn state', async () => {
+  const { cwd, data, env } = await workspace();
+  const sessionId = 'compact-launcher-session';
+  const sessionInput = { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default' };
+  const startup = await runHook('session-lifecycle-hook.mjs', { ...sessionInput, source: 'startup' }, env);
+  assert.equal(startup.code, 0, startup.stderr);
+  assert.equal(startup.json?.hookSpecificOutput?.additionalContext, 'ZCode companion lifecycle is active for this parent session.');
+
+  const ordinary = await runHook('user-prompt-hook.mjs', {
+    session_id: sessionId, turn_id: 'compact-launcher-turn', cwd, hook_event_name: 'UserPromptSubmit',
+    transcript_path: null, model: 'gpt', permission_mode: 'dontAsk', prompt: 'retain this exact turn',
+  }, env);
+  const ordinaryContext = assertRescueLauncherContext(ordinary);
+  assert.equal(ordinaryContext, rescueLauncherDescriptor);
+  const identity = createIdentityStore({ dataRoot: data });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  const active = await identity.resolveActiveTurn({ sessionId, workspace: cwd });
+  await preparations.save({ ...active, recordedPrompt: active.prompt, envelope: { version: 1, source: 'proactive', task: 'retain preparation', options: {} } });
+  const store = createStateStore({ dataRoot: data });
+  const unread = await store.reserveJob({ workspace: cwd, ownerSessionId: sessionId, ownerTurnId: active.turnId, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: active.permissionMode } });
+  await store.transitionJob(cwd, unread.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+  const before = await privateFileSnapshot(data);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const compact = await runHook('session-lifecycle-hook.mjs', { ...sessionInput, permission_mode: 'plan', source: 'compact' }, env);
+    assert.equal(compact.code, 0, compact.stderr);
+    const compactContext = compact.json?.hookSpecificOutput?.additionalContext;
+    assert.equal(compactContext, ordinaryContext);
+    assert.equal((compactContext.match(/^\[zcode-rescue-launcher\] /gmu) ?? []).length, 1);
+    const limit = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8')).hooks.SessionStart[0].hooks[0].additionalContextLimit;
+    assert.ok(Buffer.byteLength(compactContext) <= limit);
+    assert.deepEqual(await identity.resolveActiveTurn({ sessionId, workspace: cwd }), active);
+    assert.deepEqual(await privateFileSnapshot(data), before, 'compact must preserve lifecycle, caller, baseline, preparation, and unread-job state');
+  }
+});
+
+test('ordinary SessionStart sources retain only generic lifecycle context', async () => {
+  const { cwd, env } = await workspace();
+  for (const source of ['startup', 'resume', 'clear']) {
+    const result = await runHook('session-lifecycle-hook.mjs', {
+      session_id: `ordinary-${source}`, cwd, hook_event_name: 'SessionStart', transcript_path: null,
+      model: 'gpt', permission_mode: 'default', source,
+    }, env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.json?.hookSpecificOutput?.additionalContext, 'ZCode companion lifecycle is active for this parent session.');
+    assert.doesNotMatch(result.stdout, /zcode-rescue-launcher/);
+  }
+});
+
+test('unsafe compact launcher provenance emits only the fixed launcher error after recording the session', async () => {
+  const { cwd, data, env } = await workspace();
+  const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-compact-root-')), 'plugin $unsafe');
+  await mkdir(unsafeRoot, { recursive: true });
+  for (const directory of ['hooks', 'scripts', 'skills']) await cp(join(root, directory), join(unsafeRoot, directory), { recursive: true });
+  const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
+  await mkdir(join(unsafeRoot, 'node_modules'), { recursive: true });
+  await symlink(dependency, join(unsafeRoot, 'node_modules/fs-native-extensions'), 'dir');
+  const result = await runHook(join(unsafeRoot, 'hooks/session-lifecycle-hook.mjs'), {
+    session_id: 'unsafe-compact', cwd, hook_event_name: 'SessionStart', transcript_path: null,
+    model: 'gpt', permission_mode: 'default', source: 'compact',
+  }, { ...env, PLUGIN_DATA: data }, { absolute: true });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.json?.hookSpecificOutput?.additionalContext, '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}');
+  assert.doesNotMatch(result.stdout, /launcherCommand|companion lifecycle is active/);
+  assert.equal(await isOwnedSession(data, { session_id: 'unsafe-compact', cwd }), true);
 });
 
 test('two sessions in one workspace get isolated caller capabilities, permission snapshots and baselines', async () => {

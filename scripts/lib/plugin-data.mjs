@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { PluginError } from './errors.mjs';
 
 const TRUSTED_RUNTIME_ENTRIES = [
+  ['hooks', 'session-lifecycle-hook.mjs'],
   ['hooks', 'user-prompt-hook.mjs'],
   ['skills', 'rescue', 'launcher.mjs'],
   ['scripts', 'zcode-companion.mjs'],

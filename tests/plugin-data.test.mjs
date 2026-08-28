@@ -101,7 +101,7 @@ test('trusted lexical runtime entries preserve marketplace identity for exact ow
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
   await mkdir(dirname(installed), { recursive: true }); await symlink(ownedRoot, installed, 'dir');
   const expected = { dataRoot: join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace', runtimePluginRoot: installed };
-  for (const relativeEntry of ['hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
+  for (const relativeEntry of ['hooks/session-lifecycle-hook.mjs', 'hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
     assert.deepEqual(resolvePluginDataContext({
       env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath: join(installed, ...relativeEntry.split('/')),
     }), expected, relativeEntry);
@@ -109,20 +109,23 @@ test('trusted lexical runtime entries preserve marketplace identity for exact ow
   const entryPath = join(installed, 'scripts', 'zcode-companion.mjs');
 
   const wrongRoot = join(temporary, 'wrong-plugin');
-  for (const relativeEntry of ['hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
+  for (const relativeEntry of ['hooks/session-lifecycle-hook.mjs', 'hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
     const target = join(wrongRoot, ...relativeEntry.split('/')); await mkdir(dirname(target), { recursive: true }); await writeFile(target, 'export {};\n');
   }
   const wrongTarget = join(codexHome, 'plugins', 'cache', 'other', 'zcode', '0.1.0');
   await mkdir(dirname(wrongTarget), { recursive: true }); await symlink(wrongRoot, wrongTarget, 'dir');
   for (const candidate of [
     join(wrongTarget, 'scripts', 'zcode-companion.mjs'),
+    join(wrongTarget, 'hooks', 'session-lifecycle-hook.mjs'),
     join(wrongTarget, 'hooks', 'user-prompt-hook.mjs'),
     join(wrongTarget, 'skills', 'rescue', 'launcher.mjs'),
     join(temporary, 'outside-cache', 'scripts', 'zcode-companion.mjs'),
     join(codexHome, 'plugins', 'cache', 'vitry', 'wrong-plugin', '0.1.0', 'scripts', 'zcode-companion.mjs'),
+    join(codexHome, 'plugins', 'cache', 'foreign', 'zcode', '0.1.0', 'hooks', 'session-lifecycle-hook.mjs'),
     join(installed, 'hooks', 'session-end-hook.mjs'),
     join(installed, 'skills', 'rescue', 'SKILL.md'),
     `${installed}${sep}..${sep}0.1.0${sep}scripts${sep}zcode-companion.mjs`,
+    `${installed}${sep}hooks${sep}..${sep}hooks${sep}session-lifecycle-hook.mjs`,
     `${entryPath}\u0000bad`,
   ]) assert.throws(() => resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath: candidate }), { code: 'PLUGIN_DATA_ROOT_INVALID' });
 });
