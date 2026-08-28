@@ -21,6 +21,7 @@ const OWNER_RELEASE_MAX_SESSIONS = 16;
 const OWNER_RELEASE_CONCURRENCY = 8;
 const OWNER_RELEASE_BUDGET_MS = 600;
 const OWNER_RELEASE_REQUEST_MS = 250;
+const OWNER_RELEASE_STOP_REQUEST_MS = 500;
 const MAX_PRIORITIZE_LOCK_TIMEOUT_MS = 5_000;
 const MAX_CONVERSATION_SUBSCRIPTIONS = 256;
 const MAX_PENDING_CONVERSATION_TOPICS = 64;
@@ -452,7 +453,7 @@ export class ZCodeBroker {
           if (socket.destroyed || remainingMs <= 0 || this.protocol !== protocol) { failed.push(...owned.slice(offset)); break; }
           const outcomes = await Promise.allSettled(batch.map(async (sessionId) => {
             let sessionAdmission; let stopToken;
-            try { sessionAdmission = this.admission.beginSessionRequest('broker/releaseSession', sessionId, ownerId, socket); this.admission.bindSessionProtocol(sessionAdmission, protocol); const activeSession = this.activeSessionSockets.get(sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true }); const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); validateStopResult(result); if (this.protocol !== protocol || this.stoppingSessions.get(sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); return { activeSession, result, stopToken, sessionAdmission }; }
+            try { sessionAdmission = this.admission.beginSessionRequest('broker/releaseSession', sessionId, ownerId, socket); this.admission.bindSessionProtocol(sessionAdmission, protocol); const activeSession = this.activeSessionSockets.get(sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true }); const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_STOP_REQUEST_MS, remainingMs))); validateStopResult(result); if (this.protocol !== protocol || this.stoppingSessions.get(sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); return { activeSession, result, stopToken, sessionAdmission }; }
             catch (error) { if (stopToken && this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); this.admission.finishSessionRequest(sessionAdmission); throw error; }
           }));
           for (let index = 0; index < batch.length; index += 1) if (outcomes[index].status === 'fulfilled') { stoppedFences.set(batch[index], outcomes[index].value.stopToken); releaseSessionAdmissions.set(batch[index], outcomes[index].value.sessionAdmission); }

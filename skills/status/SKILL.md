@@ -12,3 +12,5 @@ Resolve the plugin root as the directory two directories above this `SKILL.md`; 
 Run in the current turn; never launch a built-in subagent. Present the companion output verbatim, including ownership markers, terminal state, timeout, and exact `$zcode:result` or `$zcode:cancel` follow-ups.
 
 Status is the durable recovery surface after a parent turn, Rescue child, or Codex process is lost. Semantic progress is a bounded public preview, not raw child output, and owner-only result/cancel rules still apply; `--all` exposes only redacted other-owner metadata. Before uninstall, use status/result/cancel to settle owned jobs: uninstall does not automatically erase durable job records or stable plugin data.
+
+Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.

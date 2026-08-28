@@ -98,6 +98,35 @@ async function findPluginRoots(directory, found = []) {
   return found;
 }
 
+async function createInstalledBoundWorkspaceFixture({ installedRoot, temporary, env, boundPluginData, canonicalOrigin, canonicalTarget }) {
+  const input = {
+    identityModule: pathToFileURL(join(installedRoot, 'scripts', 'lib', 'identity.mjs')).href,
+    stateModule: pathToFileURL(join(installedRoot, 'scripts', 'lib', 'state.mjs')).href,
+    boundPluginData,
+    canonicalOrigin,
+    canonicalTarget,
+  };
+  const fixture = await runChild(process.execPath, ['--input-type=module', '--eval', `
+    const input = JSON.parse(process.argv[1]);
+    const { createIdentityStore } = await import(input.identityModule);
+    const { createStateStore } = await import(input.stateModule);
+    const identity = createIdentityStore({ dataRoot: input.boundPluginData });
+    const state = createStateStore({ dataRoot: input.boundPluginData });
+    const sessionId = 'installed-bound-session';
+    const turnId = 'installed-bound-turn';
+    await identity.beginCallerTurn({
+      sessionId, turnId, workspace: input.canonicalOrigin, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
+      sessionStartedAt: new Date().toISOString(), sessionSource: 'startup',
+    });
+    await identity.resolveActiveTurn({ sessionId, workspace: input.canonicalTarget, workspaceBinding: 'claim' });
+    const targetJob = await state.reserveJob({ workspace: input.canonicalTarget, ownerSessionId: sessionId, ownerTurnId: turnId, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    const originDecoy = await state.reserveJob({ workspace: input.canonicalOrigin, ownerSessionId: sessionId, ownerTurnId: turnId, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    process.stdout.write(JSON.stringify({ sessionId, targetJobId: targetJob.id, originDecoyId: originDecoy.id }));
+  `, JSON.stringify(input)], { cwd: temporary, env });
+  assert.equal(fixture.code, 0, fixture.stderr || fixture.stdout);
+  return JSON.parse(fixture.stdout);
+}
+
 test('isolated Codex marketplace lists and installs the eight-skill snapshot', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-marketplace-install-'));
   t.after(() => rm(temporary, { force: true, recursive: true }));
@@ -316,6 +345,36 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(direct.code, 0, direct.stderr || direct.stdout);
   assert.equal(direct.stdout, '\nModel policy: default=ZCode default; aliases=none\n');
   assert.equal(direct.internal, '');
+
+  const boundOrigin = join(temporary, 'bound-origin');
+  const boundTarget = join(temporary, 'bound-target');
+  await mkdir(boundOrigin);
+  await writeFile(join(boundOrigin, 'tracked.txt'), 'base\n');
+  for (const args of [
+    ['init', '-q'],
+    ['add', 'tracked.txt'],
+    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'],
+    ['worktree', 'add', '-q', '-b', 'installed-effective-workspace', boundTarget],
+  ]) {
+    const result = await runProcess({ command: 'git', args: [] }, { cwd: boundOrigin, args, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024 });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  }
+  const canonicalOrigin = await realpath(boundOrigin);
+  const canonicalTarget = await realpath(boundTarget);
+  const boundCodexHome = join(temporary, 'bound-codex-home');
+  await mkdir(boundCodexHome);
+  const boundPluginData = join(await realpath(boundCodexHome), 'plugins', 'data', 'zcode-vitry');
+  const boundFixture = await createInstalledBoundWorkspaceFixture({
+    installedRoot, temporary, env: hookEnv, boundPluginData, canonicalOrigin, canonicalTarget,
+  });
+  const installedCompanion = join(installedRoot, 'scripts', 'zcode-companion.mjs');
+  const boundDirect = await runChild(process.execPath, [installedCompanion, 'invoke', 'status'], {
+    cwd: canonicalOrigin, env: { ...hookEnv, ZCODE_DATA_ROOT: boundPluginData, CODEX_THREAD_ID: boundFixture.sessionId },
+  });
+  assert.equal(boundDirect.code, 0, boundDirect.stderr || boundDirect.stdout);
+  assert.equal(boundDirect.spawnargs[1], installedCompanion);
+  assert.match(boundDirect.stdout, new RegExp(boundFixture.targetJobId));
+  assert.doesNotMatch(boundDirect.stdout, new RegExp(boundFixture.originDecoyId));
 
   const setupRecord = join(temporary, 'setup-requests.jsonl');
   await writeFile(setupRecord, '');

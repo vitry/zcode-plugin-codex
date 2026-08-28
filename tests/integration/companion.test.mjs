@@ -51,6 +51,21 @@ const commitmentPublicationCrash = join(root, 'tests', 'fixtures', 'commitment-p
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached its time limit.\n';
+const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
+const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
+
+/** The progress archive is degraded only after the shared cleanup deadline;
+ * the independently fenced job log may then report its own terminal suffix.
+ * @param {string} actual @param {string[]} semanticLines */
+function assertExactOptionalSinkDegradation(actual, semanticLines) {
+  const progressSuffixes = [[], [PROGRESS_CLEANUP_TIMEOUT_LINE], [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE]];
+  const candidates = progressSuffixes.flatMap((suffix) => [
+    [...semanticLines, ...suffix],
+    [...semanticLines, ...suffix, JOB_LOG_DISABLED_LINE],
+  ]).map((lines) => lines.join(''));
+  assert.ok(candidates.includes(actual), `unexpected optional sink degradation sequence:\n${actual}`);
+}
 
 /** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
  * @param {any} job @param {any} spec @param {string} capability */
@@ -3237,7 +3252,11 @@ test('conversation subscribe failure is observational, durable, and preserves th
   const result = await companion(context, ['rescue', '--fresh', 'subscribe failure'], { FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode conversation progress is unavailable\.\n\[zcode\] ZCode completed the delegated turn\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n)?$/u);
+  assertExactOptionalSinkDegradation(result.stderr, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode conversation progress is unavailable.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');
@@ -3249,7 +3268,11 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   const result = await companion(context, ['rescue', '--fresh', 'unsubscribe failure'], { FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode completed the delegated turn\.\n\[zcode\] ZCode conversation progress cleanup was incomplete\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n\[zcode\] ZCode progress archive was disabled\.\n)?$/u);
+  assertExactOptionalSinkDegradation(result.stderr, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+  ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');
@@ -4704,6 +4727,67 @@ test('model selection is applied at create time when resolvable and after live c
   requests = await readRequests();
   assert.ok(requests.some((request) => request.method === 'session/resume'));
   assert.ok(requests.some((request) => request.method === 'session/setModel' && request.params.model.providerId === 'fake'));
+});
+
+test('cold resume reads only isolated HOME and performs resume then setModel then one send', async () => {
+  const context = await fixture(); const record = join(context.directory, 'cold-resume.jsonl');
+  const isolatedHome = join(context.directory, 'isolated-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'fake/model' }, providerOptions: { token: 'PRIVATE_CLI_TOKEN' } }));
+  const env = {
+    HOME: isolatedHome, USERPROFILE: join(context.directory, 'wrong-userprofile'), FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model',
+  };
+  const initial = await companion(context, ['rescue', '--fresh', 'establish cold candidate'], env);
+  assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+  const resumed = await companion(context, ['rescue', '--resume', '--effort', 'high', 'materialize cold runtime'], env);
+  assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const resumeIndex = requests.findIndex((request) => request.method === 'session/resume');
+  assert.deepEqual(requests.slice(resumeIndex, resumeIndex + 3).map((request) => request.method), ['session/resume', 'session/setModel', 'session/setThoughtLevel']);
+  assert.deepEqual(requests[resumeIndex + 1].params.model, { providerId: 'fake', modelId: 'model' });
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+  assert.ok(requests.findIndex((request) => request.method === 'v4/conversation/subscribe') > resumeIndex + 2);
+  assert.doesNotMatch(`${resumed.stdout}${resumed.stderr}${resumed.internal}`, /PRIVATE_CLI_TOKEN/);
+
+  await rm(join(isolatedHome, '.zcode', 'cli', 'config.json')); await writeFile(record, '');
+  const warmAgain = await companion(context, ['rescue', '--resume', 'same-process warm runtime'], env);
+  assert.equal(warmAgain.code, 0, `${warmAgain.stderr}${warmAgain.stdout}`);
+  const warmRequests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(warmRequests.some((request) => request.method === 'session/setModel'), false);
+  assert.equal(warmRequests.filter((request) => request.method === 'session/send').length, 1);
+});
+
+test('unsupported CLI recovery tuple does not materialize, retry, fall back, or send twice', async () => {
+  const context = await fixture(); const record = join(context.directory, 'unsupported-cold-resume.jsonl');
+  const isolatedHome = join(context.directory, 'unsupported-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' } }));
+  const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' };
+  const initial = await companion(context, ['rescue', '--fresh', 'establish unsupported candidate'], env);
+  assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+  const resumed = await companion(context, ['rescue', '--resume', '--effort', 'high', 'unsupported recovery'], env);
+  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.details?.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', JSON.stringify(resumed.json));
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(requests.filter((request) => request.method === 'session/setModel').map((request) => request.params.model), [{ providerId: 'unsupported', modelId: 'model' }]);
+  assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
+});
+
+test('warm, other-warning, and missing-config resumes do not perform CLI recovery setModel', async () => {
+  for (const scenario of ['warm', 'other-warning', 'missing-config']) {
+    const context = await fixture();
+    const isolatedHome = join(context.directory, `${scenario}-home`); await mkdir(isolatedHome);
+    const record = join(context.directory, `${scenario}.jsonl`);
+    const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record,
+      ...(scenario === 'warm' ? {} : { FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' }),
+      ...(scenario === 'other-warning' ? { FAKE_ZCODE_COLD_LAST_ERROR_TYPE: 'ZCODE_OTHER_FAILURE' } : {}) };
+    const initial = await companion(context, ['rescue', '--fresh', `establish ${scenario}`], env);
+    assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
+    const resumed = await companion(context, ['rescue', '--resume', `resume ${scenario}`], env);
+    const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(requests.some((request) => request.method === 'session/setModel'), false, scenario);
+    assert.equal(requests.filter((request) => request.method === 'session/send').length, scenario === 'missing-config' ? 0 : 1, scenario);
+    if (scenario === 'warm') assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
+    else { assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_REQUEST_FAILED'); assert.equal(resumed.json.error.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE'); }
+  }
 });
 
 test('result extraction accepts mixed visible output and rejects reasoning-only or invalid structured output', async () => {

@@ -713,6 +713,60 @@ test('release guidance documents exact resume, bounded SessionEnd settlement, an
   assert.match(adr, /legacy[\s\S]+permission[\s\S]+SessionEnd[\s\S]+fail closed/i);
 });
 
+test('release guidance documents cold runtime, lifecycle partition, and compact launcher recovery bilingually', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+
+  for (const source of [english, chinese]) {
+    assert.match(source, /ZCODE_RUNTIME_MODEL_UNAVAILABLE/);
+    assert.match(source, /(?:effective `HOME`|有效 `HOME`)[\s\S]{0,160}\.zcode\/cli\/config\.json[\s\S]{0,100}`model\.main`/i);
+    assert.match(source, /(?:explicit `--model`|显式 `--model`)[\s\S]{0,180}(?:workspace (?:model )?policy|workspace 模型策略)[\s\S]{0,180}(?:CLI `model\.main`|CLI 的 `model\.main`)/i);
+    assert.match(source, /(?:session\/setModel[\s\S]{0,160}exactly once|(?:仅)?调用一次[\s\S]{0,80}session\/setModel)/i);
+    assert.match(source, /(?:effort)[\s\S]{0,180}(?:one `?session\/send`?|一次 `?session\/send`?|只执行一次 `?session\/send`?)/i);
+    assert.match(source, /(?:warm resume|热 resume)[\s\S]{0,180}(?:does not|不会|不)[\s\S]{0,100}(?:read|读取)[\s\S]{0,100}config/i);
+    assert.match(source, /(?:missing|invalid|unsupported|缺失|无效|不受支持)[\s\S]{0,240}(?:no fresh|不.*fresh)[\s\S]{0,160}(?:resend|重发)[\s\S]{0,160}(?:replacement|替换)/i);
+    assert.match(source, /(?:status|`\$zcode:status`)[\s\S]{0,120}(?:result|`\$zcode:result`)[\s\S]{0,120}(?:cancel|`\$zcode:cancel`)[\s\S]{0,260}(?:origin)[\s\S]{0,180}(?:exact (?:bound )?(?:execution )?(?:target|workspace)|精确.*(?:绑定目标|execution workspace))/i);
+    assert.match(source, /(?:one lifecycle-authoritative|一个 lifecycle 权威)[\s\S]{0,180}(?:partition|分区)[\s\S]{0,180}(?:later turns|后续 turn)/i);
+    assert.match(source, /(?:never scans or merges|不扫描也不合并|绝不扫描或合并)[\s\S]{0,120}(?:workspace )?partitions?/i);
+    assert.match(source, /(?:explicit job ID|显式 job ID)[\s\S]{0,180}(?:does not grant|不授予)[\s\S]{0,120}(?:cross-partition|跨分区|owner)/i);
+    assert.match(source, /(?:review|`\$zcode:review`)[\s\S]{0,100}(?:adversarial-review|`\$zcode:adversarial-review`)[\s\S]{0,100}(?:transfer|`\$zcode:transfer`)[\s\S]{0,240}(?:actual current partition|实际当前分区)/i);
+    assert.match(source, /(?:`compact`[\s\S]{0,100}SessionStart|SessionStart[\s\S]{0,100}`compact`)/i);
+    assert.match(source, /1200[\s\S]{0,180}(?:same instance-bound launcher|同一 instance-bound launcher)|(?:same instance-bound launcher|同一 instance-bound launcher)[\s\S]{0,180}1200/i);
+    assert.match(source, /(?:startup|`startup`)[\s\S]{0,100}(?:resume|`resume`)[\s\S]{0,100}(?:clear|`clear`)[\s\S]{0,220}(?:generic|通用)[\s\S]{0,160}UserPromptSubmit/i);
+    assert.match(source, /(?:unsafe|不安全)[\s\S]{0,180}zcode-rescue-launcher-error/i);
+    assert.match(source, /(?:one active writable Rescue per canonical workspace|每个 canonical workspace 只能有一个 active writable Rescue)[\s\S]{0,80}(?:unchanged|保持不变)/i);
+  }
+
+  assert.match(english, /Only after `session\/resume` returns the exact snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`, and only when neither an explicit `--model` nor the workspace model policy supplies a tuple/i);
+  assert.match(chinese, /仅当 `session\/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`，并且显式 `--model` 与 workspace 模型策略都没有提供 tuple/);
+  assert.match(english, /From either the eligible origin workspace or the exact bound execution target, they operate on that selected target partition/i);
+  assert.match(chinese, /从合格的 origin workspace 或精确绑定目标调用时，它们都只操作选中的 target 分区/);
+
+  const securityColdBoundary = security.split('\n').find((line) => line.includes('Cold resume runtime recovery')) ?? '';
+  assert.match(securityColdBoundary, /only after the exact runtime-unavailable snapshot warning when explicit and workspace policy are absent/i);
+  assert.match(securityColdBoundary, /never exposes raw config, provider options, endpoints, keys, or tokens/i);
+  assert.match(securityColdBoundary, /invalid or unsupported recovery remains a bounded failure without fresh fallback, resend, replacement, or config mutation/i);
+
+  const securityPartitionBoundary = security.split('\n').find((line) => line.includes('Direct status, result, and cancel')) ?? '';
+  assert.match(securityPartitionBoundary, /selected from the origin or its exact bound target and preserved privately across later turns/i);
+  assert.match(securityPartitionBoundary, /Creators select that same partition before persistence or reservation/i);
+  assert.match(securityPartitionBoundary, /No command scans or merges partitions/i);
+  assert.match(securityPartitionBoundary, /explicit job ID grants neither cross-partition nor owner authority/i);
+
+  const securityCompactBoundary = security.split('\n').find((line) => line.includes('Compact SessionStart')) ?? '';
+  assert.match(securityCompactBoundary, /same executing instance's bounded launcher descriptor without creating a turn or granting authority/i);
+  assert.match(securityCompactBoundary, /Ordinary SessionStart sources remain generic and rely on UserPromptSubmit/i);
+  assert.match(securityCompactBoundary, /unsafe provenance emits only the fixed launcher error/i);
+  assert.match(changelog, /cold resumed ZCode session/i);
+  assert.match(changelog, /lifecycle-authoritative job partition/i);
+  assert.match(changelog, /compact `SessionStart`/i);
+  assert.equal((changelog.match(/^- (?:Fixed|Added) .*?(?:cold resumed ZCode session|lifecycle-authoritative job partition|compact `SessionStart`)/gmu) ?? []).length, 3);
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+  assert.match(changelog, /one active writable Rescue per canonical workspace is unchanged/i);
+});
+
 test('release package ships receipt-gated manual uninstall guidance', () => {
   const guidePath = 'docs/manual-uninstall.md';
   const english = read('README.md');

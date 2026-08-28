@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryModel?:()=>Promise<{providerId:string,modelId:string}|undefined>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -114,6 +114,21 @@ export async function executeJob(input) {
     }, input.signal);
     const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
     sessionId = activeSessionId;
+    const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
+    const runtimeRecoveryRequired = input.resumeSessionId !== undefined && snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+    let runtimeModelMaterialized = !runtimeRecoveryRequired; let recoveryModel = selectedModel;
+    if (runtimeRecoveryRequired && !recoveryModel && input.resolveRuntimeRecoveryModel) {
+      try { recoveryModel = await boundedStep(input.resolveRuntimeRecoveryModel, input.signal); }
+      catch { input.signal?.throwIfAborted(); throw runtimeModelUnavailable(snapshot); }
+    }
+    if (runtimeRecoveryRequired && !validRecoveryModel(recoveryModel)) throw runtimeModelUnavailable(snapshot);
+    if (runtimeRecoveryRequired) {
+      snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
+      runtimeModelMaterialized = snapshot.projection?.lastError?.type !== 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
+      if (!runtimeModelMaterialized) throw runtimeModelUnavailable(snapshot);
+    }
+    else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
+    if (input.effort && runtimeModelMaterialized) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     conversationObserver = createDeferredConversationProgressObserver({ sessionId: activeSessionId, workspace });
     reporter = createProgressReporter({
       sessionId: activeSessionId,
@@ -138,9 +153,6 @@ export async function executeJob(input) {
         await conversationObserver.bind(conversationSubscription.subscriptionId);
       } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();
-    const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
-    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
-    if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {
@@ -453,4 +465,14 @@ function isInterruption(error) { return error instanceof PluginError && error.co
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
+/** @param {any} model */
+function validRecoveryModel(model) { return typeof model?.providerId === 'string' && model.providerId.length > 0 && typeof model?.modelId === 'string' && model.modelId.length > 0; }
+/** @param {any} snapshot */
+function runtimeModelUnavailable(snapshot) {
+  const message = publicErrorMessage(snapshot?.projection?.lastError?.message) ?? 'ZCode runtime model is unavailable.';
+  return new PluginError('ZCODE_REQUEST_FAILED', `ZCode session/resume failed: ${message}`, {
+    category: 'runtime', remedy: 'Configure a supported ZCode CLI model and retry the resume.',
+    details: { method: 'session/resume', remoteCode: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' },
+  });
+}
 function artifactError() { return new PluginError('RESULT_ARTIFACT_INVALID', 'Result artifact path is outside the private result store.', { category: 'storage', remedy: 'Restore the job record with a scoped result artifact.' }); }

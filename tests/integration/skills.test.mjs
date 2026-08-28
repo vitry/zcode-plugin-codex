@@ -12,10 +12,13 @@ import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { withFileLock } from '../../scripts/lib/fs.mjs';
 import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
+import { createJobLog } from '../../scripts/lib/job-log.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
+import { writeResultArtifact } from '../../scripts/lib/review.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
+import { writeWorkspaceModelConfig } from '../../scripts/lib/workspace-config.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from '../fixtures/pr39-origin-route-compatibility.mjs';
 import { runChild } from '../helpers/run-child.mjs';
@@ -1111,6 +1114,475 @@ test('installed-style invoke uses ordinary stdio, ambient thread identity, and l
   assert.notEqual(missing.code, 0); assert.match(missing.stdout, /THREAD_ID_REQUIRED/);
   const sibling = await runChild(process.execPath, [cli, 'invoke', 'status'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-bogus' } });
   assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /ACTIVE_TURN_NOT_FOUND/);
+});
+
+test('direct job commands resolve a bound lifecycle to its execution workspace from origin or target', async (t) => {
+  const ctx = await fixture(t);
+  const execution = join(ctx.directory, 'execution-worktree');
+  await run('git', ['worktree', 'add', '-q', '-b', 'effective-jobs', execution], ctx.workspace);
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'effective-owner';
+  const sessionStartedAt = new Date().toISOString();
+  await identity.beginCallerTurn({
+    sessionId, turnId: 'effective-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId, workspace: execution, workspaceBinding: 'claim' });
+  const target = await store.reserveJob({ workspace: execution, ownerSessionId: sessionId, ownerTurnId: 'effective-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const decoy = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: sessionId, ownerTurnId: 'effective-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const foreign = await store.reserveJob({ workspace: execution, ownerSessionId: 'effective-foreign', ownerTurnId: 'effective-foreign-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const logFile = await createJobLog({ dataRoot: ctx.dataRoot, workspace: execution, jobId: target.id, title: 'target-only log' });
+  await store.attachJobLog(execution, target.id, logFile);
+  const artifact = await writeResultArtifact({ dataRoot: ctx.dataRoot, workspace: execution, jobId: target.id, contents: 'target-only result' });
+  await store.transitionJob(execution, target.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'effective-result-session' });
+  await store.finishJob(execution, target.id, ['running'], 'succeeded', { resultArtifact: artifact, exitCode: 0 });
+  await writeWorkspaceModelConfig({ dataRoot: ctx.dataRoot, workspace: execution, config: { version: 1, defaultModel: 'target-model', models: {} } });
+  await writeWorkspaceModelConfig({ dataRoot: ctx.dataRoot, workspace: ctx.workspace, config: { version: 1, defaultModel: 'origin-decoy-model', models: {} } });
+  const env = { ...ctx.env, CODEX_THREAD_ID: sessionId };
+  for (const cwd of [ctx.workspace, execution]) {
+    const output = await runDirectInvocation(['invoke', 'status'], { cwd, env });
+    assert.deepEqual(output.jobs.map((job) => job.id), [target.id, foreign.id]);
+    assert.ok(output.jobs.every((job) => job.id !== decoy.id));
+    assert.deepEqual(output.modelPolicy, { configured: true, defaultModel: 'target-model', aliases: [] });
+  }
+
+  const activate = async (prompt, turnId) => {
+    await identity.beginCallerTurn({
+      sessionId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt,
+      sessionStartedAt, sessionSource: 'startup',
+    });
+    await identity.resolveActiveTurn({ sessionId, workspace: execution, workspaceBinding: 'claim' });
+  };
+  await activate(`$zcode:status ${target.id}`, 'effective-status-detail');
+  const detail = await runDirectInvocation(['invoke', 'status'], { cwd: ctx.workspace, env });
+  assert.equal(detail.job.id, target.id);
+  assert.equal(detail.job.logFile, logFile);
+  assert.deepEqual(detail.modelPolicy, { configured: true, defaultModel: 'target-model', aliases: [] });
+
+  await activate('$zcode:status', 'effective-status-latest');
+  const latest = await runDirectInvocation(['invoke', 'status'], { cwd: execution, env });
+  assert.equal(latest.job.id, target.id);
+
+  await activate('inspect the current job without an explicit command marker', 'effective-status-implicit');
+  const implicitLatest = await runDirectInvocation(['invoke', 'status'], { cwd: ctx.workspace, env });
+  assert.equal(implicitLatest.job.id, target.id);
+
+  await activate(`$zcode:result ${target.id}`, 'effective-result-explicit');
+  const result = await runDirectInvocation(['invoke', 'result'], { cwd: ctx.workspace, env });
+  assert.equal(result.job.id, target.id);
+  assert.equal(result.result, 'target-only result');
+
+  await activate('$zcode:result', 'effective-result-latest');
+  const latestResult = await runDirectInvocation(['invoke', 'result'], { cwd: execution, env });
+  assert.equal(latestResult.job.id, target.id);
+  assert.equal(latestResult.result, 'target-only result');
+
+  for (const [jobId, code] of [[foreign.id, 'OWNED_JOB_NOT_FOUND'], [decoy.id, 'OWNED_JOB_NOT_FOUND']]) {
+    await activate(`$zcode:result ${jobId}`, `effective-result-rejected-${jobId.slice(0, 8)}`);
+    await assert.rejects(runDirectInvocation(['invoke', 'result'], { cwd: execution, env }), { code });
+  }
+
+  const sibling = join(ctx.directory, 'effective-sibling');
+  await run('git', ['worktree', 'add', '-q', '-b', 'effective-sibling', sibling], ctx.workspace);
+  const unrelatedPath = join(ctx.directory, 'effective-unrelated');
+  await mkdir(unrelatedPath);
+  const unrelated = await realpath(unrelatedPath);
+  await activate('$zcode:status --all', 'effective-boundary');
+  for (const cwd of [sibling, unrelated]) {
+    await assert.rejects(runDirectInvocation(['invoke', 'status'], { cwd, env }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  }
+});
+
+test('real prompt replacement preserves only private job observation routing for direct commands', async (t) => {
+  for (const command of ['status', 'result', 'cancel']) await t.test(command, async () => {
+    const ctx = await fixture(t);
+    const execution = join(ctx.directory, `hook-recovery-${command}`);
+    await run('git', ['worktree', 'add', '-q', '-b', `hook-recovery-${command}`, execution], ctx.workspace);
+    const canonicalExecution = await realpath(execution);
+    const sessionId = `hook-recovery-${command}-owner`;
+    const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+      cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+      input: { session_id: sessionId, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+    });
+    assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+    const submit = (turnId, prompt) => runChild(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+      cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+      input: { session_id: sessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt },
+    });
+    const first = await submit('hook-recovery-first-turn', '$zcode:rescue --fresh establish target');
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+
+    const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+    const store = createStateStore({ dataRoot: ctx.dataRoot });
+    await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
+    const target = await store.reserveJob({ workspace: canonicalExecution, ownerSessionId: sessionId, ownerTurnId: 'hook-recovery-first-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+    const decoy = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: sessionId, ownerTurnId: 'hook-recovery-first-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+    if (command === 'result') {
+      const artifact = await writeResultArtifact({ dataRoot: ctx.dataRoot, workspace: canonicalExecution, jobId: target.id, contents: 'hook-recovered-result' });
+      await store.transitionJob(canonicalExecution, target.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'hook-recovery-result-session' });
+      await store.finishJob(canonicalExecution, target.id, ['running'], 'succeeded', { resultArtifact: artifact, exitCode: 0 });
+    }
+    const prompt = command === 'status' ? '$zcode:status --all' : `$zcode:${command} ${target.id}`;
+    const second = await submit('hook-recovery-second-turn', prompt);
+    assert.equal(second.code, 0, second.stderr || second.stdout);
+    const preview = await identity.resolveActiveTurn({ sessionId, workspace: ctx.workspace, workspaceBinding: 'preview' });
+    assert.equal(preview.executionWorkspace, null);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId, workspace: ctx.workspace, workspaceBinding: 'execution' }),
+      { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+
+    const output = await runDirectInvocation(['invoke', command], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+    if (command === 'status') {
+      assert.deepEqual(output.jobs.map((job) => job.id), [target.id]);
+      assert.ok(output.jobs.every((job) => job.id !== decoy.id));
+    } else if (command === 'result') {
+      assert.equal(output.job.id, target.id);
+      assert.equal(output.result, 'hook-recovered-result');
+    } else {
+      assert.equal(output.job.id, target.id);
+      assert.equal(output.job.status, 'cancelled');
+      assert.equal((await store.readJob(ctx.workspace, decoy.id)).status, 'queued');
+    }
+  });
+});
+
+test('direct running cancel stops and closes the bound Rescue only in its execution workspace', async (t) => {
+  const ctx = await fixture(t);
+  const execution = join(ctx.directory, 'cancel-execution-worktree');
+  await run('git', ['worktree', 'add', '-q', '-b', 'effective-cancel', execution], ctx.workspace);
+  const canonicalExecution = await realpath(execution);
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'effective-cancel-owner';
+  const sessionStartedAt = new Date().toISOString();
+  await identity.beginCallerTurn({
+    sessionId, turnId: 'effective-cancel-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:cancel',
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
+  const reservation = {
+    workspace: canonicalExecution, ownerSessionId: sessionId, ownerTurnId: 'effective-cancel-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' },
+  };
+  const executor = {
+    agentId: 'effective-cancel-child', agentType: 'zcode-rescue', parentSessionId: sessionId,
+    parentTurnId: 'effective-cancel-turn', parentPermissionMode: 'workspace-write', workspace: canonicalExecution,
+  };
+  const running = (await store.reserveFreshRescueJob({ workspace: canonicalExecution, reservation, executor })).job;
+  await startReservedRescueForTest(store, canonicalExecution, running, { startedAt: new Date().toISOString(), zcodeSessionId: 'effective-cancel-session' });
+  const clients = [];
+  const persisted = await store.readJob(canonicalExecution, running.id);
+  const output = await withWorkerLease({ dataRoot: ctx.dataRoot, workspace: canonicalExecution, jobId: running.id, workerLeaseId: persisted.workerLeaseId }, () =>
+    runDirectInvocation(['invoke', 'cancel'], {
+      cwd: ctx.workspace,
+      env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+      dependencies: {
+        createManagedZCodeClient: async (options) => {
+          clients.push(options);
+          return {
+            stopSession: async (zcodeSessionId) => assert.equal(zcodeSessionId, 'effective-cancel-session'),
+            close: async () => {},
+          };
+        },
+      },
+    }));
+  assert.equal(output.job.status, 'cancelled');
+  assert.equal(clients.length, 1);
+  assert.equal(clients[0].workspace, canonicalExecution);
+  await assert.rejects(
+    store.resolveRescueBinding({ workspace: canonicalExecution, parentSessionId: sessionId, executorAgentId: 'effective-cancel-child' }),
+    { code: 'RESCUE_BINDING_CLOSED' },
+  );
+  assert.equal((await store.listJobs(ctx.workspace)).length, 0);
+
+  await identity.beginCallerTurn({
+    sessionId, turnId: 'effective-queued-cancel-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:cancel',
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
+  const queuedExecutor = { ...executor, agentId: 'effective-queued-cancel-child', parentTurnId: 'effective-queued-cancel-turn' };
+  const queuedReservation = { ...reservation, ownerTurnId: 'effective-queued-cancel-turn' };
+  const queued = (await store.reserveFreshRescueJob({ workspace: canonicalExecution, reservation: queuedReservation, executor: queuedExecutor })).job;
+  await identity.beginCallerTurn({
+    sessionId, turnId: 'effective-queued-cancel-explicit-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:cancel ${queued.id}`,
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId, workspace: canonicalExecution, workspaceBinding: 'claim' });
+  const queuedOutput = await runDirectInvocation(['invoke', 'cancel'], { cwd: canonicalExecution, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+  assert.equal(queuedOutput.job.id, queued.id);
+  assert.equal(queuedOutput.job.status, 'cancelled');
+  await assert.rejects(
+    store.resolveRescueBinding({ workspace: canonicalExecution, parentSessionId: sessionId, executorAgentId: queuedExecutor.agentId }),
+    { code: 'RESCUE_BINDING_CLOSED' },
+  );
+});
+
+test('effective observer mode stays narrow while exact-target creators respect current execution authority', async (t) => {
+  const ctx = await fixture(t);
+  const execution = join(ctx.directory, 'scope-execution-worktree');
+  await run('git', ['worktree', 'add', '-q', '-b', 'effective-scope', execution], ctx.workspace);
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const sessionStartedAt = new Date().toISOString();
+  await identity.beginCallerTurn({
+    sessionId: 'effective-unbound', turnId: 'effective-unbound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all',
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  const unbound = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'effective-unbound', ownerTurnId: 'effective-unbound-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const unboundOutput = await runDirectInvocation(['invoke', 'status'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'effective-unbound' } });
+  assert.deepEqual(unboundOutput.jobs.map((job) => job.id), [unbound.id]);
+  await assert.rejects(runDirectInvocation(['invoke', 'status'], { cwd: execution, env: { ...ctx.env, CODEX_THREAD_ID: 'effective-unbound' } }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+
+  for (const command of ['review', 'adversarial-review', 'transfer']) {
+    const prompt = command === 'review' ? '$zcode:review --background'
+      : command === 'adversarial-review' ? '$zcode:adversarial-review --background focus'
+        : '$zcode:transfer --source exact-target-source';
+    await identity.beginCallerTurn({
+      sessionId: 'effective-scope-owner', turnId: `effective-scope-${command}`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt,
+      sessionStartedAt, sessionSource: 'startup',
+    });
+    await identity.resolveActiveTurn({ sessionId: 'effective-scope-owner', workspace: execution, workspaceBinding: 'claim' });
+    const dependencies = command === 'transfer' ? {
+      readCodexThread: async () => ({ id: 'exact-target-source', ephemeral: false, turns: [{ startedAt: 1, items: [{ type: 'userMessage', content: [{ type: 'text', text: 'source' }] }] }] }),
+      createManagedZCodeClient: async () => ({ createSession: async () => ({ session: { sessionId: 'exact-target-session' } }), close: async () => {} }),
+    } : { startBackgroundWorker: async () => {} };
+    const created = await runDirectInvocation(['invoke', command], {
+      cwd: execution, env: { ...ctx.env, CODEX_THREAD_ID: 'effective-scope-owner' }, dependencies,
+    });
+    assert.equal(created.job.workspace, await realpath(execution));
+  }
+});
+
+test('an origin job creator replaces a recovered Rescue target as the authoritative observation partition', async (t) => {
+  for (const command of ['review', 'adversarial-review', 'transfer']) await t.test(command, async () => {
+    const ctx = await fixture(t); const targetPath = join(ctx.directory, `creator-${command}-target`);
+    await run('git', ['worktree', 'add', '-q', '-b', `creator-${command}-target`, targetPath], ctx.workspace);
+    const target = await realpath(targetPath); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+    const store = createStateStore({ dataRoot: ctx.dataRoot }); const sessionId = `creator-${command}-owner`;
+    const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+    await identity.beginCallerTurn({
+      sessionId, turnId: 'rescue-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'rescue', ...proof,
+    });
+    await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+    const oldTarget = await store.reserveJob({
+      workspace: target, ownerSessionId: sessionId, ownerTurnId: 'rescue-turn', command: 'rescue', readOnly: true,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    });
+    const prompt = command === 'review' ? '$zcode:review --background'
+      : command === 'adversarial-review' ? '$zcode:adversarial-review --background partition focus'
+        : '$zcode:transfer --source transfer-source';
+    await identity.beginCallerTurn({
+      sessionId, turnId: `${command}-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt, ...proof,
+    });
+    const dependencies = command === 'transfer' ? {
+      readCodexThread: async () => ({ id: 'transfer-source', ephemeral: false, turns: [{ startedAt: 1, items: [{ type: 'userMessage', content: [{ type: 'text', text: 'source' }] }] }] }),
+      createManagedZCodeClient: async () => ({ createSession: async () => ({ session: { sessionId: 'transferred-zcode-session' } }), close: async () => {} }),
+    } : { startBackgroundWorker: async () => {} };
+    const created = await runDirectInvocation(['invoke', command], {
+      cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId }, dependencies,
+    });
+    assert.equal(created.job.workspace, ctx.workspace);
+
+    await identity.beginCallerTurn({
+      sessionId, turnId: `${command}-status-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof,
+    });
+    const observed = await runDirectInvocation(['invoke', 'status'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+    assert.ok(observed.jobs.some((job) => job.id === created.job.id));
+    assert.ok(observed.jobs.every((job) => job.id !== oldTarget.id));
+    assert.equal((await store.readJob(target, oldTarget.id)).workspace, target);
+
+    const resultJob = await store.reserveJob({
+      workspace: ctx.workspace, ownerSessionId: sessionId, ownerTurnId: `${command}-status-turn`, command: 'review', readOnly: true,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    });
+    const artifact = await writeResultArtifact({ dataRoot: ctx.dataRoot, workspace: ctx.workspace, jobId: resultJob.id, contents: `${command}-origin-result` });
+    await store.transitionJob(ctx.workspace, resultJob.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: `${command}-result-session` });
+    await store.finishJob(ctx.workspace, resultJob.id, ['running'], 'succeeded', { resultArtifact: artifact, exitCode: 0 });
+    await identity.beginCallerTurn({
+      sessionId, turnId: `${command}-result-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:result ${resultJob.id}`, ...proof,
+    });
+    const result = await runDirectInvocation(['invoke', 'result'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+    assert.equal(result.job.id, resultJob.id); assert.equal(result.result, `${command}-origin-result`);
+    await identity.beginCallerTurn({
+      sessionId, turnId: `${command}-partition-confined-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:result ${oldTarget.id}`, ...proof,
+    });
+    await assert.rejects(runDirectInvocation(['invoke', 'result'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } }), { code: 'OWNED_JOB_NOT_FOUND' });
+
+    const cancelJob = await store.reserveJob({
+      workspace: ctx.workspace, ownerSessionId: sessionId, ownerTurnId: `${command}-result-turn`, command: 'review', readOnly: true,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    });
+    await identity.beginCallerTurn({
+      sessionId, turnId: `${command}-cancel-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:cancel ${cancelJob.id}`, ...proof,
+    });
+    const cancelled = await runDirectInvocation(['invoke', 'cancel'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+    assert.equal(cancelled.job.id, cancelJob.id); assert.equal(cancelled.job.status, 'cancelled');
+    assert.equal((await store.readJob(target, oldTarget.id)).status, 'queued');
+  });
+});
+
+test('pending review choice persists and consumes from the newly selected origin partition', async (t) => {
+  const ctx = await fixture(t); const targetPath = join(ctx.directory, 'pending-partition-target');
+  await run('git', ['worktree', 'add', '-q', '-b', 'pending-partition-target', targetPath], ctx.workspace);
+  const target = await realpath(targetPath); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'pending-partition-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'rescue-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'rescue', ...proof });
+  await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+  await identity.beginCallerTurn({ sessionId, turnId: 'review-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.deepEqual(await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } }), {
+    type: 'needs-choice', choices: ['wait', 'background'],
+  });
+  const originStorage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: target });
+  assert.equal((await readdir(join(originStorage.directory, 'invocations', 'pending'))).length, 1);
+  await assert.rejects(readdir(join(targetStorage.directory, 'invocations', 'pending')), { code: 'ENOENT' });
+  const completed = await runDirectInvocation(['invoke-choice', 'review', 'wait'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+  assert.equal(completed.job.workspace, ctx.workspace);
+  assert.equal((await readdir(join(originStorage.directory, 'invocations', 'pending'))).length, 0);
+});
+
+test('a delayed older direct creator cannot retarget a newer prompt or reserve a job', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'delayed-selection-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'old-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review --background', ...proof });
+  let markReached; let continueSelection;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueSelection = resolve; });
+  const delayed = runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforeJobWorkspaceSelection: async () => { markReached(); await release; }, startBackgroundWorker: async () => {} },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueSelection();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a creator replaced after workspace selection cannot reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-reservation-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'old-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review --background', ...proof });
+  let markReached; let continueReservation;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueReservation = resolve; });
+  const delayed = runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforeJobReservation: async () => { markReached(); await release; }, startBackgroundWorker: async () => {} },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueReservation();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a pending choice replaced after workspace selection cannot persist in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-pending-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'old-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  let markReached; let continuePending;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continuePending = resolve; });
+  const delayed = runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforePendingInvocationWrite: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continuePending();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  await assert.rejects(readdir(join(storage.directory, 'invocations', 'pending')), { code: 'ENOENT' });
+});
+
+test('a choice replaced after workspace selection cannot consume pending or reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-consume-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  let markReached; let continueConsume;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueConsume = resolve; });
+  const delayed = runDirectInvocation(['invoke-choice', 'review', 'wait'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforePendingInvocationConsume: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueConsume();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  assert.equal((await readdir(join(storage.directory, 'invocations', 'pending'))).length, 1);
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a choice replaced after pending consumption cannot reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-consume-reservation-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  let markReached; let continueReservation;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueReservation = resolve; });
+  const delayed = runDirectInvocation(['invoke-choice', 'review', 'wait'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforeJobReservation: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueReservation();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a later-turn choice fences with current authority while preserving the pending owner turn', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'later-choice-authority-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'pending-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'wait', ...proof });
+  const completed = await runDirectInvocation(['invoke-choice', 'review', 'wait'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+  assert.equal(completed.job.ownerTurnId, 'pending-turn');
+});
+
+test('job creator selection fails before reservation and reservation failure preserves the selected pointer', async (t) => {
+  const ctx = await fixture(t); const targetPath = join(ctx.directory, 'selection-failure-target'); const unknownPath = join(ctx.directory, 'selection-failure-unknown');
+  await run('git', ['worktree', 'add', '-q', '-b', 'selection-failure-target', targetPath], ctx.workspace);
+  await run('git', ['worktree', 'add', '-q', '-b', 'selection-failure-unknown', unknownPath], ctx.workspace);
+  const target = await realpath(targetPath); const unknown = await realpath(unknownPath); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'selection-failure-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'rescue-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'rescue', ...proof });
+  await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+  await identity.beginCallerTurn({ sessionId, turnId: 'unknown-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review --background', ...proof });
+  await assert.rejects(runDirectInvocation(['invoke', 'review'], {
+    cwd: unknown, env: { ...ctx.env, CODEX_THREAD_ID: sessionId }, dependencies: { startBackgroundWorker: async () => {} },
+  }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(unknown), []);
+
+  const actualStore = createStateStore({ dataRoot: ctx.dataRoot });
+  await assert.rejects(runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId }, dependencies: {
+      createStateStore: () => ({ ...actualStore, reserveJob: async () => { throw new PluginError('INJECTED_RESERVATION_FAILURE', 'injected reservation failure'); } }),
+    },
+  }), { code: 'INJECTED_RESERVATION_FAILURE' });
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: ctx.workspace, workspaceBinding: 'effective' })).workspace, ctx.workspace);
+  assert.deepEqual(await actualStore.listJobs(ctx.workspace), []);
+});
+
+test('same-turn Rescue execution authority rejects a conflicting origin job creator before reservation', async (t) => {
+  const ctx = await fixture(t); const targetPath = join(ctx.directory, 'same-turn-conflict-target');
+  await run('git', ['worktree', 'add', '-q', '-b', 'same-turn-conflict-target', targetPath], ctx.workspace);
+  const target = await realpath(targetPath); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const sessionId = 'same-turn-conflict-owner';
+  await identity.beginCallerTurn({
+    sessionId, turnId: 'claimed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review --background',
+    sessionStartedAt: new Date().toISOString(), sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+  await assert.rejects(runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId }, dependencies: { startBackgroundWorker: async () => {} },
+  }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
 });
 
 test('role-status default app-server path is read-only and leaves caller context and jobs untouched', async (t) => {

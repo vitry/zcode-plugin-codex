@@ -204,7 +204,7 @@ export async function releaseManagedZCodeOwner(options) {
       const deadline = cleanupDeadline; const attempted = new Set();
       let legacyFallback = false;
       for (let batch = 0; batch < OWNER_CLEANUP_MAX_BATCHES && Date.now() < deadline; batch += 1) {
-        const result = await releaseOwnerWithBusyRetry(verifiedClient, verifiedCapabilities.releaseOwnerExclusions ? [...attempted] : undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount;
+        const result = await releaseOwnerWithRetry(verifiedClient, verifiedCapabilities.releaseOwnerExclusions ? [...attempted] : undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount;
         for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); }
         for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         if (!profileDeferred || result.releasedSessionIds.length + result.failedSessionIds.length === 0) break;
@@ -214,7 +214,7 @@ export async function releaseManagedZCodeOwner(options) {
         const listed = await verifiedClient.listSessions(boundedCleanupTimeout(deadline, requestTimeoutMs)); const candidates = listed.sessions.map((/** @type {any} */ session) => session.sessionId).filter((/** @type {string} */ sessionId) => !attempted.has(sessionId)).slice(0, OWNER_CLEANUP_LEGACY_ACTIVE_MAX);
         for (let offset = 0; offset < candidates.length && Date.now() < deadline; offset += OWNER_CLEANUP_LEGACY_BATCH_SIZE) {
           const batch = candidates.slice(offset, offset + OWNER_CLEANUP_LEGACY_BATCH_SIZE); const prioritized = await prioritizeBrokerOwnership({ dataRoot: options.dataRoot, workspace: storage.workspacePath, identityName, ownerId: options.ownerId, sessionIds: batch, lockTimeoutMs: remainingCleanupTimeout(deadline) }); if (!prioritized.prioritizedSessionIds.length) continue;
-          const result = await releaseOwnerWithBusyRetry(verifiedClient, undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount; for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); } for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
+          const result = await releaseOwnerWithRetry(verifiedClient, undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount; for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); } for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         }
       }
       if (!releaseProof) throw ownerReleaseIncomplete({ releaseProofMissingProfileCount: 1 });
@@ -246,7 +246,7 @@ async function discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, r
 }
 
 /** @param {ZCodeClient} client @param {string[]|undefined} excludeSessionIds @param {number} deadline @param {number} requestTimeoutMs */
-async function releaseOwnerWithBusyRetry(client, excludeSessionIds, deadline, requestTimeoutMs) { let busyError; while (Date.now() < deadline) { try { return await client.releaseOwner(excludeSessionIds, boundedCleanupTimeout(deadline, requestTimeoutMs)); } catch (error) { if ((/** @type {{code?:string}} */ (error))?.code !== 'ZCODE_TURN_ACTIVE') throw error; busyError = error; const remainingMs = deadline - Date.now(); if (remainingMs <= 1) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(25, remainingMs - 1))); } } throw busyError ?? ownerReleaseIncomplete({ failedProfileCount: 1 }); }
+async function releaseOwnerWithRetry(client, excludeSessionIds, deadline, requestTimeoutMs) { let retryableError; while (Date.now() < deadline) { try { return await client.releaseOwner(excludeSessionIds, boundedCleanupTimeout(deadline, requestTimeoutMs)); } catch (error) { const code = (/** @type {{code?:string}} */ (error))?.code; if (code !== 'ZCODE_TURN_ACTIVE' && code !== 'ZCODE_OWNER_RELEASE_TIMEOUT') throw error; retryableError = error; const remainingMs = deadline - Date.now(); if (remainingMs <= 1) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(25, remainingMs - 1))); } } throw retryableError ?? ownerReleaseIncomplete({ failedProfileCount: 1 }); }
 
 /** @param {ZCodeClient} client @param {{pid:number,instanceId:string}} identity @param {number} deadline @param {number} requestTimeoutMs */
 async function verifyBrokerIdentity(client, identity, deadline, requestTimeoutMs) { const health = await requestBrokerHealth(client, boundedCleanupTimeout(deadline, requestTimeoutMs)); if (!Number.isSafeInteger(health.pid) || health.pid <= 1 || !isSafeIdentifier(health.instanceId) || health.pid !== identity.pid || health.instanceId !== identity.instanceId) throw outputError('broker/health'); return { releaseOwnerExclusions: health.capabilities?.releaseOwnerExclusions === true }; }

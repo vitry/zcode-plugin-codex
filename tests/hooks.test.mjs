@@ -16,8 +16,8 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
-import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
+import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -52,6 +52,12 @@ async function privateTreeSnapshot(directory) {
     else found[relative].bytes = (await readFile(path)).toString('base64');
   };
   await visit(directory); return found;
+}
+
+async function privateFileSnapshot(directory) {
+  return Object.fromEntries(Object.entries(await privateTreeSnapshot(directory))
+    .filter(([, metadata]) => metadata.type === 'file')
+    .map(([path, metadata]) => [path, { mode: metadata.mode, size: metadata.size, bytes: metadata.bytes }]));
 }
 
 async function assertPrivateRoutedError(action, code, secrets) {
@@ -107,6 +113,16 @@ async function workspace() {
     const child = spawn('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'init'], { cwd }); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`git commit ${code}`)));
   });
   return { cwd, data, env: { PLUGIN_DATA: data } };
+}
+
+async function installHookRuntime(pluginRoot) {
+  await mkdir(pluginRoot, { recursive: true });
+  for (const directory of ['hooks', 'scripts']) await cp(join(root, directory), join(pluginRoot, directory), { recursive: true });
+  await mkdir(join(pluginRoot, 'skills/rescue'), { recursive: true });
+  await cp(join(root, 'skills/rescue/launcher.mjs'), join(pluginRoot, 'skills/rescue/launcher.mjs'));
+  const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
+  await mkdir(join(pluginRoot, 'node_modules'), { recursive: true });
+  await symlink(dependency, join(pluginRoot, 'node_modules/fs-native-extensions'), 'dir');
 }
 
 async function addLinkedWorktree(cwd, name = 'late-bind-target') {
@@ -181,6 +197,7 @@ test('default hooks/hooks.json registers bounded native lifecycle hooks without 
     else assert.equal(Object.hasOwn(hook, 'additionalContextLimit'), false, `${eventName} cannot emit additionalContext`);
   }
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
+  assert.equal(hooks.hooks.SessionStart[0].hooks[0].additionalContextLimit, SESSION_START_ADDITIONAL_CONTEXT_LIMIT);
   assert.equal(hooks.hooks.UserPromptSubmit[0].hooks[0].additionalContextLimit, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
@@ -194,6 +211,103 @@ test('hook input rejects oversized, malformed, extra-field and wrong-event input
     const result = await runHook('session-lifecycle-hook.mjs', { cwd }, { ...env, PLUGIN_DATA: data }, { raw });
     assert.notEqual(result.code, 0); assert.equal(result.stdout, ''); assert.doesNotMatch(result.stderr, /x{100}|transcript/);
   }
+});
+
+test('compact SessionStart restores one byte-identical launcher without changing active turn state', async () => {
+  const { cwd, data, env } = await workspace();
+  const sessionId = 'compact-launcher-session';
+  const sessionInput = { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default' };
+  const startup = await runHook('session-lifecycle-hook.mjs', { ...sessionInput, source: 'startup' }, env);
+  assert.equal(startup.code, 0, startup.stderr);
+  assert.equal(startup.json?.hookSpecificOutput?.additionalContext, 'ZCode companion lifecycle is active for this parent session.');
+
+  const ordinary = await runHook('user-prompt-hook.mjs', {
+    session_id: sessionId, turn_id: 'compact-launcher-turn', cwd, hook_event_name: 'UserPromptSubmit',
+    transcript_path: null, model: 'gpt', permission_mode: 'dontAsk', prompt: 'retain this exact turn',
+  }, env);
+  const ordinaryContext = assertRescueLauncherContext(ordinary);
+  assert.equal(ordinaryContext, rescueLauncherDescriptor);
+  const identity = createIdentityStore({ dataRoot: data });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  const active = await identity.resolveActiveTurn({ sessionId, workspace: cwd });
+  await preparations.save({ ...active, recordedPrompt: active.prompt, envelope: { version: 1, source: 'proactive', task: 'retain preparation', options: {} } });
+  const store = createStateStore({ dataRoot: data });
+  const unread = await store.reserveJob({ workspace: cwd, ownerSessionId: sessionId, ownerTurnId: active.turnId, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: active.permissionMode } });
+  await store.transitionJob(cwd, unread.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+  const before = await privateFileSnapshot(data);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const compact = await runHook('session-lifecycle-hook.mjs', { ...sessionInput, permission_mode: 'plan', source: 'compact' }, env);
+    assert.equal(compact.code, 0, compact.stderr);
+    const compactContext = compact.json?.hookSpecificOutput?.additionalContext;
+    assert.equal(compactContext, ordinaryContext);
+    assert.equal((compactContext.match(/^\[zcode-rescue-launcher\] /gmu) ?? []).length, 1);
+    const limit = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8')).hooks.SessionStart[0].hooks[0].additionalContextLimit;
+    assert.ok(Buffer.byteLength(compactContext) <= limit);
+    assert.deepEqual(await identity.resolveActiveTurn({ sessionId, workspace: cwd }), active);
+    assert.deepEqual(await privateFileSnapshot(data), before, 'compact must preserve lifecycle, caller, baseline, preparation, and unread-job state');
+  }
+});
+
+test('ordinary SessionStart sources retain only generic lifecycle context', async () => {
+  const { cwd, env } = await workspace();
+  for (const source of ['startup', 'resume', 'clear']) {
+    const result = await runHook('session-lifecycle-hook.mjs', {
+      session_id: `ordinary-${source}`, cwd, hook_event_name: 'SessionStart', transcript_path: null,
+      model: 'gpt', permission_mode: 'default', source,
+    }, env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.json?.hookSpecificOutput?.additionalContext, 'ZCode companion lifecycle is active for this parent session.');
+    assert.doesNotMatch(result.stdout, /zcode-rescue-launcher/);
+  }
+});
+
+test('unsafe compact launcher provenance emits only the fixed launcher error after recording the session', async () => {
+  const { cwd, data, env } = await workspace();
+  const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-compact-root-')), 'plugin $unsafe');
+  await mkdir(unsafeRoot, { recursive: true });
+  for (const directory of ['hooks', 'scripts', 'skills']) await cp(join(root, directory), join(unsafeRoot, directory), { recursive: true });
+  const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
+  await mkdir(join(unsafeRoot, 'node_modules'), { recursive: true });
+  await symlink(dependency, join(unsafeRoot, 'node_modules/fs-native-extensions'), 'dir');
+  const result = await runHook(join(unsafeRoot, 'hooks/session-lifecycle-hook.mjs'), {
+    session_id: 'unsafe-compact', cwd, hook_event_name: 'SessionStart', transcript_path: null,
+    model: 'gpt', permission_mode: 'default', source: 'compact',
+  }, { ...env, PLUGIN_DATA: data }, { absolute: true });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.json?.hookSpecificOutput?.additionalContext, '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}');
+  assert.doesNotMatch(result.stdout, /launcherCommand|companion lifecycle is active/);
+  assert.equal(await isOwnedSession(data, { session_id: 'unsafe-compact', cwd }), true);
+});
+
+test('compact SessionStart executes from exact ordinary and cache-symlink installs but rejects wrong or foreign lexical entries', async () => {
+  const { cwd, data } = await workspace();
+  const temporary = await mkdtemp(join(tmpdir(), 'zpc-compact-installed-'));
+  const codexHome = join(temporary, 'codex-home');
+  const copied = join(codexHome, 'plugins/cache/vitry/zcode/0.2.0');
+  await installHookRuntime(copied);
+  const input = { session_id: 'installed-compact', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'compact' };
+  const copiedResult = await runHook(join(copied, 'hooks/session-lifecycle-hook.mjs'), input, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.equal(copiedResult.code, 0, copiedResult.stderr);
+  assert.equal(copiedResult.json?.hookSpecificOutput?.additionalContext,
+    `[zcode-rescue-launcher] ${JSON.stringify({ version: 1, launcherCommand: `node "${join(copied, 'skills/rescue/launcher.mjs')}"` })}`);
+
+  const linked = join(codexHome, 'plugins/cache/vitry/zcode/0.3.0');
+  await mkdir(dirname(linked), { recursive: true }); await symlink(root, linked, 'dir');
+  const linkedResult = await runHook(join(linked, 'hooks/session-lifecycle-hook.mjs'), { ...input, session_id: 'linked-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.equal(linkedResult.code, 0, linkedResult.stderr);
+  assert.equal(linkedResult.json?.hookSpecificOutput?.additionalContext,
+    `[zcode-rescue-launcher] ${JSON.stringify({ version: 1, launcherCommand: `node "${join(linked, 'skills/rescue/launcher.mjs')}"` })}`);
+
+  const wrongEntry = join(copied, 'hooks/wrong-session-lifecycle-hook.mjs');
+  await symlink(join(copied, 'hooks/session-lifecycle-hook.mjs'), wrongEntry);
+  const wrong = await runHook(wrongEntry, { ...input, session_id: 'wrong-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.notEqual(wrong.code, 0); assert.equal(wrong.stdout, ''); assert.match(wrong.stderr, /PLUGIN_DATA_ROOT_INVALID/);
+
+  const foreignEntry = join(temporary, 'foreign-session-lifecycle-hook.mjs');
+  await symlink(join(copied, 'hooks/session-lifecycle-hook.mjs'), foreignEntry);
+  const foreign = await runHook(foreignEntry, { ...input, session_id: 'foreign-compact' }, { CODEX_HOME: codexHome, ZCODE_DATA_ROOT: data }, { absolute: true });
+  assert.notEqual(foreign.code, 0); assert.equal(foreign.stdout, ''); assert.match(foreign.stderr, /PLUGIN_DATA_ROOT_INVALID/);
 });
 
 test('two sessions in one workspace get isolated caller capabilities, permission snapshots and baselines', async () => {
@@ -1124,7 +1238,7 @@ test('a failed SessionEnd stop is later settled by reservation scavenging before
 test('SessionEnd drains deferred owner batches without touching siblings or looping on failures', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const owner = ownerIdForSession('many'); const sibling = ownerIdForSession('sibling');
   await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
-  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record } }); await client.createSession({ workspace: cwd, sessionId: 'new-active-session' }); await client.close();
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_DELAY_ONCE_MS: '300' } }); await client.createSession({ workspace: cwd, sessionId: 'new-active-session' }); await client.close();
   const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500, 'repeated release must remain inside the native hook budget');
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions; assert.deepEqual(owners, { 'sibling-session': sibling });
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'new-active-session'), 'a newer active session beyond the first 16 mappings must be stopped'); assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'sibling-session'));

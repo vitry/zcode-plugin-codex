@@ -7,10 +7,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  RESCUE_LAUNCHER_ERROR_CONTEXT,
+  SESSION_START_ADDITIONAL_CONTEXT_LIMIT,
   USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT,
   escapeRescueLauncherCommandForToml,
   renderRescueLauncherCommand,
   renderRescueUserPromptContext,
+  renderRescueUserPromptContextWithinLimit,
 } from '../scripts/lib/rescue-launcher-command.mjs';
 
 function shell(command, cwd) {
@@ -63,6 +66,27 @@ test('launcher descriptor and five maximum notices remain inside the hook contex
   const context = renderRescueUserPromptContext(command, jobs);
   assert.ok(Buffer.byteLength(context) <= USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
   assert.equal(context.match(/[0-4]{64}/gu)?.length, 5);
+});
+
+test('explicit lifecycle context budgets accept 1200 bytes and reject 1201 without changing UserPromptSubmit semantics', () => {
+  assert.equal(SESSION_START_ADDITIONAL_CONTEXT_LIMIT, 1200);
+  const contextAt = (bytes) => {
+    for (let length = 1; length < 2_000; length += 1) {
+      const command = renderRescueLauncherCommand(`/opt/${'x'.repeat(length)}/skills/rescue/launcher.mjs`, { platform: 'linux' });
+      const context = renderRescueUserPromptContext(command, []);
+      if (Buffer.byteLength(context) === bytes) return { command, context };
+    }
+    throw new Error(`could not render a ${bytes}-byte launcher fixture`);
+  };
+  const atLimit = contextAt(SESSION_START_ADDITIONAL_CONTEXT_LIMIT);
+  const overLimit = contextAt(SESSION_START_ADDITIONAL_CONTEXT_LIMIT + 1);
+  assert.equal(renderRescueUserPromptContextWithinLimit(atLimit.command, [], SESSION_START_ADDITIONAL_CONTEXT_LIMIT), atLimit.context);
+  assert.throws(
+    () => renderRescueUserPromptContextWithinLimit(overLimit.command, [], SESSION_START_ADDITIONAL_CONTEXT_LIMIT),
+    { code: 'RESCUE_LAUNCHER_CONTEXT_INVALID' },
+  );
+  assert.equal(renderRescueUserPromptContext(overLimit.command, []), overLimit.context, 'the 1800-byte UserPromptSubmit renderer must remain unchanged');
+  assert.ok(Buffer.byteLength(RESCUE_LAUNCHER_ERROR_CONTEXT) <= SESSION_START_ADDITIONAL_CONTEXT_LIMIT);
 });
 
 test('launcher renderer rejects relative, wrong-leaf, control, and oversized paths', () => {

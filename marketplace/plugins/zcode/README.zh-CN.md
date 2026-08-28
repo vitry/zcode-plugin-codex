@@ -48,6 +48,8 @@ source checkout 和已安装插件使用刻意隔离的命名空间：source dev
 
 在每个受管父 turn 中，受管 `UserPromptSubmit` hook 都会注入一条由执行该 hook 的精确插件实例机器渲染的 instance-bound launcher command。Root 和 Rescue 子 agent 原样复用这些精确字节，并且只追加固定 Rescue 参数。它们绝不从 cwd 或 Skill 文本构造路径，绝不调用直接 companion 形式 `node scripts/zcode-companion.mjs`，也绝不通过 PATH、全局包或 cache 搜索选择另一个插件实例。这样无需模型自行选择路径，同时不削弱实例或命名空间隔离。
 
+在 turn 中途发生 context compaction 后，source 为 `compact` 的 `SessionStart` 会在 1200-byte context 上限内恢复同一 instance-bound launcher descriptor。它保留已经活动的 turn，且不授予新 authority。普通 `startup`、`resume` 和 `clear` SessionStart source 只保留通用 lifecycle context；随后的 `UserPromptSubmit` 为普通 turn 提供 descriptor。不安全 provenance 只输出固定 `[zcode-rescue-launcher-error]` context，绝不回退到其他安装实例。
+
 Rescue 会区分对话的 origin workspace 与 execution workspace。Root 在同一个 parent turn 中创建或进入 linked worktree 时，第一次可信的 `prepare rescue` 会自动绑定到该 execution workspace，不需要手动 handoff。只有 origin 本身，或与它共享相同的 canonical Git common-dir 的 canonical linked-worktree 顶层目录才合格。目标在同一 turn 内不可变，因此其他 worktree 或无关仓库会被拒绝。Role inspection 只读，child 不能 claim 或更改目标。Root `Stop` 与新 prompt 会先撤销或替换 origin 和已绑定目标之间的授权；`SessionEnd` 只表示 runtime ownership 消失，会清理 runtime/preparation 状态但保留精确可恢复 binding。
 
 `source-session-unproven` 对该 Rescue 路由是终态：应使用活动受管 lifecycle context 中的 launcher，但不要从未证明的 source checkout 运行 `$zcode:setup`、prepare、follow up 或 spawn。launcher error 由 shell-unsafe 安装路径触发时同样是终态，并给出固定的重新安装 remedy；请把插件重新安装到 shell-safe 路径，再从新的受管父 turn 重试。两种情况都不授权 fallback launcher 或自动重定向。
@@ -105,6 +107,8 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 解析优先级为：显式 `--model`、已持久化的 workspace 默认值、ZCode 自身默认值。运行阶段的旧变量 `ZCODE_MODEL_ALIASES` 会被忽略；alias 必须通过 setup 持久化。发送任务前，插件会校验 ZCode 返回的模型精确 tuple 和已公布的 effort，任何不一致都会明确失败。
 
+冷 resume 只有一条狭窄兼容恢复路径。仅当 `session/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`，并且显式 `--model` 与 workspace 模型策略都没有提供 tuple 时，插件才惰性读取有效 `HOME` 下的 `.zcode/cli/config.json`，并选择其中的 `model.main`。优先级为显式 `--model`、workspace 模型策略、CLI 的 `model.main`。即使 tuple 文本已经一致，也仅调用一次 `session/setModel`；物化完成后才应用请求的 effort，并且只执行一次 `session/send`。热 resume 不会读取 config，也不会发出该恢复 setModel。config 缺失或无效、模型不受支持、setModel 被拒绝及后续 send 失败都保持为可见失败：不会 fresh fallback、重发 prompt、替换 session、重试循环或修改 CLI config。
+
 验证时可重新运行 `$zcode:setup`，再执行 `$zcode:rescue --fresh --model fast <任务>`，并用 `$zcode:status <job-id>` 检查任务。
 
 ## 任务、Transfer 与 review gate
@@ -112,6 +116,8 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 `SessionEnd` 表示 runtime ownership 消失。它只保留无活动 current attempt 的精确已完成 binding，以及精确 v1/v2 `closed/session-ended` candidate 作为可恢复状态。远端取消得到确认后，它可以只关闭该精确 active operation；未确认的 stop 会保留 writable guard。任何 bound `session/stop` 之前，过期 stop 的最终 guard 会重新检查 owner、可取消 job、binding operation/generation/current job 和 worker lease；过期 loser 不发送 stop，也不关闭 binding。
 
 每次运行都会先建立持久、带 owner 的 job。已安装插件的状态保存在 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库或插件缓存。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
+
+直接 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel` 使用一个 lifecycle 权威的当前 job 分区。从合格的 origin workspace 或精确绑定目标调用时，它们都只操作选中的 target 分区；该选择会跨后续 turn 私下保留。review、adversarial-review 和 transfer 会在持久化或预留工作前选择实际当前分区。插件绝不扫描或合并 workspace partitions：latest 选择、`--all`、日志、reconciliation、取消与 binding closure 全部使用同一分区。显式 job ID 不授予跨分区或 owner authority，任何命令也都没有新增 workspace 参数。每个 canonical workspace 只能有一个 active writable Rescue 的既有限制保持不变。
 
 `SessionEnd` 会对结束会话的可写 Rescue 执行 best-effort 结算。已 claim 的 queued reservation 在其 worker lease 仍被持有时保持不变。若进程在结算完成前退出，后续 Rescue 会执行预留时的崩溃回退，并可结算可证明的孤儿可写 job；结算不会转移 ownership，仍只有原 owner 能读取其结果。在这个预留时的崩溃回退中，仍被持有的精确 worker lease 会保留 writable guard。当精确 worker lease 已释放且现存 broker 控制通道不可用时，`SessionEnd` 或下一次 Rescue 会把孤儿归档为 `failed` 并释放 writable guard。这表示插件放弃追踪，不代表远端停止已确认。broker 仍可连接时，未确认的 `session/stop` 仍会保留 writable guard。其他会话只能通过 `$zcode:status --all` 查看脱敏后的 workspace 信息。
 

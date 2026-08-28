@@ -26,8 +26,30 @@ const hints = {
   cancel: '[job-id]',
   setup: '[--enable-review-gate | --disable-review-gate]',
 };
+const directJobSkillContracts = {
+  status: {
+    usage: 'Invoke as `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`. Require an explicit job ID with `--wait`; accept a timeout only with `--wait`. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke status` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+  result: {
+    usage: 'Invoke as `$zcode:result [job-id]`; without an ID, allow the companion to select the latest eligible owned job. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke result` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+  cancel: {
+    usage: 'Invoke as `$zcode:cancel [job-id]`; without an ID, allow the companion to select the latest eligible owned job. The native prompt hook has already recorded the exact arguments.',
+    invocation: 'Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke cancel` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.',
+  },
+};
+const directJobPartitionContract = 'Invocation from either the eligible origin workspace or its exact bound execution target resolves to the same selected target partition, which the companion preserves privately across later turns as the one lifecycle-authoritative current job partition. Never scan or merge workspace partitions. An explicit job ID cannot cross-partition or expand owner authority.';
 function skill(name) {
   return readFileSync(new URL(`skills/${name}/SKILL.md`, root), 'utf8');
+}
+
+function assertDirectJobSkillPublicContract(source, name) {
+  const contract = directJobSkillContracts[name];
+  const lines = source.split('\n');
+  assert.deepEqual(lines.filter((line) => line.startsWith('Invoke as ')), [contract.usage]);
+  assert.deepEqual(lines.filter((line) => line.includes('run exactly the constant command')), [contract.invocation]);
 }
 
 function assertRescueNamingContract(source) {
@@ -96,6 +118,24 @@ test('skills use their fixed installed entrypoint without exposing private proto
     }
     assert.match(source, /present.*output.*verbatim/is);
     assert.doesNotMatch(source, /session\/(?:create|send|read|resume|stop|list|setModel|setThoughtLevel)|interaction\/requestPermission/);
+  }
+});
+
+test('direct job Skills preserve one lifecycle-authoritative job partition without changing invocation syntax', () => {
+  for (const name of ['status', 'result', 'cancel']) {
+    const source = skill(name);
+    assert.deepEqual(source.split('\n').filter((line) => line.includes('same selected target partition')), [directJobPartitionContract]);
+    assert.throws(() => {
+      const split = source.replace('resolves to the same selected target partition', 'may resolve to different partitions');
+      assert.deepEqual(split.split('\n').filter((line) => line.includes('same selected target partition')), [directJobPartitionContract]);
+    });
+    assertDirectJobSkillPublicContract(source, name);
+
+    const { usage, invocation } = directJobSkillContracts[name];
+    assert.throws(() => assertDirectJobSkillPublicContract(source.replace(usage, `${usage} --foreign`), name));
+    assert.throws(() => assertDirectJobSkillPublicContract(source.replace(invocation, `${invocation} --foreign`), name));
+    assert.throws(() => assertDirectJobSkillPublicContract(`${source}\n${usage}\n`, name));
+    assert.throws(() => assertDirectJobSkillPublicContract(`${source}\n${invocation}\n`, name));
   }
 });
 

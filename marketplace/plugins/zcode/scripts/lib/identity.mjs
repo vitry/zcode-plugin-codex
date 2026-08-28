@@ -132,7 +132,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       /** @type {string[]} */ let priorWorkspaces = [];
       const lifecycleLockPath = sessionLockPath(global, input.sessionId);
       await withFileLock(lifecycleLockPath, async () => {
-        const state = await readGlobalBeginState(global, input, operationTimestamp);
+        const state = await readGlobalBeginState(global, input, storage.workspacePath, operationTimestamp);
         const existing = state?.active ?? null; const ledger = state?.ledger ?? null;
         if (ledger !== null) {
           if (ledger.endedAt !== null && Date.parse(input.sessionStartedAt) <= Date.parse(ledger.sessionStartedAt)) {
@@ -151,13 +151,18 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         priorWorkspaces = [...recoverableWorkspaces];
         generationId = duplicate ? existing.generationId : randomBytes(32).toString('hex');
         if (!duplicate && existing !== null) replacedTurn = replacedTurnMetadata(existing);
+        const recoveryWorkspace = existing !== null && existing.originWorkspace === storage.workspacePath
+          && ledger !== null && ledger.endedAt === null
+          && ledger.sessionStartedAt === input.sessionStartedAt && ledger.sessionSource === input.sessionSource
+          ? existing.executionWorkspace ?? existing.recoveryWorkspace ?? null
+          : null;
         const knownWorkspaces = appendKnownWorkspace(
           recoverableWorkspaces, storage.workspacePath,
         );
         const updatedAt = new Date(Math.max(operationTimestamp, ledger === null ? 0 : Date.parse(ledger.updatedAt))).toISOString();
         const nextLedger = sessionRecord(input, globalIdentityKey(input.sessionId), knownWorkspaces, updatedAt);
         const pending = duplicate ? existing : globalActiveTurnRecord(
-          input, storage.workspacePath, globalIdentityKey(input.sessionId), generationId, 'pending', operationTimestamp,
+          input, storage.workspacePath, globalIdentityKey(input.sessionId), generationId, 'pending', operationTimestamp, recoveryWorkspace,
         );
         await publicationSeam?.('before-pending');
         if (!duplicate) {
@@ -206,7 +211,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       return input.lifecycleResult ? { token, replacedTurn } : token;
     },
 
-    /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,workspaceBinding?:'preview'|'claim'|'execution',now?:Date|number|string}} expected @returns {Promise<any>} */
+    /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,workspaceBinding?:'preview'|'claim'|'execution'|'effective',now?:Date|number|string}} expected @returns {Promise<any>} */
     async resolveActiveTurn(expected) {
       validateActiveExpected(expected); const candidate = await canonicalWorkspace(expected.workspace); const global = await globalIdentityStorage(dataRoot);
       const lifecycleLockPath = sessionLockPath(global, expected.sessionId);
@@ -219,6 +224,17 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         if (mode === undefined) {
           if (candidate !== active.originWorkspace) throw workspaceIneligible();
           return { kind: 'resolved', caller: publicActiveTurn(active, candidate, false) };
+        }
+        if (mode === 'effective') {
+          if (!lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
+          if (active.recoveryWorkspace !== undefined) await assertPersistedCanonicalWorkspace(active.recoveryWorkspace);
+          const effectiveWorkspace = active.executionWorkspace ?? active.recoveryWorkspace ?? active.originWorkspace;
+          if (effectiveWorkspace === active.originWorkspace) {
+            if (candidate !== active.originWorkspace) throw workspaceIneligible();
+            return { kind: 'resolved', caller: publicActiveTurn(active, active.originWorkspace, false) };
+          }
+          if (candidate !== active.originWorkspace && candidate !== effectiveWorkspace) throw workspaceIneligible();
+          return { kind: 'resolved', caller: publicActiveTurn(active, effectiveWorkspace, active.executionWorkspace !== null) };
         }
         if (mode === 'execution') {
           if (active.executionWorkspace === null
@@ -258,6 +274,65 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         if (expected.workspaceBinding === 'preview') return publicActiveTurn(state.active, candidate, true);
         const bound = await persistClaim(state, candidate, publicationSeam, global.directory);
         return publicActiveTurn(bound, candidate, true);
+      });
+    },
+
+    /** Select the exact workspace partition observed by jobs created for one proved lifecycle authority. @param {{sessionId:string,turnId:string,generationId:string,originWorkspace:string,workspace:string}} expected */
+    async selectJobWorkspace(expected) {
+      validateJobWorkspaceSelection(expected);
+      const [originWorkspace, candidate] = await Promise.all([
+        canonicalWorkspace(expected.originWorkspace), canonicalWorkspace(expected.workspace),
+      ]);
+      const global = await globalIdentityStorage(dataRoot);
+      return withFileLock(sessionLockPath(global, expected.sessionId), async () => {
+        const state = await readGlobalState(global, expected.sessionId, true);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.turnId !== expected.turnId || state.active.generationId !== expected.generationId
+          || state.active.originWorkspace !== originWorkspace) {
+          throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        }
+        if (!lifecycleRecordsConsistent(state.active, state.ledger)) throw invalidAuthorizationRecord('identity session');
+        if (!state.ledger.knownWorkspaces.includes(candidate)) throw workspaceIneligible();
+        if (state.active.executionWorkspace !== null && state.active.executionWorkspace !== candidate) throw workspaceIneligible();
+
+        let selected = state.active;
+        if (state.active.executionWorkspace === null) {
+          if (candidate === originWorkspace && state.active.recoveryWorkspace !== undefined) {
+            selected = { ...state.active };
+            delete selected.recoveryWorkspace;
+          } else if (candidate !== originWorkspace && state.active.recoveryWorkspace !== candidate) {
+            selected = { ...state.active, recoveryWorkspace: candidate };
+          }
+          if (selected !== state.active) {
+            await publicationSeam?.('before-job-workspace-select-write');
+            await atomicWriteJson(state.activePath, selected, { privateRoot: global.directory });
+            await publicationSeam?.('after-job-workspace-select-write');
+          }
+        }
+        return publicActiveTurn(selected, candidate, selected.executionWorkspace !== null);
+      });
+    },
+
+    /** Revalidate one selected v3 job partition and perform its short durable write while the lifecycle lock is held. @param {{sessionId:string,turnId:string,generationId:string,originWorkspace:string,workspace:string}} expected @param {()=>Promise<any>} operation */
+    async withSelectedJobWorkspace(expected, operation) {
+      validateJobWorkspaceSelection(expected);
+      if (typeof operation !== 'function') throw invalidIdentityInput();
+      const [originWorkspace, candidate] = await Promise.all([
+        canonicalWorkspace(expected.originWorkspace), canonicalWorkspace(expected.workspace),
+      ]);
+      const global = await globalIdentityStorage(dataRoot);
+      return withFileLock(sessionLockPath(global, expected.sessionId), async () => {
+        const state = await readGlobalState(global, expected.sessionId, true);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.turnId !== expected.turnId || state.active.generationId !== expected.generationId
+          || state.active.originWorkspace !== originWorkspace) {
+          throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        }
+        if (!lifecycleRecordsConsistent(state.active, state.ledger)) throw invalidAuthorizationRecord('identity session');
+        if (!state.ledger.knownWorkspaces.includes(candidate)) throw workspaceIneligible();
+        const selectedWorkspace = state.active.executionWorkspace ?? state.active.recoveryWorkspace ?? state.active.originWorkspace;
+        if (selectedWorkspace !== candidate) throw workspaceIneligible();
+        return operation();
       });
     },
 
@@ -726,13 +801,14 @@ async function readGlobalState(storage, sessionId, validatePaths) {
     if (validatePaths) {
       await assertPersistedCanonicalWorkspace(active.originWorkspace);
       if (active.executionWorkspace !== null) await assertPersistedCanonicalWorkspace(active.executionWorkspace);
+      if (active.recoveryWorkspace !== undefined) await assertPersistedCanonicalWorkspace(active.recoveryWorkspace);
     }
   }
   return { active, ledger, activePath, sessionPath };
 }
 
-/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input @param {number} operationTimestamp */
-async function readGlobalBeginState(storage, input, operationTimestamp) {
+/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input @param {string} originWorkspace @param {number} operationTimestamp */
+async function readGlobalBeginState(storage, input, originWorkspace, operationTimestamp) {
   const key = globalIdentityKey(input.sessionId);
   const activePath = join(storage.activeTurnsDirectory, `${key}.json`);
   const sessionPath = join(storage.sessionsDirectory, `${key}.json`);
@@ -746,7 +822,10 @@ async function readGlobalBeginState(storage, input, operationTimestamp) {
   }
   if (ledger !== null) {
     if (!isSessionRecord(ledger) || ledger.key !== key || ledger.sessionId !== input.sessionId) throw invalidAuthorizationRecord('identity session');
-    if (active !== null && !lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
+    if (active !== null && !lifecycleRecordsConsistent(active, ledger)
+      && !isRecoverablePendingPublication(active, ledger, input, originWorkspace, operationTimestamp)) {
+      throw invalidAuthorizationRecord('identity session');
+    }
   } else if (!isRecoverableOrphanPending(active, operationTimestamp, strictTimestamp(input.sessionStartedAt))) {
     throw invalidAuthorizationRecord('identity session');
   }
@@ -1018,10 +1097,11 @@ function activeTurnRecord(input, workspacePath, timestamp) {
   return { version: 2, kind: 'active-turn', key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString() };
 }
 
-/** @param {CallerContextInput} input @param {string} originWorkspace @param {string} key @param {string} generationId @param {'pending'|'active'} status @param {number} timestamp */
-function globalActiveTurnRecord(input, originWorkspace, key, generationId, status, timestamp) {
+/** @param {CallerContextInput} input @param {string} originWorkspace @param {string} key @param {string} generationId @param {'pending'|'active'} status @param {number} timestamp @param {string|null} [recoveryWorkspace] */
+function globalActiveTurnRecord(input, originWorkspace, key, generationId, status, timestamp, recoveryWorkspace = null) {
   const createdAt = new Date(timestamp).toISOString();
-  return { version: 3, kind: 'active-turn', key, sessionId: input.sessionId, generationId, turnId: input.turnId, originWorkspace, executionWorkspace: null, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt, status };
+  return { version: 3, kind: 'active-turn', key, sessionId: input.sessionId, generationId, turnId: input.turnId, originWorkspace, executionWorkspace: null,
+    ...(recoveryWorkspace === null ? {} : { recoveryWorkspace }), permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt, status };
 }
 
 /** @param {CallerContextInput} input @param {string} key @param {string[]} knownWorkspaces @param {string} updatedAt */
@@ -1050,9 +1130,20 @@ function activeAuthorityEqual(record, input, originWorkspace) {
 
 /** @param {any} record @param {number} now @param {number|undefined} sessionStartedAt */
 function isRecoverableOrphanPending(record, now, sessionStartedAt) {
-  if (record === null || record.status !== 'pending' || record.executionWorkspace !== null) return false;
+  if (record === null || record.status !== 'pending' || record.executionWorkspace !== null || record.recoveryWorkspace !== undefined) return false;
   const createdAt = Date.parse(record.createdAt);
   return createdAt <= now && (sessionStartedAt === undefined || sessionStartedAt <= now);
+}
+
+/** @param {any} record @param {any} ledger @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input @param {string} originWorkspace @param {number} now */
+function isRecoverablePendingPublication(record, ledger, input, originWorkspace, now) {
+  const createdAt = Date.parse(record.createdAt);
+  return record.status === 'pending' && record.executionWorkspace === null
+    && activeAuthorityEqual(record, input, originWorkspace) && createdAt <= now
+    && ledger.endedAt === null && ledger.sessionStartedAt === input.sessionStartedAt
+    && ledger.sessionSource === input.sessionSource && ledger.knownWorkspaces.includes(originWorkspace)
+    && (record.recoveryWorkspace === undefined || ledger.knownWorkspaces.includes(record.recoveryWorkspace))
+    && Date.parse(ledger.updatedAt) < createdAt;
 }
 
 /** @param {any} active @param {any} ledger */
@@ -1060,6 +1151,7 @@ function lifecycleRecordsConsistent(active, ledger) {
   const activeAt = Date.parse(active.createdAt);
   return ledger.knownWorkspaces.includes(active.originWorkspace)
     && (active.executionWorkspace === null || ledger.knownWorkspaces.includes(active.executionWorkspace))
+    && (active.recoveryWorkspace === undefined || ledger.knownWorkspaces.includes(active.recoveryWorkspace))
     && Date.parse(ledger.sessionStartedAt) <= activeAt && activeAt <= Date.parse(ledger.updatedAt)
     && (ledger.endedAt === null || activeAt <= Date.parse(ledger.endedAt));
 }
@@ -1159,7 +1251,16 @@ function validateCallerInput(input) {
 /** @param {any} input */
 function validateActiveExpected(input) {
   if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)
-    || input.workspaceBinding !== undefined && !['preview', 'claim', 'execution'].includes(input.workspaceBinding)) throw invalidIdentityInput();
+    || input.workspaceBinding !== undefined && !['preview', 'claim', 'execution', 'effective'].includes(input.workspaceBinding)) throw invalidIdentityInput();
+}
+
+/** @param {any} input */
+function validateJobWorkspaceSelection(input) {
+  if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES)
+    || !isBoundedString(input.turnId, MAX_ID_BYTES) || !isDigest(input.generationId)
+    || !isBoundedString(input.originWorkspace, MAX_PATH_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)) {
+    throw invalidIdentityInput();
+  }
 }
 
 /** @param {any} input */
@@ -1272,6 +1373,7 @@ function callerMatchesActive(caller, active) {
 const CURRENT_ACTIVE_TURN_KEYS = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
 const LEGACY_ACTIVE_TURN_KEYS = ['createdAt', 'expiresAt', 'key', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'workspace'];
 const GLOBAL_ACTIVE_TURN_KEYS = ['createdAt', 'executionWorkspace', 'generationId', 'key', 'kind', 'originWorkspace', 'permissionMode', 'prompt', 'sessionId', 'status', 'turnId', 'version'];
+const GLOBAL_ACTIVE_TURN_RECOVERY_KEYS = [...GLOBAL_ACTIVE_TURN_KEYS, 'recoveryWorkspace'].sort();
 const SESSION_KEYS = ['endedAt', 'key', 'kind', 'knownWorkspaces', 'sessionId', 'sessionSource', 'sessionStartedAt', 'updatedAt', 'version'];
 const ORIGIN_INDEX_KEYS = ['generationId', 'globalKey', 'key', 'kind', 'originWorkspace', 'sessionId', 'version'];
 
@@ -1301,11 +1403,12 @@ function isActiveTurnRecord(record) { return isCurrentActiveTurnRecord(record) |
 
 /** @param {any} record */
 function isGlobalActiveTurnRecord(record) {
-  return isPlainObject(record) && hasExactKeys(record, GLOBAL_ACTIVE_TURN_KEYS)
+  return isPlainObject(record) && hasExactKeys(record, record.recoveryWorkspace === undefined ? GLOBAL_ACTIVE_TURN_KEYS : GLOBAL_ACTIVE_TURN_RECOVERY_KEYS)
     && record.version === 3 && record.kind === 'active-turn' && isDigest(record.key)
     && isBoundedString(record.sessionId, MAX_ID_BYTES) && isDigest(record.generationId) && isBoundedString(record.turnId, MAX_ID_BYTES)
     && isCanonicalStoredPath(record.originWorkspace)
     && (record.executionWorkspace === null || isCanonicalStoredPath(record.executionWorkspace))
+    && (record.recoveryWorkspace === undefined || isCanonicalStoredPath(record.recoveryWorkspace))
     && PERMISSION_MODES.includes(record.permissionMode) && typeof record.prompt === 'string'
     && Buffer.byteLength(record.prompt) <= 64 * 1024 && isStrictDate(record.createdAt)
     && ['pending', 'active'].includes(record.status);
