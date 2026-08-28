@@ -1459,6 +1459,93 @@ test('a delayed older direct creator cannot retarget a newer prompt or reserve a
   assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
 });
 
+test('a creator replaced after workspace selection cannot reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-reservation-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'old-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review --background', ...proof });
+  let markReached; let continueReservation;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueReservation = resolve; });
+  const delayed = runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforeJobReservation: async () => { markReached(); await release; }, startBackgroundWorker: async () => {} },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueReservation();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a pending choice replaced after workspace selection cannot persist in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-pending-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'old-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  let markReached; let continuePending;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continuePending = resolve; });
+  const delayed = runDirectInvocation(['invoke', 'review'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforePendingInvocationWrite: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continuePending();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  await assert.rejects(readdir(join(storage.directory, 'invocations', 'pending')), { code: 'ENOENT' });
+});
+
+test('a choice replaced after workspace selection cannot consume pending or reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-selection-consume-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  let markReached; let continueConsume;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueConsume = resolve; });
+  const delayed = runDirectInvocation(['invoke-choice', 'review', 'wait'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforePendingInvocationConsume: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueConsume();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  assert.equal((await readdir(join(storage.directory, 'invocations', 'pending'))).length, 1);
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a choice replaced after pending consumption cannot reserve in the stale partition', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'post-consume-reservation-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  let markReached; let continueReservation;
+  const reached = new Promise((resolve) => { markReached = resolve; });
+  const release = new Promise((resolve) => { continueReservation = resolve; });
+  const delayed = runDirectInvocation(['invoke-choice', 'review', 'wait'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId },
+    dependencies: { testOnlyBeforeJobReservation: async () => { markReached(); await release; } },
+  });
+  await reached;
+  await identity.beginCallerTurn({ sessionId, turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:status --all', ...proof });
+  continueReservation();
+  await assert.rejects(delayed, { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+});
+
+test('a later-turn choice fences with current authority while preserving the pending owner turn', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'later-choice-authority-owner'; const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  await identity.beginCallerTurn({ sessionId, turnId: 'pending-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:review', ...proof });
+  assert.equal((await runDirectInvocation(['invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } })).type, 'needs-choice');
+  await identity.beginCallerTurn({ sessionId, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'wait', ...proof });
+  const completed = await runDirectInvocation(['invoke-choice', 'review', 'wait'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: sessionId } });
+  assert.equal(completed.job.ownerTurnId, 'pending-turn');
+});
+
 test('job creator selection fails before reservation and reservation failure preserves the selected pointer', async (t) => {
   const ctx = await fixture(t); const targetPath = join(ctx.directory, 'selection-failure-target'); const unknownPath = join(ctx.directory, 'selection-failure-unknown');
   await run('git', ['worktree', 'add', '-q', '-b', 'selection-failure-target', targetPath], ctx.workspace);

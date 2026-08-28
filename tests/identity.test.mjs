@@ -722,7 +722,7 @@ test('effective workspace resolution is atomic, read-only, and projects the auth
 
 test('job workspace selection atomically retargets only the exact current lifecycle authority', async () => {
   const { dataRoot, identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
-  const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
   const base = { sessionId: 'job-selection', workspace: origin, permissionMode: 'default', ...proof };
   await identity.beginCallerTurn({ ...base, turnId: 'rescue-turn', prompt: 'rescue' });
   await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
@@ -768,7 +768,7 @@ test('job workspace selection rejects stale authority and workspaces outside the
   await execFile('git', ['worktree', 'add', '-q', '-b', 'unknown-execution', unknown], { cwd: origin });
   const base = {
     sessionId: 'job-selection-stale', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: new Date().toISOString(), sessionSource: 'startup',
   };
   await identity.beginCallerTurn({ ...base, turnId: 'old-turn', prompt: 'old' });
   await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
@@ -786,6 +786,31 @@ test('job workspace selection rejects stale authority and workspaces outside the
     originWorkspace: authority.originWorkspace, workspace: execution,
   }), { code: 'ACTIVE_TURN_NOT_FOUND' });
   assert.equal(await readFile(activePath, 'utf8'), newerBytes);
+});
+
+test('selected job workspace durable callbacks reject stale authority and release the lifecycle lock on failure', async () => {
+  const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+  const proof = { sessionStartedAt: new Date().toISOString(), sessionSource: 'startup' };
+  const base = { sessionId: 'job-durable-fence', workspace: origin, permissionMode: 'default', ...proof };
+  await identity.beginCallerTurn({ ...base, turnId: 'rescue-turn', prompt: 'rescue' });
+  await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
+  await identity.beginCallerTurn({ ...base, turnId: 'selected-turn', prompt: 'review' });
+  const authority = await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'preview' });
+  const selected = await identity.selectJobWorkspace({
+    sessionId: authority.sessionId, turnId: authority.turnId, generationId: authority.generationId,
+    originWorkspace: authority.originWorkspace, workspace: execution,
+  });
+  const expected = {
+    sessionId: authority.sessionId, turnId: authority.turnId, generationId: authority.generationId,
+    originWorkspace: authority.originWorkspace, workspace: selected.workspace,
+  };
+  await assert.rejects(identity.withSelectedJobWorkspace(expected, async () => { throw new Error('injected durable failure'); }), /injected durable failure/);
+  assert.equal(await identity.withSelectedJobWorkspace(expected, async () => 'lock-released'), 'lock-released');
+
+  await identity.beginCallerTurn({ ...base, turnId: 'newer-turn', prompt: 'newer' });
+  let called = false;
+  await assert.rejects(identity.withSelectedJobWorkspace(expected, async () => { called = true; }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.equal(called, false);
 });
 
 test('competing linked worktree claims atomically bind one immutable target', async () => {
@@ -1128,7 +1153,8 @@ test('a newer same-origin generation cannot authorize a restored old caller toke
 test('a newer same-origin session after interrupted cleanup does not carry the tombstoned execution target', async () => {
   const { dataRoot, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
   const identity = createIdentityStore({ dataRoot });
-  const oldProof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const newerStartedAt = new Date().toISOString();
+  const oldProof = { sessionStartedAt: new Date(Date.parse(newerStartedAt) - 60_000).toISOString(), sessionSource: 'startup' };
   await identity.beginCallerTurn({
     sessionId: 'session-cleanup-carry', turnId: 'old-turn', workspace: origin, permissionMode: 'default', prompt: 'old', ...oldProof,
   });
@@ -1142,7 +1168,7 @@ test('a newer same-origin session after interrupted cleanup does not carry the t
 
   await identity.beginCallerTurn({
     sessionId: 'session-cleanup-carry', turnId: 'new-turn', workspace: origin, permissionMode: 'default', prompt: 'new',
-    sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume',
+    sessionStartedAt: newerStartedAt, sessionSource: 'resume',
   });
   const active = JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-cleanup-carry'), 'utf8'));
   assert.equal(Object.hasOwn(active, 'recoveryWorkspace'), false);

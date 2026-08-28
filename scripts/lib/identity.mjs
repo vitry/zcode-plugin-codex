@@ -313,6 +313,29 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       });
     },
 
+    /** Revalidate one selected v3 job partition and perform its short durable write while the lifecycle lock is held. @param {{sessionId:string,turnId:string,generationId:string,originWorkspace:string,workspace:string}} expected @param {()=>Promise<any>} operation */
+    async withSelectedJobWorkspace(expected, operation) {
+      validateJobWorkspaceSelection(expected);
+      if (typeof operation !== 'function') throw invalidIdentityInput();
+      const [originWorkspace, candidate] = await Promise.all([
+        canonicalWorkspace(expected.originWorkspace), canonicalWorkspace(expected.workspace),
+      ]);
+      const global = await globalIdentityStorage(dataRoot);
+      return withFileLock(sessionLockPath(global, expected.sessionId), async () => {
+        const state = await readGlobalState(global, expected.sessionId, true);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.turnId !== expected.turnId || state.active.generationId !== expected.generationId
+          || state.active.originWorkspace !== originWorkspace) {
+          throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        }
+        if (!lifecycleRecordsConsistent(state.active, state.ledger)) throw invalidAuthorizationRecord('identity session');
+        if (!state.ledger.knownWorkspaces.includes(candidate)) throw workspaceIneligible();
+        const selectedWorkspace = state.active.executionWorkspace ?? state.active.recoveryWorkspace ?? state.active.originWorkspace;
+        if (selectedWorkspace !== candidate) throw workspaceIneligible();
+        return operation();
+      });
+    },
+
     /** Resolve exactly one runtime-recorded active turn for a canonical workspace, independent of prompt text. @param {{workspace:string,now?:Date|number|string}} expected */
     async resolveOnlyActiveTurn(expected) {
       if (!isPlainObject(expected) || !isNonEmptyString(expected.workspace)) throw invalidIdentityInput();
