@@ -2274,7 +2274,7 @@ for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt $
     .filter((name) => name.endsWith('.json')), []);
 });
 
-/** @param {any} context @param {{name:string,exact?:boolean,execution?:'foreground'|'background'}} input */
+/** @param {any} context @param {{name:string,exact?:boolean,execution?:'foreground'|'background',extraEnv?:NodeJS.ProcessEnv}} input */
 async function preparedSameTurnBoundContinuation(context, input) {
   const record = join(context.directory, `${input.name}.jsonl`); await writeFile(record, '');
   const parentSessionId = `${input.name}-parent`; const parentTurnId = `${input.name}-parent-turn`; const childId = `${input.name}-child`; const childTurnId = `${input.name}-child-turn`;
@@ -2282,7 +2282,7 @@ async function preparedSameTurnBoundContinuation(context, input) {
     parentSessionId, parentTurnId, childId, childTurnId,
     prompt: '$zcode:rescue --fresh --wait establish guarded continuation',
   });
-  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const env = { ...context.env, ...input.extraEnv, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
   const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
   assert.equal(first.job.status, 'succeeded');
   await markForwarding(context.dataRoot, {
@@ -2305,6 +2305,89 @@ async function preparedSameTurnBoundContinuation(context, input) {
     executor: { agentId: childId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId, parentTurnId, parentPermissionMode: 'workspace-write', workspace: context.workspace },
   };
 }
+
+/** @param {any} context @param {ReturnType<typeof preparedSameTurnBoundContinuation> extends Promise<infer T> ? T : never} prepared */
+async function prepareRolledBackContinuationRetry(context, prepared, env) {
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
+    parentSessionId: prepared.parentSessionId, source: 'proactive', task: 'retry rolled back continuation',
+    options: { execution: 'foreground', resume: 'resume' },
+  }), legacyPreparedRoute);
+  return runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env,
+    dependencies: { readCodexThreadSpawnChild: async () => ({
+      id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+      agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
+    }) },
+  });
+}
+
+for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of /** @type {const} */ (['resume', 'runtime-model', 'outer-dependency'])) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, async () => {
+  const context = await fixture();
+  const failureHome = join(context.directory, `${failure}-home`); await mkdir(failureHome);
+  const extraEnv = {
+    ...(failure === 'resume' ? { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' } : {}),
+    ...(failure === 'runtime-model' ? { HOME: failureHome, USERPROFILE: failureHome, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' } : {}),
+  };
+  const prepared = await preparedSameTurnBoundContinuation(context, {
+    name: `rollback-${execution}-${failure}`, exact: true, execution, extraEnv,
+  });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const bindingBefore = await store.resolveRescueBinding({
+    workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
+  });
+  assert.equal(bindingBefore.kind, 'bound');
+  const failureEnv = prepared.env;
+  const outerFailure = async () => { throw new Error('fixture outer dependency failed before execution'); };
+  const executionDependencies = failure === 'outer-dependency' ? { discoverLaunch: outerFailure } : {};
+  /** @type {any} */ let worker;
+  const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: failureEnv,
+    dependencies: {
+      readCodexThreadSpawnChild: async () => ({
+        id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+        agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
+      }),
+      ...executionDependencies,
+      ...(execution === 'background' ? { startBackgroundWorker: async (/** @type {any} */ input) => { worker = input; } } : {}),
+    },
+  });
+  if (execution === 'background') {
+    const reserved = await invocation;
+    if (!worker) throw new Error('expected background worker');
+    await assert.rejects(runCompanion(['run-reserved-job', reserved.job.id], {
+      cwd: context.workspace, env: failureEnv,
+      authorization: { executionCapability: worker.executionCapability, jobId: reserved.job.id },
+      dependencies: executionDependencies,
+    }));
+  } else await assert.rejects(invocation);
+
+  const jobsAfterFailure = await store.listJobs(context.workspace);
+  assert.equal(jobsAfterFailure.length, 2);
+  const failed = jobsAfterFailure.find((job) => job.id !== prepared.first.job.id);
+  assert.equal(failed?.status, 'failed');
+  assert.equal(failed?.startedAt, undefined); assert.equal(failed?.zcodeSessionId, undefined);
+  assert.equal(failed?.rescueContinuationOrigin, undefined); assert.equal(failed?.rescueExecutionClaim, undefined);
+  assert.equal(failed?.rescueExecutionReservation, undefined);
+  const bindingAfterFailure = await store.resolveRescueBinding({
+    workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
+  });
+  assert.equal(bindingAfterFailure.kind, 'bound');
+  assert.equal(bindingAfterFailure.binding.currentJobId, prepared.first.job.id);
+  assert.equal(bindingAfterFailure.binding.operationId, bindingBefore.binding.operationId);
+
+  await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
+    ownerId: ownerIdForSession(prepared.parentSessionId), requestTimeoutMs: 750 });
+  const retryEnv = { ...prepared.env };
+  delete retryEnv.FAKE_ZCODE_BAD_SNAPSHOT_METHOD; delete retryEnv.FAKE_ZCODE_BAD_SNAPSHOT;
+  delete retryEnv.FAKE_ZCODE_COLD_RESUME_MODEL;
+  const retried = await prepareRolledBackContinuationRetry(context, prepared, retryEnv);
+  assert.equal(retried.job.status, 'succeeded');
+  assert.equal(retried.job.zcodeSessionId, prepared.first.job.zcodeSessionId);
+  const calls = (await readFile(prepared.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.ok(calls.some((frame) => frame.method === 'session/resume' && frame.params?.sessionId === prepared.first.job.zcodeSessionId));
+});
 
 /** @param {any} context @param {string} record @param {number} expectedJobs */
 async function assertNoPreparedReservationSideEffects(context, record, expectedJobs) {
@@ -4774,7 +4857,7 @@ test('cold resume reads only isolated HOME, updates full runtime, verifies it, t
   assert.equal(warmRequests.filter((request) => request.method === 'session/send').length, 1);
 });
 
-test('unsupported CLI runtime update remains authoritative without retry, fallback, or send', async () => {
+test('cold runtime update rejection remains authoritative and retry resumes the original session without fallback', async () => {
   const context = await fixture(); const record = join(context.directory, 'unsupported-cold-resume.jsonl');
   const isolatedHome = join(context.directory, 'unsupported-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
   await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' }, provider: { unsupported: { kind: 'openai-compatible', models: { model: {} } } } }));
@@ -4790,6 +4873,21 @@ test('unsupported CLI runtime update remains authoritative without retry, fallba
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 0);
   assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
+
+  await writeFile(record, '');
+  await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
+    ownerId: ownerIdForSession('codex-session'), requestTimeoutMs: 750 });
+  const retryEnv = { ...env }; delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
+  const retried = await companion(context, ['rescue', '--resume', 'corrected recovery'], {
+    ...retryEnv,
+  });
+  assert.equal(retried.code, 0, `${retried.stderr}${retried.stdout}`);
+  assert.equal(retried.json.job.zcodeSessionId, initial.json.job.zcodeSessionId);
+  const retryRequests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(retryRequests.filter((request) => request.method === 'session/resume'
+    && request.params.sessionId === initial.json.job.zcodeSessionId).length, 1);
+  assert.equal(retryRequests.filter((request) => request.method === 'session/create').length, 0);
+  assert.equal(retryRequests.filter((request) => request.method === 'session/send').length, 1);
 });
 
 test('warm, other-warning, and missing-config resumes perform no runtime update outside exact recoverable config', async () => {

@@ -958,6 +958,18 @@ async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client; let resumeSucceeded = false;
   const migrationRollback = context.migrationRollback;
+  const activeContinuationProof = job.rescueContinuationOrigin?.kind === 'active-continuation'
+    ? job.rescueContinuationOrigin : undefined;
+  const finishResumeFailure = activeContinuationProof
+    ? (error) => store.finishActiveRescueContinuationFailure(cwd, job.id, context.workerLeaseId,
+      activeContinuationProof, 'failed', {
+      error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1,
+    })
+    : migrationRollback ? (error) => store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', {
+      error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1,
+    }) : undefined;
+  const shouldSettleResumeFailure = (error) => activeContinuationProof === undefined || !isInterruption(error)
+    && (!(error instanceof PluginError) || error.code !== 'RESCUE_BINDING_STALE');
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -966,15 +978,15 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
-      if (resumeSucceeded) return;
-      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(finishResumeFailure ? { onResumeFailure: async (error) => {
+      if (resumeSucceeded || !shouldSettleResumeFailure(error)) return;
+      await finishResumeFailure(error);
     } } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (migrationRollback && !resumeSucceeded && current?.status === 'queued') {
-      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    if (finishResumeFailure && !resumeSucceeded && current?.status === 'queued' && shouldSettleResumeFailure(error)) {
+      await finishResumeFailure(error);
     } else if (isInterruption(error) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});

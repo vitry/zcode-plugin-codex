@@ -106,7 +106,6 @@ export async function executeJob(input) {
       input.signal?.throwIfAborted();
       sessionId = input.resumeSessionId;
       snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
-      input.onResumeSucceeded?.();
     } else snapshot = await boundedStep(async () => {
       const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
       sessionId = created?.session?.sessionId;
@@ -161,6 +160,7 @@ export async function executeJob(input) {
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
+    if (input.resumeSessionId) input.onResumeSucceeded?.();
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
