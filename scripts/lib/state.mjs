@@ -349,13 +349,15 @@ export function createStateStore(options) {
      * Restore the exact prior active-v3 binding and retain its pre-running continuation as failed.
      * Binding restoration publishes first so an interrupted transaction is retryable and cannot
      * leave the failed attempt authoritative.
-     * @param {string} workspace @param {string} jobId @param {any} proof
+     * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} proof
      * @param {'failed'} nextStatus @param {Record<string,unknown>} [patch]
      */
-    async finishActiveRescueContinuationFailure(workspace, jobId, proof, nextStatus, patch = {}) {
+    async finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch = {}) {
       validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
-      if (nextStatus !== 'failed' || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
-      return finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId, proof, patch, publicationHook);
+      if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
+        || nextStatus !== 'failed' || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
+      return finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
+        expectedWorkerLeaseId, proof, patch, publicationHook);
     },
 
     /** Terminalize one queued recovery candidate only if its exact effective worker lease is unchanged.
@@ -829,10 +831,12 @@ export function createStateStore(options) {
 /**
  * Commit one active-continuation failure under the workspace state lock. A restored binding with
  * the queued proof still present is the sole accepted crash-recovery intermediate state.
- * @param {string} dataRoot @param {string} workspace @param {string} jobId @param {any} proof
+ * @param {string} dataRoot @param {string} workspace @param {string} jobId
+ * @param {string|null} expectedWorkerLeaseId @param {any} proof
  * @param {Record<string,unknown>} patch @param {(seam:string)=>void|Promise<void>} publicationHook
  */
-async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId, proof, patch, publicationHook) {
+async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
+  expectedWorkerLeaseId, proof, patch, publicationHook) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
     const forbiddenFields = Object.keys(patch).filter((field) => !JOB_PATCH_FIELDS.has(field));
@@ -851,11 +855,13 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
     const binding = snapshot.records.get(prior.key) ?? null;
     if (job.status === 'failed') {
       if (job.rescueContinuationOrigin !== undefined || hasActiveContinuationRunningEvidence(job)
+        || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, true)
         || !isRestoredActiveContinuationBinding(binding, prior)) throw invalidRescueBinding();
       return job;
     }
     if (job.status !== 'queued'
       || !sameActiveContinuationFailureProof(job.rescueContinuationOrigin, proof)
+      || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, false)
       || hasActiveContinuationRunningEvidence(job)) throw invalidRescueBinding();
     const effectivePatch = {
       ...patch,
@@ -1617,10 +1623,24 @@ function sameActiveContinuationFailureProof(left, right) {
 
 /** @param {any} job */
 function hasActiveContinuationRunningEvidence(job) {
-  return ['beforeMessageIds', 'childPid', 'effort', 'inputId', 'model', 'promptArtifact', 'resultArtifact',
-    'startRevision', 'startedAt', 'workerLeaseId', 'zcodeSessionId', 'rescueExecutionClaim']
+  return ['beforeMessageIds', 'effort', 'inputId', 'model', 'promptArtifact', 'resultArtifact',
+    'startRevision', 'startedAt', 'zcodeSessionId']
     .some((field) => Object.hasOwn(job, field))
-    || job.rescueExecutionReservation?.workerLeaseId !== undefined;
+}
+
+/** Accept either a wholly unclaimed attempt or the exact caller-owned queued execution fence. @param {any} job
+ * @param {string|null} expectedWorkerLeaseId @param {boolean} terminal */
+function validActiveContinuationFailureFence(job, expectedWorkerLeaseId, terminal) {
+  const reservationLeaseId = job.rescueExecutionReservation?.workerLeaseId;
+  if (expectedWorkerLeaseId === null) {
+    return job.childPid === undefined && job.workerLeaseId === undefined
+      && job.rescueExecutionClaim === undefined && reservationLeaseId === undefined;
+  }
+  if (job.childPid === undefined || job.workerLeaseId !== expectedWorkerLeaseId
+    || reservationLeaseId !== undefined && reservationLeaseId !== expectedWorkerLeaseId) return false;
+  if (terminal) return job.rescueExecutionClaim === undefined;
+  return validRescueExecutionClaim(job.rescueExecutionClaim, job)
+    && job.rescueExecutionClaim.workerLeaseId === expectedWorkerLeaseId;
 }
 
 /** A crash-recovery binding is the prior record byte-for-byte except for its strictly advanced timestamp. @param {any} record @param {any} prior */

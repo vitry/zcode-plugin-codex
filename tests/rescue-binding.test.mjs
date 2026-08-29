@@ -987,14 +987,14 @@ test('active continuation failure restores the prior binding and terminalizes th
   const committed = await store.publishJobSpecCommitment(workspace, continuation.job.id, 'c'.repeat(64));
   assert.ok(committed.rescueJobSpecCommitment);
   const patch = { error: { message: 'session resume rejected' }, exitCode: 1 };
-  const failed = await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, proof, 'failed', patch);
+  const failed = await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, null, proof, 'failed', patch);
   assert.equal(failed.status, 'failed'); assert.equal(failed.rescueContinuationOrigin, undefined);
   assert.equal(failed.rescueExecutionClaim, undefined); assert.equal(failed.rescueJobSpecCommitment, undefined);
   const restored = (await store.resolveRescueBinding({ workspace, parentSessionId: hook.parentSessionId,
     executorAgentId: hook.agentId })).binding;
   assert.deepEqual({ ...restored, updatedAt: proof.priorBinding.updatedAt }, proof.priorBinding);
   assert.ok(Date.parse(restored.updatedAt) > Date.parse(proof.priorBinding.updatedAt));
-  assert.deepEqual(await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, proof, 'failed', patch), failed);
+  assert.deepEqual(await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, null, proof, 'failed', patch), failed);
   assert.equal((await store.listJobs(workspace)).some((job) => job.id === continuation.job.id && job.status === 'failed'), true);
 });
 
@@ -1004,7 +1004,7 @@ test('active continuation failure converges after binding restoration faults bef
   const faulted = createStateStore({ dataRoot: base.dataRoot,
     testOnlyPublicationHook: throwingAt('active-continuation-rollback:binding') });
   await assert.rejects(faulted.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
-    base.proof, 'failed', patch), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+    null, base.proof, 'failed', patch), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
   const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
   assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
   const restoredAfterFault = (await base.store.resolveRescueBinding({ workspace: base.workspace,
@@ -1012,7 +1012,7 @@ test('active continuation failure converges after binding restoration faults bef
   assert.deepEqual({ ...restoredAfterFault, updatedAt: base.proof.priorBinding.updatedAt }, base.proof.priorBinding);
   assert.ok(Date.parse(restoredAfterFault.updatedAt) > Date.parse(base.proof.priorBinding.updatedAt));
   const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
-    base.proof, 'failed', patch);
+    null, base.proof, 'failed', patch);
   assert.equal(failed.status, 'failed');
   const restoredAfterRetry = (await base.store.resolveRescueBinding({ workspace: base.workspace,
     parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
@@ -1023,26 +1023,75 @@ test('active continuation failure idempotence rejects an unrelated failed job', 
   const base = await activeContinuationFailureFixture();
   const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
   await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
-    base.proof, 'failed', patch);
+    null, base.proof, 'failed', patch);
   const unrelated = await base.store.reserveJob({ ...reservation(base.workspace, 'unrelated-turn'),
     command: 'review', readOnly: true });
   await base.store.finishJob(base.workspace, unrelated.id, ['queued'], 'failed', patch);
   await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, unrelated.id,
-    base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+    null, base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('active continuation failure idempotence rejects terminal running evidence', async () => {
   const base = await activeContinuationFailureFixture();
   const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
   const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
-    base.proof, 'failed', patch);
+    null, base.proof, 'failed', patch);
   const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
   const path = join(storage.directory, 'jobs', `${failed.id}.json`);
   await writeFile(path, `${JSON.stringify({ ...failed, startedAt: failed.createdAt,
     zcodeSessionId: 'unexpected-started-session' }, null, 2)}\n`);
   await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, failed.id,
-    base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+    null, base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
 });
+
+test('active continuation failure accepts only its exact queued production execution fence', async () => {
+  const base = await activeContinuationFailureFixture(); const workerLeaseId = '8'.repeat(64);
+  const commitment = '9'.repeat(64); const job = base.continuation.job;
+  const executionReservation = { version: 1, capabilityDigest: 'a'.repeat(64), reservationId: 'b'.repeat(64),
+    jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: base.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  await base.store.publishJobSpecCommitment(base.workspace, job.id, commitment, executionReservation);
+  await base.store.bindJobExecutionReservationLease(base.workspace, job.id, {
+    capabilityDigest: executionReservation.capabilityDigest,
+    reservationId: executionReservation.reservationId, workerLeaseId,
+  });
+  const claimed = await base.store.claimJobWorkerForExecution(base.workspace, job.id,
+    { childPid: 999_999_999, workerLeaseId }, undefined, { sealedCommitment: commitment });
+  assert.equal(claimed.rescueExecutionClaim.workerLeaseId, workerLeaseId);
+  assert.equal(claimed.rescueExecutionReservation.workerLeaseId, workerLeaseId);
+  const patch = { error: { message: 'claimed resume failed' }, exitCode: 1 };
+  const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, job.id,
+    workerLeaseId, base.proof, 'failed', patch);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.childPid, claimed.childPid);
+  assert.equal(failed.workerLeaseId, workerLeaseId); assert.equal(failed.rescueExecutionClaim, undefined);
+  assert.equal(failed.rescueExecutionReservation.workerLeaseId, workerLeaseId);
+  assert.equal(failed.rescueContinuationOrigin, undefined); assert.equal(failed.rescueJobSpecCommitment, undefined);
+  let released;
+  const cleaned = await base.store.cleanupTerminalExecutionReservation(base.workspace, job.id, {
+    releaseExecutionReservation: async (proof) => { released = proof; },
+  });
+  assert.equal(released.workerLeaseId, workerLeaseId);
+  assert.equal(cleaned.rescueExecutionReservation, undefined);
+});
+
+for (const condition of ['foreign expected lease', 'claimed job on unclaimed path', 'missing claim for expected lease']) {
+  test(`active continuation failure rejects a ${condition}`, async () => {
+    const base = await activeContinuationFailureFixture(); const workerLeaseId = 'c'.repeat(64);
+    if (condition !== 'missing claim for expected lease') {
+      await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
+        { childPid: 999_999_999, workerLeaseId });
+    }
+    const expectedWorkerLeaseId = condition === 'foreign expected lease' ? 'd'.repeat(64)
+      : condition === 'claimed job on unclaimed path' ? null : workerLeaseId;
+    await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+      expectedWorkerLeaseId, base.proof, 'failed', { error: { message: 'expected rejection' }, exitCode: 1 }),
+    { code: 'RESCUE_BINDING_INVALID' });
+    assert.equal((await base.store.readJob(base.workspace, base.continuation.job.id)).status, 'queued');
+    const binding = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+      parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+    assert.deepEqual(binding, base.continuation.binding);
+  });
+}
 
 for (const [condition, arrange] of [
   ['changed binding key', async (base) => {
@@ -1086,10 +1135,6 @@ for (const [condition, arrange] of [
       childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
     }); return {};
   }],
-  ['claimed job', async (base) => {
-    await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
-      { childPid: 999_999_999, workerLeaseId: 'b'.repeat(64) }); return {};
-  }],
   ['mismatched workspace', async (base) => {
     const foreign = join(base.root, 'foreign-workspace'); await mkdir(foreign); return { workspace: await realpath(foreign) };
   }],
@@ -1097,7 +1142,7 @@ for (const [condition, arrange] of [
   const base = await activeContinuationFailureFixture(); const before = structuredClone(base.continuation.binding);
   const overrides = await arrange(base); const patch = { error: { message: 'expected rejection' }, exitCode: 1 };
   await assert.rejects(base.store.finishActiveRescueContinuationFailure(overrides.workspace ?? base.workspace,
-    base.continuation.job.id, overrides.proof ?? base.proof, 'failed', patch));
+    base.continuation.job.id, null, overrides.proof ?? base.proof, 'failed', patch));
   if (!['non-queued job', 'started job', 'mismatched workspace'].includes(condition)) {
     const persisted = await base.store.readJob(base.workspace, base.continuation.job.id);
     assert.notEqual(persisted.status, 'failed');
