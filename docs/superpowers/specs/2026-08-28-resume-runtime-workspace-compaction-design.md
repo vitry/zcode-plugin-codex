@@ -1,5 +1,11 @@
 # Resume Runtime, Effective Workspace, and Compact Launcher Recovery Design
 
+> **Correction:** The cold-runtime sections are superseded by
+> `2026-08-29-cold-resume-runtime-model-correction-design.md`. The effective
+> workspace and compact-launcher sections remain authoritative. Tuple-only
+> `session/setModel` is model selection and cannot materialize a cold provider
+> runtime.
+
 ## Status and scope
 
 This design addresses three independent failures observed while continuing an
@@ -36,19 +42,19 @@ may carry:
 }
 ```
 
-The current executor accepts that snapshot, performs no model materialization
-when the request and plugin workspace policy omit a model, and later reaches a
-failure boundary. A real local experiment proved the supported recovery
-sequence:
+The historical executor accepted that snapshot and later reached a failure
+boundary. A protocol-faithful follow-up experiment corrected the supported
+recovery sequence:
 
 ```text
 session/resume without runtime input
 read effective ~/.zcode/cli/config.json only after the exact warning
-session/setModel with the selected provider/model tuple
+session/updateRuntimeModelConfig with the complete bounded provider runtime
+session/read to verify warning removal and exact tuple selection
 session/send
 ```
 
-After `session/setModel`, the warning clears and the same process treats later
+After the runtime update and confirming read, the same process treats later
 resumes as warm. A warm resume therefore does not require another CLI config
 read.
 
@@ -133,11 +139,10 @@ catalog default, Desktop configuration, historical usage database, environment
 secret, or arbitrary first model.
 
 Even when the selected tuple text equals `snapshot.settings.model.current`,
-the executor calls `session/setModel` once. The call is the runtime adapter
-materialization action; textual equality is not proof that a cold adapter
-exists. The existing client continues to send
-`persistAsWorkspaceLastUsed: false` and verify that ZCode applied the exact
-tuple.
+the executor resolves the complete provider runtime and calls
+`session/updateRuntimeModelConfig` once with `applyModelSelection: true`.
+Textual equality is not proof that a cold adapter exists. One subsequent
+`session/read` must prove warning removal and exact tuple selection.
 
 If an effort was requested, effort application occurs after the recovered
 model is materialized. Then the executor sends the prompt once. No prompt is
@@ -146,31 +151,27 @@ creates a second input boundary.
 
 ### Effective CLI configuration reader
 
-A focused module reads only:
+A focused module reads the bounded effective file:
 
 ```text
-<effective-home>/.zcode/cli/config.json -> model.main
+<effective-home>/.zcode/cli/config.json -> selected provider and model runtime
 ```
 
 The effective home follows the execution environment (`HOME`, then
 `USERPROFILE`, then the platform home fallback). The reader uses a bounded
-regular-file read, bounded JSON parsing, an exact supported object shape for
-the required field, and splits `provider/model` at the first slash. It returns
-only:
-
-```json
-{"providerId":"provider","modelId":"model"}
-```
-
-It never returns, logs, persists, copies, or includes in an error any provider
-options, endpoint, API key, token, secret, or raw configuration bytes.
+regular-file read, bounded JSON parsing, and an allowlisted ZCode 0.16.3
+runtime shape. The normalized runtime exists only in bounded memory and may
+carry the configured endpoint or inline credential solely over the existing
+authenticated local broker request. It is never cached, logged, persisted,
+rendered, or attached to an error.
 
 Missing, unreadable, oversized, malformed, or unusable `model.main` leaves the
 original runtime-unavailable condition authoritative. The public error remains
-bounded and task-free. A `session/setModel` rejection or a later real
+bounded and task-free. A structured runtime-update rejection or a later real
 `session/send` provider/model failure is propagated through its existing
-structured error path. Recovery is attempted at most once and never loops,
-creates a replacement session, selects fresh, or mutates CLI configuration.
+structured error path. Recovery is attempted at most once and never retries
+resume, loops, creates a replacement session, selects fresh, or mutates CLI
+configuration.
 
 ## Lifecycle-authoritative effective workspace
 
@@ -318,7 +319,7 @@ closed rather than silently deduplicating or selecting one.
 - Fresh sessions retain current model selection and do not read CLI config
   through this recovery path.
 - Warm resumed sessions without the exact warning do not read CLI config or
-  issue a recovery `session/setModel`.
+  issue a runtime update.
 - Existing explicit/workspace model behavior remains higher priority.
 - Existing same-workspace direct job commands remain compatible.
 - The public `$zcode:rescue`, `$zcode:status`, `$zcode:result`, and
@@ -353,12 +354,12 @@ fixed launcher-error context on unsafe provenance.
   malformed/oversized input, invalid tuples, home selection, and secret
   non-disclosure.
 - Extend the fake ZCode peer with an exact cold warning that clears only after
-  `session/setModel`.
-- Prove the exact sequence `resume -> setModel -> send`, with no send before
-  recovery and no second config read after the session is warm.
+  `session/updateRuntimeModelConfig`.
+- Prove the exact sequence `resume -> updateRuntime -> read -> send`, with no
+  send before recovery and no second config read after the session is warm.
 - Prove explicit and plugin workspace models retain precedence and are forcibly
   applied even when equal to the cold snapshot's current tuple.
-- Prove other warning types, setModel failures, missing config, and genuine
+- Prove other warning types, runtime-update failures, missing config, and genuine
   unsupported models expose their authoritative failure without retry loops or
   fresh fallback.
 - Prove requested effort is applied after model recovery.
@@ -419,7 +420,7 @@ marketplace installation configuration.
 
 1. The exact historical cold-resume shape materializes the configured runtime
    once and sends the continuation once in the original ZCode session.
-2. Warm resume performs no CLI config read and no recovery setModel call.
+2. Warm resume performs no CLI config read and no runtime-update call.
 3. Invalid/missing config and truly unsupported models remain visible failures
    with no fallback, loop, resend, or replacement session.
 4. Status, result, and cancel invoked from either eligible origin or exact

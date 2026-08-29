@@ -500,7 +500,6 @@ input.on('line', async (line) => {
     }
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = process.env.FAKE_ZCODE_SET_MODEL_CURRENT ? JSON.parse(process.env.FAKE_ZCODE_SET_MODEL_CURRENT) : p.model;
-      if (process.env.FAKE_ZCODE_COLD_RESUME_MODEL && `${p.model?.providerId}/${p.model?.modelId}` === process.env.FAKE_ZCODE_COLD_RESUME_MODEL) sessions.get(p.sessionId).runtimeMaterialized = true;
       send({ id: message.id, result: snapshotForMethod('session/setModel', p.sessionId) });
       break;
     case 'session/updateRuntimeModelConfig': {
@@ -509,6 +508,9 @@ input.on('line', async (line) => {
       }
       const session = sessions.get(p.sessionId);
       if (!session) { send({ id: message.id, error: { code: -32099, message: 'missing fixture session' } }); break; }
+      if (process.env.FAKE_ZCODE_RUNTIME_UPDATE_ERROR === '1') {
+        send({ id: message.id, error: { code: -32099, message: 'fixture runtime model unsupported', data: { code: 'model_config_unsupported' } } }); break;
+      }
       session.settings.model.current = structuredClone(p.runtimeModel.model); session.runtimeMaterialized = true;
       const result = { sessionId: p.sessionId, appliedModelRuntimeRevision: p.runtimeModel.revision, changed: true };
       if (process.env.FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT === 'extra') result.extra = true;

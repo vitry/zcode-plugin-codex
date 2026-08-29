@@ -321,6 +321,17 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {string} directory @returns {Promise<string>} */
+async function readPersistedText(directory) {
+  const chunks = [];
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) chunks.push(await readPersistedText(path));
+    else if (entry.isFile()) chunks.push(await readFile(path, 'utf8'));
+  }
+  return chunks.join('\n');
+}
+
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} extraEnv @param {string} expectedMessage @param {{onDurableProgress?:()=>void}} [options] */
 async function companionAfterDurableProgress(context, args, extraEnv, expectedMessage, options = {}) {
   const nonce = randomBytes(32).toString('hex');
@@ -4729,10 +4740,13 @@ test('model selection is applied at create time when resolvable and after live c
   assert.ok(requests.some((request) => request.method === 'session/setModel' && request.params.model.providerId === 'fake'));
 });
 
-test('cold resume reads only isolated HOME and performs resume then setModel then one send', async () => {
+test('cold resume reads only isolated HOME, updates full runtime, verifies it, then sends once without persisting secrets', async () => {
   const context = await fixture(); const record = join(context.directory, 'cold-resume.jsonl');
   const isolatedHome = join(context.directory, 'isolated-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
-  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'fake/model' }, providerOptions: { token: 'PRIVATE_CLI_TOKEN' } }));
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({
+    model: { main: 'fake/model' },
+    provider: { fake: { kind: 'openai-compatible', options: { baseURL: 'https://private.invalid/v1', apiKey: 'PRIVATE_CLI_TOKEN' }, models: { model: { supportsToolCall: true } } } },
+  }));
   const env = {
     HOME: isolatedHome, USERPROFILE: join(context.directory, 'wrong-userprofile'), FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model',
   };
@@ -4742,36 +4756,43 @@ test('cold resume reads only isolated HOME and performs resume then setModel the
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   const resumeIndex = requests.findIndex((request) => request.method === 'session/resume');
-  assert.deepEqual(requests.slice(resumeIndex, resumeIndex + 3).map((request) => request.method), ['session/resume', 'session/setModel', 'session/setThoughtLevel']);
-  assert.deepEqual(requests[resumeIndex + 1].params.model, { providerId: 'fake', modelId: 'model' });
+  assert.deepEqual(requests.slice(resumeIndex, resumeIndex + 4).map((request) => request.method), ['session/resume', 'session/updateRuntimeModelConfig', 'session/read', 'session/setThoughtLevel']);
+  assert.deepEqual(requests[resumeIndex + 1].params.runtimeModel.model, { providerId: 'fake', modelId: 'model' });
+  assert.equal(requests[resumeIndex + 1].params.runtimeModel.provider.apiKey.value, 'PRIVATE_CLI_TOKEN');
+  assert.equal(requests[resumeIndex + 1].params.applyModelSelection, true);
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
-  assert.ok(requests.findIndex((request) => request.method === 'v4/conversation/subscribe') > resumeIndex + 2);
+  assert.ok(requests.findIndex((request) => request.method === 'v4/conversation/subscribe') > resumeIndex + 3);
   assert.doesNotMatch(`${resumed.stdout}${resumed.stderr}${resumed.internal}`, /PRIVATE_CLI_TOKEN/);
+  const storage = await resolveWorkspaceStorage(context);
+  assert.doesNotMatch(await readPersistedText(storage.directory), /PRIVATE_CLI_TOKEN/);
 
   await rm(join(isolatedHome, '.zcode', 'cli', 'config.json')); await writeFile(record, '');
   const warmAgain = await companion(context, ['rescue', '--resume', 'same-process warm runtime'], env);
   assert.equal(warmAgain.code, 0, `${warmAgain.stderr}${warmAgain.stdout}`);
   const warmRequests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(warmRequests.some((request) => request.method === 'session/setModel'), false);
+  assert.equal(warmRequests.some((request) => request.method === 'session/updateRuntimeModelConfig'), false);
   assert.equal(warmRequests.filter((request) => request.method === 'session/send').length, 1);
 });
 
-test('unsupported CLI recovery tuple does not materialize, retry, fall back, or send twice', async () => {
+test('unsupported CLI runtime update remains authoritative without retry, fallback, or send', async () => {
   const context = await fixture(); const record = join(context.directory, 'unsupported-cold-resume.jsonl');
   const isolatedHome = join(context.directory, 'unsupported-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
-  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' } }));
-  const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' };
+  await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' }, provider: { unsupported: { kind: 'openai-compatible', models: { model: {} } } } }));
+  const env = { HOME: isolatedHome, USERPROFILE: isolatedHome, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model', FAKE_ZCODE_RUNTIME_UPDATE_ERROR: '1' };
   const initial = await companion(context, ['rescue', '--fresh', 'establish unsupported candidate'], env);
   assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
   const resumed = await companion(context, ['rescue', '--resume', '--effort', 'high', 'unsupported recovery'], env);
-  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.details?.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', JSON.stringify(resumed.json));
+  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.details?.remoteCode, 'model_config_unsupported', JSON.stringify(resumed.json));
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.deepEqual(requests.filter((request) => request.method === 'session/setModel').map((request) => request.params.model), [{ providerId: 'unsupported', modelId: 'model' }]);
+  assert.deepEqual(requests.filter((request) => request.method === 'session/updateRuntimeModelConfig').map((request) => request.params.runtimeModel.model), [{ providerId: 'unsupported', modelId: 'model' }]);
+  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/updateRuntimeModelConfig').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/read').length, 0);
   assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
 });
 
-test('warm, other-warning, and missing-config resumes do not perform CLI recovery setModel', async () => {
+test('warm, other-warning, and missing-config resumes perform no runtime update outside exact recoverable config', async () => {
   for (const scenario of ['warm', 'other-warning', 'missing-config']) {
     const context = await fixture();
     const isolatedHome = join(context.directory, `${scenario}-home`); await mkdir(isolatedHome);
@@ -4783,7 +4804,7 @@ test('warm, other-warning, and missing-config resumes do not perform CLI recover
     assert.equal(initial.code, 0, `${initial.stderr}${initial.stdout}`); await writeFile(record, '');
     const resumed = await companion(context, ['rescue', '--resume', `resume ${scenario}`], env);
     const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(requests.some((request) => request.method === 'session/setModel'), false, scenario);
+    assert.equal(requests.some((request) => request.method === 'session/updateRuntimeModelConfig'), false, scenario);
     assert.equal(requests.filter((request) => request.method === 'session/send').length, scenario === 'missing-config' ? 0 : 1, scenario);
     if (scenario === 'warm') assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
     else { assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_REQUEST_FAILED'); assert.equal(resumed.json.error.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE'); }
