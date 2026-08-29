@@ -87,13 +87,16 @@ function normalizeProvider(raw, providerId, selectedModelId) {
   const options = raw.options === undefined ? {} : raw.options;
   if (!plain(options)) throw runtimeModelConfigError();
   const models = raw.models === undefined ? {} : boundedRecord(raw.models, MAX_MODELS);
-  const selectedEntry = Object.entries(models).find(([modelId, model]) => modelId === selectedModelId
-    || plain(model) && model.id === selectedModelId);
+  const selectedEntry = own(models, selectedModelId) ? [selectedModelId, models[selectedModelId]]
+    : Object.entries(models).find(([, model]) => plain(model) && model.id === selectedModelId);
   const selectedModel = selectedEntry === undefined ? normalizeModel(selectedModelId, {}, kind)
     : normalizeModel(selectedEntry[0], selectedEntry[1], kind);
   const normalizedModels = [selectedModel, ...Object.entries(models)
     .filter(([modelId]) => modelId !== selectedEntry?.[0])
     .map(([modelId, model]) => normalizeModel(modelId, model, kind))];
+  if (new Set(normalizedModels.map((model) => model.modelId)).size !== normalizedModels.length) {
+    throw runtimeModelConfigError();
+  }
 
   const baseURL = optionalText(options.baseURL);
   const apiKey = optionalText(options.apiKey);

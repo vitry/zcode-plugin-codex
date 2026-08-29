@@ -135,6 +135,38 @@ test('synthesizes the selected runtime model when optional provider.models is ab
   assert.deepEqual(runtime.provider.models, [{ modelId: 'model-1' }]);
 });
 
+test('selects a unique model alias by raw id when no exact key exists', async () => {
+  const config = nativeMinimalConfig();
+  config.model.main = 'custom/target';
+  config.provider.custom.models = {
+    alias: { id: 'target', options: { temperature: 0 } },
+  };
+  const runtime = await nativeRuntime(config);
+  assert.deepEqual(runtime.provider.models, [{
+    modelId: 'target', providerOptions: { openaiCompatible: { temperature: 0 } },
+  }]);
+});
+
+test('rejects an exact model key that collides with an earlier alias id using the fixed error', async () => {
+  const config = nativeMinimalConfig();
+  config.model.main = 'custom/target';
+  config.provider.custom.models = {
+    alias: { id: 'target', options: { temperature: 1 } },
+    target: { options: { temperature: 0 } },
+  };
+  assertFixedRuntimeConfigError(await nativeRuntime(config).catch((error) => error));
+});
+
+test('rejects multiple aliases that normalize to the same model id using the fixed error', async () => {
+  const config = nativeMinimalConfig();
+  config.model.main = 'custom/target';
+  config.provider.custom.models = {
+    first: { id: 'target' },
+    second: { id: 'target' },
+  };
+  assertFixedRuntimeConfigError(await nativeRuntime(config).catch((error) => error));
+});
+
 test('accepts the native shorthand root model while the legacy main-model reader remains compatible', async () => {
   const config = nativeMinimalConfig();
   config.model = 'custom/model-1';
