@@ -158,11 +158,12 @@ function normalizeReasoning(value, kind) {
   if (!plain(value)) throw runtimeModelConfigError();
   const rawLevels = value.levels ?? [];
   if (!Array.isArray(rawLevels) || rawLevels.length > MAX_REASONING_LEVELS
-    || rawLevels.some((level) => !boundedText(level))) return undefined;
+    || rawLevels.some((level) => !boundedText(level))) throw runtimeModelConfigError();
   const levels = rawLevels.map((level) => ({ value: level, label: level }));
   const enabled = value.enabled === undefined ? levels.length > 0 : optionalBoolean(value.enabled);
   const levelValues = new Set(rawLevels);
-  const defaultLevel = levelValues.has(value.defaultLevel) ? value.defaultLevel : undefined;
+  const defaultLevel = optionalText(value.defaultLevel);
+  if (defaultLevel !== undefined && !levelValues.has(defaultLevel)) throw runtimeModelConfigError();
   const rawProviderOptionsByLevel = optionalJsonRecordMap(value.providerOptionsByLevel, MAX_REASONING_LEVELS, levelValues);
   const providerOptionsByLevel = rawProviderOptionsByLevel === undefined ? undefined
     : Object.fromEntries(Object.entries(rawProviderOptionsByLevel).map(([level, entry]) => [
@@ -211,7 +212,8 @@ function mergeStringRecords(...values) {
 function optionalJsonRecordMap(value, maximumEntries, allowedKeys) {
   if (value === undefined) return undefined;
   const record = boundedRecord(value, maximumEntries);
-  return Object.fromEntries(Object.entries(record).filter(([key]) => allowedKeys.has(key)).map(([key, entry]) => {
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) throw runtimeModelConfigError();
+  return Object.fromEntries(Object.entries(record).map(([key, entry]) => {
     if (!plain(entry)) throw runtimeModelConfigError();
     return [key, checkedJsonRecord(entry)];
   }));

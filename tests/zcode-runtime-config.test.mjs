@@ -216,22 +216,54 @@ test('maps native model capability fields and aliases', async () => {
   assert.equal(model.supportsStructuredOutput, true);
 });
 
-test('maps reasoning while omitting cross-field defaults and options outside advertised levels', async () => {
+test('maps valid reasoning defaults and per-level options', async () => {
   const config = nativeMinimalConfig();
   config.provider.custom.models['model-1'].reasoning = {
     levels: ['low', 'high'],
-    defaultLevel: 'missing',
-    providerOptionsByLevel: { high: { reasoningEffort: 'high' }, missing: { reasoningEffort: 'missing' } },
+    defaultLevel: 'high',
+    providerOptionsByLevel: { high: { reasoningEffort: 'high' } },
   };
   const runtime = await nativeRuntime(config);
   assert.deepEqual(runtime.provider.models[0].reasoning, {
     enabled: true,
     levels: [{ value: 'low', label: 'low' }, { value: 'high', label: 'high' }],
+    defaultLevel: 'high',
     providerOptionsByLevel: {
       high: { openaiCompatible: { reasoningEffort: 'high' } },
     },
   });
+  assert.equal(runtime.thoughtLevel, 'high');
+});
+
+test('omits a missing reasoning default and selects the first advertised level', async () => {
+  const config = nativeMinimalConfig();
+  config.provider.custom.models['model-1'].reasoning = { levels: ['low', 'high'] };
+  const runtime = await nativeRuntime(config);
+  assert.equal(Object.hasOwn(runtime.provider.models[0].reasoning ?? {}, 'defaultLevel'), false);
   assert.equal(runtime.thoughtLevel, 'low');
+});
+
+test('rejects malformed or inconsistent reasoning fields with one secret-free error', async (t) => {
+  /** @type {Array<[string,(reasoning:any)=>void]>} */
+  const cases = [
+    ['default outside levels', (reasoning) => { reasoning.defaultLevel = 'missing'; }],
+    ['default array', (reasoning) => { reasoning.defaultLevel = ['PRIVATE_DEFAULT']; }],
+    ['default object', (reasoning) => { reasoning.defaultLevel = { secret: 'PRIVATE_DEFAULT' }; }],
+    ['default control', (reasoning) => { reasoning.defaultLevel = 'high\u0000PRIVATE'; }],
+    ['default oversized', (reasoning) => { reasoning.defaultLevel = `high-${'x'.repeat(4_097)}`; }],
+    ['unknown option key', (reasoning) => { reasoning.providerOptionsByLevel = { missing: { secret: 'PRIVATE_OPTION' } }; }],
+    ['levels object', (reasoning) => { reasoning.levels = { secret: 'PRIVATE_LEVEL' }; }],
+    ['level object', (reasoning) => { reasoning.levels = [{ secret: 'PRIVATE_LEVEL' }]; }],
+    ['level control', (reasoning) => { reasoning.levels = ['high\u0000PRIVATE']; }],
+    ['level oversized', (reasoning) => { reasoning.levels = ['x'.repeat(4_097)]; }],
+    ['too many levels', (reasoning) => { reasoning.levels = Array.from({ length: 33 }, (_, index) => `level-${index}`); }],
+    ['option map array', (reasoning) => { reasoning.providerOptionsByLevel = []; }],
+    ['option value scalar', (reasoning) => { reasoning.providerOptionsByLevel = { high: 'PRIVATE_OPTION' }; }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, async () => {
+    const config = nativeMinimalConfig(); const reasoning = { levels: ['low', 'high'], defaultLevel: 'high' }; mutate(reasoning); config.provider.custom.models['model-1'].reasoning = reasoning;
+    assertFixedRuntimeConfigError(await nativeRuntime(config).catch((error) => error));
+  });
 });
 
 test('ignores passthrough fields that native model normalization does not consume', async () => {
@@ -245,7 +277,6 @@ test('ignores passthrough fields that native model normalization does not consum
   Object.assign(config.provider.custom.models['model-1'], {
     providerOptions: { leaked: 'model' },
     supportsTools: true,
-    reasoning: { enabled: true, levels: [{ value: 'high', label: 'High' }] },
   });
   const runtime = await nativeRuntime(config);
   assert.equal(Object.hasOwn(runtime.provider, 'apiFormat'), false);
