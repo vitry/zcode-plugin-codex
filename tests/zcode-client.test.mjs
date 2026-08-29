@@ -409,6 +409,31 @@ test('runtime model update permits omitted thought level when selected reasoning
   }
 });
 
+test('runtime model update rejects a globally oversized valid-field combination before transport', async () => {
+  const runtimeModel = runtimeModelFixture(); delete runtimeModel.thoughtLevel;
+  const privateText = 'PRIVATE_GLOBAL_WIRE_SECRET'.padEnd(4_000, 'x');
+  runtimeModel.provider.models = Array.from({ length: 256 }, (_, index) => ({
+    modelId: index === 0 ? 'fixture-model' : `model-${index}`,
+    label: privateText, description: privateText, disabledReason: privateText,
+  }));
+  let calls = 0;
+  const client = new ZCodeClient({ request: async (_method, params) => { calls += 1; return { sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }; } });
+  await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModel), (error) => error?.code === 'ZCODE_INPUT_INVALID' && !JSON.stringify(error).includes('PRIVATE_GLOBAL_WIRE_SECRET'));
+  assert.equal(calls, 0);
+});
+
+test('runtime model update accepts a bounded multi-model wire payload', async () => {
+  const runtimeModel = runtimeModelFixture(); delete runtimeModel.thoughtLevel;
+  const boundedText = 'bounded'.padEnd(1_000, 'x');
+  runtimeModel.provider.models = Array.from({ length: 32 }, (_, index) => ({
+    modelId: index === 0 ? 'fixture-model' : `model-${index}`, label: boundedText, description: boundedText,
+  }));
+  let calls = 0;
+  const client = new ZCodeClient({ request: async (_method, params) => { calls += 1; return { sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }; } });
+  assert.deepEqual(await client.updateRuntimeModelConfig('session-1', runtimeModel), { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: false });
+  assert.equal(calls, 1);
+});
+
 test('runtime model update rejects every malformed or mismatched exact result', async () => {
   const valid = { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: true };
   const invalid = [null, {}, { ...valid, extra: true }, { ...valid, sessionId: 'session-2' }, { ...valid, appliedModelRuntimeRevision: 'other-revision' }, { ...valid, changed: 1 }];

@@ -4,7 +4,7 @@ import { readdir, realpath } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
-import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
+import { closeProtocolUntil, connectZCodeBroker, DEFAULT_MAX_FRAME_BYTES, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validCreateSnapshot, validSessionInfo, validSettingsSnapshot, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -19,6 +19,9 @@ const RUNTIME_MAX_ENTRIES = 256;
 const RUNTIME_MAX_REASONING_LEVELS = 32;
 const RUNTIME_MAX_VALUE_DEPTH = 8;
 const RUNTIME_MAX_VALUE_NODES = 2_048;
+const RUNTIME_MAX_WIRE_BYTES = Math.floor(DEFAULT_MAX_FRAME_BYTES / 2);
+const RUNTIME_MAX_WIRE_NODES = 65_536;
+const RUNTIME_MAX_WIRE_DEPTH = 16;
 const RUNTIME_DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const OWNER_CLEANUP_BUDGET_MS = 1_800;
 const OWNER_CLEANUP_MAX_BATCHES = 32;
@@ -324,6 +327,7 @@ function validateModel(model) { requireExactObject(model, ['providerId', 'modelI
 function copyModel(model) { return { providerId: model.providerId, modelId: model.modelId, ...(model.variant === undefined ? {} : { variant: model.variant }) }; }
 /** @param {unknown} value */
 function copyRuntimeModel(value) {
+  validateRuntimeWireBudget(value);
   if (!runtimeExactObject(value, ['revision', 'generatedAt', 'model', 'provider'], ['thoughtLevel'])
     || !runtimeText(value.revision) || !Number.isSafeInteger(value.generatedAt) || value.generatedAt < 0) throw inputError();
   const model = copyRuntimeModelRef(value.model);
@@ -449,6 +453,49 @@ function runtimeText(value) {
 }
 /** @param {string} value */
 function runtimeSafeKey(value) { return runtimeText(value) && !RUNTIME_DANGEROUS_KEYS.has(value); }
+/** @param {unknown} value */
+function validateRuntimeWireBudget(value) {
+  visitRuntimeWireValue(value, 0, { nodes: 0, bytes: 0, ancestors: new WeakSet() });
+}
+/** @param {unknown} value @param {number} depth @param {{nodes:number,bytes:number,ancestors:WeakSet<object>}} state */
+function visitRuntimeWireValue(value, depth, state) {
+  if (depth > RUNTIME_MAX_WIRE_DEPTH) throw inputError();
+  if (value === null) { chargeRuntimeWire(state, 4); return; }
+  if (typeof value === 'string') { chargeRuntimeWire(state, conservativeRuntimeWireTextBytes(value)); return; }
+  if (typeof value === 'number') { chargeRuntimeWire(state, Number.isFinite(value) ? Buffer.byteLength(String(value)) : 4); return; }
+  if (typeof value === 'boolean') { chargeRuntimeWire(state, value ? 4 : 5); return; }
+  if (typeof value !== 'object') throw inputError();
+  if (state.ancestors.has(value)) throw inputError();
+  state.ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > RUNTIME_MAX_ENTRIES) throw inputError();
+      chargeRuntimeWire(state, 2 + Math.max(0, value.length - 1));
+      for (const entry of value) visitRuntimeWireValue(entry, depth + 1, state);
+      return;
+    }
+    if (!runtimePlainObject(value)) throw inputError();
+    const entries = Object.entries(value);
+    if (entries.length > RUNTIME_MAX_ENTRIES) throw inputError();
+    chargeRuntimeWire(state, 2 + Math.max(0, entries.length - 1));
+    for (const [key, entry] of entries) {
+      if (RUNTIME_DANGEROUS_KEYS.has(key)) throw inputError();
+      chargeRuntimeWire(state, conservativeRuntimeWireTextBytes(key) + 1);
+      visitRuntimeWireValue(entry, depth + 1, state);
+    }
+  } finally { state.ancestors.delete(value); }
+}
+/** @param {{nodes:number,bytes:number}} state @param {number} bytes */
+function chargeRuntimeWire(state, bytes) {
+  state.nodes += 1; state.bytes += bytes;
+  if (state.nodes > RUNTIME_MAX_WIRE_NODES || state.bytes > RUNTIME_MAX_WIRE_BYTES) throw inputError();
+}
+/** @param {string} value */
+function conservativeRuntimeWireTextBytes(value) {
+  const bytes = Buffer.byteLength(value);
+  if (bytes > RUNTIME_MAX_WIRE_BYTES) throw inputError();
+  return 2 + bytes * 2;
+}
 /** @param {any} model @returns {string[]} */
 function advertisedThoughtLevels(model) {
   const values = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : Array.isArray(model.reasoning?.levels) ? model.reasoning.levels.map((/** @type {any} */ entry) => entry?.value) : [];
