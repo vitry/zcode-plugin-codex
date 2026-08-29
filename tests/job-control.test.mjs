@@ -776,7 +776,7 @@ test('cold recovery runtime update rejection is authoritative and prevents send'
   assert.equal(caught, updateRuntimeError); assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls.slice(0, 2), ['resume', 'updateRuntime:cli/main']);
 });
 
-for (const outcome of ['failure', 'interruption']) test(`legacy migration keeps its migrated active attempt when ${outcome} follows a successful resume RPC`, async () => {
+for (const outcome of ['failure', 'interruption']) test(`legacy migration restores its exact SessionEnd tombstone when ${outcome} follows a successful resume RPC`, async () => {
   const { root, workspace, store } = await setup();
   const migration = await legacyMigrationExecutionFixture(root, workspace, store);
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
@@ -798,21 +798,7 @@ for (const outcome of ['failure', 'interruption']) test(`legacy migration keeps 
       if (!resumeRpcSucceeded) return store.finishSessionEndedRescueContinuation(workspace,
         migration.continuation.job.id, migration.continuation.migrationRollback, 'failed',
         { error: { message: error instanceof Error ? error.message : 'resume failed' }, exitCode: 1 });
-      const committed = await store.transitionJob(workspace, migration.continuation.job.id, ['queued'], 'running', {
-        startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cold-resume',
-        childPid: 999_999_999, workerLeaseId: migration.continuation.job.id,
-      });
-      const committedBinding = await store.resolveRescueBinding({ workspace,
-        parentSessionId: migration.executor.parentSessionId, executorAgentId: migration.executor.agentId });
-      assert.equal(committedBinding.kind, 'bound');
-      if (committedBinding.kind !== 'bound') throw new Error('expected committed migration binding');
-      assert.equal(committedBinding.binding.currentJobId, migration.continuation.job.id);
-      if (outcome === 'interruption') {
-        await store.transitionJob(workspace, migration.continuation.job.id, [committed.status], 'cancelling');
-        return store.finishJob(workspace, migration.continuation.job.id, ['cancelling'], 'cancelled', { exitCode: null });
-      }
-      return store.finishJob(workspace, migration.continuation.job.id, [committed.status], 'failed',
-        { error: { message: error instanceof Error ? error.message : 'resume failed' }, exitCode: 1 });
+      return undefined;
     },
   }).catch((error) => error);
   if (outcome === 'interruption') assert.equal(caught, original);
@@ -822,17 +808,10 @@ for (const outcome of ['failure', 'interruption']) test(`legacy migration keeps 
   }
   const current = await store.readJob(workspace, migration.continuation.job.id);
   assert.equal(current.status, outcome === 'interruption' ? 'cancelled' : 'failed');
-  if (outcome === 'failure') {
-    const binding = await store.resolveRescueBinding({ workspace, parentSessionId: migration.executor.parentSessionId,
-      executorAgentId: migration.executor.agentId });
-    assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.state, 'active');
-    assert.equal(binding.binding.currentJobId, migration.continuation.job.id);
-    assert.notDeepEqual(binding.binding, migration.closed.binding);
-  } else {
-    const [binding] = JSON.parse(await readFile(migration.partitionPath, 'utf8')).records;
-    assert.equal(binding.version, 3); assert.equal(binding.state, 'closed'); assert.equal(binding.closeReason, 'cancel');
-    assert.equal(binding.currentJobId, migration.continuation.job.id); assert.notDeepEqual(binding, migration.closed.binding);
-  }
+  const [binding] = JSON.parse(await readFile(migration.partitionPath, 'utf8')).records;
+  assert.deepEqual(binding, migration.closed.binding);
+  await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId: migration.executor.parentSessionId,
+    executorAgentId: migration.executor.agentId }), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
 test('cold recovery preserves interruption at resolve, update, and verification-read boundaries', async () => {

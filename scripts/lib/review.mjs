@@ -197,7 +197,10 @@ export async function executeJob(input) {
             && ['running', 'failed', 'cancelled'].includes(settled.status)) current = settled;
           else throw readError;
         }
-      } catch (rollbackError) { primaryError = rollbackError; resumeFailureSettlementRejected = true; }
+      } catch (rollbackError) {
+        primaryError = new ResumeFailureSettlementError(primaryError, rollbackError);
+        resumeFailureSettlementRejected = true;
+      }
     }
     if (!resumeFailureSettlementRejected && error instanceof SuccessfulResultFinalizationError) {
       if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
@@ -287,6 +290,16 @@ async function publishSuccessfulResult({ input, job, workspace, dataRoot, result
 export class SuccessfulResultFinalizationError extends Error {
   /** @param {unknown} cause @param {string} resultArtifact */
   constructor(cause, resultArtifact) { super('Successful result could not be finalized.', { cause }); this.name = 'SuccessfulResultFinalizationError'; this.resultArtifact = resultArtifact; }
+}
+
+export class ResumeFailureSettlementError extends Error {
+  /** @param {unknown} executionError @param {unknown} settlementError */
+  constructor(executionError, settlementError) {
+    super('Resume failure settlement could not be proven.', { cause: settlementError });
+    this.name = 'ResumeFailureSettlementError';
+    this.executionError = executionError;
+    this.settlementError = settlementError;
+  }
 }
 
 /** @param {string} jobId @param {string} status */

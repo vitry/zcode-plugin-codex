@@ -1538,11 +1538,12 @@ test('background interruption after claim preserves the binding revoke and termi
   assert.equal((await readFile(record, 'utf8')).trim(), '');
 });
 
-for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
+for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy post-resume failure', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
   ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, `background-migration-${failurePoint.replace(' ', '-')}.jsonl`); await writeFile(record, '');
+  const runtimeHome = join(context.directory, 'empty-runtime-home'); await mkdir(runtimeHome);
   const parentSessionId = `background-migration-${failurePoint.replace(' ', '-')}-parent`;
   const childId = `background-migration-${failurePoint.replace(' ', '-')}-child`; const childTurnId = `${childId}-turn`;
   await prepareDirectRescueChild(context, {
@@ -1565,7 +1566,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
   const partitionPath = join(storage.directory, partitionName);
-  const historicalMarkerless = ['legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution',
+  const historicalMarkerless = ['legacy worker execution', 'legacy post-resume failure', 'legacy recovery', 'corrupt legacy worker execution',
     'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint);
   const partition = JSON.parse(await readFile(partitionPath, 'utf8')); const current = partition.records[0];
   const v2 = { ...current, version: 2, childAuthority: { ...current.childAuthority } };
@@ -1605,7 +1606,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
     cwd: workspace, env: childEnv,
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
-  if (['worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
+  if (['worker crash', 'legacy worker execution', 'legacy post-resume failure', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
     const queued = await attempt; assert.equal(queued.type, 'background');
     assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|rescueReservationKind|priorCurrentJobId|priorClosedAt/u);
     if (failurePoint === 'worker crash') {
@@ -1651,7 +1652,9 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace, ownerId: ownerIdForSession(parentSessionId), requestTimeoutMs: 500 });
         /** @type {any} */ let executionError;
         await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
-          cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
+          cwd: workspace, env: failurePoint === 'legacy post-resume failure'
+            ? { ...childEnv, HOME: runtimeHome, USERPROFILE: runtimeHome, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' }
+            : { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
           authorization: { executionCapability: capability.token, jobId: queued.job.id },
         }), (error) => { executionError = error; return failurePoint === 'durable marker v1 downgrade'
           ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID'
@@ -1676,7 +1679,8 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }), { code: 'RESCUE_BINDING_CLOSED' });
   const failedJobs = await store.listJobs(workspace); assert.equal(failedJobs.length, 2); assert.equal(failedJobs[1].status, 'failed');
   const callsAfterFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length, failurePoint === 'legacy worker execution' ? 1 : 0);
+  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length,
+    ['legacy worker execution', 'legacy post-resume failure'].includes(failurePoint) ? 1 : 0);
 
   if (['worker launch', 'worker crash'].includes(failurePoint)) {
     await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-c', workspace, permissionMode: 'workspace-write',
@@ -2389,22 +2393,38 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   assert.ok(calls.some((frame) => frame.method === 'session/resume' && frame.params?.sessionId === prepared.first.job.zcodeSessionId));
 });
 
-test('active continuation rollback convergence preserves the original resume error across publication and winner-read faults', async () => {
+for (const scenario of [
+  { name: 'publication and winner-read faults', publicationFaults: 1, preSettlementFaults: 0, winnerReadFault: true },
+  { name: 'exhausted inner settlement retries before outer convergence', publicationFaults: 0, preSettlementFaults: 2, winnerReadFault: false },
+]) test(`active continuation rollback convergence preserves the original resume error across ${scenario.name}`, async () => {
   const context = await fixture();
   const prepared = await preparedSameTurnBoundContinuation(context, {
-    name: 'rollback-original-error', exact: true, execution: 'foreground',
+    name: `rollback-original-error-${scenario.publicationFaults}-${scenario.preSettlementFaults}`, exact: true, execution: 'foreground',
     extraEnv: { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
   });
   const baseStore = createStateStore({ dataRoot: context.dataRoot });
-  let publicationFaults = 0; let publicationFaultObserved = false; let winnerReadFaults = 0;
+  let publicationAttempts = 0; let injectedPublicationFaults = 0; let preSettlementFaults = 0;
+  let publicationFaultObserved = false; let winnerReadFaults = 0;
   const publicationFaulted = createStateStore({ dataRoot: context.dataRoot, testOnlyPublicationHook: async (seam) => {
-    if (seam === 'active-continuation-rollback:binding' && publicationFaults++ === 0) {
+    if (seam === 'active-continuation-rollback:binding') publicationAttempts += 1;
+    if (seam === 'active-continuation-rollback:binding' && injectedPublicationFaults < scenario.publicationFaults) {
+      injectedPublicationFaults += 1;
       publicationFaultObserved = true;
       throw new Error('injected binding publication checkpoint failure');
     }
   } });
-  const faultedStore = { ...publicationFaulted, readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
-    if (publicationFaultObserved && winnerReadFaults === 0) {
+  const faultedStore = { ...publicationFaulted,
+    finishActiveRescueContinuationFailure: async (/** @type {string} */ workspace, /** @type {string} */ jobId,
+      /** @type {string|null} */ workerLeaseId, /** @type {any} */ proof, /** @type {'failed'} */ status,
+      /** @type {Record<string,unknown>} */ patch) => {
+      if (preSettlementFaults < scenario.preSettlementFaults) {
+        preSettlementFaults += 1;
+        throw new Error('injected pre-settlement failure');
+      }
+      return publicationFaulted.finishActiveRescueContinuationFailure(workspace, jobId, workerLeaseId, proof, status, patch);
+    },
+    readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    if (scenario.winnerReadFault && publicationFaultObserved && winnerReadFaults === 0) {
       winnerReadFaults += 1;
       throw new Error('injected post-settlement winner read failure');
     }
@@ -2421,9 +2441,12 @@ test('active continuation rollback convergence preserves the original resume err
       }),
     },
   }).catch((error) => error);
-  assert.ok(publicationFaults >= 1); assert.equal(winnerReadFaults, 1);
+  assert.equal(injectedPublicationFaults, scenario.publicationFaults);
+  assert.equal(preSettlementFaults, scenario.preSettlementFaults);
+  assert.ok(publicationAttempts >= scenario.publicationFaults);
+  assert.equal(winnerReadFaults, scenario.winnerReadFault ? 1 : 0);
   assert.notEqual(caught?.code, 'RESCUE_PUBLICATION_TEST_FAULT');
-  assert.doesNotMatch(caught?.message ?? '', /publication checkpoint|winner read/u);
+  assert.doesNotMatch(caught?.message ?? '', /pre-settlement|publication checkpoint|winner read/u);
   const jobs = await baseStore.listJobs(context.workspace); const failed = jobs.find((job) => job.id !== prepared.first.job.id);
   assert.equal(failed?.status, 'failed'); assert.equal(failed?.error?.message, caught?.message);
   const binding = await baseStore.resolveRescueBinding({ workspace: context.workspace,

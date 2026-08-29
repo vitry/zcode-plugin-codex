@@ -24,7 +24,7 @@ import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
-import { executeJob, readResultArtifact } from './lib/review.mjs';
+import { executeJob, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
@@ -982,19 +982,7 @@ async function executeReserved(context) {
     }
     if (!migrationRollback) return undefined;
     if (!resumeRpcSucceeded) return finishResumeFailure(error);
-    const current = await store.readJob(cwd, job.id);
-    if (current.status !== 'queued') return current;
-    const committed = await store.transitionJob(cwd, job.id, ['queued'], 'running', {
-      startedAt: new Date().toISOString(), zcodeSessionId: spec.resumeSessionId,
-      childPid: context.childPid, workerLeaseId: context.workerLeaseId,
-    });
-    if (isInterruption(error)) {
-      await store.transitionJob(cwd, job.id, [committed.status], 'cancelling');
-      return store.finishJob(cwd, job.id, ['cancelling'], 'cancelled', { exitCode: null });
-    }
-    return store.finishJob(cwd, job.id, [committed.status], 'failed', {
-      error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1,
-    });
+    return undefined;
   };
   try {
     context.signal?.throwIfAborted();
@@ -1007,17 +995,20 @@ async function executeReserved(context) {
     return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; }, onRunningPersisted: () => { runningPersisted = true; }, ...(finishResumeFailure ? { onResumeFailure: convergeResumeFailure } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
+    const executionError = error instanceof ResumeFailureSettlementError ? error.executionError : error;
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (finishResumeFailure && current?.status === 'queued'
-      && (migrationRollback && !resumeRpcSucceeded || activeContinuationProof && activeRollbackAllowed(error))) {
-      await convergeResumeFailure(error);
-    } else if (isInterruption(error) && current?.status === 'queued') {
+    const settlementRequired = migrationRollback && !resumeRpcSucceeded
+      || activeContinuationProof && activeRollbackAllowed(executionError);
+    if (finishResumeFailure && settlementRequired
+      && (current?.status === 'queued' || error instanceof ResumeFailureSettlementError)) {
+      await convergeResumeFailure(executionError);
+    } else if (isInterruption(executionError) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
-    } else if (!isInterruption(error) && current?.status === 'queued') {
-      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
+    } else if (!isInterruption(executionError) && current?.status === 'queued') {
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: executionError instanceof Error ? executionError.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
     }
-    throw error;
+    throw executionError;
   }
 }
 
