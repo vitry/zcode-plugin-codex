@@ -500,9 +500,26 @@ input.on('line', async (line) => {
     }
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = process.env.FAKE_ZCODE_SET_MODEL_CURRENT ? JSON.parse(process.env.FAKE_ZCODE_SET_MODEL_CURRENT) : p.model;
-      if (process.env.FAKE_ZCODE_COLD_RESUME_MODEL && `${p.model?.providerId}/${p.model?.modelId}` === process.env.FAKE_ZCODE_COLD_RESUME_MODEL) sessions.get(p.sessionId).runtimeMaterialized = true;
       send({ id: message.id, result: snapshotForMethod('session/setModel', p.sessionId) });
       break;
+    case 'session/updateRuntimeModelConfig': {
+      if (Object.keys(p).sort().join(',') !== 'applyModelSelection,runtimeModel,sessionId' || p.applyModelSelection !== true || !p.runtimeModel || typeof p.runtimeModel !== 'object') {
+        send({ id: message.id, error: { code: -32602, message: 'invalid runtime model update params' } }); break;
+      }
+      const session = sessions.get(p.sessionId);
+      if (!session) { send({ id: message.id, error: { code: -32099, message: 'missing fixture session' } }); break; }
+      if (process.env.FAKE_ZCODE_RUNTIME_UPDATE_ERROR === '1') {
+        send({ id: message.id, error: { code: -32099, message: 'fixture runtime model unsupported', data: { code: 'model_config_unsupported' } } }); break;
+      }
+      session.settings.model.current = structuredClone(p.runtimeModel.model); session.runtimeMaterialized = true;
+      const result = { sessionId: p.sessionId, appliedModelRuntimeRevision: p.runtimeModel.revision, changed: true };
+      if (process.env.FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT === 'extra') result.extra = true;
+      if (process.env.FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT === 'wrong-session') result.sessionId = 'wrong-session';
+      if (process.env.FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT === 'wrong-revision') result.appliedModelRuntimeRevision = 'wrong-revision';
+      if (process.env.FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT === 'bad-changed') result.changed = 1;
+      send({ id: message.id, result });
+      break;
+    }
     case 'session/setThoughtLevel':
       sessions.get(p.sessionId).settings.thoughtLevel.current = process.env.FAKE_ZCODE_SET_THOUGHT_CURRENT ?? p.thoughtLevel;
       send({ id: message.id, result: snapshotForMethod('session/setThoughtLevel', p.sessionId) });

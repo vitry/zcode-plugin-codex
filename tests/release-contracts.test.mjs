@@ -721,12 +721,15 @@ test('release guidance documents cold runtime, lifecycle partition, and compact 
 
   for (const source of [english, chinese]) {
     assert.match(source, /ZCODE_RUNTIME_MODEL_UNAVAILABLE/);
-    assert.match(source, /(?:effective `HOME`|有效 `HOME`)[\s\S]{0,160}\.zcode\/cli\/config\.json[\s\S]{0,100}`model\.main`/i);
+    assert.match(source, /(?:effective `HOME`|有效 `HOME`)[\s\S]{0,160}\.zcode\/cli\/config\.json/i);
     assert.match(source, /(?:explicit `--model`|显式 `--model`)[\s\S]{0,180}(?:workspace (?:model )?policy|workspace 模型策略)[\s\S]{0,180}(?:CLI `model\.main`|CLI 的 `model\.main`)/i);
-    assert.match(source, /(?:session\/setModel[\s\S]{0,160}exactly once|(?:仅)?调用一次[\s\S]{0,80}session\/setModel)/i);
+    assert.match(source, /(?:session\/updateRuntimeModelConfig[\s\S]{0,180}exactly once|仅调用一次[\s\S]{0,80}session\/updateRuntimeModelConfig)/i);
+    assert.match(source, /session\/read[\s\S]{0,180}(?:warning)[\s\S]{0,180}(?:exact tuple|tuple 精确匹配)/i);
+    assert.match(source, /(?:never cached, logged, persisted, or rendered|绝不缓存、记录、持久化或渲染)/i);
+    assert.doesNotMatch(source, /(?:calls? `session\/setModel` exactly once|仅调用一次 `session\/setModel`)/i);
     assert.match(source, /(?:effort)[\s\S]{0,180}(?:one `?session\/send`?|一次 `?session\/send`?|只执行一次 `?session\/send`?)/i);
     assert.match(source, /(?:warm resume|热 resume)[\s\S]{0,180}(?:does not|不会|不)[\s\S]{0,100}(?:read|读取)[\s\S]{0,100}config/i);
-    assert.match(source, /(?:missing|invalid|unsupported|缺失|无效|不受支持)[\s\S]{0,240}(?:no fresh|不.*fresh)[\s\S]{0,160}(?:resend|重发)[\s\S]{0,160}(?:replacement|替换)/i);
+    assert.match(source, /(?:missing|invalid|genuine AppServer|缺失|无效|真实拒绝)[\s\S]{0,320}(?:no resume retry|不会重试 resume)[\s\S]{0,160}(?:fresh fallback)[\s\S]{0,160}(?:resend|重发)[\s\S]{0,160}(?:replacement|替换)/i);
     assert.match(source, /(?:status|`\$zcode:status`)[\s\S]{0,120}(?:result|`\$zcode:result`)[\s\S]{0,120}(?:cancel|`\$zcode:cancel`)[\s\S]{0,260}(?:origin)[\s\S]{0,180}(?:exact (?:bound )?(?:execution )?(?:target|workspace)|精确.*(?:绑定目标|execution workspace))/i);
     assert.match(source, /(?:one lifecycle-authoritative|一个 lifecycle 权威)[\s\S]{0,180}(?:partition|分区)[\s\S]{0,180}(?:later turns|后续 turn)/i);
     assert.match(source, /(?:never scans or merges|不扫描也不合并|绝不扫描或合并)[\s\S]{0,120}(?:workspace )?partitions?/i);
@@ -739,15 +742,16 @@ test('release guidance documents cold runtime, lifecycle partition, and compact 
     assert.match(source, /(?:one active writable Rescue per canonical workspace|每个 canonical workspace 只能有一个 active writable Rescue)[\s\S]{0,80}(?:unchanged|保持不变)/i);
   }
 
-  assert.match(english, /Only after `session\/resume` returns the exact snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`, and only when neither an explicit `--model` nor the workspace model policy supplies a tuple/i);
-  assert.match(chinese, /仅当 `session\/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`，并且显式 `--model` 与 workspace 模型策略都没有提供 tuple/);
+  assert.match(english, /Only after `session\/resume` returns the exact snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE` does the plugin lazily read/i);
+  assert.match(chinese, /仅当 `session\/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE` 时，插件才惰性读取/);
   assert.match(english, /From either the eligible origin workspace or the exact bound execution target, they operate on that selected target partition/i);
   assert.match(chinese, /从合格的 origin workspace 或精确绑定目标调用时，它们都只操作选中的 target 分区/);
 
   const securityColdBoundary = security.split('\n').find((line) => line.includes('Cold resume runtime recovery')) ?? '';
-  assert.match(securityColdBoundary, /only after the exact runtime-unavailable snapshot warning when explicit and workspace policy are absent/i);
-  assert.match(securityColdBoundary, /never exposes raw config, provider options, endpoints, keys, or tokens/i);
-  assert.match(securityColdBoundary, /invalid or unsupported recovery remains a bounded failure without fresh fallback, resend, replacement, or config mutation/i);
+  assert.match(securityColdBoundary, /only after the exact runtime-unavailable snapshot warning/i);
+  assert.match(securityColdBoundary, /never caches, persists, logs, or renders raw config, provider options, endpoints, keys, or tokens/i);
+  assert.match(securityColdBoundary, /invalid config remains the bounded original failure, genuine AppServer rejection stays authoritative/i);
+  assert.match(securityColdBoundary, /no resume retry, fresh fallback, resend, replacement, or config mutation/i);
 
   const securityPartitionBoundary = security.split('\n').find((line) => line.includes('Direct status, result, and cancel')) ?? '';
   assert.match(securityPartitionBoundary, /selected from the origin or its exact bound target and preserved privately across later turns/i);

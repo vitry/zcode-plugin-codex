@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryModel?:()=>Promise<{providerId:string,modelId:string}|undefined>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryConfig?:(model:{providerId:string,modelId:string}|undefined)=>Promise<any>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -116,19 +116,19 @@ export async function executeJob(input) {
     sessionId = activeSessionId;
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     const runtimeRecoveryRequired = input.resumeSessionId !== undefined && snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
-    let runtimeModelMaterialized = !runtimeRecoveryRequired; let recoveryModel = selectedModel;
-    if (runtimeRecoveryRequired && !recoveryModel && input.resolveRuntimeRecoveryModel) {
-      try { recoveryModel = await boundedStep(input.resolveRuntimeRecoveryModel, input.signal); }
-      catch { input.signal?.throwIfAborted(); throw runtimeModelUnavailable(snapshot); }
-    }
-    if (runtimeRecoveryRequired && !validRecoveryModel(recoveryModel)) throw runtimeModelUnavailable(snapshot);
     if (runtimeRecoveryRequired) {
-      snapshot = await boundedStep(() => client.setModel(activeSessionId, recoveryModel), input.signal);
-      runtimeModelMaterialized = snapshot.projection?.lastError?.type !== 'ZCODE_RUNTIME_MODEL_UNAVAILABLE';
-      if (!runtimeModelMaterialized) throw runtimeModelUnavailable(snapshot);
+      const resolveRuntimeRecoveryConfig = input.resolveRuntimeRecoveryConfig;
+      if (!resolveRuntimeRecoveryConfig) throw runtimeModelUnavailable(snapshot);
+      let runtimeModel;
+      try { runtimeModel = await boundedStep(() => resolveRuntimeRecoveryConfig(selectedModel), input.signal); }
+      catch { input.signal?.throwIfAborted(); throw runtimeModelUnavailable(snapshot); }
+      await boundedStep(() => client.updateRuntimeModelConfig(activeSessionId, runtimeModel), input.signal);
+      snapshot = await boundedStep(() => client.readSession(activeSessionId), input.signal);
+      if (!sameModel(snapshot.settings?.model?.current, runtimeModel?.model)
+        || snapshot.projection?.lastError?.type === 'ZCODE_RUNTIME_MODEL_UNAVAILABLE') throw runtimeModelUnavailable(snapshot);
     }
     else if (!runtimeRecoveryRequired && selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
-    if (input.effort && runtimeModelMaterialized) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
+    if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     conversationObserver = createDeferredConversationProgressObserver({ sessionId: activeSessionId, workspace });
     reporter = createProgressReporter({
       sessionId: activeSessionId,
@@ -465,8 +465,6 @@ function isInterruption(error) { return error instanceof PluginError && error.co
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
-/** @param {any} model */
-function validRecoveryModel(model) { return typeof model?.providerId === 'string' && model.providerId.length > 0 && typeof model?.modelId === 'string' && model.modelId.length > 0; }
 /** @param {any} snapshot */
 function runtimeModelUnavailable(snapshot) {
   const message = publicErrorMessage(snapshot?.projection?.lastError?.message) ?? 'ZCode runtime model is unavailable.';

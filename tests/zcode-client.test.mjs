@@ -153,6 +153,26 @@ function brokerCreateParams(workspacePath, sessionId) {
   return { workspace: { workspacePath, workspaceKey: workspacePath }, ...(sessionId === undefined ? {} : { sessionId }) };
 }
 
+function runtimeModelFixture() {
+  return {
+    revision: 'runtime-revision-1', generatedAt: 1,
+    model: { providerId: 'fixture-provider', modelId: 'fixture-model', variant: 'fast' },
+    provider: {
+      providerId: 'fixture-provider', kind: 'openai-compatible', apiFormat: 'openai-responses', label: 'Fixture provider', source: 'user',
+      baseURL: 'https://example.invalid/v1', apiKey: { source: 'inline', value: 'fixture-secret' }, apiKeyRequired: true,
+      headers: { Authorization: 'Bearer fixture-secret' }, providerOptions: { openaiCompatible: { nested: [true, 7, null] } },
+      logoUrl: 'https://example.invalid/logo.png', modelsDevProviderId: 'fixture-models-dev',
+      models: [{
+        modelId: 'fixture-model', label: 'Fixture model', description: 'Fixture description', contextWindow: 128_000, maxOutputTokens: 8_192,
+        reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }], defaultLevel: 'high', providerOptionsByLevel: { high: { openaiCompatible: { reasoningEffort: 'high' } } } },
+        supportsImages: true, supportsPdf: true, supportsTools: true, supportsStructuredOutput: true,
+        providerOptions: { openaiCompatible: { temperature: 0.2 } }, disabledReason: 'fixture-only',
+      }],
+    },
+    thoughtLevel: 'high',
+  };
+}
+
 async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, instanceByte, record, ...wireOptions }) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const identityName = brokerIdentityNameForWireOptions(wireOptions);
@@ -277,6 +297,157 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
     for (const result of [created, read, resumed, modeled]) { assert.deepEqual(result.protocol, { name: 'ZCode Protocol', version: 1 }); assert.equal(result.session.sessionKind, 'interactive'); assert.equal(result.settings.model.available[0].label, 'Fixture model'); assert.deepEqual(result.messages[0].info.model, model); assert.equal(result.goalStats.tokensUsed, 0); assert.equal(result.todos[0].priority, 'high'); assert.equal(result.todoGroups[0].source, 'session'); assert.equal(result.slashCommands[0].source, 'builtin'); }
     assert.equal(listed.sessions[0].sessionKind, 'interactive');
   });
+});
+
+test('runtime model update uses the exact 0.16.3 wire shape and real fixture', async () => {
+  await withClient(async (client, record) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const runtimeModel = runtimeModelFixture();
+    const updated = await client.updateRuntimeModelConfig(sessionId, runtimeModel);
+    assert.deepEqual(updated, { sessionId, appliedModelRuntimeRevision: runtimeModel.revision, changed: true });
+    const call = (await readRecordedCalls(record)).find((entry) => entry.method === 'session/updateRuntimeModelConfig');
+    assert.deepEqual(call, { id: call.id, method: 'session/updateRuntimeModelConfig', params: { sessionId, runtimeModel, applyModelSelection: true } });
+    const reread = await client.readSession(sessionId);
+    assert.deepEqual(reread.settings.model.current, runtimeModel.model);
+    assert.notEqual(reread.projection.lastError?.type, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
+  }, { FAKE_ZCODE_COLD_RESUME_MODEL: 'fixture-provider/fixture-model' });
+});
+
+test('runtime model update defensively copies caller-owned nested values before awaiting', async () => {
+  let captured; let resolveRequest;
+  const protocol = { request: (_method, params) => { captured = params; return new Promise((resolvePromise) => { resolveRequest = resolvePromise; }); } };
+  const client = new ZCodeClient(protocol);
+  const runtimeModel = runtimeModelFixture();
+  const updating = client.updateRuntimeModelConfig('session-1', runtimeModel);
+  runtimeModel.provider.headers.Authorization = 'mutated-secret';
+  runtimeModel.provider.models[0].reasoning.providerOptionsByLevel.high.openaiCompatible.reasoningEffort = 'mutated';
+  assert.equal(captured.runtimeModel.provider.headers.Authorization, 'Bearer fixture-secret');
+  assert.equal(captured.runtimeModel.provider.models[0].reasoning.providerOptionsByLevel.high.openaiCompatible.reasoningEffort, 'high');
+  resolveRequest({ sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: false });
+  await updating;
+});
+
+test('runtime model update accepts every exact provider credential source', async () => {
+  const credentials = [
+    { source: 'credential', key: 'fixture-credential' },
+    { source: 'env', name: 'FIXTURE_API_KEY' },
+    { source: 'server-config', key: 'fixture-server-key' },
+    { source: 'inline', value: 'fixture-inline-secret' },
+  ];
+  for (const apiKey of credentials) {
+    const runtimeModel = runtimeModelFixture(); runtimeModel.provider.apiKey = apiKey;
+    const client = new ZCodeClient({ request: async (_method, params) => ({ sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }) });
+    assert.deepEqual(await client.updateRuntimeModelConfig('session-1', runtimeModel), { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: false });
+  }
+});
+
+test('runtime model update accepts every exact provider source and API format enum', async () => {
+  const sources = ['builtin', 'models-dev', 'custom', 'user', 'workspace', 'ephemeral'];
+  const apiFormats = ['anthropic-messages', 'openai-chat-completions', 'openai-responses'];
+  for (const [index, source] of sources.entries()) {
+    const runtimeModel = runtimeModelFixture(); runtimeModel.provider.source = source; runtimeModel.provider.apiFormat = apiFormats[index % apiFormats.length];
+    const client = new ZCodeClient({ request: async (_method, params) => ({ sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }) });
+    await client.updateRuntimeModelConfig('session-1', runtimeModel);
+  }
+});
+
+test('runtime model update rejects malformed, amplified, dangerous, and secret-bearing inputs', async () => {
+  const deep = {}; let cursor = deep; for (let index = 0; index < 10; index += 1) { cursor.next = {}; cursor = cursor.next; }
+  const dangerous = JSON.parse('{"__proto__":{"polluted":true}}');
+  const cases = [
+    { ...runtimeModelFixture(), extra: true },
+    { ...runtimeModelFixture(), revision: '' },
+    { ...runtimeModelFixture(), revision: 'x'.repeat(4_097) },
+    { ...runtimeModelFixture(), generatedAt: -1 },
+    { ...runtimeModelFixture(), model: { providerId: 'fixture-provider', modelId: 'fixture-model', extra: true } },
+    { ...runtimeModelFixture(), model: { providerId: 'other-provider', modelId: 'fixture-model' } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, kind: 'unknown-kind' } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, source: 'unknown-source' } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, apiFormat: 'responses' } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, models: [] } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, models: Array.from({ length: 257 }, (_, index) => ({ modelId: `model-${index}` })) } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, models: Array.from({ length: 256 }, (_, index) => ({ modelId: index === 0 ? 'fixture-model' : `model-${index}`, providerOptions: { openaiCompatible: { values: Array(8).fill(true) } } })) } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, apiKey: { source: 'inline', value: 'TOP_SECRET_VALUE', extra: true } } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, apiKey: { source: 'env' } } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, apiKey: { source: 'env', name: 'API_KEY', extra: true } } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, headers: dangerous } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, providerOptions: deep } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, models: [{ ...runtimeModelFixture().provider.models[0], supportsPdf: 'yes' }] } },
+    { ...runtimeModelFixture(), provider: { ...runtimeModelFixture().provider, models: [{ ...runtimeModelFixture().provider.models[0], reasoning: { enabled: true, levels: Array.from({ length: 33 }, (_, index) => ({ value: `l${index}`, label: `L${index}` })) } }] } },
+  ];
+  for (const runtimeModel of cases) {
+    let calls = 0; const client = new ZCodeClient({ request: async () => { calls += 1; return {}; } });
+    await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModel), (error) => error?.code === 'ZCODE_INPUT_INVALID' && !JSON.stringify(error).includes('TOP_SECRET_VALUE'));
+    assert.equal(calls, 0);
+  }
+  assert.equal({}.polluted, undefined);
+});
+
+test('runtime model update rejects cross-field thought and reasoning mismatches before transport', async () => {
+  const invalid = [
+    (() => { const value = runtimeModelFixture(); value.thoughtLevel = 'medium'; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning.defaultLevel = 'medium'; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning.providerOptionsByLevel.medium = { openaiCompatible: { reasoningEffort: 'medium' } }; return value; })(),
+    (() => { const value = runtimeModelFixture(); delete value.provider.models[0].reasoning; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning = { enabled: false, levels: [] }; return value; })(),
+  ];
+  for (const runtimeModel of invalid) {
+    let calls = 0; const client = new ZCodeClient({ request: async () => { calls += 1; return {}; } });
+    await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModel), { code: 'ZCODE_INPUT_INVALID' });
+    assert.equal(calls, 0);
+  }
+});
+
+test('runtime model update permits omitted thought level when selected reasoning is missing or empty', async () => {
+  const valid = [
+    (() => { const value = runtimeModelFixture(); delete value.thoughtLevel; delete value.provider.models[0].reasoning; return value; })(),
+    (() => { const value = runtimeModelFixture(); delete value.thoughtLevel; value.provider.models[0].reasoning = { enabled: false, levels: [] }; return value; })(),
+  ];
+  for (const runtimeModel of valid) {
+    const client = new ZCodeClient({ request: async (_method, params) => ({ sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }) });
+    await client.updateRuntimeModelConfig('session-1', runtimeModel);
+  }
+});
+
+test('runtime model update rejects a globally oversized valid-field combination before transport', async () => {
+  const runtimeModel = runtimeModelFixture(); delete runtimeModel.thoughtLevel;
+  const privateText = 'PRIVATE_GLOBAL_WIRE_SECRET'.padEnd(4_000, 'x');
+  runtimeModel.provider.models = Array.from({ length: 256 }, (_, index) => ({
+    modelId: index === 0 ? 'fixture-model' : `model-${index}`,
+    label: privateText, description: privateText, disabledReason: privateText,
+  }));
+  let calls = 0;
+  const client = new ZCodeClient({ request: async (_method, params) => { calls += 1; return { sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }; } });
+  await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModel), (error) => error?.code === 'ZCODE_INPUT_INVALID' && !JSON.stringify(error).includes('PRIVATE_GLOBAL_WIRE_SECRET'));
+  assert.equal(calls, 0);
+});
+
+test('runtime model update accepts a bounded multi-model wire payload', async () => {
+  const runtimeModel = runtimeModelFixture(); delete runtimeModel.thoughtLevel;
+  const boundedText = 'bounded'.padEnd(1_000, 'x');
+  runtimeModel.provider.models = Array.from({ length: 32 }, (_, index) => ({
+    modelId: index === 0 ? 'fixture-model' : `model-${index}`, label: boundedText, description: boundedText,
+  }));
+  let calls = 0;
+  const client = new ZCodeClient({ request: async (_method, params) => { calls += 1; return { sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }; } });
+  assert.deepEqual(await client.updateRuntimeModelConfig('session-1', runtimeModel), { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: false });
+  assert.equal(calls, 1);
+});
+
+test('runtime model update rejects every malformed or mismatched exact result', async () => {
+  const valid = { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: true };
+  const invalid = [null, {}, { ...valid, extra: true }, { ...valid, sessionId: 'session-2' }, { ...valid, appliedModelRuntimeRevision: 'other-revision' }, { ...valid, changed: 1 }];
+  for (const result of invalid) {
+    const client = new ZCodeClient({ request: async () => result });
+    await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModelFixture()), { code: 'ZCODE_OUTPUT_INVALID' });
+  }
+});
+
+test('runtime model update rejects fake CLI exact-result violations', async (t) => {
+  for (const variant of ['extra', 'wrong-session', 'wrong-revision', 'bad-changed']) await t.test(variant, () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    await assert.rejects(client.updateRuntimeModelConfig(sessionId, runtimeModelFixture()), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_BAD_RUNTIME_UPDATE_RESULT: variant }));
 });
 
 test('ordinary session/create accepts the bounded 0.16.1 initial empty-session snapshot', async () => {
@@ -1001,6 +1172,21 @@ test('direct broker clients require an explicit stable owner credential before c
   for (const ownerId of [undefined, '', 'too-short']) await assert.rejects(createZCodeClient({ workspace: '/tmp', brokerEndpoint: '/missing-broker', brokerToken: 'a'.repeat(64), ...(ownerId === undefined ? {} : { ownerId }) }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
+test('broker forwards runtime model updates only for the known owner without changing active routing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-runtime-update-owner-')); const ownerId = 'runtime-update-owner'; const foreignOwnerId = 'runtime-update-foreign-owner'; const sessionId = 'runtime-update-session'; const ownerWrites = []; const foreignWrites = [];
+  const ownerSocket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => ownerWrites.push(JSON.parse(line)) }, destroy() {} }; const foreignSocket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => foreignWrites.push(JSON.parse(line)) }, destroy() {} };
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'r'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  for (const [socket, id] of [[ownerSocket, ownerId], [foreignSocket, foreignOwnerId]]) { broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, id); }
+  broker.sessionOwners.set(sessionId, { ownerId, socket: ownerSocket }); broker.reloadOwnership = async () => {};
+  const activeRoute = { socket: ownerSocket, token: 'existing-route', baseline: 4, inputId: 'existing-input' }; broker.activeSessionSockets.set(sessionId, activeRoute); broker.activeSessions.add(sessionId);
+  let forwarded = 0; broker.protocol = { request: async (method, params) => { forwarded += 1; assert.equal(method, 'session/updateRuntimeModelConfig'); return { sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: true }; } };
+  const params = { sessionId, runtimeModel: runtimeModelFixture(), applyModelSelection: true };
+  await broker.handleLocal(ownerSocket, JSON.stringify({ id: 70, method: 'session/updateRuntimeModelConfig', params }));
+  await broker.handleLocal(foreignSocket, JSON.stringify({ id: 71, method: 'session/updateRuntimeModelConfig', params }));
+  assert.deepEqual(ownerWrites.at(-1)?.result, { sessionId, appliedModelRuntimeRevision: 'runtime-revision-1', changed: true }); assert.equal(foreignWrites.at(-1)?.error?.code, -32041); assert.equal(forwarded, 1);
+  assert.equal(broker.activeSessionSockets.get(sessionId), activeRoute); assert.equal(broker.activeSessions.has(sessionId), true); assert.equal(broker.admission.activeCount, 0); await rm(directory, { recursive: true, force: true });
+});
+
 test('actual 0.16.1 snapshot and list required fields are enforced', async (t) => {
   await t.test('snapshot workspace', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'missing-workspace' }));
   await t.test('message envelope', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'empty-message' }));
@@ -1533,7 +1719,7 @@ test('owner release rejects non-object stop results before local or durable side
 });
 
 test('owner operation leases make pending read model and resume RPCs mutually exclusive with release', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-owner-operation-leases-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'owner-operation-lease-owner'; const sessionId = 'owner-operation-lease-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: 'b'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; broker.reloadOwnership = async () => {}; const pending = new Map(); let stopCalls = 0; const protocol = { request: (method) => { if (method === 'session/stop') { stopCalls += 1; return Promise.resolve({}); } return new Promise((resolvePromise, rejectPromise) => { pending.set(method, { resolvePromise, rejectPromise }); }); }, cancelTurn() {} }; broker.protocol = protocol; const methods = ['session/read', 'session/setModel', 'session/resume']; const operations = methods.map((method, index) => broker.handleLocal(socket, JSON.stringify({ id: 10 + index, method, params: { sessionId, ...(method === 'session/setModel' ? { model: { providerId: 'fake', modelId: 'model' }, persistAsWorkspaceLastUsed: false } : {}) } }))); while (pending.size !== methods.length) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-owner-operation-leases-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'owner-operation-lease-owner'; const sessionId = 'owner-operation-lease-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: 'b'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; broker.reloadOwnership = async () => {}; const pending = new Map(); let stopCalls = 0; const protocol = { request: (method) => { if (method === 'session/stop') { stopCalls += 1; return Promise.resolve({}); } return new Promise((resolvePromise, rejectPromise) => { pending.set(method, { resolvePromise, rejectPromise }); }); }, cancelTurn() {} }; broker.protocol = protocol; const methods = ['session/read', 'session/setModel', 'session/updateRuntimeModelConfig', 'session/resume']; const operations = methods.map((method, index) => broker.handleLocal(socket, JSON.stringify({ id: 10 + index, method, params: { sessionId, ...(method === 'session/setModel' ? { model: { providerId: 'fake', modelId: 'model' }, persistAsWorkspaceLastUsed: false } : method === 'session/updateRuntimeModelConfig' ? { runtimeModel: runtimeModelFixture(), applyModelSelection: true } : {}) } }))); while (pending.size !== methods.length) await new Promise((resolvePromise) => setImmediate(resolvePromise));
   const release = await broker.releaseOwner(socket, ownerId, []); assert.deepEqual(release.releasedSessionIds, []); assert.deepEqual(release.failedSessionIds, [sessionId]); assert.equal(stopCalls, 0); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions[sessionId], ownerId); for (const method of methods) pending.get(method).resolvePromise({ method }); await Promise.all(operations); assert.equal(writes.filter((frame) => frame.result).length, methods.length); assert.equal(broker.admission.activeSessionCount, 0); await rm(directory, { recursive: true, force: true });
 });
 
@@ -1633,6 +1819,7 @@ test('owner operation leases reject every owner RPC while an explicit create cla
     ['session/read', {}],
     ['session/resume', {}],
     ['session/setModel', { model: { providerId: 'fake', modelId: 'model' }, persistAsWorkspaceLastUsed: false }],
+    ['session/updateRuntimeModelConfig', { runtimeModel: runtimeModelFixture(), applyModelSelection: true }],
     ['session/setThoughtLevel', { thoughtLevel: 'medium', persistAsWorkspaceLastUsed: false }],
   ];
   for (const [index, [method, extraParams]] of cases.entries()) await t.test(method, async () => {

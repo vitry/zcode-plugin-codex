@@ -107,7 +107,7 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 解析优先级为：显式 `--model`、已持久化的 workspace 默认值、ZCode 自身默认值。运行阶段的旧变量 `ZCODE_MODEL_ALIASES` 会被忽略；alias 必须通过 setup 持久化。发送任务前，插件会校验 ZCode 返回的模型精确 tuple 和已公布的 effort，任何不一致都会明确失败。
 
-冷 resume 只有一条狭窄兼容恢复路径。仅当 `session/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE`，并且显式 `--model` 与 workspace 模型策略都没有提供 tuple 时，插件才惰性读取有效 `HOME` 下的 `.zcode/cli/config.json`，并选择其中的 `model.main`。优先级为显式 `--model`、workspace 模型策略、CLI 的 `model.main`。即使 tuple 文本已经一致，也仅调用一次 `session/setModel`；物化完成后才应用请求的 effort，并且只执行一次 `session/send`。热 resume 不会读取 config，也不会发出该恢复 setModel。config 缺失或无效、模型不受支持、setModel 被拒绝及后续 send 失败都保持为可见失败：不会 fresh fallback、重发 prompt、替换 session、重试循环或修改 CLI config。
+冷 resume 只有一条狭窄兼容恢复路径。仅当 `session/resume` 返回精确 snapshot warning `ZCODE_RUNTIME_MODEL_UNAVAILABLE` 时，插件才惰性读取有效 `HOME` 下的 `.zcode/cli/config.json`。它按显式 `--model`、workspace 模型策略、CLI 的 `model.main` 的优先级，为已选 tuple 解析完整且有界的 runtime 配置。内存中的 runtime 可以包含已配置的 provider adapter 与凭据，但只经现有认证本地 broker 通道传递，绝不缓存、记录、持久化或渲染。插件仅调用一次 `session/updateRuntimeModelConfig`，再执行一次 `session/read`，确认 warning 已消失且当前 tuple 精确匹配，随后才应用请求的 effort，并且只执行一次 `session/send`。热 resume 不会读取 config，也不会发出 runtime update。config 缺失或无效时保留有界的原始 runtime-unavailable 失败；AppServer 对 runtime update 的真实拒绝及后续 send 失败保持权威。不会重试 resume、fresh fallback、重发 prompt、替换 session、进入重试循环或修改 CLI config。普通的非 cold 显式模型选择仍使用 `session/setModel`。
 
 验证时可重新运行 `$zcode:setup`，再执行 `$zcode:rescue --fresh --model fast <任务>`，并用 `$zcode:status <job-id>` 检查任务。
 

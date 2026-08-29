@@ -44,17 +44,18 @@ const silentSubscribe = () => () => {};
 
 /** @param {any} [options] */
 function resumedExecutionClient(options = {}) {
-  const { lastErrorType, current = { providerId: 'p', modelId: 'm' }, available = [], setModelError, sendError } = options;
-  /** @type {string[]} */ const calls = []; const sessionId = 'zs-cold-resume'; let selected = current; let sends = 0; let unresolvedRuntime = Boolean(lastErrorType);
+  const { lastErrorType, current = { providerId: 'p', modelId: 'm' }, available = [], updateRuntimeError, sendError } = options;
+  /** @type {string[]} */ const calls = []; const sessionId = 'zs-cold-resume'; let selected = current; let sends = 0; let unresolvedRuntime = Boolean(lastErrorType); let completed = false;
   const resumeSnapshot = () => ({ session: { sessionId }, settings: { model: { current: selected, available } }, projection: { ...(unresolvedRuntime ? { lastError: { type: lastErrorType, message: 'runtime unavailable' } } : {}) }, messages: [] });
   return { calls, client: {
     resumeSession: async () => { calls.push('resume'); return resumeSnapshot(); },
     subscribe: silentSubscribe, setPermissionHandler: () => {},
-    setModel: async (/** @type {string} */ id, /** @type {any} */ model) => { calls.push(`setModel:${model.providerId}/${model.modelId}`); assert.equal(id, sessionId); if (setModelError) throw setModelError; selected = model; if (!options.setModelDoesNotMaterialize) unresolvedRuntime = false; return resumeSnapshot(); },
+    setModel: async (/** @type {string} */ id, /** @type {any} */ model) => { calls.push(`setModel:${model.providerId}/${model.modelId}`); assert.equal(id, sessionId); selected = model; return resumeSnapshot(); },
+    updateRuntimeModelConfig: async (/** @type {string} */ id, /** @type {any} */ runtimeModel) => { calls.push(`updateRuntime:${runtimeModel.model.providerId}/${runtimeModel.model.modelId}`); assert.equal(id, sessionId); if (updateRuntimeError) throw updateRuntimeError; selected = options.runtimeCurrent ?? runtimeModel.model; unresolvedRuntime = Boolean(options.runtimeWarningRetained); return { sessionId, appliedModelRuntimeRevision: runtimeModel.revision, changed: true }; },
     setThoughtLevel: async (/** @type {string} */ id, /** @type {string} */ effort) => { calls.push(`effort:${effort}`); assert.equal(id, sessionId); return resumeSnapshot(); },
     send: async () => { sends += 1; calls.push('send'); if (sendError) throw sendError; return { inputId: 'input-cold-resume', stateRevision: 1 }; },
-    waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cold-resume', parentMessageId: 'input-cold-resume' }, parts: [{ type: 'text', text: 'done' }] }] }),
+    waitForCompletion: async () => { completed = true; },
+    readSession: async () => { calls.push('read'); return completed ? { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cold-resume', parentMessageId: 'input-cold-resume' }, parts: [{ type: 'text', text: 'done' }] }] } : resumeSnapshot(); },
     stopSession: async () => { calls.push('stop'); }, close: async () => { calls.push('close'); },
   }, sends: () => sends };
 }
@@ -79,6 +80,11 @@ const executeJob = async (input) => {
     throw error;
   }
 };
+
+/** @param {{providerId:string,modelId:string}} model */
+function runtimeModel(model) {
+  return { revision: 'runtime-test-revision', generatedAt: 1_788_000_000_000, model, provider: { providerId: model.providerId, kind: 'openai-compatible', source: 'user', baseURL: 'https://example.invalid/v1', apiKey: { source: 'inline', value: 'PRIVATE_RUNTIME_KEY' }, models: [{ modelId: model.modelId }] } };
+}
 
 /** @param {string} value */
 function hasPublicControl(value) {
@@ -659,32 +665,32 @@ test('resume candidates are only latest owned rescue sessions', async () => {
   assert.equal((await controller.resumeCandidate(workspace, 'session-a')).id, rescue.id);
 });
 
-test('cold resume resolves explicit catalog model, force-materializes an equal tuple, then applies effort before one send', async () => {
+test('cold resume resolves explicit catalog model, materializes its full runtime, verifies it, then applies effort before one send', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const tuple = { providerId: 'catalog', modelId: 'chosen' };
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', current: tuple, available: [{ ref: tuple }] });
   let recoveryReads = 0;
   const result = await executeJob({
     job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume',
-    modelRequest: 'chosen', modelAliases: {}, effort: 'high', resolveRuntimeRecoveryModel: async () => { recoveryReads += 1; return { providerId: 'cli', modelId: 'fallback' }; },
+    modelRequest: 'chosen', modelAliases: {}, effort: 'high', resolveRuntimeRecoveryConfig: async (model) => { recoveryReads += 1; assert.deepEqual(model, tuple); return runtimeModel(model); },
   });
-  assert.equal(result.job.status, 'succeeded'); assert.equal(recoveryReads, 0); assert.equal(fixture.sends(), 1);
-  assert.deepEqual(fixture.calls.slice(0, 4), ['resume', 'setModel:catalog/chosen', 'effort:high', 'send']);
+  assert.equal(result.job.status, 'succeeded'); assert.equal(recoveryReads, 1); assert.equal(fixture.sends(), 1);
+  assert.deepEqual(fixture.calls.slice(0, 5), ['resume', 'updateRuntime:catalog/chosen', 'read', 'effort:high', 'send']);
 });
 
 test('cold resume lazily materializes the CLI recovery model when no plugin model exists', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' }); let recoveryReads = 0;
-  await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryModel: async () => { recoveryReads += 1; return { providerId: 'cli', modelId: 'main/model' }; } });
+  await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async (model) => { recoveryReads += 1; assert.equal(model, undefined); return runtimeModel({ providerId: 'cli', modelId: 'main/model' }); } });
   assert.equal(recoveryReads, 1); assert.equal(fixture.sends(), 1);
-  assert.deepEqual(fixture.calls.slice(0, 3), ['resume', 'setModel:cli/main/model', 'send']);
+  assert.deepEqual(fixture.calls.slice(0, 4), ['resume', 'updateRuntime:cli/main/model', 'read', 'send']);
 });
 
 test('warm resume and a different lastError type never resolve or apply runtime recovery', async () => {
   for (const lastErrorType of [undefined, 'ZCODE_OTHER_FAILURE']) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
     const fixture = resumedExecutionClient({ lastErrorType }); let recoveryReads = 0;
-    await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryModel: async () => { recoveryReads += 1; return { providerId: 'cli', modelId: 'main' }; } });
+    await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async () => { recoveryReads += 1; return runtimeModel({ providerId: 'cli', modelId: 'main' }); } });
     assert.equal(recoveryReads, 0); assert.equal(fixture.sends(), 1); assert.equal(fixture.calls.some((call) => call.startsWith('setModel:')), false);
   }
 });
@@ -693,40 +699,74 @@ test('missing or rejected recovery preserves runtime-unavailable and fails befor
   for (const resolver of [undefined, async () => { throw new PluginError('ZCODE_RUNTIME_MODEL_CONFIG_INVALID', 'config unavailable'); }]) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
     const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
-    const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high', resumeSessionId: 'zs-cold-resume', ...(resolver ? { resolveRuntimeRecoveryModel: resolver } : {}) }).catch((error) => error);
+    const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high', resumeSessionId: 'zs-cold-resume', ...(resolver ? { resolveRuntimeRecoveryConfig: resolver } : {}) }).catch((error) => error);
     assert.equal(caught.code, 'ZCODE_REQUEST_FAILED'); assert.equal(caught.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
     assert.equal(fixture.sends(), 0); assert.equal(fixture.calls.filter((call) => call === 'send').length, 0);
     assert.equal(fixture.calls.some((call) => call.startsWith('effort:')), false);
   }
 });
 
-test('cold recovery that remains runtime-unavailable fails before effort or send', async () => {
+test('cold recovery that remains runtime-unavailable after update and read fails before effort or send', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', setModelDoesNotMaterialize: true });
+  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', runtimeWarningRetained: true });
   const caught = await executeJob({
     job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high',
-    resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryModel: async () => ({ providerId: 'cli', modelId: 'main' }),
+    resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async () => runtimeModel({ providerId: 'cli', modelId: 'main' }),
   }).catch((error) => error);
   assert.equal(caught.code, 'ZCODE_REQUEST_FAILED'); assert.equal(caught.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
-  assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls, ['resume', 'setModel:cli/main', 'close']);
+  assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls, ['resume', 'updateRuntime:cli/main', 'read', 'close']);
 });
 
-test('cold recovery setModel rejection is authoritative and prevents send', async () => {
+test('cold recovery rejects a post-update current tuple mismatch before effort or send', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const setModelError = new PluginError('ZCODE_MODEL_REJECTED', 'model rejected');
-  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', setModelError });
-  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryModel: async () => ({ providerId: 'cli', modelId: 'main' }) }).catch((error) => error);
-  assert.equal(caught, setModelError); assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls.slice(0, 2), ['resume', 'setModel:cli/main']);
+  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', runtimeCurrent: { providerId: 'other', modelId: 'wrong' } });
+  const caught = await executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high',
+    resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async () => runtimeModel({ providerId: 'cli', modelId: 'main' }),
+  }).catch((error) => error);
+  assert.equal(caught.code, 'ZCODE_REQUEST_FAILED'); assert.equal(caught.details.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
+  assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls, ['resume', 'updateRuntime:cli/main', 'read', 'close']);
+});
+
+test('cold recovery runtime update rejection is authoritative and prevents send', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const updateRuntimeError = new PluginError('ZCODE_MODEL_REJECTED', 'model rejected');
+  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', updateRuntimeError });
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async () => runtimeModel({ providerId: 'cli', modelId: 'main' }) }).catch((error) => error);
+  assert.equal(caught, updateRuntimeError); assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls.slice(0, 2), ['resume', 'updateRuntime:cli/main']);
+});
+
+test('cold recovery preserves interruption at resolve, update, and verification-read boundaries', async () => {
+  for (const boundary of ['resolve', 'update', 'read']) {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+    const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
+    const controller = new AbortController();
+    const interruption = new PluginError('JOB_INTERRUPTED', `interrupted at ${boundary}`, { category: 'interruption', remedy: 'retry' });
+    const originalUpdate = fixture.client.updateRuntimeModelConfig; const originalRead = fixture.client.readSession;
+    if (boundary === 'update') fixture.client.updateRuntimeModelConfig = async (...args) => { controller.abort(interruption); await originalUpdate(...args); throw new Error('update transport closed'); };
+    if (boundary === 'read') fixture.client.readSession = async (...args) => { controller.abort(interruption); await originalRead(...args); throw new Error('read transport closed'); };
+    const resolveRuntimeRecoveryConfig = async () => {
+      if (boundary === 'resolve') { controller.abort(interruption); throw new Error('config read closed'); }
+      return runtimeModel({ providerId: 'cli', modelId: 'main' });
+    };
+    await assert.rejects(executeJob({
+      job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high',
+      resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig, signal: controller.signal,
+    }), (error) => error === interruption, boundary);
+    assert.equal(fixture.calls.filter((call) => call === 'resume').length, 1, boundary);
+    assert.equal(fixture.calls.filter((call) => call === 'send').length, 0, boundary);
+    assert.equal(fixture.calls.some((call) => call.startsWith('effort:')), false, boundary);
+  }
 });
 
 test('genuine send failure after recovery remains authoritative with no retry', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const sendError = new PluginError('ZCODE_PROVIDER_FAILURE', 'provider refused');
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', sendError });
-  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', model: { providerId: 'workspace', modelId: 'configured' }, resolveRuntimeRecoveryModel: async () => ({ providerId: 'cli', modelId: 'ignored' }) }).catch((error) => error);
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', model: { providerId: 'workspace', modelId: 'configured' }, resolveRuntimeRecoveryConfig: async (model) => { assert.ok(model); return runtimeModel(model); } }).catch((error) => error);
   assert.equal(caught, sendError); assert.equal(fixture.sends(), 1);
   assert.deepEqual(fixture.calls.filter((call) => call === 'send'), ['send']);
-  assert.ok(fixture.calls.indexOf('setModel:workspace/configured') < fixture.calls.indexOf('send'));
+  assert.ok(fixture.calls.indexOf('updateRuntime:workspace/configured') < fixture.calls.indexOf('send'));
 });
 
 test('executor failure cannot steal cancellation terminal ownership', async () => {
