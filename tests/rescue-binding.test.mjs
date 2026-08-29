@@ -235,6 +235,17 @@ async function makeEligible(store, workspace, job, sessionId) {
   });
 }
 
+async function activeContinuationFailureFixture(options = {}) {
+  const base = await fixture(options); const hook = executor(base.workspace);
+  const first = await base.store.reserveFreshRescueJob({ workspace: base.workspace,
+    reservation: reservation(base.workspace), executor: hook });
+  await makeEligible(base.store, base.workspace, first.job, 'active-rollback-session');
+  await base.store.finishJob(base.workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await base.store.reserveBoundRescueContinuation({ workspace: base.workspace,
+    reservation: reservation(base.workspace, 'turn-b'), executor: hook, operationId: first.binding.operationId });
+  return { ...base, hook, first, continuation, proof: continuation.job.rescueContinuationOrigin };
+}
+
 async function bindingFiles(directory) {
   return (await readdir(directory, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && /^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name))
@@ -968,6 +979,134 @@ test('migration rollback and failed terminalization retain the queued marker acr
   const failed = await store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, continuation.migrationRollback, 'failed', patch);
   assert.equal(failed.status, 'failed'); assert.equal(failed.rescueMigrationRollback, undefined);
   assert.deepEqual(await store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, continuation.migrationRollback, 'failed', patch), failed);
+});
+
+test('active continuation failure restores the prior binding and terminalizes the retained attempt idempotently', async () => {
+  const { workspace, store, hook, continuation, proof } = await activeContinuationFailureFixture();
+  assert.ok(proof);
+  const committed = await store.publishJobSpecCommitment(workspace, continuation.job.id, 'c'.repeat(64));
+  assert.ok(committed.rescueJobSpecCommitment);
+  const patch = { error: { message: 'session resume rejected' }, exitCode: 1 };
+  const failed = await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, proof, 'failed', patch);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.rescueContinuationOrigin, undefined);
+  assert.equal(failed.rescueExecutionClaim, undefined); assert.equal(failed.rescueJobSpecCommitment, undefined);
+  const restored = (await store.resolveRescueBinding({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId })).binding;
+  assert.deepEqual({ ...restored, updatedAt: proof.priorBinding.updatedAt }, proof.priorBinding);
+  assert.ok(Date.parse(restored.updatedAt) > Date.parse(proof.priorBinding.updatedAt));
+  assert.deepEqual(await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, proof, 'failed', patch), failed);
+  assert.equal((await store.listJobs(workspace)).some((job) => job.id === continuation.job.id && job.status === 'failed'), true);
+});
+
+test('active continuation failure converges after binding restoration faults before terminal publication', async () => {
+  const base = await activeContinuationFailureFixture();
+  const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
+  const faulted = createStateStore({ dataRoot: base.dataRoot,
+    testOnlyPublicationHook: throwingAt('active-continuation-rollback:binding') });
+  await assert.rejects(faulted.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    base.proof, 'failed', patch), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
+  const restoredAfterFault = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+  assert.deepEqual({ ...restoredAfterFault, updatedAt: base.proof.priorBinding.updatedAt }, base.proof.priorBinding);
+  assert.ok(Date.parse(restoredAfterFault.updatedAt) > Date.parse(base.proof.priorBinding.updatedAt));
+  const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    base.proof, 'failed', patch);
+  assert.equal(failed.status, 'failed');
+  const restoredAfterRetry = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+  assert.deepEqual(restoredAfterRetry, restoredAfterFault);
+});
+
+test('active continuation failure idempotence rejects an unrelated failed job', async () => {
+  const base = await activeContinuationFailureFixture();
+  const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
+  await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    base.proof, 'failed', patch);
+  const unrelated = await base.store.reserveJob({ ...reservation(base.workspace, 'unrelated-turn'),
+    command: 'review', readOnly: true });
+  await base.store.finishJob(base.workspace, unrelated.id, ['queued'], 'failed', patch);
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, unrelated.id,
+    base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('active continuation failure idempotence rejects terminal running evidence', async () => {
+  const base = await activeContinuationFailureFixture();
+  const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
+  const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    base.proof, 'failed', patch);
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+  const path = join(storage.directory, 'jobs', `${failed.id}.json`);
+  await writeFile(path, `${JSON.stringify({ ...failed, startedAt: failed.createdAt,
+    zcodeSessionId: 'unexpected-started-session' }, null, 2)}\n`);
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, failed.id,
+    base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+for (const [condition, arrange] of [
+  ['changed binding key', async (base) => {
+    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+    const [path] = await bindingFiles(storage.directory); const partition = JSON.parse(await readFile(path, 'utf8'));
+    const current = partition.records[0]; partition.records[0] = createRescueBinding({
+      parentSessionId: current.parentSessionId, executorAgentId: 'sibling-child', executorAgentType: 'zcode-rescue',
+      executorParentTurnId: 'sibling-turn', executorParentPermissionMode: current.permissionMode,
+      executorAgentPath: '/root/sibling-child', workspace: current.workspace, permissionMode: current.permissionMode,
+      anchorJobId: current.anchorJobId, currentJobId: current.currentJobId, operationId: current.operationId,
+      now: current.updatedAt,
+    });
+    await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`); return {};
+  }],
+  ['changed operation', async (base) => {
+    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+    const [path] = await bindingFiles(storage.directory); const partition = JSON.parse(await readFile(path, 'utf8'));
+    partition.records[0].operationId = 'f'.repeat(64);
+    partition.records[0].updatedAt = new Date(Date.parse(partition.records[0].updatedAt) + 1).toISOString();
+    await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`); return {};
+  }],
+  ['changed prior binding', async (base) => ({ proof: { ...base.proof,
+    priorBinding: { ...base.proof.priorBinding, createdAt: '2020-01-01T00:00:00.000Z' } } })],
+  ['changed current job', async (base) => {
+    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+    const [path] = await bindingFiles(storage.directory); const partition = JSON.parse(await readFile(path, 'utf8'));
+    partition.records[0].currentJobId = 'e'.repeat(64);
+    partition.records[0].updatedAt = new Date(Date.parse(partition.records[0].updatedAt) + 1).toISOString();
+    await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`); return {};
+  }],
+  ['non-queued job', async (base) => {
+    await base.store.finishJob(base.workspace, base.continuation.job.id, ['queued'], 'failed', {
+      error: { message: 'generic settlement won' }, exitCode: 1,
+    }); return {};
+  }],
+  ['started job', async (base) => {
+    const claimed = await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
+      { childPid: 999_999_999, workerLeaseId: 'a'.repeat(64) });
+    await base.store.transitionJob(base.workspace, base.continuation.job.id, ['queued'], 'running', {
+      startedAt: new Date().toISOString(), zcodeSessionId: 'started-session',
+      childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+    }); return {};
+  }],
+  ['claimed job', async (base) => {
+    await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
+      { childPid: 999_999_999, workerLeaseId: 'b'.repeat(64) }); return {};
+  }],
+  ['mismatched workspace', async (base) => {
+    const foreign = join(base.root, 'foreign-workspace'); await mkdir(foreign); return { workspace: await realpath(foreign) };
+  }],
+]) test(`active continuation failure rejects a ${condition} without rollback publication`, async () => {
+  const base = await activeContinuationFailureFixture(); const before = structuredClone(base.continuation.binding);
+  const overrides = await arrange(base); const patch = { error: { message: 'expected rejection' }, exitCode: 1 };
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(overrides.workspace ?? base.workspace,
+    base.continuation.job.id, overrides.proof ?? base.proof, 'failed', patch));
+  if (!['non-queued job', 'started job', 'mismatched workspace'].includes(condition)) {
+    const persisted = await base.store.readJob(base.workspace, base.continuation.job.id);
+    assert.notEqual(persisted.status, 'failed');
+  }
+  if (!['changed binding key', 'changed operation', 'changed current job', 'started job'].includes(condition)) {
+    const binding = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+      parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+    assert.deepEqual(binding, before);
+  }
 });
 
 test('markerless legacy rollback metadata is adopted only for its unique queued migrated binding', async () => {
