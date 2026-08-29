@@ -2394,8 +2394,9 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
 });
 
 for (const scenario of [
-  { name: 'publication and winner-read faults', publicationFaults: 1, preSettlementFaults: 0, winnerReadFault: true },
-  { name: 'exhausted inner settlement retries before outer convergence', publicationFaults: 0, preSettlementFaults: 2, winnerReadFault: false },
+  { name: 'publication and winner-read faults', publicationFaults: 1, preSettlementFaults: 0, winnerReadFault: true, runningWinner: false, expectedSettlementCalls: 2 },
+  { name: 'exhausted inner settlement retries before outer convergence', publicationFaults: 0, preSettlementFaults: 2, winnerReadFault: false, runningWinner: false, expectedSettlementCalls: 3 },
+  { name: 'an inner settlement rejection followed by a durable running winner', publicationFaults: 0, preSettlementFaults: 1, winnerReadFault: false, runningWinner: true, expectedSettlementCalls: 2 },
 ]) test(`active continuation rollback convergence preserves the original resume error across ${scenario.name}`, async () => {
   const context = await fixture();
   const prepared = await preparedSameTurnBoundContinuation(context, {
@@ -2403,7 +2404,7 @@ for (const scenario of [
     extraEnv: { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
   });
   const baseStore = createStateStore({ dataRoot: context.dataRoot });
-  let publicationAttempts = 0; let injectedPublicationFaults = 0; let preSettlementFaults = 0;
+  let publicationAttempts = 0; let injectedPublicationFaults = 0; let preSettlementFaults = 0; let settlementCalls = 0;
   let publicationFaultObserved = false; let winnerReadFaults = 0;
   const publicationFaulted = createStateStore({ dataRoot: context.dataRoot, testOnlyPublicationHook: async (seam) => {
     if (seam === 'active-continuation-rollback:binding') publicationAttempts += 1;
@@ -2417,6 +2418,16 @@ for (const scenario of [
     finishActiveRescueContinuationFailure: async (/** @type {string} */ workspace, /** @type {string} */ jobId,
       /** @type {string|null} */ workerLeaseId, /** @type {any} */ proof, /** @type {'failed'} */ status,
       /** @type {Record<string,unknown>} */ patch) => {
+      settlementCalls += 1;
+      if (scenario.runningWinner && preSettlementFaults === 0) {
+        preSettlementFaults += 1;
+        const queued = await baseStore.readJob(workspace, jobId);
+        await baseStore.transitionJob(workspace, jobId, ['queued'], 'running', {
+          startedAt: new Date().toISOString(), zcodeSessionId: prepared.first.job.zcodeSessionId,
+          childPid: queued.childPid, workerLeaseId: queued.workerLeaseId,
+        });
+        throw new Error('injected settlement rejection after running winner');
+      }
       if (preSettlementFaults < scenario.preSettlementFaults) {
         preSettlementFaults += 1;
         throw new Error('injected pre-settlement failure');
@@ -2443,15 +2454,19 @@ for (const scenario of [
   }).catch((error) => error);
   assert.equal(injectedPublicationFaults, scenario.publicationFaults);
   assert.equal(preSettlementFaults, scenario.preSettlementFaults);
+  assert.equal(settlementCalls, scenario.expectedSettlementCalls);
   assert.ok(publicationAttempts >= scenario.publicationFaults);
   assert.equal(winnerReadFaults, scenario.winnerReadFault ? 1 : 0);
   assert.notEqual(caught?.code, 'RESCUE_PUBLICATION_TEST_FAULT');
-  assert.doesNotMatch(caught?.message ?? '', /pre-settlement|publication checkpoint|winner read/u);
-  const jobs = await baseStore.listJobs(context.workspace); const failed = jobs.find((job) => job.id !== prepared.first.job.id);
-  assert.equal(failed?.status, 'failed'); assert.equal(failed?.error?.message, caught?.message);
+  assert.notEqual(caught?.code, 'RESCUE_BINDING_INVALID');
+  assert.doesNotMatch(caught?.message ?? '', /pre-settlement|publication checkpoint|running winner|winner read/u);
+  const jobs = await baseStore.listJobs(context.workspace); const attempt = jobs.find((job) => job.id !== prepared.first.job.id);
+  assert.equal(attempt?.status, scenario.runningWinner ? 'running' : 'failed');
+  if (!scenario.runningWinner) assert.equal(attempt?.error?.message, caught?.message);
   const binding = await baseStore.resolveRescueBinding({ workspace: context.workspace,
     parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
-  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.currentJobId, prepared.first.job.id);
+  assert.equal(binding.kind, 'bound');
+  assert.equal(binding.binding.currentJobId, scenario.runningWinner ? attempt?.id : prepared.first.job.id);
 });
 
 /** @param {any} context @param {string} record @param {number} expectedJobs */

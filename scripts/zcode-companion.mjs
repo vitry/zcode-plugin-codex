@@ -1000,7 +1000,7 @@ async function executeReserved(context) {
     const settlementRequired = migrationRollback && !resumeRpcSucceeded
       || activeContinuationProof && activeRollbackAllowed(executionError);
     if (finishResumeFailure && settlementRequired
-      && (current?.status === 'queued' || error instanceof ResumeFailureSettlementError)) {
+      && (current?.status === 'queued' || current === null && error instanceof ResumeFailureSettlementError)) {
       await convergeResumeFailure(executionError);
     } else if (isInterruption(executionError) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
