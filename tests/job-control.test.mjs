@@ -736,6 +736,29 @@ test('cold recovery runtime update rejection is authoritative and prevents send'
   assert.equal(caught, updateRuntimeError); assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls.slice(0, 2), ['resume', 'updateRuntime:cli/main']);
 });
 
+test('cold recovery preserves interruption at resolve, update, and verification-read boundaries', async () => {
+  for (const boundary of ['resolve', 'update', 'read']) {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+    const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
+    const controller = new AbortController();
+    const interruption = new PluginError('JOB_INTERRUPTED', `interrupted at ${boundary}`, { category: 'interruption', remedy: 'retry' });
+    const originalUpdate = fixture.client.updateRuntimeModelConfig; const originalRead = fixture.client.readSession;
+    if (boundary === 'update') fixture.client.updateRuntimeModelConfig = async (...args) => { controller.abort(interruption); await originalUpdate(...args); throw new Error('update transport closed'); };
+    if (boundary === 'read') fixture.client.readSession = async (...args) => { controller.abort(interruption); await originalRead(...args); throw new Error('read transport closed'); };
+    const resolveRuntimeRecoveryConfig = async () => {
+      if (boundary === 'resolve') { controller.abort(interruption); throw new Error('config read closed'); }
+      return runtimeModel({ providerId: 'cli', modelId: 'main' });
+    };
+    await assert.rejects(executeJob({
+      job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', effort: 'high',
+      resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig, signal: controller.signal,
+    }), (error) => error === interruption, boundary);
+    assert.equal(fixture.calls.filter((call) => call === 'resume').length, 1, boundary);
+    assert.equal(fixture.calls.filter((call) => call === 'send').length, 0, boundary);
+    assert.equal(fixture.calls.some((call) => call.startsWith('effort:')), false, boundary);
+  }
+});
+
 test('genuine send failure after recovery remains authoritative with no retry', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const sendError = new PluginError('ZCODE_PROVIDER_FAILURE', 'provider refused');
