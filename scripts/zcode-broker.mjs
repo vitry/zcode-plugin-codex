@@ -34,8 +34,8 @@ const MAX_TERMINAL_WINNER_EVIDENCE = 256;
 const RAW_ENDPOINT_PROBE_MS = 100;
 export const MIN_BROKER_IDLE_TIMEOUT_MS = 1_000;
 export const MAX_BROKER_IDLE_TIMEOUT_MS = 3_600_000;
-const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner']);
-const OWNER_SCOPED_SESSION_METHODS = new Set(['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']);
+const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/updateRuntimeModelConfig', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner']);
+const OWNER_SCOPED_SESSION_METHODS = new Set(['session/read', 'session/resume', 'session/setModel', 'session/updateRuntimeModelConfig', 'session/setThoughtLevel']);
 const EXCLUSIVE_SESSION_METHODS = new Set(['session/create', 'session/send', 'session/stop', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/releaseSession']);
 
 // One admission authority owns every transient broker fence. Durable ownership

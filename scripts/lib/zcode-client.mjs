@@ -10,6 +10,16 @@ import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker,
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const RUNTIME_PROVIDER_KINDS = new Set(['anthropic', 'openai', 'openai-compatible']);
+const RUNTIME_API_FORMATS = new Set(['anthropic-messages', 'openai-chat-completions', 'openai-responses']);
+const RUNTIME_CREDENTIAL_FIELDS = new Map([['credential', 'key'], ['env', 'name'], ['server-config', 'key'], ['inline', 'value']]);
+const RUNTIME_PROVIDER_SOURCES = new Set(['builtin', 'models-dev', 'custom', 'user', 'workspace', 'ephemeral']);
+const RUNTIME_MAX_TEXT_BYTES = 4_096;
+const RUNTIME_MAX_ENTRIES = 256;
+const RUNTIME_MAX_REASONING_LEVELS = 32;
+const RUNTIME_MAX_VALUE_DEPTH = 8;
+const RUNTIME_MAX_VALUE_NODES = 2_048;
+const RUNTIME_DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const OWNER_CLEANUP_BUDGET_MS = 1_800;
 const OWNER_CLEANUP_MAX_BATCHES = 32;
 const OWNER_CLEANUP_LEGACY_ACTIVE_MAX = 64;
@@ -85,6 +95,17 @@ export class ZCodeClient {
     validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel', this.initialEmptySessions.has(sessionId));
     if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
+  }
+
+  /** @param {string} sessionId @param {any} runtimeModel */
+  async updateRuntimeModelConfig(sessionId, runtimeModel) {
+    requireSessionId(sessionId);
+    const copiedRuntimeModel = copyRuntimeModel(runtimeModel);
+    const result = await this.protocol.request('session/updateRuntimeModelConfig', { sessionId, runtimeModel: copiedRuntimeModel, applyModelSelection: true });
+    if (!runtimeExactObject(result, ['sessionId', 'appliedModelRuntimeRevision', 'changed'], [])
+      || result.sessionId !== sessionId || result.appliedModelRuntimeRevision !== copiedRuntimeModel.revision
+      || typeof result.changed !== 'boolean') throw outputError('session/updateRuntimeModelConfig');
+    return result;
   }
 
   /** @param {string} sessionId @param {string} thoughtLevel */
@@ -301,6 +322,131 @@ function boundedRequestOption(value) { return value === undefined || typeof valu
 function validateModel(model) { requireExactObject(model, ['providerId', 'modelId'], ['variant']); requireString(model.providerId); requireString(model.modelId); if (model.variant !== undefined) requireString(model.variant); }
 /** @param {any} model */
 function copyModel(model) { return { providerId: model.providerId, modelId: model.modelId, ...(model.variant === undefined ? {} : { variant: model.variant }) }; }
+/** @param {unknown} value */
+function copyRuntimeModel(value) {
+  if (!runtimeExactObject(value, ['revision', 'generatedAt', 'model', 'provider'], ['thoughtLevel'])
+    || !runtimeText(value.revision) || !Number.isSafeInteger(value.generatedAt) || value.generatedAt < 0) throw inputError();
+  const model = copyRuntimeModelRef(value.model);
+  const provider = copyRuntimeProvider(value.provider, { nodes: 0 });
+  if (provider.providerId !== model.providerId || !provider.models.some((entry) => entry.modelId === model.modelId)) throw inputError();
+  const thoughtLevel = value.thoughtLevel;
+  if (thoughtLevel !== undefined && !runtimeText(thoughtLevel)) throw inputError();
+  return { revision: value.revision, generatedAt: value.generatedAt, model, provider, ...(thoughtLevel === undefined ? {} : { thoughtLevel }) };
+}
+/** @param {unknown} value */
+function copyRuntimeModelRef(value) {
+  if (!runtimeExactObject(value, ['providerId', 'modelId'], ['variant']) || !runtimeText(value.providerId) || !runtimeText(value.modelId)
+    || value.variant !== undefined && !runtimeText(value.variant)) throw inputError();
+  return { providerId: value.providerId, modelId: value.modelId, ...(value.variant === undefined ? {} : { variant: value.variant }) };
+}
+/** @param {unknown} value @param {{nodes:number}} jsonState */
+function copyRuntimeProvider(value, jsonState) {
+  const optional = ['apiFormat', 'label', 'baseURL', 'apiKey', 'apiKeyRequired', 'headers', 'providerOptions', 'logoUrl', 'modelsDevProviderId'];
+  if (!runtimeExactObject(value, ['providerId', 'kind', 'source', 'models'], optional)
+    || !runtimeText(value.providerId) || !RUNTIME_PROVIDER_KINDS.has(value.kind) || !RUNTIME_PROVIDER_SOURCES.has(value.source)
+    || value.apiFormat !== undefined && !RUNTIME_API_FORMATS.has(value.apiFormat)
+    || !Array.isArray(value.models) || value.models.length < 1 || value.models.length > RUNTIME_MAX_ENTRIES) throw inputError();
+  for (const key of ['label', 'baseURL', 'logoUrl', 'modelsDevProviderId']) if (value[key] !== undefined && !runtimeText(value[key])) throw inputError();
+  if (value.apiKeyRequired !== undefined && typeof value.apiKeyRequired !== 'boolean') throw inputError();
+  const apiKey = value.apiKey === undefined ? undefined : copyRuntimeCredential(value.apiKey);
+  const headers = value.headers === undefined ? undefined : copyRuntimeStringRecord(value.headers);
+  const providerOptions = value.providerOptions === undefined ? undefined : copyRuntimeJsonRecord(value.providerOptions, jsonState);
+  const models = value.models.map((model) => copyRuntimeProviderModel(model, jsonState));
+  if (new Set(models.map((model) => model.modelId)).size !== models.length) throw inputError();
+  return {
+    providerId: value.providerId, kind: value.kind, ...(value.apiFormat === undefined ? {} : { apiFormat: value.apiFormat }),
+    ...(value.label === undefined ? {} : { label: value.label }), source: value.source,
+    ...(value.baseURL === undefined ? {} : { baseURL: value.baseURL }), ...(apiKey === undefined ? {} : { apiKey }),
+    ...(value.apiKeyRequired === undefined ? {} : { apiKeyRequired: value.apiKeyRequired }), ...(headers === undefined ? {} : { headers }),
+    ...(providerOptions === undefined ? {} : { providerOptions }), ...(value.logoUrl === undefined ? {} : { logoUrl: value.logoUrl }),
+    ...(value.modelsDevProviderId === undefined ? {} : { modelsDevProviderId: value.modelsDevProviderId }), models,
+  };
+}
+/** @param {unknown} value */
+function copyRuntimeCredential(value) {
+  if (!runtimePlainObject(value) || !runtimeText(value.source)) throw inputError();
+  const field = RUNTIME_CREDENTIAL_FIELDS.get(value.source);
+  if (field === undefined || !runtimeExactObject(value, ['source', field], []) || !runtimeText(value[field])) throw inputError();
+  return { source: value.source, [field]: value[field] };
+}
+/** @param {unknown} value @param {{nodes:number}} jsonState */
+function copyRuntimeProviderModel(value, jsonState) {
+  const optional = ['label', 'description', 'contextWindow', 'maxOutputTokens', 'reasoning', 'supportsImages', 'supportsPdf', 'supportsTools', 'supportsStructuredOutput', 'providerOptions', 'disabledReason'];
+  if (!runtimeExactObject(value, ['modelId'], optional) || !runtimeText(value.modelId)) throw inputError();
+  for (const key of ['label', 'description', 'disabledReason']) if (value[key] !== undefined && !runtimeText(value[key])) throw inputError();
+  for (const key of ['contextWindow', 'maxOutputTokens']) if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 1)) throw inputError();
+  for (const key of ['supportsImages', 'supportsPdf', 'supportsTools', 'supportsStructuredOutput']) if (value[key] !== undefined && typeof value[key] !== 'boolean') throw inputError();
+  const reasoning = value.reasoning === undefined ? undefined : copyRuntimeReasoning(value.reasoning, jsonState);
+  const providerOptions = value.providerOptions === undefined ? undefined : copyRuntimeJsonRecord(value.providerOptions, jsonState);
+  return {
+    modelId: value.modelId, ...(value.label === undefined ? {} : { label: value.label }), ...(value.description === undefined ? {} : { description: value.description }),
+    ...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }), ...(value.maxOutputTokens === undefined ? {} : { maxOutputTokens: value.maxOutputTokens }),
+    ...(reasoning === undefined ? {} : { reasoning }), ...(value.supportsImages === undefined ? {} : { supportsImages: value.supportsImages }),
+    ...(value.supportsPdf === undefined ? {} : { supportsPdf: value.supportsPdf }), ...(value.supportsTools === undefined ? {} : { supportsTools: value.supportsTools }),
+    ...(value.supportsStructuredOutput === undefined ? {} : { supportsStructuredOutput: value.supportsStructuredOutput }), ...(providerOptions === undefined ? {} : { providerOptions }),
+    ...(value.disabledReason === undefined ? {} : { disabledReason: value.disabledReason }),
+  };
+}
+/** @param {unknown} value @param {{nodes:number}} jsonState */
+function copyRuntimeReasoning(value, jsonState) {
+  if (!runtimeExactObject(value, ['enabled', 'levels'], ['defaultLevel', 'providerOptionsByLevel']) || typeof value.enabled !== 'boolean'
+    || !Array.isArray(value.levels) || value.levels.length > RUNTIME_MAX_REASONING_LEVELS) throw inputError();
+  const levels = value.levels.map((level) => {
+    if (!runtimeExactObject(level, ['value', 'label'], []) || !runtimeText(level.value) || !runtimeText(level.label)) throw inputError();
+    return { value: level.value, label: level.label };
+  });
+  if (value.defaultLevel !== undefined && !runtimeText(value.defaultLevel)) throw inputError();
+  let providerOptionsByLevel;
+  if (value.providerOptionsByLevel !== undefined) {
+    if (!runtimePlainObject(value.providerOptionsByLevel) || Object.keys(value.providerOptionsByLevel).length > RUNTIME_MAX_REASONING_LEVELS) throw inputError();
+    providerOptionsByLevel = Object.fromEntries(Object.entries(value.providerOptionsByLevel).map(([level, options]) => {
+      if (!runtimeSafeKey(level)) throw inputError(); return [level, copyRuntimeJsonRecord(options, jsonState)];
+    }));
+  }
+  return { enabled: value.enabled, levels, ...(value.defaultLevel === undefined ? {} : { defaultLevel: value.defaultLevel }), ...(providerOptionsByLevel === undefined ? {} : { providerOptionsByLevel }) };
+}
+/** @param {unknown} value */
+function copyRuntimeStringRecord(value) {
+  if (!runtimePlainObject(value) || Object.keys(value).length > RUNTIME_MAX_ENTRIES) throw inputError();
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (!runtimeSafeKey(key) || !runtimeText(entry)) throw inputError(); return [key, entry];
+  }));
+}
+/** @param {unknown} value @param {{nodes:number}} state */
+function copyRuntimeJsonRecord(value, state) {
+  if (!runtimePlainObject(value)) throw inputError();
+  return copyRuntimeJsonValue(value, 0, state);
+}
+/** @param {unknown} value @param {number} depth @param {{nodes:number}} state @returns {any} */
+function copyRuntimeJsonValue(value, depth, state) {
+  state.nodes += 1;
+  if (state.nodes > RUNTIME_MAX_VALUE_NODES || depth > RUNTIME_MAX_VALUE_DEPTH) throw inputError();
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') { if (!runtimeText(value)) throw inputError(); return value; }
+  if (typeof value === 'number') { if (!Number.isFinite(value)) throw inputError(); return value; }
+  if (Array.isArray(value)) { if (value.length > RUNTIME_MAX_ENTRIES) throw inputError(); return value.map((entry) => copyRuntimeJsonValue(entry, depth + 1, state)); }
+  if (!runtimePlainObject(value) || Object.keys(value).length > RUNTIME_MAX_ENTRIES) throw inputError();
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (!runtimeSafeKey(key)) throw inputError(); return [key, copyRuntimeJsonValue(entry, depth + 1, state)];
+  }));
+}
+/** @param {unknown} value @param {string[]} required @param {string[]} optional @returns {value is Record<string,any>} */
+function runtimeExactObject(value, required, optional) {
+  return runtimePlainObject(value) && required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => runtimeSafeKey(key) && (required.includes(key) || optional.includes(key)));
+}
+/** @param {unknown} value @returns {value is Record<string,any>} */
+function runtimePlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null;
+}
+/** @param {unknown} value @returns {value is string} */
+function runtimeText(value) {
+  return typeof value === 'string' && value.trim().length > 0 && Buffer.byteLength(value) <= RUNTIME_MAX_TEXT_BYTES
+    && ![...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; });
+}
+/** @param {string} value */
+function runtimeSafeKey(value) { return runtimeText(value) && !RUNTIME_DANGEROUS_KEYS.has(value); }
 /** @param {any} model @returns {string[]} */
 function advertisedThoughtLevels(model) {
   const values = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : Array.isArray(model.reasoning?.levels) ? model.reasoning.levels.map((/** @type {any} */ entry) => entry?.value) : [];
