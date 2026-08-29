@@ -155,4 +155,3 @@ TDD must prove:
   persisted artifacts, and error serialization;
 - source, installed marketplace, packed-install, lint, typecheck, line-ending,
   and full test suites remain green.
-
