@@ -24,36 +24,30 @@ function completeConfig() {
       bigmodel: {
         kind: 'openai-compatible',
         name: 'BigModel',
-        source: 'custom',
         options: {
-          apiFormat: 'openai-chat-completions',
           baseURL: 'https://api.bigmodel.example/v1',
           apiKey: 'PRIVATE_API_KEY',
           apiKeyRequired: true,
           headers: { 'X-Client': 'codex' },
-          providerOptions: { compatibility: { mode: 'strict' } },
-          logoUrl: 'https://assets.example/bigmodel.svg',
-          modelsDevProviderId: 'bigmodel-provider',
         },
         models: {
           'GLM-5.2': {
             name: 'GLM 5.2',
-            description: 'Primary model',
             contextWindow: 131_072,
             maxOutputTokens: 16_384,
             reasoning: {
               enabled: true,
-              levels: [{ value: 'high', label: 'High', description: 'More reasoning' }],
+              levels: ['high'],
               defaultLevel: 'high',
               providerOptionsByLevel: { high: { reasoningEffort: 'high' } },
             },
             supportsImages: true,
             supportsPdf: true,
-            supportsTools: true,
+            supportsToolCall: true,
             supportsStructuredOutput: false,
-            providerOptions: { modelFamily: 'glm' },
+            options: { modelFamily: 'glm' },
           },
-          'glm-4.7': { name: 'GLM 4.7', disabledReason: 'Legacy' },
+          'glm-4.7': { name: 'GLM 4.7' },
         },
         ignoredSecret: 'PRIVATE_PROVIDER_SECRET',
       },
@@ -65,6 +59,25 @@ function completeConfig() {
 /** @param {(value:any)=>any} [update] */
 async function completeConfigFixture(update = (value) => value) {
   return configFixture(JSON.stringify(update(completeConfig())));
+}
+
+/** @returns {any} */
+function nativeMinimalConfig() {
+  return {
+    model: { main: 'custom/model-1' },
+    provider: {
+      custom: {
+        kind: 'openai-compatible',
+        models: { 'model-1': {} },
+      },
+    },
+  };
+}
+
+/** @param {any} config */
+async function nativeRuntime(config) {
+  const home = await configFixture(JSON.stringify(config));
+  return readZCodeCliRuntimeModel({ home, now: () => 7, revision: () => 'native-test' });
 }
 
 /** @param {unknown} error */
@@ -102,6 +115,116 @@ test('falls back from empty HOME to USERPROFILE', async () => {
   });
 });
 
+test('maps the minimal current CLI provider config without inventing passthrough fields', async () => {
+  const runtime = await nativeRuntime(nativeMinimalConfig());
+  assert.deepEqual(runtime, {
+    revision: 'native-test',
+    generatedAt: 7,
+    model: { providerId: 'custom', modelId: 'model-1' },
+    provider: {
+      providerId: 'custom', kind: 'openai-compatible', source: 'user',
+      models: [{ modelId: 'model-1' }],
+    },
+  });
+});
+
+test('synthesizes the selected runtime model when optional provider.models is absent', async () => {
+  const config = nativeMinimalConfig();
+  delete config.provider.custom.models;
+  const runtime = await nativeRuntime(config);
+  assert.deepEqual(runtime.provider.models, [{ modelId: 'model-1' }]);
+});
+
+test('accepts the native shorthand root model while the legacy main-model reader remains compatible', async () => {
+  const config = nativeMinimalConfig();
+  config.model = 'custom/model-1';
+  const home = await configFixture(JSON.stringify(config));
+  assert.deepEqual(await readZCodeCliMainModel({ home }), { providerId: 'custom', modelId: 'model-1' });
+  assert.deepEqual((await readZCodeCliRuntimeModel({
+    home, now: () => 7, revision: () => 'native-test',
+  })).model, { providerId: 'custom', modelId: 'model-1' });
+});
+
+test('merges provider, provider option, and model headers in native met order', async () => {
+  const config = nativeMinimalConfig();
+  config.provider.custom.headers = { Shared: 'provider', Provider: 'yes' };
+  config.provider.custom.options = { headers: { Shared: 'options', Options: 'yes' } };
+  config.provider.custom.models['model-1'].headers = { Shared: 'model', Model: 'yes' };
+  const runtime = await nativeRuntime(config);
+  assert.deepEqual(runtime.provider.headers, {
+    Shared: 'model', Provider: 'yes', Options: 'yes', Model: 'yes',
+  });
+});
+
+test('wraps raw model options in the provider kind namespace', async (t) => {
+  for (const [kind, namespace] of [
+    ['anthropic', 'anthropic'], ['openai', 'openai'], ['openai-compatible', 'openaiCompatible'],
+  ]) await t.test(kind, async () => {
+    const config = nativeMinimalConfig();
+    config.provider.custom.kind = kind;
+    config.provider.custom.models['model-1'].options = { reasoningEffort: 'high' };
+    const runtime = await nativeRuntime(config);
+    assert.deepEqual(runtime.provider.models[0].providerOptions, {
+      [namespace]: { reasoningEffort: 'high' },
+    });
+  });
+});
+
+test('maps native model capability fields and aliases', async () => {
+  const config = nativeMinimalConfig();
+  Object.assign(config.provider.custom.models['model-1'], {
+    supportsToolCall: false,
+    tool_call: true,
+    modalities: { input: ['text', 'pdf'] },
+    structured_output: true,
+  });
+  const model = (await nativeRuntime(config)).provider.models[0];
+  assert.equal(model.supportsTools, false);
+  assert.equal(model.supportsPdf, true);
+  assert.equal(model.supportsStructuredOutput, true);
+});
+
+test('maps raw reasoning strings and selects a valid root thought level', async () => {
+  const config = nativeMinimalConfig();
+  config.provider.custom.models['model-1'].reasoning = {
+    levels: ['low', 'high'],
+    defaultLevel: 'missing',
+    providerOptionsByLevel: { high: { reasoningEffort: 'high' } },
+  };
+  const runtime = await nativeRuntime(config);
+  assert.deepEqual(runtime.provider.models[0].reasoning, {
+    enabled: true,
+    levels: [{ value: 'low', label: 'low' }, { value: 'high', label: 'high' }],
+    defaultLevel: 'missing',
+    providerOptionsByLevel: {
+      high: { openaiCompatible: { reasoningEffort: 'high' } },
+    },
+  });
+  assert.equal(runtime.thoughtLevel, 'low');
+});
+
+test('ignores passthrough fields that native model normalization does not consume', async () => {
+  const config = nativeMinimalConfig();
+  Object.assign(config.provider.custom, {
+    apiFormat: 'openai-responses',
+    providerOptions: { leaked: 'provider' },
+    logoUrl: 'https://ignored.invalid/logo.svg',
+    modelsDevProviderId: 'ignored-provider',
+  });
+  Object.assign(config.provider.custom.models['model-1'], {
+    providerOptions: { leaked: 'model' },
+    supportsTools: true,
+    reasoning: { enabled: true, levels: [{ value: 'high', label: 'High' }] },
+  });
+  const runtime = await nativeRuntime(config);
+  assert.equal(Object.hasOwn(runtime.provider, 'apiFormat'), false);
+  assert.equal(Object.hasOwn(runtime.provider, 'providerOptions'), false);
+  assert.equal(Object.hasOwn(runtime.provider, 'logoUrl'), false);
+  assert.equal(Object.hasOwn(runtime.provider, 'modelsDevProviderId'), false);
+  assert.deepEqual(runtime.provider.models[0], { modelId: 'model-1' });
+  assert.equal(Object.hasOwn(runtime, 'thoughtLevel'), false);
+});
+
 test('normalizes the selected complete runtime model with an in-memory inline credential', async () => {
   const home = await completeConfigFixture();
   const runtime = await readZCodeCliRuntimeModel({
@@ -118,37 +241,33 @@ test('normalizes the selected complete runtime model with an in-memory inline cr
       providerId: 'bigmodel',
       kind: 'openai-compatible',
       label: 'BigModel',
-      source: 'custom',
-      apiFormat: 'openai-chat-completions',
+      source: 'user',
       baseURL: 'https://api.bigmodel.example/v1',
       apiKey: { source: 'inline', value: 'PRIVATE_API_KEY' },
       apiKeyRequired: true,
       headers: { 'X-Client': 'codex' },
-      providerOptions: { compatibility: { mode: 'strict' } },
-      logoUrl: 'https://assets.example/bigmodel.svg',
-      modelsDevProviderId: 'bigmodel-provider',
       models: [
         {
           modelId: 'GLM-5.2',
           label: 'GLM 5.2',
-          description: 'Primary model',
           contextWindow: 131_072,
           maxOutputTokens: 16_384,
           reasoning: {
             enabled: true,
-            levels: [{ value: 'high', label: 'High', description: 'More reasoning' }],
+            levels: [{ value: 'high', label: 'high' }],
             defaultLevel: 'high',
-            providerOptionsByLevel: { high: { reasoningEffort: 'high' } },
+            providerOptionsByLevel: { high: { openaiCompatible: { reasoningEffort: 'high' } } },
           },
           supportsImages: true,
           supportsPdf: true,
           supportsTools: true,
           supportsStructuredOutput: false,
-          providerOptions: { modelFamily: 'glm' },
+          providerOptions: { openaiCompatible: { modelFamily: 'glm' } },
         },
-        { modelId: 'glm-4.7', label: 'GLM 4.7', disabledReason: 'Legacy' },
+        { modelId: 'glm-4.7', label: 'GLM 4.7' },
       ],
     },
+    thoughtLevel: 'high',
   });
   assert.doesNotMatch(JSON.stringify(runtime), /PRIVATE_UNRELATED_SECRET|PRIVATE_PROVIDER_SECRET/);
 });
@@ -222,34 +341,35 @@ test('runtime resolver falls back from HOME to USERPROFILE', async () => {
 test('accepts empty supported option records', async () => {
   const home = await completeConfigFixture((config) => {
     config.provider.bigmodel.options.headers = {};
-    config.provider.bigmodel.options.providerOptions = {};
-    config.provider.bigmodel.models['GLM-5.2'].providerOptions = {};
+    config.provider.bigmodel.models['GLM-5.2'].options = {};
     config.provider.bigmodel.models['GLM-5.2'].reasoning.providerOptionsByLevel = {};
     return config;
   });
   const runtime = await readZCodeCliRuntimeModel({
     home, now: () => 1, revision: () => 'revision-1',
   });
-  assert.deepEqual(runtime.provider.headers, {});
-  assert.deepEqual(runtime.provider.providerOptions, {});
-  assert.deepEqual(runtime.provider.models[0].providerOptions, {});
+  assert.equal(Object.hasOwn(runtime.provider, 'headers'), false);
+  assert.equal(Object.hasOwn(runtime.provider, 'providerOptions'), false);
+  assert.deepEqual(runtime.provider.models[0].providerOptions, { openaiCompatible: {} });
   assert.deepEqual(runtime.provider.models[0]?.reasoning?.providerOptionsByLevel, {});
 });
 
 test('preserves finite JSON numbers in supported provider options', async () => {
   const home = await completeConfigFixture((config) => {
-    config.provider.bigmodel.options.providerOptions = { temperature: 0.25 };
+    config.provider.bigmodel.models['GLM-5.2'].options = { temperature: 0.25 };
     return config;
   });
   const runtime = await readZCodeCliRuntimeModel({
     home, now: () => 1, revision: () => 'revision-1',
   });
-  assert.deepEqual(runtime.provider.providerOptions, { temperature: 0.25 });
+  assert.deepEqual(runtime.provider.models[0].providerOptions, {
+    openaiCompatible: { temperature: 0.25 },
+  });
 });
 
 test('preserves bounded JSON arrays in supported provider options', async () => {
   const home = await completeConfigFixture((config) => {
-    config.provider.bigmodel.options.providerOptions = {
+    config.provider.bigmodel.models['GLM-5.2'].options = {
       stop: ['END'], nested: [{ enabled: true }],
     };
     return config;
@@ -257,8 +377,8 @@ test('preserves bounded JSON arrays in supported provider options', async () => 
   const runtime = await readZCodeCliRuntimeModel({
     home, now: () => 1, revision: () => 'revision-1',
   });
-  assert.deepEqual(runtime.provider.providerOptions, {
-    stop: ['END'], nested: [{ enabled: true }],
+  assert.deepEqual(runtime.provider.models[0].providerOptions, {
+    openaiCompatible: { stop: ['END'], nested: [{ enabled: true }] },
   });
 });
 
@@ -266,26 +386,22 @@ test('rejects invalid runtime shapes, values, selection, and collection bounds w
   /** @type {Array<[string,(config:any)=>void]>} */
   const invalidCases = [
     ['missing provider', (config) => { delete config.provider.bigmodel; }],
-    ['missing selected model', (config) => { delete config.provider.bigmodel.models['GLM-5.2']; }],
     ['unsupported kind', (config) => { config.provider.bigmodel.kind = 'private-kind'; }],
-    ['invalid source', (config) => { config.provider.bigmodel.source = 'remote'; }],
-    ['invalid api format', (config) => { config.provider.bigmodel.options.apiFormat = 'private-format'; }],
-    ['missing required api key', (config) => { delete config.provider.bigmodel.options.apiKey; }],
     ['invalid options array', (config) => { config.provider.bigmodel.options = []; }],
     ['invalid headers', (config) => { config.provider.bigmodel.options.headers = { Authorization: 3 }; }],
     ['invalid provider options nesting', (config) => {
       /** @type {any} */
-      let value = {}; config.provider.bigmodel.options.providerOptions = value;
+      let value = {}; config.provider.bigmodel.models['GLM-5.2'].options = value;
       for (let index = 0; index < 20; index += 1) { value.next = {}; value = value.next; }
     }],
     ['oversized provider options array', (config) => {
-      config.provider.bigmodel.options.providerOptions = { stop: Array.from({ length: 257 }, () => 'END') };
+      config.provider.bigmodel.models['GLM-5.2'].options = { stop: Array.from({ length: 257 }, () => 'END') };
     }],
-    ['invalid model metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].supportsTools = 'yes'; }],
-    ['invalid reasoning metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].reasoning.levels = [{}]; }],
+    ['invalid model metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].supportsToolCall = 'yes'; }],
+    ['invalid reasoning metadata', (config) => { config.provider.bigmodel.models['GLM-5.2'].reasoning.enabled = 'yes'; }],
     ['control string', (config) => { config.provider.bigmodel.name = 'Big\u0000Model'; }],
     ['C1 control string', (config) => { config.provider.bigmodel.name = 'Big\u0085Model'; }],
-    ['oversized string', (config) => { config.provider.bigmodel.models['GLM-5.2'].description = 'x'.repeat(4097); }],
+    ['oversized string', (config) => { config.provider.bigmodel.models['GLM-5.2'].name = 'x'.repeat(4097); }],
     ['provider array', (config) => { config.provider = []; }],
     ['models array', (config) => { config.provider.bigmodel.models = []; }],
     ['too many providers', (config) => {

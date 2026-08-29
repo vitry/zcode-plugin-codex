@@ -14,8 +14,7 @@ const MAX_REASONING_LEVELS = 32;
 const MAX_VALUE_DEPTH = 8;
 const MAX_VALUE_NODES = 2048;
 const PROVIDER_KINDS = new Set(['anthropic', 'openai', 'openai-compatible']);
-const API_FORMATS = new Set(['anthropic-messages', 'openai-chat-completions', 'openai-responses']);
-const PROVIDER_SOURCES = new Set(['builtin', 'models-dev', 'custom', 'user', 'workspace', 'ephemeral']);
+const PROVIDER_OPTION_NAMESPACES = ['anthropic', 'openai', 'openaiCompatible', 'openai-compatible'];
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 /**
@@ -44,7 +43,10 @@ export async function readZCodeCliRuntimeModel(input = {}) {
     const revision = (input.revision ?? defaultRevision)();
     const generatedAt = (input.now ?? Date.now)();
     if (!boundedText(revision) || !nonnegativeSafeInteger(generatedAt)) throw runtimeModelConfigError();
-    return { revision, generatedAt, model, provider };
+    const selected = provider.models.find((entry) => entry.modelId === model.modelId);
+    const thoughtLevel = selected?.reasoning === undefined ? undefined
+      : effectiveThoughtLevel(selected.reasoning);
+    return { revision, generatedAt, model, provider, ...(thoughtLevel === undefined ? {} : { thoughtLevel }) };
   } catch {
     throw runtimeModelConfigError();
   }
@@ -63,7 +65,8 @@ async function readEffectiveConfig(input) {
 
 /** @param {Record<string,any>} config */
 function parseMainModel(config) {
-  const main = plain(config.model) ? config.model.main : undefined;
+  const main = typeof config.model === 'string' ? config.model
+    : plain(config.model) ? config.model.main : undefined;
   if (!boundedText(main)) throw runtimeModelConfigError();
   const slash = main.indexOf('/');
   if (slash < 1) throw runtimeModelConfigError();
@@ -80,58 +83,60 @@ function normalizeModelRef(value) {
 function normalizeProvider(raw, providerId, selectedModelId) {
   const kind = raw.kind;
   const label = optionalText(raw.name);
-  const source = raw.source ?? 'user';
-  if (!PROVIDER_KINDS.has(kind) || !PROVIDER_SOURCES.has(source)) throw runtimeModelConfigError();
+  if (!PROVIDER_KINDS.has(kind)) throw runtimeModelConfigError();
   const options = raw.options === undefined ? {} : raw.options;
   if (!plain(options)) throw runtimeModelConfigError();
-  const models = boundedRecord(raw.models, MAX_MODELS, 1);
-  if (!own(models, selectedModelId)) throw runtimeModelConfigError();
-  const normalizedModels = Object.entries(models).map(([modelId, model]) => normalizeModel(modelId, model));
-  if (normalizedModels.length < 1) throw runtimeModelConfigError();
+  const models = raw.models === undefined ? {} : boundedRecord(raw.models, MAX_MODELS);
+  const selectedEntry = Object.entries(models).find(([modelId, model]) => modelId === selectedModelId
+    || plain(model) && model.id === selectedModelId);
+  const selectedModel = selectedEntry === undefined ? normalizeModel(selectedModelId, {}, kind)
+    : normalizeModel(selectedEntry[0], selectedEntry[1], kind);
+  const normalizedModels = [selectedModel, ...Object.entries(models)
+    .filter(([modelId]) => modelId !== selectedEntry?.[0])
+    .map(([modelId, model]) => normalizeModel(modelId, model, kind))];
 
-  const apiFormat = optionalEnum(options.apiFormat, API_FORMATS);
   const baseURL = optionalText(options.baseURL);
   const apiKey = optionalText(options.apiKey);
   const apiKeyRequired = optionalBoolean(options.apiKeyRequired);
-  const headers = optionalStringRecord(options.headers);
-  const providerOptions = optionalJsonRecord(options.providerOptions);
-  const logoUrl = optionalText(options.logoUrl);
-  const modelsDevProviderId = optionalText(options.modelsDevProviderId);
-  if (apiKeyRequired === true && apiKey === undefined) throw runtimeModelConfigError();
+  const rawSelectedModel = selectedEntry?.[1];
+  const headers = mergeStringRecords(raw.headers, options.headers,
+    plain(rawSelectedModel) ? rawSelectedModel.headers : undefined);
 
   return {
-    providerId, kind, source,
+    providerId, kind, source: 'user',
     ...(label === undefined ? {} : { label }),
-    ...(apiFormat === undefined ? {} : { apiFormat }),
     ...(baseURL === undefined ? {} : { baseURL }),
     ...(apiKey === undefined ? {} : { apiKey: { source: 'inline', value: apiKey } }),
     ...(apiKeyRequired === undefined ? {} : { apiKeyRequired }),
     ...(headers === undefined ? {} : { headers }),
-    ...(providerOptions === undefined ? {} : { providerOptions }),
-    ...(logoUrl === undefined ? {} : { logoUrl }),
-    ...(modelsDevProviderId === undefined ? {} : { modelsDevProviderId }),
     models: normalizedModels,
   };
 }
 
-/** @param {string} modelId @param {unknown} raw */
-function normalizeModel(modelId, raw) {
+/** @param {string} configuredModelId @param {unknown} raw @param {string} kind */
+function normalizeModel(configuredModelId, raw, kind) {
+  const modelId = plain(raw) && raw.id !== undefined ? optionalText(raw.id) : configuredModelId;
   if (!boundedText(modelId) || !plain(raw)) throw runtimeModelConfigError();
   const label = optionalText(raw.name);
-  const description = optionalText(raw.description);
-  const contextWindow = optionalPositiveInteger(raw.contextWindow);
-  const maxOutputTokens = optionalPositiveInteger(raw.maxOutputTokens);
-  const reasoning = optionalReasoning(raw.reasoning);
-  const supportsImages = optionalBoolean(raw.supportsImages);
-  const supportsPdf = optionalBoolean(raw.supportsPdf);
-  const supportsTools = optionalBoolean(raw.supportsTools);
-  const supportsStructuredOutput = optionalBoolean(raw.supportsStructuredOutput);
-  const providerOptions = optionalJsonRecord(raw.providerOptions);
-  const disabledReason = optionalText(raw.disabledReason);
+  const limit = raw.limit === undefined ? {} : raw.limit;
+  const modalities = raw.modalities === undefined ? {} : raw.modalities;
+  if (!plain(limit) || !plain(modalities)) throw runtimeModelConfigError();
+  const inputModalities = modalities.input === undefined ? [] : modalities.input;
+  if (!Array.isArray(inputModalities) || inputModalities.length > MAX_RECORD_ENTRIES
+    || inputModalities.some((entry) => !boundedText(entry))) throw runtimeModelConfigError();
+  const contextWindow = optionalPositiveInteger(raw.contextWindow ?? limit.context);
+  const maxOutputTokens = optionalPositiveInteger(limit.output ?? modelOptionMaxTokens(raw.options)
+    ?? raw.maxOutputTokens);
+  const reasoning = normalizeReasoning(raw.reasoning, kind);
+  const supportsImages = optionalBoolean(raw.supportsImages ?? raw.attachment
+    ?? (inputModalities.includes('image') || undefined));
+  const supportsPdf = optionalBoolean(raw.supportsPdf ?? (inputModalities.includes('pdf') || undefined));
+  const supportsTools = optionalBoolean(raw.supportsToolCall ?? raw.tool_call);
+  const supportsStructuredOutput = optionalBoolean(raw.supportsStructuredOutput ?? raw.structured_output);
+  const providerOptions = wrapProviderOptions(raw.options, kind);
   return {
     modelId,
     ...(label === undefined ? {} : { label }),
-    ...(description === undefined ? {} : { description }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(reasoning === undefined ? {} : { reasoning }),
@@ -140,27 +145,62 @@ function normalizeModel(modelId, raw) {
     ...(supportsTools === undefined ? {} : { supportsTools }),
     ...(supportsStructuredOutput === undefined ? {} : { supportsStructuredOutput }),
     ...(providerOptions === undefined ? {} : { providerOptions }),
-    ...(disabledReason === undefined ? {} : { disabledReason }),
   };
 }
 
-/** @param {unknown} value */
-function optionalReasoning(value) {
+/** @param {unknown} value @param {string} kind */
+function normalizeReasoning(value, kind) {
   if (value === undefined) return undefined;
-  if (!plain(value) || typeof value.enabled !== 'boolean' || !Array.isArray(value.levels)
-    || value.levels.length > MAX_REASONING_LEVELS) throw runtimeModelConfigError();
-  const levels = value.levels.map((level) => {
-    if (!plain(level) || !boundedText(level.value) || !boundedText(level.label)) throw runtimeModelConfigError();
-    const description = optionalText(level.description);
-    return { value: level.value, label: level.label, ...(description === undefined ? {} : { description }) };
-  });
+  if (typeof value === 'boolean') return { enabled: value, levels: [] };
+  if (!plain(value)) throw runtimeModelConfigError();
+  const rawLevels = value.levels ?? [];
+  if (!Array.isArray(rawLevels) || rawLevels.length > MAX_REASONING_LEVELS
+    || rawLevels.some((level) => !boundedText(level))) return undefined;
+  const levels = rawLevels.map((level) => ({ value: level, label: level }));
+  const enabled = value.enabled === undefined ? levels.length > 0 : optionalBoolean(value.enabled);
   const defaultLevel = optionalText(value.defaultLevel);
-  const providerOptionsByLevel = optionalJsonRecordMap(value.providerOptionsByLevel, MAX_REASONING_LEVELS);
+  const rawProviderOptionsByLevel = optionalJsonRecordMap(value.providerOptionsByLevel, MAX_REASONING_LEVELS);
+  const providerOptionsByLevel = rawProviderOptionsByLevel === undefined ? undefined
+    : Object.fromEntries(Object.entries(rawProviderOptionsByLevel).map(([level, entry]) => [
+      level, wrapCheckedProviderOptions(entry, kind),
+    ]));
   return {
-    enabled: value.enabled, levels,
+    enabled, levels,
     ...(defaultLevel === undefined ? {} : { defaultLevel }),
     ...(providerOptionsByLevel === undefined ? {} : { providerOptionsByLevel }),
   };
+}
+
+/** @param {{levels:Array<{value:string}>,defaultLevel?:string}} reasoning */
+function effectiveThoughtLevel(reasoning) {
+  const values = reasoning.levels.map((level) => level.value);
+  return reasoning.defaultLevel !== undefined && values.includes(reasoning.defaultLevel)
+    ? reasoning.defaultLevel : values[0];
+}
+
+/** @param {unknown} value */
+function modelOptionMaxTokens(value) {
+  return plain(value) ? value.max_tokens : undefined;
+}
+
+/** @param {unknown} value @param {string} kind */
+function wrapProviderOptions(value, kind) {
+  const checked = optionalJsonRecord(value);
+  return checked === undefined ? undefined : wrapCheckedProviderOptions(checked, kind);
+}
+
+/** @param {Record<string,any>} value @param {string} kind */
+function wrapCheckedProviderOptions(value, kind) {
+  if (PROVIDER_OPTION_NAMESPACES.some((namespace) => own(value, namespace))) return value;
+  const namespace = kind === 'anthropic' ? 'anthropic' : kind === 'openai' ? 'openai' : 'openaiCompatible';
+  return { [namespace]: value };
+}
+
+/** @param {...unknown} values */
+function mergeStringRecords(...values) {
+  const merged = Object.assign({}, ...values.filter((value) => value !== undefined)
+    .map((value) => optionalStringRecord(value)));
+  return Object.keys(merged).length === 0 ? undefined : merged;
 }
 
 /** @param {unknown} value @param {number} maximumEntries */
@@ -220,13 +260,6 @@ function optionalStringRecord(value) {
     if (typeof entry !== 'string' || !boundedText(entry)) throw runtimeModelConfigError();
     return [key, entry];
   }));
-}
-
-/** @param {unknown} value @param {Set<string>} values @returns {string|undefined} */
-function optionalEnum(value, values) {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !values.has(value)) throw runtimeModelConfigError();
-  return value;
 }
 
 /** @param {unknown} value */
