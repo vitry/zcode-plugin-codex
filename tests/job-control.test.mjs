@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -84,6 +84,46 @@ const executeJob = async (input) => {
 /** @param {{providerId:string,modelId:string}} model */
 function runtimeModel(model) {
   return { revision: 'runtime-test-revision', generatedAt: 1_788_000_000_000, model, provider: { providerId: model.providerId, kind: 'openai-compatible', source: 'user', baseURL: 'https://example.invalid/v1', apiKey: { source: 'inline', value: 'PRIVATE_RUNTIME_KEY' }, models: [{ modelId: model.modelId }] } };
+}
+
+/** @param {string} root @param {string} workspace @param {any} store */
+async function legacyMigrationExecutionFixture(root, workspace, store) {
+  const executor = { parentSessionId: 'legacy-parent', parentTurnId: 'legacy-origin-turn', agentId: 'legacy-child',
+    agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace,
+    parentPermissionMode: 'workspace-write' };
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: executor.parentSessionId,
+    ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }, executor });
+  await store.claimJobWorkerForExecution(workspace, first.job.id,
+    { childPid: 999_999_999, workerLeaseId: first.job.id });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cold-resume',
+      childPid: 999_999_999, workerLeaseId: first.job.id });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+  const partitionPath = join(storage.directory, partitionName); const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+  const current = partition.records[0];
+  partition.records[0] = { version: 1, key: current.key, operationId: current.operationId, state: current.state,
+    parentSessionId: current.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode,
+    workspace: current.workspace, permissionMode: current.permissionMode, anchorJobId: current.anchorJobId,
+    currentJobId: current.currentJobId, createdAt: current.createdAt, updatedAt: current.updatedAt,
+    closedAt: current.closedAt, closeReason: current.closeReason };
+  await atomicWriteJson(partitionPath, partition);
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: executor.parentSessionId,
+    executorAgentId: executor.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  assert.equal(closed.kind, 'closed');
+  const canonicalWorkspace = storage.workspacePath;
+  const proof = await store.readRescueBindingMigrationProof({ workspace: canonicalWorkspace, parentSessionId: executor.parentSessionId,
+    executorAgentId: executor.agentId, childAgentType: executor.agentType, originWorkspace: canonicalWorkspace,
+    executionWorkspace: canonicalWorkspace, agentPath: executor.agentPath });
+  assert.equal(proof.kind, 'proof');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: { workspace,
+    ownerSessionId: executor.parentSessionId, ownerTurnId: 'legacy-continuation-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }, executor, operationId: first.binding.operationId,
+    migrationProof: proof.migrationProof, expectedCurrentJobId: first.job.id, expectedAnchorJobId: first.job.id });
+  return { closed, continuation, executor, partitionPath };
 }
 
 /** @param {string} value */
@@ -734,6 +774,65 @@ test('cold recovery runtime update rejection is authoritative and prevents send'
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', updateRuntimeError });
   const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', resolveRuntimeRecoveryConfig: async () => runtimeModel({ providerId: 'cli', modelId: 'main' }) }).catch((error) => error);
   assert.equal(caught, updateRuntimeError); assert.equal(fixture.sends(), 0); assert.deepEqual(fixture.calls.slice(0, 2), ['resume', 'updateRuntime:cli/main']);
+});
+
+for (const outcome of ['failure', 'interruption']) test(`legacy migration keeps its migrated active attempt when ${outcome} follows a successful resume RPC`, async () => {
+  const { root, workspace, store } = await setup();
+  const migration = await legacyMigrationExecutionFixture(root, workspace, store);
+  const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' });
+  const controller = new AbortController();
+  const original = outcome === 'interruption'
+    ? new PluginError('JOB_INTERRUPTED', 'interrupted after resume')
+    : new PluginError('ZCODE_RUNTIME_MODEL_CONFIG_INVALID', 'runtime config unavailable after resume');
+  let resumeRpcSucceeded = false;
+  const caught = await executeJob({
+    job: migration.continuation.job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client,
+    task: 'legacy migration continuation', resumeSessionId: 'zs-cold-resume', signal: controller.signal,
+    onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; },
+    onRunningPersisted: () => {},
+    resolveRuntimeRecoveryConfig: async () => {
+      if (outcome === 'interruption') controller.abort(original);
+      throw original;
+    },
+    onResumeFailure: async (error) => {
+      if (!resumeRpcSucceeded) return store.finishSessionEndedRescueContinuation(workspace,
+        migration.continuation.job.id, migration.continuation.migrationRollback, 'failed',
+        { error: { message: error instanceof Error ? error.message : 'resume failed' }, exitCode: 1 });
+      const committed = await store.transitionJob(workspace, migration.continuation.job.id, ['queued'], 'running', {
+        startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cold-resume',
+        childPid: 999_999_999, workerLeaseId: migration.continuation.job.id,
+      });
+      const committedBinding = await store.resolveRescueBinding({ workspace,
+        parentSessionId: migration.executor.parentSessionId, executorAgentId: migration.executor.agentId });
+      assert.equal(committedBinding.kind, 'bound');
+      if (committedBinding.kind !== 'bound') throw new Error('expected committed migration binding');
+      assert.equal(committedBinding.binding.currentJobId, migration.continuation.job.id);
+      if (outcome === 'interruption') {
+        await store.transitionJob(workspace, migration.continuation.job.id, [committed.status], 'cancelling');
+        return store.finishJob(workspace, migration.continuation.job.id, ['cancelling'], 'cancelled', { exitCode: null });
+      }
+      return store.finishJob(workspace, migration.continuation.job.id, [committed.status], 'failed',
+        { error: { message: error instanceof Error ? error.message : 'resume failed' }, exitCode: 1 });
+    },
+  }).catch((error) => error);
+  if (outcome === 'interruption') assert.equal(caught, original);
+  else {
+    assert.equal(caught?.code, 'ZCODE_REQUEST_FAILED');
+    assert.equal(caught?.details?.remoteCode, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE');
+  }
+  const current = await store.readJob(workspace, migration.continuation.job.id);
+  assert.equal(current.status, outcome === 'interruption' ? 'cancelled' : 'failed');
+  if (outcome === 'failure') {
+    const binding = await store.resolveRescueBinding({ workspace, parentSessionId: migration.executor.parentSessionId,
+      executorAgentId: migration.executor.agentId });
+    assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.state, 'active');
+    assert.equal(binding.binding.currentJobId, migration.continuation.job.id);
+    assert.notDeepEqual(binding.binding, migration.closed.binding);
+  } else {
+    const [binding] = JSON.parse(await readFile(migration.partitionPath, 'utf8')).records;
+    assert.equal(binding.version, 3); assert.equal(binding.state, 'closed'); assert.equal(binding.closeReason, 'cancel');
+    assert.equal(binding.currentJobId, migration.continuation.job.id); assert.notDeepEqual(binding, migration.closed.binding);
+  }
 });
 
 test('cold recovery preserves interruption at resolve, update, and verification-read boundaries', async () => {

@@ -2306,7 +2306,7 @@ async function preparedSameTurnBoundContinuation(context, input) {
   };
 }
 
-/** @param {any} context @param {ReturnType<typeof preparedSameTurnBoundContinuation> extends Promise<infer T> ? T : never} prepared */
+/** @param {any} context @param {ReturnType<typeof preparedSameTurnBoundContinuation> extends Promise<infer T> ? T : never} prepared @param {NodeJS.ProcessEnv} env */
 async function prepareRolledBackContinuationRetry(context, prepared, env) {
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId: prepared.parentSessionId, source: 'proactive', task: 'retry rolled back continuation',
@@ -2387,6 +2387,48 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
   assert.ok(calls.some((frame) => frame.method === 'session/resume' && frame.params?.sessionId === prepared.first.job.zcodeSessionId));
+});
+
+test('active continuation rollback convergence preserves the original resume error across publication and winner-read faults', async () => {
+  const context = await fixture();
+  const prepared = await preparedSameTurnBoundContinuation(context, {
+    name: 'rollback-original-error', exact: true, execution: 'foreground',
+    extraEnv: { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
+  });
+  const baseStore = createStateStore({ dataRoot: context.dataRoot });
+  let publicationFaults = 0; let publicationFaultObserved = false; let winnerReadFaults = 0;
+  const publicationFaulted = createStateStore({ dataRoot: context.dataRoot, testOnlyPublicationHook: async (seam) => {
+    if (seam === 'active-continuation-rollback:binding' && publicationFaults++ === 0) {
+      publicationFaultObserved = true;
+      throw new Error('injected binding publication checkpoint failure');
+    }
+  } });
+  const faultedStore = { ...publicationFaulted, readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    if (publicationFaultObserved && winnerReadFaults === 0) {
+      winnerReadFaults += 1;
+      throw new Error('injected post-settlement winner read failure');
+    }
+    return baseStore.readJob(workspace, jobId);
+  } };
+  const caught = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: prepared.env,
+    dependencies: {
+      createStateStore: () => faultedStore,
+      readCodexThreadSpawnChild: async () => ({
+        id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+        agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' },
+        createdAt: 1, updatedAt: 2,
+      }),
+    },
+  }).catch((error) => error);
+  assert.ok(publicationFaults >= 1); assert.equal(winnerReadFaults, 1);
+  assert.notEqual(caught?.code, 'RESCUE_PUBLICATION_TEST_FAULT');
+  assert.doesNotMatch(caught?.message ?? '', /publication checkpoint|winner read/u);
+  const jobs = await baseStore.listJobs(context.workspace); const failed = jobs.find((job) => job.id !== prepared.first.job.id);
+  assert.equal(failed?.status, 'failed'); assert.equal(failed?.error?.message, caught?.message);
+  const binding = await baseStore.resolveRescueBinding({ workspace: context.workspace,
+    parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
+  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.currentJobId, prepared.first.job.id);
 });
 
 /** @param {any} context @param {string} record @param {number} expectedJobs */
@@ -4877,7 +4919,7 @@ test('cold runtime update rejection remains authoritative and retry resumes the 
   await writeFile(record, '');
   await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
     ownerId: ownerIdForSession('codex-session'), requestTimeoutMs: 750 });
-  const retryEnv = { ...env }; delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
+  /** @type {NodeJS.ProcessEnv} */ const retryEnv = { ...env }; delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
   const retried = await companion(context, ['rescue', '--resume', 'corrected recovery'], {
     ...retryEnv,
   });
