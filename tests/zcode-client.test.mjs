@@ -383,6 +383,32 @@ test('runtime model update rejects malformed, amplified, dangerous, and secret-b
   assert.equal({}.polluted, undefined);
 });
 
+test('runtime model update rejects cross-field thought and reasoning mismatches before transport', async () => {
+  const invalid = [
+    (() => { const value = runtimeModelFixture(); value.thoughtLevel = 'medium'; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning.defaultLevel = 'medium'; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning.providerOptionsByLevel.medium = { openaiCompatible: { reasoningEffort: 'medium' } }; return value; })(),
+    (() => { const value = runtimeModelFixture(); delete value.provider.models[0].reasoning; return value; })(),
+    (() => { const value = runtimeModelFixture(); value.provider.models[0].reasoning = { enabled: false, levels: [] }; return value; })(),
+  ];
+  for (const runtimeModel of invalid) {
+    let calls = 0; const client = new ZCodeClient({ request: async () => { calls += 1; return {}; } });
+    await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModel), { code: 'ZCODE_INPUT_INVALID' });
+    assert.equal(calls, 0);
+  }
+});
+
+test('runtime model update permits omitted thought level when selected reasoning is missing or empty', async () => {
+  const valid = [
+    (() => { const value = runtimeModelFixture(); delete value.thoughtLevel; delete value.provider.models[0].reasoning; return value; })(),
+    (() => { const value = runtimeModelFixture(); delete value.thoughtLevel; value.provider.models[0].reasoning = { enabled: false, levels: [] }; return value; })(),
+  ];
+  for (const runtimeModel of valid) {
+    const client = new ZCodeClient({ request: async (_method, params) => ({ sessionId: params.sessionId, appliedModelRuntimeRevision: params.runtimeModel.revision, changed: false }) });
+    await client.updateRuntimeModelConfig('session-1', runtimeModel);
+  }
+});
+
 test('runtime model update rejects every malformed or mismatched exact result', async () => {
   const valid = { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: true };
   const invalid = [null, {}, { ...valid, extra: true }, { ...valid, sessionId: 'session-2' }, { ...valid, appliedModelRuntimeRevision: 'other-revision' }, { ...valid, changed: 1 }];

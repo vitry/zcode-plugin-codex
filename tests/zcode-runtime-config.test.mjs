@@ -216,18 +216,17 @@ test('maps native model capability fields and aliases', async () => {
   assert.equal(model.supportsStructuredOutput, true);
 });
 
-test('maps raw reasoning strings and selects a valid root thought level', async () => {
+test('maps reasoning while omitting cross-field defaults and options outside advertised levels', async () => {
   const config = nativeMinimalConfig();
   config.provider.custom.models['model-1'].reasoning = {
     levels: ['low', 'high'],
     defaultLevel: 'missing',
-    providerOptionsByLevel: { high: { reasoningEffort: 'high' } },
+    providerOptionsByLevel: { high: { reasoningEffort: 'high' }, missing: { reasoningEffort: 'missing' } },
   };
   const runtime = await nativeRuntime(config);
   assert.deepEqual(runtime.provider.models[0].reasoning, {
     enabled: true,
     levels: [{ value: 'low', label: 'low' }, { value: 'high', label: 'high' }],
-    defaultLevel: 'missing',
     providerOptionsByLevel: {
       high: { openaiCompatible: { reasoningEffort: 'high' } },
     },

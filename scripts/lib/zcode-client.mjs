@@ -328,9 +328,10 @@ function copyRuntimeModel(value) {
     || !runtimeText(value.revision) || !Number.isSafeInteger(value.generatedAt) || value.generatedAt < 0) throw inputError();
   const model = copyRuntimeModelRef(value.model);
   const provider = copyRuntimeProvider(value.provider, { nodes: 0 });
-  if (provider.providerId !== model.providerId || !provider.models.some((entry) => entry.modelId === model.modelId)) throw inputError();
+  const selectedModel = provider.models.find((entry) => entry.modelId === model.modelId);
+  if (provider.providerId !== model.providerId || selectedModel === undefined) throw inputError();
   const thoughtLevel = value.thoughtLevel;
-  if (thoughtLevel !== undefined && !runtimeText(thoughtLevel)) throw inputError();
+  if (thoughtLevel !== undefined && (!runtimeText(thoughtLevel) || !selectedModel.reasoning?.levels.some((level) => level.value === thoughtLevel))) throw inputError();
   return { revision: value.revision, generatedAt: value.generatedAt, model, provider, ...(thoughtLevel === undefined ? {} : { thoughtLevel }) };
 }
 /** @param {unknown} value */
@@ -395,12 +396,13 @@ function copyRuntimeReasoning(value, jsonState) {
     if (!runtimeExactObject(level, ['value', 'label'], []) || !runtimeText(level.value) || !runtimeText(level.label)) throw inputError();
     return { value: level.value, label: level.label };
   });
-  if (value.defaultLevel !== undefined && !runtimeText(value.defaultLevel)) throw inputError();
+  const levelValues = new Set(levels.map((level) => level.value));
+  if (value.defaultLevel !== undefined && (!runtimeText(value.defaultLevel) || !levelValues.has(value.defaultLevel))) throw inputError();
   let providerOptionsByLevel;
   if (value.providerOptionsByLevel !== undefined) {
     if (!runtimePlainObject(value.providerOptionsByLevel) || Object.keys(value.providerOptionsByLevel).length > RUNTIME_MAX_REASONING_LEVELS) throw inputError();
     providerOptionsByLevel = Object.fromEntries(Object.entries(value.providerOptionsByLevel).map(([level, options]) => {
-      if (!runtimeSafeKey(level)) throw inputError(); return [level, copyRuntimeJsonRecord(options, jsonState)];
+      if (!runtimeSafeKey(level) || !levelValues.has(level)) throw inputError(); return [level, copyRuntimeJsonRecord(options, jsonState)];
     }));
   }
   return { enabled: value.enabled, levels, ...(value.defaultLevel === undefined ? {} : { defaultLevel: value.defaultLevel }), ...(providerOptionsByLevel === undefined ? {} : { providerOptionsByLevel }) };
