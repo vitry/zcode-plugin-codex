@@ -308,6 +308,25 @@ test('SessionEnd cancels an active turn only after acknowledged stop and coheren
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled'); assert.equal(stops, 1); assert.equal(closes, 1);
 });
 
+test('SessionEnd retains the writable guard when the post-stop session read is uncertain', async () => {
+  const input = await fixture(); await job(input); let reads = 0; let stops = 0;
+  const settlement = await settleOutcome(input, async (current) => ({
+    readSession: async (sessionId) => {
+      assert.equal(sessionId, current.zcodeSessionId); reads += 1;
+      if (reads === 1) return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] };
+      throw new Error('post-stop read transport closed');
+    },
+    stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); stops += 1; },
+    close: async () => {},
+  }));
+  assert.equal(settlement.kind, 'retained-writable-guard'); assert.equal(settlement.job.status, 'running');
+  assert.equal(reads, 2); assert.equal(stops, 1); assert.match(settlement.job.lastCancelError, /post-stop read transport closed/);
+  await assert.rejects(input.store.reserveJob({
+    workspace: input.workspace, ownerSessionId: 'later-owner', ownerTurnId: 'later-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' },
+  }), { code: 'WRITABLE_JOB_EXISTS' });
+});
+
 test('SessionEnd retains an unresolved empty idle admission gap for later coherent settlement', async () => {
   const input = await fixture(); await job(input); let phase = 0; let stops = 0;
   const reads = [

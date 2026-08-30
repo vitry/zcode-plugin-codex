@@ -7,7 +7,7 @@ import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
-import { classifyCurrentTurnSnapshot } from './turn-terminal.mjs';
+import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -229,7 +229,8 @@ async function observeCancellationSettlement(input, job, guard) {
     catch (error) { return { kind: 'uncertain', error }; }
     const classification = classifyCurrentTurnSnapshot(snapshot, turnBoundary(job));
     if (classification.kind !== 'pending') return { ...classification, snapshot };
-    if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)) {
+    if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)
+      && hasCurrentTurnActivity(snapshot, turnBoundary(job))) {
       const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, job, guard);
       if (revalidated?.kind === 'stale') return { kind: 'stale', job: revalidated.job };
       try { await input.options.stopSession(job.zcodeSessionId); stoppedActiveTurn = true; }

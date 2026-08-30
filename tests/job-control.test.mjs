@@ -437,19 +437,23 @@ test('cancellation bridges the 0.16.5 admission gap with a second guarded stop a
   running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-admission-gap', startRevision: 7, beforeMessageIds: ['historical'] });
   const snapshots = [
     { projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] },
+    { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
     { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [completedUser('input-admission-gap')] },
     { projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [completedUser('input-admission-gap'), {
       info: { role: 'assistant', messageId: 'assistant-admission-gap', parentMessageId: 'input-admission-gap', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }],
     }] },
   ];
   let reads = 0; let stops = 0;
+  /** @type {number[]} */
+  const stopReadCounts = [];
   const controller = createJobController({
     store, dataRoot: join(root, 'data'), cancellationObservationMs: 1_000, cancellationObservationIntervalMs: 0,
-    stopSession: async () => { assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); stops += 1; },
+    stopSession: async () => { assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); stops += 1; stopReadCounts.push(reads); },
     readSession: async (sessionId) => { assert.equal(sessionId, running.zcodeSessionId); return snapshots[Math.min(reads++, snapshots.length - 1)]; },
   });
   const winner = await controller.cancel(workspace, job.id, job.ownerSessionId);
-  assert.equal(winner.status, 'cancelled'); assert.equal(stops, 2); assert.equal(reads, 3);
+  assert.equal(winner.status, 'cancelled'); assert.equal(stops, 2); assert.equal(reads, 4);
+  assert.deepEqual(stopReadCounts, [0, 3], 'the compensating stop must wait for attributable current-turn activity');
 });
 
 test('cancellation preserves a coherent completed-success terminal winner', async () => {

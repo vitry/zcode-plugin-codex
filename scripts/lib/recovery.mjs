@@ -339,7 +339,7 @@ async function settleEndedRemoteJob(input, job) {
     try { await client.stopSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await cancelJob(input, job)); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
     throwIfRecoveryInterrupted(input);
     const settledClassification = hasBoundary(job) ? classifyCurrentTurnSnapshot(snapshot, currentTurnBoundary(job)) : { kind: 'pending' };
     const racedCompletion = settledClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;

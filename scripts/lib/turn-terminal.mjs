@@ -33,6 +33,18 @@ export function classifyCurrentTurnSnapshot(snapshot, boundary = {}) {
 }
 
 /**
+ * Report activity only when the snapshot contains the accepted turn's real-user
+ * root at or beyond its persisted revision boundary.
+ * @param {any} snapshot
+ * @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} boundary
+ */
+export function hasCurrentTurnActivity(snapshot, boundary = {}) {
+  const revision = snapshot?.runtime?.stateRevision;
+  if (!Number.isSafeInteger(revision) || revision < 0 || boundary.stateRevision !== undefined && revision < boundary.stateRevision) return false;
+  return selectCurrentTurnUserRoot(snapshot, boundary) !== undefined;
+}
+
+/**
  * Use the exact direct-input/sole-real-user-root selection shared by result extraction.
  * A directly linked response locks selection even when hidden or otherwise unusable.
  * @param {any} snapshot
