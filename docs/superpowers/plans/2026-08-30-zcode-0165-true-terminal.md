@@ -253,3 +253,35 @@ Run the repository's documented marketplace snapshot build command, then rerun `
 - [ ] **Step 7: Commit**
 
 Commit: `test: qualify ZCode 0.16.5 true terminals`
+
+### Task 6: Close final-review baseline and admission races
+
+**Files:**
+- Modify: `scripts/lib/conversation-progress.mjs`
+- Modify: `scripts/lib/review.mjs`
+- Modify: `scripts/lib/job-control.mjs`
+- Modify: `scripts/lib/recovery.mjs`
+- Test: `tests/conversation-progress.test.mjs`
+- Test: `tests/job-control.test.mjs`
+- Test: `tests/recovery.test.mjs`
+- Test: `tests/session-end.test.mjs`
+
+- [ ] **Step 1: Add deterministic RED tests for pre-baseline online frames**
+
+Gate the initial snapshot behind online historical `running -> failed` traffic. Assert that the historical turn never obtains current-turn authority, late initial ordering cannot be accepted as a valid baseline, and execution degrades to coherent snapshot fallback.
+
+- [ ] **Step 2: Require an established subscription baseline before arming**
+
+Expose a bounded baseline-ready result from the conversation observer. Accept only a complete initial or recovery snapshot before online authority is enabled. If online traffic wins, ordering is stale, or baseline establishment fails, mark v4 authority unavailable and continue through snapshot fallback.
+
+- [ ] **Step 3: Add deterministic RED tests for running/send/cancel interleaving**
+
+Gate `session/send` after the job becomes running, start cancel concurrently, and prove cancellation cannot pass the admission fence until the accepted boundary is durable. Also cover accepted send followed by boundary persistence failure and orphan recovery with no boundary; a bare stop acknowledgement must retain the writable guard.
+
+- [ ] **Step 4: Fence admission and retain boundaryless guards**
+
+Hold the existing per-job cancellation lock across running revalidation, guarded send, and accepted-boundary CAS. On boundary publication failure, perform only best-effort remote stop and preserve nonterminal durable state unless attributable evidence proves a terminal winner. Cancellation, SessionEnd, and recovery use the same boundaryless rule and never terminalize from a stop ACK alone.
+
+- [ ] **Step 5: Verify, regenerate, and re-review**
+
+Run the four focused suites, all affected suites, marketplace snapshot generation/contracts, and `npm run check`. Repeat independent Spec and Quality reviews before pushing the branch.
