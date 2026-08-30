@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -231,6 +231,37 @@ test('release docs publish exact private Rescue continuation without a public se
   assert.match(bindingAdr, /one canonical workspace admits at most one active writable Rescue/i);
   assert.match(bindingAdr, /parallel Rescue throughput.{0,160}separate isolation and admission design/is);
   assert.match(bindingAdr, /continuation fix neither authorizes nor implements that change/i);
+});
+
+test('Rescue continuation rollback ships with runtime parity while repair stays repository-only', async () => {
+  const runtimePaths = [
+    'scripts/lib/state.mjs',
+    'scripts/lib/review.mjs',
+    'scripts/zcode-companion.mjs',
+  ];
+  const sourceRuntime = runtimePaths.map((path) => read(path));
+  assert.match(sourceRuntime[0], /finishActiveRescueContinuationFailure/);
+  assert.match(sourceRuntime[1], /ResumeFailureSettlementError/);
+  assert.match(sourceRuntime[2], /convergeResumeFailure/);
+
+  const npmPack = npmLaunch(['pack', '--dry-run', '--json', '--ignore-scripts'], { env: process.env });
+  const packed = JSON.parse((await execFile(npmPack.command, npmPack.args, {
+    cwd: repositoryRoot, maxBuffer: 4 * 1024 * 1024,
+  })).stdout);
+  const packedPaths = packed?.[0]?.files?.map((entry) => entry.path) ?? [];
+  for (const path of runtimePaths) assert.ok(packedPaths.includes(path), `${path} must ship in the package`);
+  assert.ok(!packedPaths.includes('tools/repair-rescue-continuation-binding.mjs'));
+  assert.equal(existsSync(new URL('marketplace/plugins/zcode/tools/repair-rescue-continuation-binding.mjs', root)), false);
+
+  const bindingAdr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  assert.match(bindingAdr, /reservation-time.{0,120}`currentJobId`/is);
+  assert.match(bindingAdr, /claimed lease.{0,160}compare-and-swap|compare-and-swap.{0,160}claimed lease/is);
+  assert.match(bindingAdr, /binding restoration.{0,180}failed job.{0,180}crash convergence/is);
+  assert.match(bindingAdr, /runtime correction.{0,160}operator-only maintenance/is);
+  assert.match(read('CHANGELOG.md'), /pre-running Rescue continuation.{0,220}restores the exact prior binding/is);
+  for (const [index, path] of runtimePaths.entries()) {
+    assert.equal(read(`marketplace/plugins/zcode/${path}`), sourceRuntime[index], `${path} must have exact marketplace parity`);
+  }
 });
 
 test('future writable-concurrency ADR remains absent from real package and marketplace artifacts', { timeout: 360_000 }, async (t) => {

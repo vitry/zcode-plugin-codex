@@ -1538,11 +1538,12 @@ test('background interruption after claim preserves the binding revoke and termi
   assert.equal((await readFile(record, 'utf8')).trim(), '');
 });
 
-for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
+for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy post-resume failure', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
   ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, `background-migration-${failurePoint.replace(' ', '-')}.jsonl`); await writeFile(record, '');
+  const runtimeHome = join(context.directory, 'empty-runtime-home'); await mkdir(runtimeHome);
   const parentSessionId = `background-migration-${failurePoint.replace(' ', '-')}-parent`;
   const childId = `background-migration-${failurePoint.replace(' ', '-')}-child`; const childTurnId = `${childId}-turn`;
   await prepareDirectRescueChild(context, {
@@ -1565,7 +1566,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
   const partitionPath = join(storage.directory, partitionName);
-  const historicalMarkerless = ['legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution',
+  const historicalMarkerless = ['legacy worker execution', 'legacy post-resume failure', 'legacy recovery', 'corrupt legacy worker execution',
     'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint);
   const partition = JSON.parse(await readFile(partitionPath, 'utf8')); const current = partition.records[0];
   const v2 = { ...current, version: 2, childAuthority: { ...current.childAuthority } };
@@ -1605,7 +1606,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
     cwd: workspace, env: childEnv,
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
-  if (['worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
+  if (['worker crash', 'legacy worker execution', 'legacy post-resume failure', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
     const queued = await attempt; assert.equal(queued.type, 'background');
     assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|rescueReservationKind|priorCurrentJobId|priorClosedAt/u);
     if (failurePoint === 'worker crash') {
@@ -1651,7 +1652,9 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace, ownerId: ownerIdForSession(parentSessionId), requestTimeoutMs: 500 });
         /** @type {any} */ let executionError;
         await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
-          cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
+          cwd: workspace, env: failurePoint === 'legacy post-resume failure'
+            ? { ...childEnv, HOME: runtimeHome, USERPROFILE: runtimeHome, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' }
+            : { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
           authorization: { executionCapability: capability.token, jobId: queued.job.id },
         }), (error) => { executionError = error; return failurePoint === 'durable marker v1 downgrade'
           ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID'
@@ -1676,7 +1679,8 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }), { code: 'RESCUE_BINDING_CLOSED' });
   const failedJobs = await store.listJobs(workspace); assert.equal(failedJobs.length, 2); assert.equal(failedJobs[1].status, 'failed');
   const callsAfterFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length, failurePoint === 'legacy worker execution' ? 1 : 0);
+  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length,
+    ['legacy worker execution', 'legacy post-resume failure'].includes(failurePoint) ? 1 : 0);
 
   if (['worker launch', 'worker crash'].includes(failurePoint)) {
     await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-c', workspace, permissionMode: 'workspace-write',
@@ -2274,7 +2278,7 @@ for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt $
     .filter((name) => name.endsWith('.json')), []);
 });
 
-/** @param {any} context @param {{name:string,exact?:boolean,execution?:'foreground'|'background'}} input */
+/** @param {any} context @param {{name:string,exact?:boolean,execution?:'foreground'|'background',extraEnv?:NodeJS.ProcessEnv}} input */
 async function preparedSameTurnBoundContinuation(context, input) {
   const record = join(context.directory, `${input.name}.jsonl`); await writeFile(record, '');
   const parentSessionId = `${input.name}-parent`; const parentTurnId = `${input.name}-parent-turn`; const childId = `${input.name}-child`; const childTurnId = `${input.name}-child-turn`;
@@ -2282,7 +2286,8 @@ async function preparedSameTurnBoundContinuation(context, input) {
     parentSessionId, parentTurnId, childId, childTurnId,
     prompt: '$zcode:rescue --fresh --wait establish guarded continuation',
   });
-  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const env = { ...context.env, ...input.extraEnv, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) };
   const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
   assert.equal(first.job.status, 'succeeded');
   await markForwarding(context.dataRoot, {
@@ -2305,6 +2310,190 @@ async function preparedSameTurnBoundContinuation(context, input) {
     executor: { agentId: childId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId, parentTurnId, parentPermissionMode: 'workspace-write', workspace: context.workspace },
   };
 }
+
+/** @param {any} context @param {ReturnType<typeof preparedSameTurnBoundContinuation> extends Promise<infer T> ? T : never} prepared @param {NodeJS.ProcessEnv} env */
+async function prepareRolledBackContinuationRetry(context, prepared, env) {
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
+    parentSessionId: prepared.parentSessionId, source: 'proactive', task: 'retry rolled back continuation',
+    options: { execution: 'foreground', resume: 'resume' },
+  }), legacyPreparedRoute);
+  return runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env,
+    dependencies: { readCodexThreadSpawnChild: async () => ({
+      id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+      agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
+    }) },
+  });
+}
+
+for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of /** @type {const} */ (['resume', 'runtime-model', 'outer-dependency', 'outer-dependency-read'])) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, async () => {
+  const context = await fixture();
+  const failureHome = join(context.directory, `${failure}-home`); await mkdir(failureHome);
+  const extraEnv = {
+    ...(failure === 'resume' ? { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' } : {}),
+    ...(failure === 'runtime-model' ? { HOME: failureHome, USERPROFILE: failureHome, FAKE_ZCODE_COLD_RESUME_MODEL: 'fake/model' } : {}),
+  };
+  const prepared = await preparedSameTurnBoundContinuation(context, {
+    name: `rollback-${execution}-${failure}`, exact: true, execution, extraEnv,
+  });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const bindingBefore = await store.resolveRescueBinding({
+    workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
+  });
+  assert.equal(bindingBefore.kind, 'bound');
+  const failureEnv = prepared.env;
+  const outerError = new Error('fixture outer dependency failed before execution');
+  let outerDependencyFailed = false; let outerReadFaults = 0;
+  const outerFailure = async () => { outerDependencyFailed = true; throw outerError; };
+  const outerReadFaultStore = { ...store, readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    if (outerDependencyFailed && outerReadFaults === 0) {
+      outerReadFaults += 1;
+      throw new Error('fixture first outer winner read failed');
+    }
+    return store.readJob(workspace, jobId);
+  } };
+  const executionDependencies = failure.startsWith('outer-dependency') ? {
+    discoverLaunch: outerFailure,
+    ...(failure === 'outer-dependency-read' ? { createStateStore: () => outerReadFaultStore } : {}),
+  } : {};
+  /** @type {any} */ let worker;
+  /** @type {unknown} */ let caught;
+  const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: failureEnv,
+    dependencies: {
+      readCodexThreadSpawnChild: async () => ({
+        id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+        agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
+      }),
+      ...executionDependencies,
+      ...(execution === 'background' ? { startBackgroundWorker: async (/** @type {any} */ input) => { worker = input; } } : {}),
+    },
+  });
+  if (execution === 'background') {
+    const reserved = await invocation;
+    if (!worker) throw new Error('expected background worker');
+    await assert.rejects(runCompanion(['run-reserved-job', reserved.job.id], {
+      cwd: context.workspace, env: failureEnv,
+      authorization: { executionCapability: worker.executionCapability, jobId: reserved.job.id },
+      dependencies: executionDependencies,
+    }), (error) => { caught = error; return true; });
+  } else await assert.rejects(invocation, (error) => { caught = error; return true; });
+  if (failure === 'outer-dependency-read') {
+    assert.equal(caught, outerError); assert.equal(outerReadFaults, 1);
+  }
+
+  const jobsAfterFailure = await store.listJobs(context.workspace);
+  assert.equal(jobsAfterFailure.length, 2);
+  const failed = jobsAfterFailure.find((job) => job.id !== prepared.first.job.id);
+  assert.equal(failed?.status, 'failed');
+  assert.equal(failed?.startedAt, undefined); assert.equal(failed?.zcodeSessionId, undefined);
+  assert.equal(failed?.rescueContinuationOrigin, undefined); assert.equal(failed?.rescueExecutionClaim, undefined);
+  assert.equal(failed?.rescueExecutionReservation, undefined);
+  if (execution === 'background') {
+    const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+    const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+      `${createHash('sha256').update(worker.executionCapability).digest('hex')}.json`);
+    const capability = JSON.parse(await readFile(capabilityPath, 'utf8'));
+    assert.match(capability.consumedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.equal(capability.executionReservationId, undefined);
+    assert.equal(capability.executionReservationWorkerLeaseId, undefined);
+  }
+  const bindingAfterFailure = await store.resolveRescueBinding({
+    workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
+  });
+  assert.equal(bindingAfterFailure.kind, 'bound');
+  assert.equal(bindingAfterFailure.binding.currentJobId, prepared.first.job.id);
+  assert.equal(bindingAfterFailure.binding.operationId, bindingBefore.binding.operationId);
+
+  await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
+    ownerId: ownerIdForSession(prepared.parentSessionId), requestTimeoutMs: 750 });
+  const retryEnv = { ...prepared.env };
+  delete retryEnv.FAKE_ZCODE_BAD_SNAPSHOT_METHOD; delete retryEnv.FAKE_ZCODE_BAD_SNAPSHOT;
+  delete retryEnv.FAKE_ZCODE_COLD_RESUME_MODEL;
+  const retried = await prepareRolledBackContinuationRetry(context, prepared, retryEnv);
+  assert.equal(retried.job.status, 'succeeded');
+  assert.equal(retried.job.zcodeSessionId, prepared.first.job.zcodeSessionId);
+  const calls = (await readFile(prepared.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.ok(calls.some((frame) => frame.method === 'session/resume' && frame.params?.sessionId === prepared.first.job.zcodeSessionId));
+});
+
+for (const scenario of [
+  { name: 'publication and winner-read faults', publicationFaults: 1, preSettlementFaults: 0, winnerReadFault: true, runningWinner: false, expectedSettlementCalls: 2 },
+  { name: 'exhausted inner settlement retries before outer convergence', publicationFaults: 0, preSettlementFaults: 2, winnerReadFault: false, runningWinner: false, expectedSettlementCalls: 3 },
+  { name: 'an inner settlement rejection followed by a durable running winner', publicationFaults: 0, preSettlementFaults: 1, winnerReadFault: false, runningWinner: true, expectedSettlementCalls: 2 },
+]) test(`active continuation rollback convergence preserves the original resume error across ${scenario.name}`, async () => {
+  const context = await fixture();
+  const prepared = await preparedSameTurnBoundContinuation(context, {
+    name: `rollback-original-error-${scenario.publicationFaults}-${scenario.preSettlementFaults}`, exact: true, execution: 'foreground',
+    extraEnv: { FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
+  });
+  const baseStore = createStateStore({ dataRoot: context.dataRoot });
+  let publicationAttempts = 0; let injectedPublicationFaults = 0; let preSettlementFaults = 0; let settlementCalls = 0;
+  let publicationFaultObserved = false; let winnerReadFaults = 0;
+  const publicationFaulted = createStateStore({ dataRoot: context.dataRoot, testOnlyPublicationHook: async (seam) => {
+    if (seam === 'active-continuation-rollback:binding') publicationAttempts += 1;
+    if (seam === 'active-continuation-rollback:binding' && injectedPublicationFaults < scenario.publicationFaults) {
+      injectedPublicationFaults += 1;
+      publicationFaultObserved = true;
+      throw new Error('injected binding publication checkpoint failure');
+    }
+  } });
+  const faultedStore = { ...publicationFaulted,
+    finishActiveRescueContinuationFailure: async (/** @type {string} */ workspace, /** @type {string} */ jobId,
+      /** @type {string|null} */ workerLeaseId, /** @type {any} */ proof, /** @type {'failed'} */ status,
+      /** @type {Record<string,unknown>} */ patch) => {
+      settlementCalls += 1;
+      if (scenario.runningWinner && preSettlementFaults === 0) {
+        preSettlementFaults += 1;
+        const queued = await baseStore.readJob(workspace, jobId);
+        await baseStore.transitionJob(workspace, jobId, ['queued'], 'running', {
+          startedAt: new Date().toISOString(), zcodeSessionId: prepared.first.job.zcodeSessionId,
+          childPid: queued.childPid, workerLeaseId: queued.workerLeaseId,
+        });
+        throw new Error('injected settlement rejection after running winner');
+      }
+      if (preSettlementFaults < scenario.preSettlementFaults) {
+        preSettlementFaults += 1;
+        throw new Error('injected pre-settlement failure');
+      }
+      return publicationFaulted.finishActiveRescueContinuationFailure(workspace, jobId, workerLeaseId, proof, status, patch);
+    },
+    readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    if (scenario.winnerReadFault && publicationFaultObserved && winnerReadFaults === 0) {
+      winnerReadFaults += 1;
+      throw new Error('injected post-settlement winner read failure');
+    }
+    return baseStore.readJob(workspace, jobId);
+  } };
+  const caught = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: prepared.env,
+    dependencies: {
+      createStateStore: () => faultedStore,
+      readCodexThreadSpawnChild: async () => ({
+        id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+        agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' },
+        createdAt: 1, updatedAt: 2,
+      }),
+    },
+  }).catch((error) => error);
+  assert.equal(injectedPublicationFaults, scenario.publicationFaults);
+  assert.equal(preSettlementFaults, scenario.preSettlementFaults);
+  assert.equal(settlementCalls, scenario.expectedSettlementCalls);
+  assert.ok(publicationAttempts >= scenario.publicationFaults);
+  assert.equal(winnerReadFaults, scenario.winnerReadFault ? 1 : 0);
+  assert.notEqual(caught?.code, 'RESCUE_PUBLICATION_TEST_FAULT');
+  assert.notEqual(caught?.code, 'RESCUE_BINDING_INVALID');
+  assert.doesNotMatch(caught?.message ?? '', /pre-settlement|publication checkpoint|running winner|winner read/u);
+  const jobs = await baseStore.listJobs(context.workspace); const attempt = jobs.find((job) => job.id !== prepared.first.job.id);
+  assert.equal(attempt?.status, scenario.runningWinner ? 'running' : 'failed');
+  if (!scenario.runningWinner) assert.equal(attempt?.error?.message, caught?.message);
+  const binding = await baseStore.resolveRescueBinding({ workspace: context.workspace,
+    parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
+  assert.equal(binding.kind, 'bound');
+  assert.equal(binding.binding.currentJobId, scenario.runningWinner ? attempt?.id : prepared.first.job.id);
+});
 
 /** @param {any} context @param {string} record @param {number} expectedJobs */
 async function assertNoPreparedReservationSideEffects(context, record, expectedJobs) {
@@ -4774,7 +4963,7 @@ test('cold resume reads only isolated HOME, updates full runtime, verifies it, t
   assert.equal(warmRequests.filter((request) => request.method === 'session/send').length, 1);
 });
 
-test('unsupported CLI runtime update remains authoritative without retry, fallback, or send', async () => {
+test('cold runtime update rejection remains authoritative and retry resumes the original session without fallback', async () => {
   const context = await fixture(); const record = join(context.directory, 'unsupported-cold-resume.jsonl');
   const isolatedHome = join(context.directory, 'unsupported-home'); await mkdir(join(isolatedHome, '.zcode', 'cli'), { recursive: true });
   await writeFile(join(isolatedHome, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 'unsupported/model' }, provider: { unsupported: { kind: 'openai-compatible', models: { model: {} } } } }));
@@ -4790,6 +4979,23 @@ test('unsupported CLI runtime update remains authoritative without retry, fallba
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 0);
   assert.equal(requests.some((request) => request.method === 'session/setThoughtLevel'), false);
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
+
+  await writeFile(record, '');
+  await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
+    ownerId: ownerIdForSession('codex-session'), requestTimeoutMs: 750 });
+  /** @type {NodeJS.ProcessEnv} */ const retryEnv = { ...env,
+    FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) };
+  delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
+  const retried = await companion(context, ['rescue', '--resume', 'corrected recovery'], {
+    ...retryEnv,
+  });
+  assert.equal(retried.code, 0, `${retried.stderr}${retried.stdout}`);
+  assert.equal(retried.json.job.zcodeSessionId, initial.json.job.zcodeSessionId);
+  const retryRequests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(retryRequests.filter((request) => request.method === 'session/resume'
+    && request.params.sessionId === initial.json.job.zcodeSessionId).length, 1);
+  assert.equal(retryRequests.filter((request) => request.method === 'session/create').length, 0);
+  assert.equal(retryRequests.filter((request) => request.method === 'session/send').length, 1);
 });
 
 test('warm, other-warning, and missing-config resumes perform no runtime update outside exact recoverable config', async () => {

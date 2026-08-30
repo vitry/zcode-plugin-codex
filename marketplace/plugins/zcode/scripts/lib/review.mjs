@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryConfig?:(model:{providerId:string,modelId:string}|undefined)=>Promise<any>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryConfig?:(model:{providerId:string,modelId:string}|undefined)=>Promise<any>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeRpcSucceeded?:()=>void,onRunningPersisted?:()=>void,onResumeFailure?:(error:unknown)=>Promise<any>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -106,7 +106,7 @@ export async function executeJob(input) {
       input.signal?.throwIfAborted();
       sessionId = input.resumeSessionId;
       snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
-      input.onResumeSucceeded?.();
+      input.onResumeRpcSucceeded?.();
     } else snapshot = await boundedStep(async () => {
       const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
       sessionId = created?.session?.sessionId;
@@ -161,6 +161,7 @@ export async function executeJob(input) {
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
+    if (input.resumeSessionId) input.onRunningPersisted?.();
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
@@ -189,9 +190,17 @@ export async function executeJob(input) {
     let resumeFailureSettlementRejected = false;
     if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
       try {
-        await input.onResumeFailure(primaryError);
-        current = await input.store.readJob(workspace, job.id).catch(() => current);
-      } catch (rollbackError) { primaryError = rollbackError; resumeFailureSettlementRejected = true; }
+        const settled = await input.onResumeFailure(primaryError);
+        try { current = await input.store.readJob(workspace, job.id); }
+        catch (readError) {
+          if (settled?.id === job.id && settled.workspace === running.workspace
+            && ['running', 'failed', 'cancelled'].includes(settled.status)) current = settled;
+          else throw readError;
+        }
+      } catch (rollbackError) {
+        primaryError = new ResumeFailureSettlementError(primaryError, rollbackError);
+        resumeFailureSettlementRejected = true;
+      }
     }
     if (!resumeFailureSettlementRejected && error instanceof SuccessfulResultFinalizationError) {
       if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
@@ -281,6 +290,16 @@ async function publishSuccessfulResult({ input, job, workspace, dataRoot, result
 export class SuccessfulResultFinalizationError extends Error {
   /** @param {unknown} cause @param {string} resultArtifact */
   constructor(cause, resultArtifact) { super('Successful result could not be finalized.', { cause }); this.name = 'SuccessfulResultFinalizationError'; this.resultArtifact = resultArtifact; }
+}
+
+export class ResumeFailureSettlementError extends Error {
+  /** @param {unknown} executionError @param {unknown} settlementError */
+  constructor(executionError, settlementError) {
+    super('Resume failure settlement could not be proven.', { cause: settlementError });
+    this.name = 'ResumeFailureSettlementError';
+    this.executionError = executionError;
+    this.settlementError = settlementError;
+  }
 }
 
 /** @param {string} jobId @param {string} status */

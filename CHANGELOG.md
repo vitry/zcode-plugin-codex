@@ -6,6 +6,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Fixed pre-running Rescue continuation failures so a locked compare-and-swap restores the exact prior binding while retaining the failed attempt. Claimed leases remain fenced, crash retries converge across binding-first publication, legacy migration semantics stay unchanged, and the strict historical repair CLI remains operator-only and outside package and marketplace artifacts.
 - Fixed a cold resumed ZCode session by lazily reading the bounded effective CLI provider configuration only after the exact warning, applying one ephemeral `session/updateRuntimeModelConfig`, and proving recovery with one `session/read` before effort and one send. Warm resumes do not read config; credentials are neither cached nor persisted; invalid config remains bounded while genuine AppServer rejection stays authoritative; and recovery never retries resume, falls back, resends, or replaces the session.
 - Fixed direct status/result/cancel and job creators to use one lifecycle-authoritative job partition across origin, exact target, and later turns, without scanning, merging, or expanding explicit-ID ownership.
 - Added compact `SessionStart` rehydration of the same instance-bound Rescue launcher within the existing context limit, without minting authority; ordinary sources remain generic and unsafe provenance remains a fixed error.

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, readdir, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { lstat, readdir, realpath, unlink } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { PluginError } from './errors.mjs';
 import { isCanonicalCodexAgentPath } from './codex-app-server.mjs';
@@ -343,6 +344,62 @@ export function createStateStore(options) {
       if (!['failed', 'cancelled'].includes(nextStatus) || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
       return transitionStoredJob(dataRoot, workspace, jobId, ['queued'], nextStatus, patch, true,
         { migrationRollback: rollback, publicationHook });
+    },
+
+    /**
+     * Restore the exact prior active-v3 binding and retain its pre-running continuation as failed.
+     * Binding restoration publishes first so an interrupted transaction is retryable and cannot
+     * leave the failed attempt authoritative.
+     * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} proof
+     * @param {'failed'} nextStatus @param {Record<string,unknown>} [patch]
+     */
+    async finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch = {}) {
+      validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
+      if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
+        || nextStatus !== 'failed' || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
+      return finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
+        expectedWorkerLeaseId, proof, patch, publicationHook);
+    },
+
+    /**
+     * Validate or apply one explicitly identified historical active-v3 Rescue binding repair.
+     * This maintenance-only operation never discovers candidates and never rewrites job records.
+     * @param {any} input
+     * @returns {Promise<{status:'repairable'|'repaired'|'already-repaired'}>}
+     */
+    async repairRescueContinuationBinding(input) {
+      try {
+        validateHistoricalRescueRepairInput(input);
+        const storage = await existingJobStorageForRepair(dataRoot, input.workspace);
+        return await withFileLock(storage.lockPath, async () => {
+          const lockIdentity = await captureStateLockIdentity(storage);
+          const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
+          await validateOwnerIndexForRepairLocked(storage, jobs);
+          const activeWritableJobs = jobs.filter(isActiveWritableJob);
+          if (activeWritableJobs.length > 0) {
+            await readRescueReservationEvidence(storage, activeWritableJobs[0]);
+            throw invalidRescueBindingRepair();
+          }
+
+          const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
+          const binding = snapshot.records.get(input.bindingKey) ?? null;
+          const state = validateHistoricalRescueRepairBinding(binding, input, storage.workspacePath);
+          const anchor = await readExactBindingJob(storage, input.anchorJobId);
+          const failedCurrent = await readExactBindingJob(storage, input.failedCurrentJobId);
+          await Promise.all([anchor, failedCurrent].map((job) => readRescueReservationEvidence(storage, job)));
+          validateHistoricalRescueRepairJobs(anchor, failedCurrent, input, binding, storage.workspacePath);
+          if (state === 'already-repaired') return { status: 'already-repaired' };
+          if (input.apply !== true) return { status: 'repairable' };
+
+          const repaired = validateRescueBinding({ ...binding, currentJobId: input.anchorJobId,
+            updatedAt: historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt) });
+          await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot,
+            bindingSnapshotWith(snapshot, repaired), lockIdentity);
+          return { status: 'repaired' };
+        }, { createLayout: false });
+      } catch {
+        throw invalidRescueBindingRepair();
+      }
     },
 
     /** Terminalize one queued recovery candidate only if its exact effective worker lease is unchanged.
@@ -813,6 +870,165 @@ export function createStateStore(options) {
   };
 }
 
+const HISTORICAL_RESCUE_REPAIR_REQUIRED_KEYS = [
+  'anchorJobId', 'bindingKey', 'childAgentId', 'childAgentPath', 'expectedBindingUpdatedAt',
+  'failedCurrentJobId', 'operationId', 'parentSessionId', 'workspace',
+];
+
+/** @param {any} input */
+function validateHistoricalRescueRepairInput(input) {
+  if (!isPlainJsonObject(input)) throw invalidRescueBindingRepair();
+  const keys = Object.keys(input).sort();
+  const allowed = input.apply === undefined
+    ? HISTORICAL_RESCUE_REPAIR_REQUIRED_KEYS
+    : [...HISTORICAL_RESCUE_REPAIR_REQUIRED_KEYS, 'apply'].sort();
+  if (keys.join(',') !== allowed.join(',')
+    || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId)
+    || !isNonEmptyString(input.childAgentId) || !validAgentPath(input.childAgentPath)
+    || !isDigest(input.bindingKey) || !isDigest(input.operationId) || !isDigest(input.anchorJobId)
+    || !isDigest(input.failedCurrentJobId) || input.anchorJobId === input.failedCurrentJobId
+    || !isIsoTimestamp(input.expectedBindingUpdatedAt)
+    || input.apply !== undefined && typeof input.apply !== 'boolean') throw invalidRescueBindingRepair();
+  historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt);
+}
+
+/** One deterministic generation makes an exact retry distinguishable from every later binding update. @param {string} expected */
+function historicalRescueRepairUpdatedAt(expected) {
+  try {
+    const repaired = new Date(Date.parse(expected) + 1).toISOString();
+    if (Date.parse(repaired) !== Date.parse(expected) + 1) throw new Error('invalid');
+    return repaired;
+  } catch { throw invalidRescueBindingRepair(); }
+}
+
+/** Validate the owner index exactly without invoking its repair path. @param {any} storage @param {any[]} jobs */
+async function validateOwnerIndexForRepairLocked(storage, jobs) {
+  const marker = await readOwnerIndexMarker(storage);
+  const layout = await readOwnerIndexLayout(storage);
+  if (marker?.version !== OWNER_INDEX_VERSION || !ownerIndexMarkerMatches(marker, layout)) throw invalidRescueBindingRepair();
+  const expectedTuples = jobs.map((job) => ownerBindingTuple(job.ownerSessionId, job.id)).sort();
+  const actualTuples = layout.bindings.map((binding) => binding.tuple).sort();
+  if (!sameStringList(expectedTuples, actualTuples)) throw invalidRescueBindingRepair();
+}
+
+/** @param {any} binding @param {any} input @param {string} workspace */
+function validateHistoricalRescueRepairBinding(binding, input, workspace) {
+  let valid; let authority;
+  try { valid = validateRescueBinding(binding); authority = rescueBindingAuthorityView(valid); }
+  catch { throw invalidRescueBindingRepair(); }
+  const common = valid.version === 3 && valid.state === 'active' && valid.workspace === workspace
+    && valid.parentSessionId === input.parentSessionId && valid.key === input.bindingKey
+    && valid.operationId === input.operationId && valid.anchorJobId === input.anchorJobId
+    && authority.kind === 'subagent-start' && authority.childAgentId === input.childAgentId
+    && authority.childAgentType === 'zcode-rescue' && authority.agentPath === input.childAgentPath;
+  if (!common) throw invalidRescueBindingRepair();
+  if (valid.currentJobId === input.failedCurrentJobId
+    && valid.updatedAt === input.expectedBindingUpdatedAt) return 'repairable';
+  const repairedUpdatedAt = historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt);
+  if (valid.currentJobId !== input.anchorJobId || valid.updatedAt !== repairedUpdatedAt) throw invalidRescueBindingRepair();
+  let expectedOriginal;
+  try { expectedOriginal = validateRescueBinding({ ...valid, currentJobId: input.failedCurrentJobId,
+    updatedAt: input.expectedBindingUpdatedAt }); } catch { throw invalidRescueBindingRepair(); }
+  const expectedRepaired = validateRescueBinding({ ...expectedOriginal, currentJobId: input.anchorJobId,
+    updatedAt: valid.updatedAt });
+  if (!sameExactBinding(valid, expectedRepaired)) throw invalidRescueBindingRepair();
+  return 'already-repaired';
+}
+
+/** @param {any} anchor @param {any} current @param {any} input @param {any} binding @param {string} workspace */
+function validateHistoricalRescueRepairJobs(anchor, current, input, binding, workspace) {
+  const common = [anchor, current].every((job) => job.workspace === workspace
+    && job.ownerSessionId === input.parentSessionId && job.command === 'rescue' && job.readOnly === false)
+    && anchor.id === input.anchorJobId && ['succeeded', 'failed'].includes(anchor.status)
+    && isSafeIdentifier(anchor.zcodeSessionId) && anchor.permissionSnapshot.permissionMode === binding.permissionMode
+    && current.id === input.failedCurrentJobId && current.status === 'failed'
+    && current.permissionSnapshot.permissionMode === binding.permissionMode
+    && current.rescueReservationKind === 'bound' && current.rescueMigrationRollback === undefined
+    && current.rescueContinuationOrigin === undefined;
+  if (!common || hasActiveContinuationRunningEvidence(current)) throw invalidRescueBindingRepair();
+}
+
+function invalidRescueBindingRepair() {
+  return new PluginError('RESCUE_BINDING_REPAIR_INVALID', 'The requested Rescue binding repair is not safe to apply.', {
+    category: 'state', remedy: 'Re-check every exact maintenance identity and persisted safety proof.',
+  });
+}
+
+/**
+ * Commit one active-continuation failure under the workspace state lock. A restored binding with
+ * the queued proof still present is the sole accepted crash-recovery intermediate state.
+ * @param {string} dataRoot @param {string} workspace @param {string} jobId
+ * @param {string|null} expectedWorkerLeaseId @param {any} proof
+ * @param {Record<string,unknown>} patch @param {(seam:string)=>void|Promise<void>} publicationHook
+ */
+async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
+  expectedWorkerLeaseId, proof, patch, publicationHook) {
+  const storage = await jobStorage(dataRoot, workspace);
+  return withFileLock(storage.lockPath, async () => {
+    const lockIdentity = await captureStateLockIdentity(storage);
+    const forbiddenFields = Object.keys(patch).filter((field) => !JOB_PATCH_FIELDS.has(field));
+    if (forbiddenFields.length > 0) {
+      throw new PluginError('JOB_PATCH_FORBIDDEN', 'Job patch contains protected or unsupported fields.', {
+        category: 'state', remedy: 'Only patch mutable job execution fields.', details: { forbiddenFields, jobId },
+      });
+    }
+    const path = jobPath(storage.jobsDirectory, jobId);
+    const job = await readJobRecord(path, jobId, storage.workspacePath);
+    if (job.command !== 'rescue' || job.readOnly !== false || job.rescueReservationKind !== 'bound') {
+      throw invalidRescueBinding();
+    }
+    const prior = validateActiveContinuationFailureProof(proof, job, storage.workspacePath);
+    const snapshot = await readBindingPartitionSnapshot(storage, prior.parentSessionId, false);
+    const binding = snapshot.records.get(prior.key) ?? null;
+    if (job.status === 'failed') {
+      if (job.rescueContinuationOrigin !== undefined || hasActiveContinuationRunningEvidence(job)
+        || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, true)
+        || !hasExactActiveContinuationTerminalPatch(job, patch, expectedWorkerLeaseId)
+        || !isRestoredActiveContinuationBinding(binding, prior)) throw invalidRescueBinding();
+      return job;
+    }
+    if (job.status !== 'queued'
+      || !sameActiveContinuationFailureProof(job.rescueContinuationOrigin, proof)
+      || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, false)
+      || hasActiveContinuationRunningEvidence(job)) throw invalidRescueBinding();
+    const effectivePatch = {
+      ...patch,
+      finishedAt: new Date(Math.max(Date.now(), Date.parse(job.lastActivityAt ?? job.createdAt))).toISOString(),
+    };
+    validateJobPatch(job, 'failed', effectivePatch, jobId);
+    const updated = {
+      ...job, ...effectivePatch, id: job.id, status: 'failed',
+      updatedAt: new Date(Math.max(Date.now(), Date.parse(job.createdAt), Date.parse(job.updatedAt),
+        Date.parse(effectivePatch.finishedAt))).toISOString(),
+      workspace: job.workspace,
+    };
+    delete updated.rescueContinuationOrigin;
+    delete updated.rescueExecutionClaim;
+    delete updated.rescueJobSpecCommitment;
+    delete updated.rescueLegacyJobSpecProof;
+    validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+
+    let expectedSnapshot = snapshot;
+    if (!isRestoredActiveContinuationBinding(binding, prior)) {
+      if (binding === null || binding.state !== 'active' || binding.currentJobId !== job.id
+        || binding.key !== prior.key || binding.operationId !== prior.operationId) throw invalidRescueBinding();
+      const expectedAdvanced = validateRescueBinding({ ...prior, currentJobId: job.id, updatedAt: binding.updatedAt });
+      if (!sameExactBinding(binding, expectedAdvanced)) throw invalidRescueBinding();
+      const restored = validateRescueBinding({ ...prior, updatedAt: new Date(Math.max(
+        Date.now(), Date.parse(prior.updatedAt) + 1, Date.parse(binding.updatedAt) + 1,
+      )).toISOString() });
+      expectedSnapshot = bindingSnapshotWith(snapshot, restored);
+      await writeBindingPartitionGuarded(storage, prior.parentSessionId, snapshot, expectedSnapshot, lockIdentity);
+      await publicationCheckpoint(publicationHook, 'active-continuation-rollback:binding');
+    }
+    await assertPublicationGuard(storage, lockIdentity, expectedSnapshot, prior.parentSessionId);
+    await atomicWriteJson(path, updated);
+    await publicationCheckpoint(publicationHook, 'active-continuation-rollback:terminal');
+    await assertPublicationGuard(storage, lockIdentity, expectedSnapshot, prior.parentSessionId);
+    return updated;
+  });
+}
+
 /** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
@@ -948,6 +1164,26 @@ async function jobStorage(dataRoot, workspace) {
     ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
     lockPath: join(storage.directory, '.state.lock'),
   };
+}
+
+/** Resolve only a complete pre-existing maintenance layout without creating or chmodding any path. @param {string} dataRoot @param {string} workspace */
+async function existingJobStorageForRepair(dataRoot, workspace) {
+  try {
+    const requestedWorkspace = resolve(workspace); const requestedDataRoot = resolve(dataRoot);
+    const [workspacePath, dataRootPath] = await Promise.all([realpath(requestedWorkspace), realpath(requestedDataRoot)]);
+    if (workspacePath !== requestedWorkspace) throw invalidRescueBindingRepair();
+    const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
+    const workspacesDirectory = join(dataRootPath, 'workspaces');
+    const directory = join(workspacesDirectory, workspaceKey);
+    const jobsDirectory = join(directory, 'jobs'); const ownerIndexDirectory = join(directory, 'job-owners');
+    for (const path of [dataRootPath, workspacesDirectory, directory, jobsDirectory, ownerIndexDirectory]) {
+      const stats = await lstat(path);
+      if (stats.isSymbolicLink() || !stats.isDirectory()
+        || process.platform !== 'win32' && (stats.mode & 0o777) !== 0o700) throw invalidRescueBindingRepair();
+    }
+    return { dataRootPath, directory, workspaceKey, workspacePath, jobsDirectory, ownerIndexDirectory,
+      ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'), lockPath: join(directory, '.state.lock') };
+  } catch { throw invalidRescueBindingRepair(); }
 }
 
 /** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation */
@@ -1513,6 +1749,77 @@ function validRescueContinuationOrigin(value, job) {
       || binding.currentJobId === job.id && value.kind === 'legacy-adoption'
       && Date.parse(binding.updatedAt) >= Date.parse(job.createdAt);
   } catch { return false; }
+}
+
+/** Validate the caller's exact durable active-continuation proof for failure rollback. @param {any} proof @param {any} job @param {string} workspace */
+function validateActiveContinuationFailureProof(proof, job, workspace) {
+  if (!isPlainJsonObject(proof) || Object.keys(proof).sort().join(',') !== 'kind,priorBinding'
+    || proof.kind !== 'active-continuation') throw invalidRescueBinding();
+  let prior;
+  try { prior = validateRescueBinding(proof.priorBinding); } catch { throw invalidRescueBinding(); }
+  if (prior.version !== 3 || prior.state !== 'active' || prior.parentSessionId !== job.ownerSessionId
+    || prior.workspace !== workspace || job.workspace !== workspace || prior.permissionMode !== job.permissionSnapshot.permissionMode
+    || prior.currentJobId === job.id || Date.parse(job.createdAt) < Date.parse(prior.updatedAt)) throw invalidRescueBinding();
+  return prior;
+}
+
+/** @param {any} left @param {any} right */
+function sameActiveContinuationFailureProof(left, right) {
+  return isPlainJsonObject(left) && isPlainJsonObject(right)
+    && Object.keys(left).sort().join(',') === 'kind,priorBinding'
+    && Object.keys(right).sort().join(',') === 'kind,priorBinding'
+    && left.kind === 'active-continuation' && right.kind === 'active-continuation'
+    && sameExactBinding(left.priorBinding, right.priorBinding);
+}
+
+/** @param {any} job */
+function hasActiveContinuationRunningEvidence(job) {
+  return ['beforeMessageIds', 'effort', 'inputId', 'model', 'promptArtifact', 'resultArtifact',
+    'startRevision', 'startedAt', 'zcodeSessionId']
+    .some((field) => Object.hasOwn(job, field))
+}
+
+/**
+ * Terminal proof is intentionally deleted after publication, so an exact retry can authenticate only
+ * the durable mutable outcome it requested. Require deep equality for every requested field and reject
+ * other terminal patch fields except the generated timestamp and the caller-owned execution fence.
+ * @param {any} job @param {Record<string,unknown>} patch @param {string|null} expectedWorkerLeaseId
+ */
+function hasExactActiveContinuationTerminalPatch(job, patch, expectedWorkerLeaseId) {
+  if (!Object.entries(patch).every(([field, value]) => Object.hasOwn(job, field)
+    && samePersistedJsonValue(job[field], value))) return false;
+  const allowed = new Set([...Object.keys(patch), 'finishedAt']);
+  if (expectedWorkerLeaseId !== null) { allowed.add('childPid'); allowed.add('workerLeaseId'); }
+  return [...JOB_PATCH_FIELDS].every((field) => !Object.hasOwn(job, field) || allowed.has(field));
+}
+
+/** Compare against the exact JSON value atomicWriteJson persists, including -0 and prototype normalization.
+ * @param {unknown} persisted @param {unknown} requested */
+function samePersistedJsonValue(persisted, requested) {
+  try { return isDeepStrictEqual(persisted, JSON.parse(JSON.stringify(requested))); }
+  catch { return false; }
+}
+
+/** Accept either a wholly unclaimed attempt or the exact caller-owned queued execution fence. @param {any} job
+ * @param {string|null} expectedWorkerLeaseId @param {boolean} terminal */
+function validActiveContinuationFailureFence(job, expectedWorkerLeaseId, terminal) {
+  const reservationLeaseId = job.rescueExecutionReservation?.workerLeaseId;
+  if (expectedWorkerLeaseId === null) {
+    return job.childPid === undefined && job.workerLeaseId === undefined
+      && job.rescueExecutionClaim === undefined && reservationLeaseId === undefined;
+  }
+  if (job.childPid === undefined || job.workerLeaseId !== expectedWorkerLeaseId
+    || reservationLeaseId !== undefined && reservationLeaseId !== expectedWorkerLeaseId) return false;
+  if (terminal) return job.rescueExecutionClaim === undefined;
+  return validRescueExecutionClaim(job.rescueExecutionClaim, job)
+    && job.rescueExecutionClaim.workerLeaseId === expectedWorkerLeaseId;
+}
+
+/** A crash-recovery binding is the prior record byte-for-byte except for its strictly advanced timestamp. @param {any} record @param {any} prior */
+function isRestoredActiveContinuationBinding(record, prior) {
+  if (record === null || Date.parse(record.updatedAt) <= Date.parse(prior.updatedAt)) return false;
+  try { return sameExactBinding(record, validateRescueBinding({ ...prior, updatedAt: record.updatedAt })); }
+  catch { return false; }
 }
 
 /** @param {unknown} value */
