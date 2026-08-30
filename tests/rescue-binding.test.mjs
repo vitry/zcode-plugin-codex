@@ -1116,11 +1116,13 @@ test('active continuation rollback stale lock holder cannot publish the failed j
   const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
   const lockPath = join(storage.directory, '.state.lock');
   const staleLockPath = `${lockPath}.stale-holder`; const replacementLockPath = `${lockPath}.replacement`;
-  let replaced = false;
+  let hookAttempted = false; let replaced = false; let renameError;
   const faulted = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
-    if (replaced || seam !== 'active-continuation-rollback:binding') return;
+    if (hookAttempted || seam !== 'active-continuation-rollback:binding') return;
+    hookAttempted = true;
+    try { await rename(lockPath, staleLockPath); }
+    catch (error) { renameError = error; throw error; }
     replaced = true;
-    await rename(lockPath, staleLockPath);
     await mkdir(lockPath, { mode: 0o700 });
     await writeFile(join(lockPath, 'advisory.lock'), '', { mode: 0o600 });
   } });
@@ -1130,11 +1132,25 @@ test('active continuation rollback stale lock holder cannot publish the failed j
     await faulted.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
       null, base.proof, 'failed', patch);
   } catch (error) { rejection = error; }
-  await rename(lockPath, replacementLockPath); await rename(staleLockPath, lockPath);
+  finally {
+    if (replaced) {
+      await rename(lockPath, replacementLockPath);
+      await rename(staleLockPath, lockPath);
+    }
+  }
 
-  assert.equal(rejection?.code, 'RESCUE_BINDING_INVALID');
+  assert.equal(hookAttempted, true);
+  if (process.platform === 'win32') {
+    assert.equal(replaced, false);
+    assert.ok(['EPERM', 'EACCES', 'EBUSY'].includes(renameError?.code), `unexpected Windows rename error: ${renameError?.code}`);
+    assert.equal(rejection?.code, 'RESCUE_PUBLICATION_TEST_FAULT');
+  } else {
+    assert.equal(replaced, true); assert.equal(renameError, undefined);
+    assert.equal(rejection?.code, 'RESCUE_BINDING_INVALID');
+  }
   const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
   assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
+  assert.equal(queued.error, undefined); assert.equal(queued.exitCode, undefined);
   const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
     null, base.proof, 'failed', patch);
   assert.equal(failed.status, 'failed');

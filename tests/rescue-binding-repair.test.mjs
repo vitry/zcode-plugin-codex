@@ -4,13 +4,14 @@ import { access, lstat, mkdtemp, mkdir, readFile, readdir, realpath, writeFile }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { rescueBindingPartitionKey } from '../scripts/lib/rescue-binding.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runProcess } from '../scripts/lib/process.mjs';
 
-const repairTool = new URL('../tools/repair-rescue-continuation-binding.mjs', import.meta.url).pathname;
+const repairTool = fileURLToPath(new URL('../tools/repair-rescue-continuation-binding.mjs', import.meta.url));
 
 function reservation(workspace, turn = 'turn-a') {
   return { workspace, ownerSessionId: 'parent-session', ownerTurnId: turn, command: 'rescue', readOnly: false,

@@ -2286,7 +2286,8 @@ async function preparedSameTurnBoundContinuation(context, input) {
     parentSessionId, parentTurnId, childId, childTurnId,
     prompt: '$zcode:rescue --fresh --wait establish guarded continuation',
   });
-  const env = { ...context.env, ...input.extraEnv, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const env = { ...context.env, ...input.extraEnv, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) };
   const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
   assert.equal(first.job.status, 'succeeded');
   await markForwarding(context.dataRoot, {
@@ -4982,7 +4983,9 @@ test('cold runtime update rejection remains authoritative and retry resumes the 
   await writeFile(record, '');
   await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace,
     ownerId: ownerIdForSession('codex-session'), requestTimeoutMs: 750 });
-  /** @type {NodeJS.ProcessEnv} */ const retryEnv = { ...env }; delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
+  /** @type {NodeJS.ProcessEnv} */ const retryEnv = { ...env,
+    FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) };
+  delete retryEnv.FAKE_ZCODE_RUNTIME_UPDATE_ERROR;
   const retried = await companion(context, ['rescue', '--resume', 'corrected recovery'], {
     ...retryEnv,
   });
