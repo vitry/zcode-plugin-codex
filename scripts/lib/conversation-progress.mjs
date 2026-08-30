@@ -169,6 +169,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     const stagedToolStates = new Map(toolStates);
     const stagedRowStates = new Map(rowStates);
     const staged = [];
+    /** @type {{kind:'succeeded'|'interrupted'|'failed',turnId:string}|null} */ let stagedTerminalResult = null;
     for (const delta of frame.deltas) {
       if (delta.op === 'row.removed') {
         applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
@@ -192,7 +193,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
           const trackedTurn = authoritativeTurn;
           if (authorityState === 'waiting-terminal' && trackedTurn?.rowId === row.rowId && trackedTurn?.turnId === row.turnId) {
             if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-            resolveAuthoritativeTerminal(row.state === 'completedSuccess' ? 'succeeded' : row.state === 'completedInterrupted' ? 'interrupted' : 'failed', row.turnId);
+            stagedTerminalResult = { kind: row.state === 'completedSuccess' ? 'succeeded' : row.state === 'completedInterrupted' ? 'interrupted' : 'failed', turnId: row.turnId };
           }
           continue;
         }
@@ -212,6 +213,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
     replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
     lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
+    if (stagedTerminalResult) resolveAuthoritativeTerminal(stagedTerminalResult.kind, stagedTerminalResult.turnId);
     return accepted('online', staged);
   }
 

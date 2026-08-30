@@ -827,6 +827,35 @@ test('a gap during async projection discards staged lifecycle state and its wate
   assert.doesNotMatch(JSON.stringify(terminal), /STAGED_MARKER/);
 });
 
+test('a gap during a frame with a staged turn terminal cannot resolve event authority', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  let releasePath;
+  let reportPathStarted;
+  const pathStarted = new Promise((resolve) => { reportPathStarted = resolve; });
+  const pathGate = new Promise((resolve) => { releasePath = resolve; });
+  const observer = await createStructuralDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { resolvePath: async () => { reportPathStarted(); await pathGate; return null; } },
+  );
+  const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({
+    ordinal: 1, fromSeq: 0, toSeq: 1,
+    deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })],
+  }), observedAt);
+  const interrupted = observer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 1, toSeq: 2,
+    deltas: [
+      captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }),
+      toolRow({ rowId: 2, toolCallId: 'blocked-tool', toolName: 'Read', input: { file_path: 'blocked' } }),
+    ],
+  }), observedAt);
+  await pathStarted;
+  observer.markGap(); releasePath();
+  assert.deepEqual(await interrupted, { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.equal(observer.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
 test('accepts bounded captured multiline tool output without rendering any raw output', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
