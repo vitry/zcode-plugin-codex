@@ -1092,16 +1092,12 @@ test('cold recovery preserves interruption at resolve, update, and verification-
 
 test('genuine send failure after recovery remains authoritative with no retry', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const sendError = new PluginError('ZCODE_REQUEST_FAILED', 'ZCode session/send failed: provider refused', {
-    category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: 'session/send', rpcCode: -32_099, remoteCode: 'provider_refused' },
-  });
+  const sendError = new PluginError('ZCODE_PROVIDER_FAILURE', 'provider refused');
   const fixture = resumedExecutionClient({ lastErrorType: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', sendError });
   const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client: fixture.client, task: 'task', resumeSessionId: 'zs-cold-resume', model: { providerId: 'workspace', modelId: 'configured' }, resolveRuntimeRecoveryConfig: async (model) => { assert.ok(model); return runtimeModel(model); } }).catch((error) => error);
   assert.equal(caught, sendError); assert.equal(fixture.sends(), 1);
   assert.deepEqual(fixture.calls.filter((call) => call === 'send'), ['send']);
   assert.ok(fixture.calls.indexOf('updateRuntime:workspace/configured') < fixture.calls.indexOf('send'));
-  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
-  assert.equal((await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'after-explicit-send-rejection' })).status, 'queued');
 });
 
 test('executor failure cannot steal cancellation terminal ownership', async () => {

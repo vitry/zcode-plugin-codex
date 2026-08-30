@@ -275,14 +275,14 @@ async function withClient(callback, env = {}, options = {}) {
   try { await callback(client, record); } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
 }
 
-async function withFreshManagedClient(callback, env = {}) {
+async function withFreshManagedClient(callback, env = {}, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-client-'));
   const launch = { command: process.execPath, args: [fixture], target: fixture };
   const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
   const identityPath = join(storage.directory, 'broker', 'identity.json');
   let client; let identity;
   try {
-    client = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, launch, ownerId: 'fresh-managed-client-owner', env: { ...process.env, ...env } });
+    client = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, launch, ownerId: 'fresh-managed-client-owner', env: { ...process.env, ...env }, ...options });
     await callback(client, directory);
   } finally {
     try { identity = JSON.parse(await readFile(identityPath, 'utf8')); } catch { /* broker did not publish an identity */ }
@@ -816,6 +816,22 @@ test('malformed, oversized, disconnect and request error fail closed', async (t)
       assert.equal(error.code, code);
       assert.equal(isCorrelatedZCodeResponseError(error), code === 'ZCODE_REQUEST_FAILED');
       return true;
+    });
+  }, env, options));
+});
+
+test('managed send preserves upstream rejection provenance without blessing ambiguous broker failures', async (t) => {
+  const cases = [
+    ['upstream rejection', { FAKE_ZCODE_ERROR: 'session/send' }, {}, 'ZCODE_REQUEST_FAILED', true],
+    ['upstream disconnect', { FAKE_ZCODE_DISCONNECT: 'session/send' }, {}, 'ZCODE_DISCONNECTED', false],
+    ['upstream malformed frame', { FAKE_ZCODE_MALFORMED: 'session/send' }, {}, 'ZCODE_PROTOCOL_MALFORMED', false],
+    ['malformed success', { FAKE_ZCODE_BAD_RESULT: 'session/send' }, {}, 'ZCODE_OUTPUT_INVALID', false],
+    ['upstream timeout', { FAKE_ZCODE_SUPPRESS_METHOD: 'session/send' }, { requestTimeoutMs: scaleTestTimeout(150) }, 'ZCODE_REQUEST_TIMEOUT', false],
+  ];
+  for (const [name, env, options, code, correlated] of cases) await t.test(name, () => withFreshManagedClient(async (client, workspace) => {
+    const created = await client.createSession({ workspace });
+    await assert.rejects(client.send(created.session.sessionId, 'probe send provenance'), (error) => {
+      assert.equal(error.code, code); assert.equal(isCorrelatedZCodeResponseError(error), correlated); return true;
     });
   }, env, options));
 });

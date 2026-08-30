@@ -4777,6 +4777,16 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
   }
 });
 
+test('real managed upstream send rejection fails the writable job and releases its slot', async () => {
+  const context = await fixture();
+  const rejected = await companion(context, ['rescue', '--fresh', 'reject this send'], { FAKE_ZCODE_ERROR: 'session/send' });
+  assert.notEqual(rejected.code, 0); assert.equal(rejected.json.error.code, 'ZCODE_REQUEST_FAILED');
+  const store = createStateStore({ dataRoot: context.dataRoot }); const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'failed');
+  const next = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'after-rejected-send', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  assert.equal(next.status, 'queued');
+});
+
 test('real CLI cancellation stops sessions owned by the Transfer broker profile', async () => {
   const context = await fixture(); const launch = { command: process.execPath, args: [fake], target: fake };
   const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes, drainTimeoutMs: TRANSFER_WIRE_LIMITS.drainTimeoutMs });

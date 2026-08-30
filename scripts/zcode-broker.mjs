@@ -13,7 +13,7 @@ import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
 import { validCreateSnapshot } from './lib/zcode-schema.mjs';
-import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
+import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, CORRELATED_RESPONSE_PROVENANCE, isCorrelatedZCodeResponseError, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
 const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
@@ -415,7 +415,8 @@ export class ZCodeBroker {
           if (stopToken && this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId);
           if (ownerCommitToken && this.ownerCommitTokens.get(ownerCommitToken) === protocol) this.ownerCommitTokens.delete(ownerCommitToken);
           const pluginError = error instanceof PluginError ? { code: error.code, category: error.category, remedy: error.remedy, details: error.details } : null;
-          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError } } : {}) } });
+          const requestProvenance = frame.method === 'session/send' && isCorrelatedZCodeResponseError(error) ? CORRELATED_RESPONSE_PROVENANCE : undefined;
+          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError, ...(requestProvenance ? { requestProvenance } : {}) } } : {}) } });
         }
       } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.admission.finishSessionRequest(sessionAdmission); }
     } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }
