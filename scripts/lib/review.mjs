@@ -22,6 +22,7 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 const READ_TOOLS = /^(read|inspect|search|list|find|glob|grep|git(?:[-_ ]?(?:status|diff|log|show))?)$/i;
 const MUTATING_TOOLS = /(write|edit|patch|delete|remove|create|exec|shell|command|install|move|rename|commit|push)/i;
 const OPTIONAL_PROGRESS_FENCE_MS = 250;
+const SUBSCRIPTION_BASELINE_FENCE_MS = 100;
 const REVIEW_OUTPUT_SCHEMA = await loadReviewOutputSchema();
 
 /** @param {any} request @param {any} permissionSnapshot @param {string} command */
@@ -170,9 +171,14 @@ export async function executeJob(input) {
     if (input.resumeSessionId) input.onRunningPersisted?.();
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)];
-    // Arm against the subscription's established historical baseline immediately
-    // before send. A fast v4 terminal may resolve now, but cannot be consumed until
-    // the accepted input boundary below is durable.
+    // Drain only frames already delivered around the subscribe acknowledgement;
+    // the bounded progress fence cannot wait indefinitely for a late initial.
+    await reporter.flush(Date.now() + SUBSCRIPTION_BASELINE_FENCE_MS);
+    // Confirm the subscription's historical baseline. If it is unavailable, v4
+    // authority stays disabled and the coordinator uses snapshot reconciliation.
+    conversationObserver.confirmBaseline();
+    // Arm immediately before send. A fast v4 terminal may resolve now, but cannot
+    // be consumed until the accepted input boundary below is durable.
     conversationObserver.waitForTurnTerminal();
     conversationObserver.beginTurnBoundary();
     sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);

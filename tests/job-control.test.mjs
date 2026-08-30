@@ -1419,6 +1419,49 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   assert.equal(output.job.status, 'succeeded');
 });
 
+test('execution does not wait indefinitely for a late initial baseline and uses coherent snapshot fallback', { timeout: 10_000 }, async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const sessionId = 'zs-late-initial'; const subscriptionId = 'subscription-late-initial';
+  /** @type {null|((message:any)=>void)} */ let handler = null;
+  const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('conversation handler missing'); handler(message); };
+  let sends = 0; let signalHistoricalFrames = () => {};
+  const historicalFramesObserved = new Promise((resolve) => { signalHistoricalFrames = () => resolve(undefined); });
+  const wrapped = { ...store, updateJobProgressProbe: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ probe) => {
+    const updated = await store.updateJobProgressProbe(workspaceArg, jobId, probe);
+    if (probe.acceptedOnline >= 2) signalHistoricalFrames();
+    return updated;
+  } };
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {},
+    subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { handler = null; }; },
+    subscribeConversation: async () => ({ subscriptionId, unsubscribe: async () => {} }),
+    send: async () => {
+      sends += 1;
+      return { inputId: 'input-late-initial', stateRevision: 3 };
+    },
+    waitForCompletion: async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 1, fromSeq: 0, toSeq: 1, deltas: [captured0165TurnRow({ rowId: 9, turnId: 'turn-historical', state: 'running' })] })));
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 1, toSeq: 2, deltas: [captured0165TurnRow({ rowId: 9, turnId: 'turn-historical', state: 'failed' })] })));
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 3, fromSeq: 0, toSeq: 2, snapshot: boundedSnapshotFixture({ sessionId, seq: 2 }) })));
+    },
+    readSession: async () => {
+      await historicalFramesObserved;
+      return { projection: { status: 'completed' }, runtime: { stateRevision: 4 }, messages: [
+        completedUser('input-late-initial'),
+        { info: { role: 'assistant', messageId: 'assistant-late-initial', parentMessageId: 'input-late-initial', finish: 'stop' }, parts: [{ type: 'text', text: 'snapshot fallback result' }] },
+      ] };
+    },
+    stopSession: async () => {}, close: async () => {},
+  };
+
+  const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' });
+  assert.equal(sends, 1);
+  assert.equal(output.result, 'snapshot fallback result');
+  assert.equal(output.job.status, 'succeeded');
+});
+
 test('snapshot fallback keeps empty idle and unfinished 0.16.5 reads pending until a coherent current-turn result', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   let reads = 0;
