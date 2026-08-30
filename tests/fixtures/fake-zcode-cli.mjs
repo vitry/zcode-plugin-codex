@@ -259,9 +259,8 @@ function conversationSnapshot(sessionId, seq, rows = []) {
 
 // Captured 0.16.5 qualification scenario. The envelope, nesting, wire version,
 // event order, and turnHeader lifecycle match the controlled real-peer probe.
-// Sanitized ids/content/timestamps replace private probe values. `future*`
-// members are deliberately harmless open-world qualification data, not claimed
-// as fields observed in that capture.
+// Sanitized ids/content/timestamps replace private probe values. Synthetic
+// additive-field probes live in unit fixtures, never in this captured scenario.
 async function traceCaptured0165(sendIndex, phase, message) {
   if (process.env.FAKE_ZCODE_CAPTURED_0165_TRACE) {
     await appendFile(process.env.FAKE_ZCODE_CAPTURED_0165_TRACE, `${JSON.stringify({ sendCount: sendIndex, phase, message })}\n`);
@@ -269,28 +268,20 @@ async function traceCaptured0165(sendIndex, phase, message) {
 }
 
 function captured0165Frame({ sessionId, subscriptionId, ordinal, fromSeq, toSeq, delta }) {
-  const message = conversationNotification({
+  return conversationNotification({
     sessionId, subscriptionId, deliveryKind: 'online', ordinal, fromSeq, toSeq, deltas: [delta],
     logicalFrameId: `captured-frame-${ordinal}`,
   });
-  message.futureNotificationMetadata = { ignored: true };
-  message.params.futureParamsMetadata = { ignored: true };
-  message.params.frame.futureFrameMetadata = { ignored: true };
-  message.params.frame.payload.futurePayloadMetadata = { ignored: true };
-  delta.futureDeltaMetadata = { ignored: true };
-  delta.row.futureRowMetadata = { ignored: true };
-  return message;
 }
 
-async function captured0165GateReleased(sendIndex) {
-  const gate = process.env.FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE;
+async function captured0165GateReleased(gate, sendIndex) {
   if (!gate) return true;
   const value = await readFile(gate, 'utf8').then(JSON.parse).catch(() => null);
   return value?.version === 1 && Number.isSafeInteger(value.releaseThrough) && value.releaseThrough >= sendIndex;
 }
 
 async function finishCaptured0165Turn({ session, sessionId, subscriptionId, sendIndex, assistant, turnRow }) {
-  while (!await captured0165GateReleased(sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
+  while (!await captured0165GateReleased(process.env.FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE, sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
   session.messages.push(assistant); session.projectionStatus = 'idle'; session.stateRevision = sendIndex * 2;
   const terminal = captured0165Frame({
     sessionId, subscriptionId, ordinal: 3, fromSeq: 1, toSeq: 2,
@@ -306,10 +297,11 @@ async function sendCaptured0165Turn(message, p, session) {
   turnMessages[0].info.semantics = { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
   turnMessages[1].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
   session.messages.push(turnMessages[0]); session.projectionStatus = 'running'; session.stateRevision = sendIndex * 2 - 1;
-  const accepted = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision: session.stateRevision, futureAdmissionMetadata: { ignored: true } } };
+  const accepted = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision: session.stateRevision } };
   await traceCaptured0165(sendIndex, 'send-accepted', accepted); send(accepted);
-  const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: session.stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' }, futureLegacyMetadata: { ignored: true } } };
+  const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: session.stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
   await traceCaptured0165(sendIndex, 'legacy-prompt-completed', legacy); send(legacy);
+  while (!await captured0165GateReleased(process.env.FAKE_ZCODE_CAPTURED_0165_RUNNING_GATE, sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
   const turnRow = {
     rowId: 100 + sendIndex, turnId: `captured-turn-${sendIndex}`, createdAt: 1_786_233_600_000,
     createdAtSeq: 100 + sendIndex, kind: 'turnHeader', origin: 'userInput', state: 'running',
@@ -517,15 +509,12 @@ input.on('line', async (line) => {
         const response = { id: message.id, result: { ack: {
           subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1',
           openTiming: { version: 1, initialFrameEncodeMs: 0, sessionRuntimeState: 'warm', snapshotRowCount: 0 },
-          futureAckMetadata: { ignored: true },
-        }, futureResponseMetadata: { ignored: true } } };
+        } } };
         await traceCaptured0165(sendIndex, 'subscribe-ack', response); send(response);
         const initial = conversationNotification({
           sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 0,
           logicalFrameId: 'captured-initial-frame', snapshot: conversationSnapshot(sessionId, 0),
         });
-        initial.futureNotificationMetadata = { ignored: true };
-        initial.params.frame.payload.futurePayloadMetadata = { ignored: true };
         await traceCaptured0165(sendIndex, 'initial-frame', initial); send(initial);
         break;
       }

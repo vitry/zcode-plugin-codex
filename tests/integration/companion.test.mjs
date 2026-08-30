@@ -4802,13 +4802,17 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
   const context = await fixture();
   const record = join(context.directory, 'captured-0165-requests.jsonl');
   const trace = join(context.directory, 'captured-0165-peer-trace.jsonl');
-  const gate = join(context.directory, 'captured-0165-terminal-gate.json');
-  const reached = join(context.directory, 'captured-0165-running.json');
-  await atomicWriteJson(gate, { version: 1, releaseThrough: 0 });
+  const runningGate = join(context.directory, 'captured-0165-running-gate.json');
+  const terminalGate = join(context.directory, 'captured-0165-terminal-gate.json');
+  const runningReached = join(context.directory, 'captured-0165-running.json');
+  await atomicWriteJson(runningGate, { version: 1, releaseThrough: 0 });
+  await atomicWriteJson(terminalGate, { version: 1, releaseThrough: 0 });
   const env = {
     FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165',
     FAKE_ZCODE_RECORD: record, FAKE_ZCODE_CAPTURED_0165_TRACE: trace,
-    FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: gate, FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED: reached,
+    FAKE_ZCODE_CAPTURED_0165_RUNNING_GATE: runningGate,
+    FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: terminalGate,
+    FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED: runningReached,
   };
   const store = createStateStore({ dataRoot: context.dataRoot });
 
@@ -4816,17 +4820,33 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
   async function executeHeldTurn(turn, mode) {
     let settled = false;
     const execution = companion(context, ['rescue', mode, `captured 0.16.5 turn ${turn}`], env).finally(() => { settled = true; });
-    await waitFor(async () => {
-      const marker = await readFile(reached, 'utf8').then(JSON.parse).catch(() => null);
-      const traced = await readFile(trace, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
-      return marker?.version === 1 && marker?.sendCount === turn && marker?.phase === 'running-after-legacy-complete'
-        && traced.some((entry) => entry.sendCount === turn && entry.phase === 'session-read-pending');
-    }, `captured 0.16.5 turn ${turn} did not reach its pre-terminal gate`);
-    assert.equal(settled, false, 'false legacy completion and running v4 evidence must not settle the companion');
-    const jobs = await store.listOwnedJobs(context.workspace, 'codex-session');
-    assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'running').length, 1);
-    await atomicWriteJson(gate, { version: 1, releaseThrough: turn });
-    const result = await execution;
+    const readTrace = () => readFile(trace, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    let result;
+    try {
+      await waitFor(async () => (await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'legacy-prompt-completed'),
+        `captured 0.16.5 turn ${turn} did not reach its legacy-only gap`);
+      assert.equal((await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'turn-running'), false,
+        'the captured legacy-only gap must precede every runtime running frame');
+      assert.equal(settled, false, 'false legacy completion without a runtime frame must not settle the companion');
+      await atomicWriteJson(runningGate, { version: 1, releaseThrough: turn });
+      await waitFor(async () => {
+        const marker = await readFile(runningReached, 'utf8').then(JSON.parse).catch(() => null);
+        const traced = await readTrace();
+        const runningIndex = traced.findIndex((entry) => entry.sendCount === turn && entry.phase === 'turn-running');
+        const laterPendingRead = traced.findIndex((entry, index) => index > runningIndex && entry.sendCount === turn && entry.phase === 'session-read-pending');
+        return marker?.version === 1 && marker?.sendCount === turn && marker?.phase === 'running-after-legacy-complete'
+          && runningIndex >= 0 && laterPendingRead > runningIndex;
+      }, `captured 0.16.5 turn ${turn} did not reach its running pre-terminal gate`);
+      assert.equal(settled, false, 'running v4 evidence without a terminal must not settle the companion');
+      const jobs = await store.listOwnedJobs(context.workspace, 'codex-session');
+      assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'running').length, 1);
+      await atomicWriteJson(terminalGate, { version: 1, releaseThrough: turn });
+      result = await execution;
+    } finally {
+      await atomicWriteJson(runningGate, { version: 1, releaseThrough: turn });
+      await atomicWriteJson(terminalGate, { version: 1, releaseThrough: turn });
+      if (!settled) await execution.catch(() => {});
+    }
     assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
     assert.equal(result.json.job.status, 'succeeded');
     assert.equal(result.json.result, `captured 0.16.5 result ${turn}`);
@@ -4863,7 +4883,10 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
     const entries = peerTrace.filter((entry) => entry.sendCount === turn);
     const protocolEntries = entries.filter((entry) => !entry.phase.startsWith('session-read-'));
     assert.deepEqual(protocolEntries.map((entry) => entry.phase), ['subscribe-ack', 'initial-frame', 'send-accepted', 'legacy-prompt-completed', 'turn-running', 'turn-terminal']);
+    assert.doesNotMatch(JSON.stringify(protocolEntries), /future/u, 'captured qualification data must not contain synthetic additive fields');
     const ack = protocolEntries[0].message.result.ack;
+    assert.deepEqual(Object.keys(protocolEntries[0].message.result), ['ack']);
+    assert.deepEqual(Object.keys(ack).sort(), ['logEpoch', 'mode', 'openTiming', 'subscriptionId']);
     assert.deepEqual(ack.openTiming, { version: 1, initialFrameEncodeMs: 0, sessionRuntimeState: 'warm', snapshotRowCount: 0 });
     assert.deepEqual(protocolEntries.slice(1).filter((entry) => entry.message.method === 'v4/conversation/frame').map((entry) => entry.message.params.wireVersion), [3, 3, 3]);
     const running = entries.find((entry) => entry.phase === 'turn-running').message;
