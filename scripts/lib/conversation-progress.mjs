@@ -21,6 +21,7 @@ const CONVERSATION_WIRE_VERSION = 3;
 const SUPPORTED_ROW_KINDS = new Set(['toolCall', 'turnHeader']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
 /** @typedef {{op:string,row:Record<string,any>|null,fromRowId?:number}} ValidatedDelta */
+/** @typedef {{kind:'succeeded'|'interrupted'|'failed',turnId:string}|{kind:'unavailable'}} TurnTerminalResult */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
 const rejected = (reason) => ({ disposition: 'rejected', reason, events: [] });
@@ -43,7 +44,7 @@ export function normalizePreview(value, limit = PREVIEW_LIMIT) {
 /**
  * @param {{sessionId:string,subscriptionId:string,workspace:string}} options
  * @param {{resolvePath?:(value:unknown,workspaceRoot:string)=>Promise<string|null>,pathTimeoutMs?:number}} [dependencies]
- * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,markGap:()=>void,markTerminal:()=>void}>}
+ * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}>}
  */
 export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }, dependencies = {}) {
   const workspaceRoot = await realpath(resolve(workspace));
@@ -62,8 +63,12 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   /** @type {number|undefined} */
   let lastSeq;
   let terminal = false; let needsRecovery = false;
+  let authorityState = 'idle';
+  /** @type {{rowId:number,turnId:string}|null} */ let authoritativeTurn = null;
+  /** @type {(result:TurnTerminalResult)=>void} */ let resolveTurnTerminal;
+  /** @type {Promise<TurnTerminalResult>} */ let turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
 
-  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,markGap:()=>void,markTerminal:()=>void}} */
+  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}} */
   const api = {
     observe(notification, observedAt) {
       if (terminal) return Promise.resolve(ignored('terminal'));
@@ -73,19 +78,41 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         drain();
       });
     },
+    beginTurnBoundary,
+    waitForTurnTerminal: () => turnTerminal,
+    terminalAuthorityState: () => authorityState,
     markGap,
     markTerminal: latchTerminal,
   };
   return api;
 
-  function markGap() { if (!terminal) needsRecovery = true; }
-  function latchTerminal() { terminal = true; while (pending.length > 0) pending.shift()?.resolve(ignored('terminal')); }
+  function beginTurnBoundary() {
+    if (terminal) { makeAuthorityUnavailable(); return; }
+    if (authorityState === 'resolved' || authorityState === 'unavailable') {
+      turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
+    }
+    authoritativeTurn = null; authorityState = 'waiting-running';
+  }
+  function makeAuthorityUnavailable() {
+    if (authorityState === 'resolved' || authorityState === 'unavailable') return;
+    authorityState = 'unavailable'; authoritativeTurn = null; resolveTurnTerminal({ kind: 'unavailable' });
+  }
+  /** @param {'succeeded'|'interrupted'|'failed'} kind @param {string} turnId */
+  function resolveAuthoritativeTerminal(kind, turnId) {
+    if (authorityState !== 'waiting-terminal') return;
+    authorityState = 'resolved'; resolveTurnTerminal({ kind, turnId });
+  }
+  function markGap() { if (!terminal) { needsRecovery = true; makeAuthorityUnavailable(); } }
+  function latchTerminal() { terminal = true; makeAuthorityUnavailable(); while (pending.length > 0) pending.shift()?.resolve(ignored('terminal')); }
 
   function drain() {
     if (active || pending.length === 0) return;
     const item = pending.shift(); if (!item) return;
     active = true;
-    Promise.resolve().then(() => observeFrame(item.notification, item.observedAt)).catch(() => rejected('row-shape')).then((result) => item.resolve(result)).finally(() => { active = false; drain(); });
+    Promise.resolve().then(() => observeFrame(item.notification, item.observedAt)).catch(() => rejected('row-shape')).then((result) => {
+      if (result.disposition === 'rejected' && result.reason !== 'topic') makeAuthorityUnavailable();
+      item.resolve(result);
+    }).finally(() => { active = false; drain(); });
   }
 
   /** @param {unknown} notification @param {unknown} observedAt @returns {Promise<ObservationResult>} */
@@ -118,6 +145,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     }
     if (frame.payloadKind === 'snapshot') {
       if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
+      if (authorityState === 'waiting-running' || authorityState === 'waiting-terminal') makeAuthorityUnavailable();
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false; resetLifecycleState();
       return accepted('online');
     }
@@ -129,7 +157,6 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     const stagedToolStates = new Map(toolStates);
     const stagedRowStates = new Map(rowStates);
     const staged = [];
-    let stagedTerminal = false;
     for (const delta of frame.deltas) {
       if (delta.op === 'row.removed') {
         applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
@@ -146,19 +173,25 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         const previous = stagedRowStates.get(row.rowId);
         if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
           if (previous !== undefined || stagedRowStates.size < MAX_TRACKED_ROWS) stagedRowStates.set(row.rowId, row.state);
-          if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-          stagedTerminal = true; break;
+          const trackedTurn = authoritativeTurn;
+          if (authorityState === 'waiting-terminal' && trackedTurn?.rowId === row.rowId && trackedTurn?.turnId === row.turnId) {
+            if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
+            resolveAuthoritativeTerminal(row.state === 'completedSuccess' ? 'succeeded' : row.state === 'completedInterrupted' ? 'interrupted' : 'failed', row.turnId);
+          }
+          continue;
         }
         if (previous === undefined && stagedRowStates.size >= MAX_TRACKED_ROWS) continue;
         stagedRowStates.set(row.rowId, row.state);
         if (previous === row.state) continue;
+        if (row.state === 'running' && row.origin === 'userInput' && authorityState === 'waiting-running') {
+          authoritativeTurn = { rowId: row.rowId, turnId: row.turnId }; authorityState = 'waiting-terminal';
+        }
         if (row.state === 'running' && previous === undefined && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
       }
     }
     if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
     replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
     lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
-    if (stagedTerminal) latchTerminal();
     return accepted('online', staged);
   }
 
@@ -192,7 +225,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       if (row.kind === 'toolCall') { absorbToolState(row); continue; }
       if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
         if (rowStates.has(row.rowId) || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
-        latchTerminal(); return;
+        continue;
       }
       if (!rowStates.has(row.rowId) && rowStates.size >= MAX_TRACKED_ROWS) continue;
       rowStates.set(row.rowId, row.state);
@@ -209,14 +242,34 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
   /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */ const buffered = [];
   let binding = false; let disabled = false; let terminal = false; let prebindGap = false;
+  let authorityState = 'idle';
+  /** @type {(result:TurnTerminalResult)=>void} */ let resolveTurnTerminal;
+  /** @type {Promise<TurnTerminalResult>} */ let turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
+  /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let bridgedDescriber;
   /** @param {string} [reason] */
   const resolveBufferedEmpty = (reason = terminal ? 'terminal' : 'disabled') => { while (buffered.length > 0) buffered.shift()?.resolve(ignored(reason)); };
-  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
+  const makeAuthorityUnavailable = () => {
+    if (authorityState === 'resolved' || authorityState === 'unavailable') return;
+    authorityState = 'unavailable'; resolveTurnTerminal({ kind: 'unavailable' });
+  };
+  const bridgeAuthority = () => {
+    if (!describer || bridgedDescriber === describer) return;
+    bridgedDescriber = describer;
+    describer.waitForTurnTerminal().then((result) => {
+      if (authorityState === 'resolved' || authorityState === 'unavailable') return;
+      authorityState = result.kind === 'unavailable' ? 'unavailable' : 'resolved'; resolveTurnTerminal(result);
+    });
+  };
+  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
     observe(notification, observedAt) {
       if (terminal || disabled) return Promise.resolve(ignored(terminal ? 'terminal' : 'disabled'));
-      if (describer && !binding) return describer.observe(notification, observedAt);
+      if (describer && !binding) return describer.observe(notification, observedAt).then((result) => {
+        authorityState = describer?.terminalAuthorityState() ?? authorityState;
+        return result;
+      });
       if (buffered.length >= MAX_PENDING_OBSERVATIONS) {
         if (describer) describer.markGap(); else prebindGap = true;
+        makeAuthorityUnavailable();
         return Promise.resolve(ignored('overflow'));
       }
       return new Promise((resolveResult) => buffered.push({ notification, observedAt, resolve: resolveResult }));
@@ -226,24 +279,38 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       binding = true;
       try {
         describer = await createConversationProgressDescriber({ sessionId, subscriptionId, workspace });
+        if (authorityState === 'waiting-running') describer.beginTurnBoundary();
+        bridgeAuthority();
         while (!terminal && !disabled && buffered.length > 0) {
           const item = buffered.shift(); if (!item) break;
           item.resolve(await describer.observe(item.notification, item.observedAt));
+          authorityState = describer.terminalAuthorityState();
         }
         if (prebindGap) describer.markGap();
       } catch (error) {
-        disabled = true; resolveBufferedEmpty(); throw error;
+        disabled = true; makeAuthorityUnavailable(); resolveBufferedEmpty(); throw error;
       } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
     },
-    fail() { disabled = true; resolveBufferedEmpty(); },
+    beginTurnBoundary() {
+      if (terminal || disabled) { makeAuthorityUnavailable(); return; }
+      if (authorityState === 'resolved' || authorityState === 'unavailable') {
+        turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; }); bridgedDescriber = undefined;
+      }
+      authorityState = 'waiting-running';
+      describer?.beginTurnBoundary(); bridgeAuthority();
+    },
+    waitForTurnTerminal: () => turnTerminal,
+    terminalAuthorityState: () => describer && !disabled && !terminal ? describer.terminalAuthorityState() : authorityState,
+    fail() { disabled = true; makeAuthorityUnavailable(); resolveBufferedEmpty(); },
     markGap() {
       if (terminal || disabled) return;
       if (describer) describer.markGap();
       else if (prebindGap) return;
       else prebindGap = true;
+      makeAuthorityUnavailable();
       resolveBufferedEmpty('recovery-required');
     },
-    markTerminal() { terminal = true; describer?.markTerminal(); resolveBufferedEmpty(); },
+    markTerminal() { terminal = true; describer?.markTerminal(); makeAuthorityUnavailable(); resolveBufferedEmpty(); },
   });
 }
 
@@ -313,7 +380,8 @@ function validateRow(row) {
     return row;
   }
   if (row.kind === 'turnHeader') {
-    if (!hasRequiredKeys(row, ['rowId', 'kind', 'state']) || !wireNumber(row.rowId) || !TURN_STATES.has(row.state)) return null;
+    if (!hasRequiredKeys(row, ['rowId', 'kind', 'turnId', 'origin', 'state']) || !wireNumber(row.rowId)
+      || !boundedIdentifier(row.turnId, 1024) || !boundedIdentifier(row.origin, 256) || !TURN_STATES.has(row.state)) return null;
     return row;
   }
   return null;

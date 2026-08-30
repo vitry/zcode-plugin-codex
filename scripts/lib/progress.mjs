@@ -51,8 +51,8 @@ const KNOWN_PROGRESS = new Map([
   ['tool_call_progress', ['running', 'ZCode tool work is still running.']],
   ['tool_call_result', ['running', 'ZCode completed a tool call.']],
   ['api_retry', ['waiting', 'ZCode is retrying the model request.']],
-  ['prompt_completed', ['finalizing', 'ZCode completed the delegated turn.']],
-  ['prompt_failed', ['finalizing', 'ZCode reported a failed delegated turn.']],
+  ['prompt_completed', ['waiting', 'ZCode reported legacy completion; awaiting confirmed turn state.']],
+  ['prompt_failed', ['waiting', 'ZCode reported legacy failure; awaiting confirmed turn state.']],
 ]);
 
 /** @param {unknown} notification @param {string} sessionId @param {unknown} observedAt */
