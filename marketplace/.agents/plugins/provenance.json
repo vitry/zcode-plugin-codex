@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "896cc0726e51dbb00e547c48f688b3836046dbac",
-  "sourceSha": "896cc0726e51dbb00e547c48f688b3836046dbac",
+  "sourceRef": "280f3fcbfd69efeeb9b1c0c1b24bba2a9ca08e3d",
+  "sourceSha": "280f3fcbfd69efeeb9b1c0c1b24bba2a9ca08e3d",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "c7ba80ab19a89497eb5083a4e3a1f8c07e926217dabccd29ee3fb32c2c1ea281",
+    "sha256": "506b53e39e51ed3b24774ae2004b664ed58fcb53b0a9d311ea4d19342fa1625a",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -58,8 +58,8 @@
       },
       {
         "path": "plugins/zcode/docs/adr/0013-bind-rescue-child-to-zcode-session.md",
-        "size": 8534,
-        "sha256": "4e0291e1b0638eb7def5a4075ec16ceda1350fda24e4b54c9254c85a8cf400a6"
+        "size": 8915,
+        "sha256": "394f9fad667fef14d38a9af60763db823e94eddf7f7f2d890262a2a5e8b2e6d6"
       },
       {
         "path": "plugins/zcode/docs/manual-uninstall.md",
