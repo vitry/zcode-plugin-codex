@@ -1246,18 +1246,18 @@ test('authoritative terminal error fails the job with the exact provider reason 
 });
 
 test('fresh active status remains pending until explicit interruption stops the exact session', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {}; let reads = 0;
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {}; let stopped = false;
   const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-active-final' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-active-final', stateRevision: 9 }), waitForCompletion: async () => {},
-    readSession: async () => { reads += 1; signalRead(); return reads === 1
+    readSession: async () => { signalRead(); return !stopped
       ? { projection: { status: 'running' }, runtime: { stateRevision: 9 }, messages: [completedUser('input-active-final')] }
       : { projection: { status: 'idle' }, runtime: { stateRevision: 10 }, messages: [completedUser('input-active-final'), {
         info: { role: 'assistant', messageId: 'assistant-active-final', parentMessageId: 'input-active-final', finish: 'cancelled' }, parts: [],
       }] }; },
-    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-active-final'); stops += 1; }, close: async () => {},
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-active-final'); stops += 1; stopped = true; }, close: async () => {},
   };
 
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
