@@ -4965,7 +4965,7 @@ test('resumed rescue cannot reuse a historical visible result when the current t
   assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
 });
 
-test('an unrelated-only assistant remains pending until interruption without reusing historical output', async () => {
+test('an unrelated-only assistant remains pending until interruption without reusing historical output', { skip: windowsRealSignalSkip }, async () => {
   const context = await fixture();
   const record = join(context.directory, 'unrelated-only.jsonl'); await writeFile(record, '');
   const completionGate = join(context.directory, 'unrelated-only-completion-gate');
