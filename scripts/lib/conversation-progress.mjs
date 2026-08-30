@@ -169,10 +169,13 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     const stagedToolStates = new Map(toolStates);
     const stagedRowStates = new Map(rowStates);
     /** @type {Map<number,{turnId:string,state:string}>} */ const stagedFrameTurnStates = new Map();
+    const stagedFrameMutatedRowIds = new Set();
+    let stagedTrackedRowRemoved = false;
     const staged = [];
     /** @type {{kind:'succeeded'|'interrupted'|'failed',turnId:string}|null} */ let stagedTerminalResult = null;
     for (const delta of frame.deltas) {
       if (delta.op === 'row.removed') {
+        if (authoritativeTurn && authoritativeTurn.rowId >= /** @type {number} */ (delta.fromRowId)) stagedTrackedRowRemoved = true;
         applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
         for (const rowId of stagedFrameTurnStates.keys()) if (rowId >= /** @type {number} */ (delta.fromRowId)) stagedFrameTurnStates.delete(rowId);
         continue;
@@ -181,7 +184,10 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         if (delta.rowMutationId === null) {
           stagedFrameTurnStates.clear();
           if (authorityState === 'waiting-terminal') makeAuthorityUnavailable();
-        } else stagedFrameTurnStates.delete(delta.rowMutationId);
+        } else {
+          stagedFrameMutatedRowIds.add(delta.rowMutationId);
+          stagedFrameTurnStates.delete(delta.rowMutationId);
+        }
       }
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
@@ -217,10 +223,13 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
     const trackedTurn = authoritativeTurn;
     const finalTurnState = trackedTurn ? stagedFrameTurnStates.get(trackedTurn.rowId) : undefined;
-    if (authorityState === 'waiting-terminal' && trackedTurn && finalTurnState?.turnId === trackedTurn.turnId
-      && ['completedSuccess', 'completedInterrupted', 'failed'].includes(finalTurnState.state)) {
-      if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: finalTurnState.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-      stagedTerminalResult = { kind: finalTurnState.state === 'completedSuccess' ? 'succeeded' : finalTurnState.state === 'completedInterrupted' ? 'interrupted' : 'failed', turnId: trackedTurn.turnId };
+    if (authorityState === 'waiting-terminal' && trackedTurn) {
+      const trackedRowMutated = stagedTrackedRowRemoved || stagedFrameMutatedRowIds.has(trackedTurn.rowId);
+      if (trackedRowMutated && finalTurnState?.turnId !== trackedTurn.turnId) makeAuthorityUnavailable();
+      else if (finalTurnState?.turnId === trackedTurn.turnId && ['completedSuccess', 'completedInterrupted', 'failed'].includes(finalTurnState.state)) {
+        if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: finalTurnState.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
+        stagedTerminalResult = { kind: finalTurnState.state === 'completedSuccess' ? 'succeeded' : finalTurnState.state === 'completedInterrupted' ? 'interrupted' : 'failed', turnId: trackedTurn.turnId };
+      }
     }
     replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
     lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;

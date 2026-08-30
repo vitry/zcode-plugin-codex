@@ -65,7 +65,7 @@ test('turn terminal authority ignores historical, unstarted, background, and mis
   await observer.observe(conversationFrame({ ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [captured0165TurnRow({ rowId: 2, turnId: 'background', origin: 'backgroundWork', state: 'running' })] }), observedAt);
   await observer.observe(conversationFrame({ ordinal: 4, fromSeq: 12, toSeq: 13, deltas: [captured0165TurnRow({ rowId: 10, turnId: 'turn-current', state: 'running' })] }), observedAt);
   await observer.observe(conversationFrame({ ordinal: 5, fromSeq: 13, toSeq: 14, deltas: [captured0165TurnRow({ rowId: 11, turnId: 'turn-current', state: 'completedSuccess' })] }), observedAt);
-  await observer.observe(conversationFrame({ ordinal: 6, fromSeq: 14, toSeq: 15, deltas: [captured0165TurnRow({ rowId: 10, turnId: 'turn-foreign', state: 'completedSuccess' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 6, fromSeq: 14, toSeq: 15, deltas: [captured0165TurnRow({ rowId: 12, turnId: 'turn-foreign', state: 'completedSuccess' })] }), observedAt);
   await assertPromisePending(terminal);
   await observer.observe(conversationFrame({ ordinal: 7, fromSeq: 15, toSeq: 16, deltas: [captured0165TurnRow({ rowId: 10, turnId: 'turn-current', state: 'completedInterrupted' })] }), observedAt);
   assert.deepEqual(await terminal, { kind: 'interrupted', turnId: 'turn-current' });
@@ -858,11 +858,11 @@ test('a gap during a frame with a staged turn terminal cannot resolve event auth
 
 test('turn terminal authority uses the final mutation for its row within one atomic frame', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
-  for (const trailingDelta of [
-    captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' }),
-    { op: 'row.removed', fromRowId: 1 },
-    toolRow({ rowId: 1, toolCallId: 'replacement-tool' }),
-    { op: 'row.upserted', row: { rowId: 1, kind: 'futureRowKind', futurePayload: { added: true } } },
+  for (const { trailingDelta, preservesTurn } of [
+    { trailingDelta: captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' }), preservesTurn: true },
+    { trailingDelta: { op: 'row.removed', fromRowId: 1 }, preservesTurn: false },
+    { trailingDelta: toolRow({ rowId: 1, toolCallId: 'replacement-tool' }), preservesTurn: false },
+    { trailingDelta: { op: 'row.upserted', row: { rowId: 1, kind: 'futureRowKind', futurePayload: { added: true } } }, preservesTurn: false },
   ]) {
     const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
@@ -875,9 +875,27 @@ test('turn terminal authority uses the final mutation for its row within one ato
       deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }), trailingDelta],
     }), observedAt);
     assert.equal(result.events.some((event) => event.phase === 'finalizing'), false);
-    assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
-    await assertPromisePending(terminal);
-    observer.markGap();
+    if (preservesTurn) {
+      assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
+      await assertPromisePending(terminal); observer.markGap();
+    } else assert.equal(observer.terminalAuthorityState(), 'unavailable');
+    assert.deepEqual(await terminal, { kind: 'unavailable' });
+  }
+});
+
+test('a replaced authoritative row cannot terminalize from an old-turn replay in a later frame', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const replacement of [
+    { op: 'row.removed', fromRowId: 1 },
+    toolRow({ rowId: 1, toolCallId: 'replacement-tool' }),
+    captured0165TurnRow({ rowId: 1, turnId: 'replacement-turn', state: 'running' }),
+  ]) {
+    const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    await observer.observe(conversationFrame({ ordinal: 1, fromSeq: 0, toSeq: 1, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })] }), observedAt);
+    await observer.observe(conversationFrame({ ordinal: 2, fromSeq: 1, toSeq: 2, deltas: [replacement] }), observedAt);
+    await observer.observe(conversationFrame({ ordinal: 3, fromSeq: 2, toSeq: 3, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' })] }), observedAt);
+    assert.equal(observer.terminalAuthorityState(), 'unavailable');
     assert.deepEqual(await terminal, { kind: 'unavailable' });
   }
 });
