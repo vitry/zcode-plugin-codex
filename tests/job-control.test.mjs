@@ -1231,9 +1231,40 @@ test('remotely proven interrupted turn settles cancelled without issuing a redun
     ] }),
     stopSession: async () => { stops += 1; throw new Error('redundant stop must not run'); }, close: async () => {},
   };
-  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+  const wrapped = { ...store, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ nextStatus, /** @type {Record<string,unknown>} */ patch) => {
+    const winner = await store.finishJob(workspaceArg, jobId, expected, nextStatus, patch);
+    if (nextStatus === 'cancelled') throw new Error('cancelled apply-then-throw');
+    return winner;
+  } };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }).catch((error) => error);
   assert.equal(caught.code, 'ZCODE_TURN_INTERRUPTED'); assert.equal(stops, 0);
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('remote interruption returns a concurrent durable succeeded winner', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const dataRoot = join(root, 'data'); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await mkdir(join(storage.directory, 'results'), { recursive: true });
+  const resultArtifact = `results/${job.id}.md`; await writeFile(join(storage.directory, resultArtifact), 'concurrent success', { mode: 0o600 });
+  let promoteWinner = false; let promoted = false; let stops = 0;
+  const wrapped = { ...store, readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId) => {
+    if (promoteWinner && !promoted) {
+      promoted = true; await store.finishJob(workspaceArg, jobId, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+    }
+    return store.readJob(workspaceArg, jobId);
+  } };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-interrupted-success-winner' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-interrupted-success-winner', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => { promoteWinner = true; return { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [
+      completedUser('input-interrupted-success-winner'),
+      { info: { role: 'assistant', messageId: 'assistant-interrupted-success-winner', parentMessageId: 'input-interrupted-success-winner', finish: 'cancelled', time: { completed: 3 } }, parts: [{ type: 'text', text: 'partial' }] },
+    ] }; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const output = await executeJob({ job, workspace, dataRoot, store: wrapped, client, task: 'task' });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'concurrent success'); assert.equal(stops, 0);
 });
 
 test('executor activates bounded snapshot progress only after the exact accepted boundary is durable and keeps final read authoritative', async () => {

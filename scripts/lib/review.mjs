@@ -187,21 +187,23 @@ export async function executeJob(input) {
     const finalSnapshot = terminal.snapshot;
     remoteTerminalProven = true;
     if (terminal.kind === 'interrupted') {
-      await settleRemoteInterruption({ input, job, workspace, dataRoot });
-      throw new PluginError('ZCODE_TURN_INTERRUPTED', 'ZCode interrupted the delegated turn.', { category: 'runtime', remedy: 'Retry the task when the session is ready.' });
+      const winner = await settleRemoteInterruption({ input, job, workspace, dataRoot });
+      if (winner.status === 'succeeded') output = { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: winner.resultArtifact }) };
+      else throw new PluginError('ZCODE_TURN_INTERRUPTED', 'ZCode interrupted the delegated turn.', { category: 'runtime', remedy: 'Retry the task when the session is ready.' });
+    } else {
+      if (terminal.kind === 'failed' && finalSnapshot?.projection?.status !== 'error') {
+        const message = publicErrorMessage(selectCurrentTurnAssistant(finalSnapshot, turnBoundary)?.info?.error?.message) ?? 'ZCode reported a terminal error.';
+        throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
+      }
+      const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
+      const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
+      const publication = await publishSuccessfulResult({
+        input, job, workspace, dataRoot, result,
+        appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+      });
+      output = { job: publication.job, result: publication.result };
+      appliedFinalization = publication.appliedFinalization;
     }
-    if (terminal.kind === 'failed' && finalSnapshot?.projection?.status !== 'error') {
-      const message = publicErrorMessage(selectCurrentTurnAssistant(finalSnapshot, turnBoundary)?.info?.error?.message) ?? 'ZCode reported a terminal error.';
-      throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
-    }
-    const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
-    const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
-    const publication = await publishSuccessfulResult({
-      input, job, workspace, dataRoot, result,
-      appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
-    });
-    output = { job: publication.job, result: publication.result };
-    appliedFinalization = publication.appliedFinalization;
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     let current = initialBoundStopGuardComplete ? await input.store.readJob(workspace, job.id).catch(() => running) : null;
@@ -310,11 +312,27 @@ async function settleRemoteInterruption({ input, job, workspace, dataRoot }) {
   return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
     let current = await input.store.readJob(workspace, job.id);
     if (['cancelled', 'failed', 'succeeded'].includes(current.status)) return current;
-    if (current.status === 'queued') return input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null });
-    if (current.status === 'running') current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null });
-    if (current.status === 'cancelling') return input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+    if (current.status === 'queued') return settleInterruptedFinish(input.store, workspace, job.id, ['queued']);
+    if (current.status === 'running') {
+      try { current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null }); }
+      catch (error) {
+        const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+        if (winner && winner.status !== 'running') current = winner; else throw error;
+      }
+    }
+    if (current.status === 'cancelling') return settleInterruptedFinish(input.store, workspace, job.id, ['cancelling']);
     return current;
   });
+}
+
+/** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expected */
+async function settleInterruptedFinish(store, workspace, jobId, expected) {
+  try { return await store.finishJob(workspace, jobId, expected, 'cancelled', { exitCode: null }); }
+  catch (error) {
+    const winner = await store.readJob(workspace, jobId).catch(() => null);
+    if (winner?.status === 'cancelled') return winner;
+    throw error;
+  }
 }
 
 export class SuccessfulResultFinalizationError extends Error {
