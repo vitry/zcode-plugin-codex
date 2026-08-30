@@ -737,7 +737,7 @@ for (const execution of ['foreground', 'background']) {
 }
 
 test('a crashed real background worker reconciles remote terminal state without failing remote active work', async (t) => {
-  for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'running'], ['missing', 'failed']]) {
+  for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'failed'], ['missing', 'failed']]) {
     const fixture = await context(); const control = join(fixture.root, 'recovery-control.json'); await writeFile(control, JSON.stringify({ mode: 'active' }));
     const env = { ...fixture.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
     const started = await runCompanion(['rescue', '--background', '--fresh', `recover ${remoteMode}`], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext }, autoLaunchBackground: true });

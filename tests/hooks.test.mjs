@@ -159,7 +159,7 @@ async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId,
     : (await store.reserveFreshRescueJob({ workspace: cwd, reservation, executor })).job;
   const worker = { childPid: 999_999, workerLeaseId: 'd'.repeat(64) };
   value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
-  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, ...peerEnv } });
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...peerEnv } });
   await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
   const sent = await client.send(remoteSessionId, 'recover this accepted turn');
   await client.close();

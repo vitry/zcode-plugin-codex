@@ -161,11 +161,18 @@ function addSessionProgress(result, mode, pendingAssistant) {
 async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
 function applyRecoveryMode(session, mode) {
   if (!session || !mode) return;
-  session.projectionStatus = mode === 'completed' ? 'completed' : mode === 'stopped' ? 'paused' : 'running';
-  if (mode === 'completed' && session.pendingResult && !session.resultApplied) {
-    completePendingTurn(session); session.projectionStatus = 'completed';
+  if (mode === 'active') {
+    if (session.pendingTurn) session.projectionStatus = 'running';
+    return;
   }
-  if (mode === 'stopped') interruptPendingTurn(session);
+  if (mode === 'completed') {
+    if (session.pendingResult && !session.resultApplied) completePendingTurn(session);
+    session.projectionStatus = 'completed';
+    return;
+  }
+  if (mode === 'stopped') {
+    if (!interruptPendingTurn(session) && session.projectionStatus !== 'idle') session.projectionStatus = 'paused';
+  }
 }
 
 async function record(message) {

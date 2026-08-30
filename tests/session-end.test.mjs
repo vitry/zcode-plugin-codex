@@ -853,17 +853,18 @@ test('executeJob interruption observes the accepted turn through coherent cancel
   assert.equal((await input.store.readJob(input.workspace, reservation.id)).status, 'cancelled');
 });
 
-test('executeJob interruption preserves coherent success while throwing the original interruption', async () => {
+test('executeJob interruption returns coherent success as the terminal winner', async () => {
   const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' });
   const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'foreground interrupted', { category: 'runtime', remedy: 'stop' });
   let stops = 0;
   const client = { ...executorClient(), stopSession: async () => { stops += 1; }, readSession: async () => coherentTerminal('input-a', 'success won cancellation') };
-  await assert.rejects(executeJob({
+  const output = await executeJob({
     job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client, task: 'interrupt', signal: controller.signal,
     onBoundaryPersisted: async () => { controller.abort(interruption); },
-  }), (error) => error === interruption);
+  });
   const stored = await input.store.readJob(input.workspace, reservation.id);
-  assert.equal(stops, 1); assert.equal(stored.status, 'succeeded');
+  assert.equal(stops, 1); assert.equal(output.job.id, reservation.id); assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.result, 'success won cancellation'); assert.equal(stored.status, 'succeeded');
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   assert.equal(await readFile(join(storage.directory, stored.resultArtifact), 'utf8'), 'success won cancellation');
 });
