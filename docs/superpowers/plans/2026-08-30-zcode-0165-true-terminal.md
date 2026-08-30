@@ -58,6 +58,8 @@ Expected: failure from the current `exactKeys` checks.
 
 Change upstream-owned object checks from exact key sets to required consumed-field checks. Continue to validate wire version, topic/subscription identity, sequence continuity, row kind/state/status, identifiers, timestamps, JSON depth/node/byte limits, and path containment.
 
+Audit the remaining upstream response validators in `zcode-client.mjs` and `zcode-broker.mjs`, including runtime-model update/set responses. Convert only response-side exact-object checks to consumed-field projections; caller input, request, persistence, capability, and CAS shapes remain exact.
+
 - [ ] **Step 7: Run focused tests and commit**
 
 Run: `node --test tests/zcode-client.test.mjs tests/conversation-progress.test.mjs`
@@ -70,7 +72,9 @@ Commit: `fix: accept additive ZCode protocol fields`
 
 **Files:**
 - Modify: `scripts/lib/conversation-progress.mjs`
+- Modify: `scripts/lib/progress.mjs`
 - Test: `tests/conversation-progress.test.mjs`
+- Test: `tests/progress.test.mjs`
 
 - [ ] **Step 1: Write failing lifecycle tests**
 
@@ -107,9 +111,11 @@ Extend the deferred observer with a small API such as:
 
 Resolve only after a post-boundary `running` row transitions to `completedSuccess`, `completedInterrupted`, or `failed`. Map them to `succeeded`, `interrupted`, and `failed`. Disable authority on subscription failure or an unrecovered gap so callers can select snapshot fallback.
 
+Downgrade legacy `prompt_completed` and `prompt_failed` to activity/wakeup events. They must not set `terminalSequence`, dispatch the terminal fence, or discard later v4 frames. The real v4/snapshot settlement path owns terminal fencing.
+
 - [ ] **Step 4: Run focused tests and commit**
 
-Run: `node --test tests/conversation-progress.test.mjs`
+Run: `node --test tests/conversation-progress.test.mjs tests/progress.test.mjs`
 
 Expected: all tests pass.
 
@@ -176,6 +182,7 @@ Commit: `fix: wait for coherent ZCode turn completion`
 **Files:**
 - Modify: `scripts/lib/recovery.mjs`
 - Modify: `scripts/lib/job-control.mjs` if the existing cancellation seam requires it
+- Modify: `scripts/zcode-companion.mjs` to provide `readSession` to cancellation
 - Test: `tests/recovery.test.mjs`
 - Test: `tests/job-control.test.mjs`
 - Test: `tests/session-end.test.mjs`
@@ -196,7 +203,7 @@ Expected: current recovery or cancellation terminalizes after the first idle/sto
 
 - [ ] **Step 4: Reuse the shared classifier**
 
-Replace direct `projection.status` terminal decisions with the shared classification. Preserve all existing ownership revalidation, worker lease, binding CAS, and terminal winner rules. Do not change persistent schemas.
+Replace direct `projection.status` terminal decisions with the shared classification. The controller observes the persisted boundary before stopping, skips an admission-pending turn, stops only after current-turn activity appears, and rereads for coherent settlement. Preserve all existing ownership revalidation, worker lease, binding CAS, and terminal winner rules. Do not change persistent schemas or add a daemon.
 
 - [ ] **Step 5: Run focused tests and commit**
 
