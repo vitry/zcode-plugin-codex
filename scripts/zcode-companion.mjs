@@ -956,7 +956,7 @@ async function executeWithWorkerLease(context) {
 /** @param {any} context */
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
-  let client; let resumeRpcSucceeded = false; let runningPersisted = false;
+  let client; let executeJobEntered = false; let resumeRpcSucceeded = false; let runningPersisted = false;
   const migrationRollback = context.migrationRollback;
   const activeContinuationProof = job.rescueContinuationOrigin?.kind === 'active-continuation'
     ? job.rescueContinuationOrigin : undefined;
@@ -992,6 +992,7 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
+    executeJobEntered = true;
     return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; }, onRunningPersisted: () => { runningPersisted = true; }, ...(finishResumeFailure ? { onResumeFailure: convergeResumeFailure } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
@@ -1000,7 +1001,8 @@ async function executeReserved(context) {
     const settlementRequired = migrationRollback && !resumeRpcSucceeded
       || activeContinuationProof && activeRollbackAllowed(executionError);
     if (finishResumeFailure && settlementRequired
-      && (current?.status === 'queued' || current === null && error instanceof ResumeFailureSettlementError)) {
+      && (current?.status === 'queued' || current === null
+        && (activeContinuationProof && !executeJobEntered || error instanceof ResumeFailureSettlementError))) {
       await convergeResumeFailure(executionError);
     } else if (isInterruption(executionError) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});

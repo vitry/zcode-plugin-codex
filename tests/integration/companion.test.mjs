@@ -2325,7 +2325,7 @@ async function prepareRolledBackContinuationRetry(context, prepared, env) {
   });
 }
 
-for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of /** @type {const} */ (['resume', 'runtime-model', 'outer-dependency'])) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, async () => {
+for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of /** @type {const} */ (['resume', 'runtime-model', 'outer-dependency', 'outer-dependency-read'])) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, async () => {
   const context = await fixture();
   const failureHome = join(context.directory, `${failure}-home`); await mkdir(failureHome);
   const extraEnv = {
@@ -2341,9 +2341,22 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   });
   assert.equal(bindingBefore.kind, 'bound');
   const failureEnv = prepared.env;
-  const outerFailure = async () => { throw new Error('fixture outer dependency failed before execution'); };
-  const executionDependencies = failure === 'outer-dependency' ? { discoverLaunch: outerFailure } : {};
+  const outerError = new Error('fixture outer dependency failed before execution');
+  let outerDependencyFailed = false; let outerReadFaults = 0;
+  const outerFailure = async () => { outerDependencyFailed = true; throw outerError; };
+  const outerReadFaultStore = { ...store, readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    if (outerDependencyFailed && outerReadFaults === 0) {
+      outerReadFaults += 1;
+      throw new Error('fixture first outer winner read failed');
+    }
+    return store.readJob(workspace, jobId);
+  } };
+  const executionDependencies = failure.startsWith('outer-dependency') ? {
+    discoverLaunch: outerFailure,
+    ...(failure === 'outer-dependency-read' ? { createStateStore: () => outerReadFaultStore } : {}),
+  } : {};
   /** @type {any} */ let worker;
+  /** @type {unknown} */ let caught;
   const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: context.workspace, env: failureEnv,
     dependencies: {
@@ -2362,8 +2375,11 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
       cwd: context.workspace, env: failureEnv,
       authorization: { executionCapability: worker.executionCapability, jobId: reserved.job.id },
       dependencies: executionDependencies,
-    }));
-  } else await assert.rejects(invocation);
+    }), (error) => { caught = error; return true; });
+  } else await assert.rejects(invocation, (error) => { caught = error; return true; });
+  if (failure === 'outer-dependency-read') {
+    assert.equal(caught, outerError); assert.equal(outerReadFaults, 1);
+  }
 
   const jobsAfterFailure = await store.listJobs(context.workspace);
   assert.equal(jobsAfterFailure.length, 2);
@@ -2372,6 +2388,15 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   assert.equal(failed?.startedAt, undefined); assert.equal(failed?.zcodeSessionId, undefined);
   assert.equal(failed?.rescueContinuationOrigin, undefined); assert.equal(failed?.rescueExecutionClaim, undefined);
   assert.equal(failed?.rescueExecutionReservation, undefined);
+  if (execution === 'background') {
+    const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+    const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+      `${createHash('sha256').update(worker.executionCapability).digest('hex')}.json`);
+    const capability = JSON.parse(await readFile(capabilityPath, 'utf8'));
+    assert.match(capability.consumedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.equal(capability.executionReservationId, undefined);
+    assert.equal(capability.executionReservationWorkerLeaseId, undefined);
+  }
   const bindingAfterFailure = await store.resolveRescueBinding({
     workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
   });
