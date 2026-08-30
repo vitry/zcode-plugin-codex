@@ -998,6 +998,40 @@ test('active continuation failure restores the prior binding and terminalizes th
   assert.equal((await store.listJobs(workspace)).some((job) => job.id === continuation.job.id && job.status === 'failed'), true);
 });
 
+test('active continuation failure idempotence compares the caller patch using persisted JSON semantics', async () => {
+  const base = await activeContinuationFailureFixture();
+  const details = Object.assign(Object.create(null), { attempt: -0, source: 'resume' });
+  const error = Object.assign(Object.create(null), { message: 'normalized resume failure', details });
+  const patch = { error, exitCode: -0 };
+  await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    null, base.proof, 'failed', patch);
+
+  const persisted = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(Object.getPrototypeOf(persisted.error), Object.prototype);
+  assert.equal(Object.is(persisted.error.details.attempt, -0), false);
+  assert.equal(Object.is(persisted.exitCode, -0), false);
+  assert.deepEqual(await base.store.finishActiveRescueContinuationFailure(base.workspace,
+    base.continuation.job.id, null, base.proof, 'failed', patch), persisted);
+});
+
+for (const mutation of ['extra mutable field', 'missing requested field']) {
+  test(`active continuation failure idempotence rejects a terminal job with ${mutation}`, async () => {
+    const base = await activeContinuationFailureFixture();
+    const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
+    const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+      null, base.proof, 'failed', patch);
+    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+    const path = join(storage.directory, 'jobs', `${failed.id}.json`);
+    const mutated = JSON.parse(await readFile(path, 'utf8'));
+    if (mutation === 'extra mutable field') mutated.lastCancelError = { message: 'unrequested terminal mutation' };
+    else delete mutated.exitCode;
+    await writeFile(path, `${JSON.stringify(mutated, null, 2)}\n`);
+
+    await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, failed.id,
+      null, base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+  });
+}
+
 test('active continuation failure converges after binding restoration faults before terminal publication', async () => {
   const base = await activeContinuationFailureFixture();
   const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };

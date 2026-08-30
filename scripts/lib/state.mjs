@@ -1787,10 +1787,17 @@ function hasActiveContinuationRunningEvidence(job) {
  */
 function hasExactActiveContinuationTerminalPatch(job, patch, expectedWorkerLeaseId) {
   if (!Object.entries(patch).every(([field, value]) => Object.hasOwn(job, field)
-    && isDeepStrictEqual(job[field], value))) return false;
+    && samePersistedJsonValue(job[field], value))) return false;
   const allowed = new Set([...Object.keys(patch), 'finishedAt']);
   if (expectedWorkerLeaseId !== null) { allowed.add('childPid'); allowed.add('workerLeaseId'); }
   return [...JOB_PATCH_FIELDS].every((field) => !Object.hasOwn(job, field) || allowed.has(field));
+}
+
+/** Compare against the exact JSON value atomicWriteJson persists, including -0 and prototype normalization.
+ * @param {unknown} persisted @param {unknown} requested */
+function samePersistedJsonValue(persisted, requested) {
+  try { return isDeepStrictEqual(persisted, JSON.parse(JSON.stringify(requested))); }
+  catch { return false; }
 }
 
 /** Accept either a wholly unclaimed attempt or the exact caller-owned queued execution fence. @param {any} job
