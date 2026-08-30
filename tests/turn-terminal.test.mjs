@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { awaitCurrentTurnTerminal, classifyCurrentTurnSnapshot, selectCurrentTurnAssistant } from '../scripts/lib/turn-terminal.mjs';
+import { awaitCurrentTurnTerminal, classifyCurrentTurnSnapshot, persistedTurnBoundary, selectCurrentTurnAssistant } from '../scripts/lib/turn-terminal.mjs';
 
 const boundary = { beforeMessageIds: new Set(['historical-user', 'historical-assistant']), inputId: 'input-current', stateRevision: 7 };
+
+test('persisted turn boundary validates and constructs one shared classifier boundary', () => {
+  assert.equal(persistedTurnBoundary({ inputId: 'input-current', startRevision: 7 }), null);
+  assert.equal(persistedTurnBoundary({ inputId: 'input-current', startRevision: -1, beforeMessageIds: [] }), null);
+  assert.deepEqual(persistedTurnBoundary({ inputId: 'input-current', startRevision: 7, beforeMessageIds: ['historical-user', 'historical-assistant'] }), boundary);
+});
 
 function user(messageId = 'input-current', extra = {}) {
   return { info: { role: 'user', messageId, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' }, ...extra }, parts: [{ type: 'text', text: 'prompt' }] };

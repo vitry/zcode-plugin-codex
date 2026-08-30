@@ -5,6 +5,18 @@ const INTERRUPTED_FINISHES = new Set(['abort', 'aborted', 'cancelled', 'canceled
 const RECONCILE_INTERVAL_MS = 100;
 
 /**
+ * Validate and construct the classifier boundary persisted on a job record.
+ * @param {any} job
+ * @returns {{beforeMessageIds:Set<string>,inputId:string,stateRevision:number}|null}
+ */
+export function persistedTurnBoundary(job) {
+  if (typeof job?.inputId !== 'string' || !job.inputId
+    || !Number.isSafeInteger(job.startRevision) || job.startRevision < 0
+    || !Array.isArray(job.beforeMessageIds) || job.beforeMessageIds.some((/** @type {unknown} */ id) => typeof id !== 'string')) return null;
+  return { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) };
+}
+
+/**
  * Classify only evidence attributable to the accepted current-turn boundary.
  * Unknown/additive upstream fields are intentionally ignored.
  * @param {any} snapshot

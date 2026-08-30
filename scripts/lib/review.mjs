@@ -237,7 +237,20 @@ export async function executeJob(input) {
         if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
         if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
       } else {
-        const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
+        const cancellation = createJobController({
+          store: input.store, dataRoot,
+          stopSession: (id) => client.stopSession(id),
+          readSession: (id) => client.readSession(id),
+          publishSucceededSnapshot: async ({ job: cancelling, snapshot, turnBoundary }) => {
+            const result = extractFinalResult(snapshot, cancelling.command, turnBoundary);
+            const publication = await publishSuccessfulResultWithLockHeld({
+              input, job: cancelling, workspace, dataRoot, result, expectedStatuses: ['cancelling'],
+              returnTerminalWinner: true,
+              appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+            });
+            return publication.job;
+          },
+        });
         await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
@@ -286,25 +299,36 @@ async function waitForOptionalProgress(operation, deadline) {
 
 /** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant:()=>Promise<unknown>}} publication */
 async function publishSuccessfulResult({ input, job, workspace, dataRoot, result, appendAssistant }) {
-  return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
-    const current = await input.store.readJob(workspace, job.id);
-    if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }), appliedFinalization: false };
-    if (['failed', 'cancelled'].includes(current.status)) throw terminalPublicationError(job.id, current.status);
-    if (current.status !== 'running') throw statusPublicationError(job.id, current.status);
-    await appendAssistant();
-    const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
-    try {
-      const succeeded = await input.store.finishJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
-      return { job: succeeded, result, appliedFinalization: true };
-    } catch (error) {
-      const winner = await input.store.readJob(workspace, job.id).catch(() => null);
-      if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }), appliedFinalization: true };
-      if (winner?.status === 'running') throw new SuccessfulResultFinalizationError(error, resultArtifact);
-      if (!winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
-      if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
-      throw error;
-    }
-  });
+  return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, () => publishSuccessfulResultWithLockHeld({
+    input, job, workspace, dataRoot, result, appendAssistant, expectedStatuses: ['running'],
+  }));
+}
+
+/**
+ * Publish a coherent successful snapshot while the caller already owns the job cancellation lock.
+ * @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant?:()=>Promise<unknown>,expectedStatuses?:string[],returnTerminalWinner?:boolean}} publication
+ */
+export async function publishSuccessfulResultWithLockHeld({ input, job, workspace, dataRoot, result, appendAssistant = async () => {}, expectedStatuses = ['running'], returnTerminalWinner = false }) {
+  const current = await input.store.readJob(workspace, job.id);
+  if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }), appliedFinalization: false };
+  if (['failed', 'cancelled'].includes(current.status)) {
+    if (returnTerminalWinner) return { job: current, result: undefined, appliedFinalization: false };
+    throw terminalPublicationError(job.id, current.status);
+  }
+  if (!expectedStatuses.includes(current.status)) throw statusPublicationError(job.id, current.status);
+  await appendAssistant();
+  const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
+  try {
+    const succeeded = await input.store.finishJob(workspace, job.id, [current.status], 'succeeded', { resultArtifact, exitCode: 0 });
+    return { job: succeeded, result, appliedFinalization: true };
+  } catch (error) {
+    const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+    if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }), appliedFinalization: true };
+    if ((winner && expectedStatuses.includes(winner.status)) || !winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
+    if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
+    if (returnTerminalWinner && ['succeeded', 'failed', 'cancelled'].includes(winner.status)) return { job: winner, result: undefined, appliedFinalization: false };
+    throw error;
+  }
 }
 
 /** Settle v4-proven remote interruption without requiring another stop acknowledgement. @param {{input:any,job:any,workspace:string,dataRoot:string}} settlement */

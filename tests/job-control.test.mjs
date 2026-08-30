@@ -12,7 +12,7 @@ import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
-import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
+import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld } from '../scripts/lib/review.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
@@ -477,6 +477,30 @@ test('cancellation preserves a coherent completed-success terminal winner', asyn
   assert.equal(await readFile(join(storage.directory, winner.resultArtifact), 'utf8'), 'completion won cancellation');
 });
 
+test('lock-assumed success publication returns and cleans up a concurrent terminal winner when requested', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'publication-terminal-winner' });
+  let running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-publication-terminal-winner' });
+  running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-publication-terminal-winner', startRevision: 2, beforeMessageIds: [] });
+  running = await store.transitionJob(workspace, running.id, ['running'], 'cancelling');
+  let raced = false;
+  const wrapped = { ...store, finishJob: async (/** @type {any[]} */ ...args) => {
+    const [targetWorkspace, jobId, expected, next, patch] = args;
+    if (!raced && next === 'succeeded') {
+      raced = true;
+      await store.finishJob(targetWorkspace, jobId, ['cancelling'], 'failed', { error: { message: 'failed winner' }, exitCode: 1 });
+      throw new PluginError('JOB_TERMINAL', 'failed winner', { category: 'state', remedy: 'inspect' });
+    }
+    return store.finishJob(targetWorkspace, jobId, expected, next, patch);
+  } };
+  const publication = await publishSuccessfulResultWithLockHeld({
+    input: { store: wrapped }, job: running, workspace, dataRoot: join(root, 'data'), result: 'losing result',
+    expectedStatuses: ['cancelling'], returnTerminalWinner: true,
+  });
+  assert.equal(publication.job.status, 'failed'); assert.equal(publication.appliedFinalization, false);
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  await assert.rejects(readFile(join(storage.directory, 'results', `${job.id}.md`)), { code: 'ENOENT' });
+});
+
 test('cancellation observation expiry preserves the cancelling writable guard for retry', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-expiry' });
   const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-expiry' });
@@ -489,6 +513,50 @@ test('cancellation observation expiry preserves the cancelling writable guard fo
   const retained = await store.readJob(workspace, job.id);
   assert.equal(retained.status, 'cancelling'); assert.equal(retained.lastCancelError, undefined);
   await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'blocked-by-guard' }), { code: 'WRITABLE_JOB_EXISTS' });
+});
+
+test('cancellation observation deadline bounds a hung session read', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-hung-read' });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-hung-read' });
+  await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-cancel-hung-read', startRevision: 2, beforeMessageIds: [] });
+  /** @type {Array<()=>void>} */ const deadlines = [];
+  const controller = createJobController({
+    store, dataRoot: join(root, 'data'), cancellationObservationMs: 10,
+    setTimeout: (callback) => { deadlines.push(callback); return 1; }, clearTimeout: () => {},
+    stopSession: async () => {}, readSession: async () => new Promise(() => {}),
+  });
+  const cancellation = controller.cancel(workspace, job.id, job.ownerSessionId);
+  while (!deadlines.length) await new Promise((resolve) => setImmediate(resolve));
+  deadlines[0]();
+  await assert.rejects(Promise.race([
+    cancellation,
+    new Promise((_, reject) => globalThis.setTimeout(() => reject(new Error('hung read escaped the observation deadline')), 1_000)),
+  ]), { code: 'JOB_CANCEL_FAILED' });
+  assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling');
+});
+
+test('cancellation observation expires with a frozen injected clock', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-frozen-clock' });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-frozen-clock' });
+  await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-cancel-frozen-clock', startRevision: 2, beforeMessageIds: [] });
+  /** @type {Array<()=>void>} */ const deadlines = []; let reads = 0;
+  const controller = createJobController({
+    store, dataRoot: join(root, 'data'), cancellationObservationMs: 10, cancellationObservationIntervalMs: 0,
+    clock: () => 100,
+    setTimeout: (callback) => { deadlines.push(callback); return 1; }, clearTimeout: () => {}, delay: async () => {},
+    stopSession: async () => {},
+    readSession: async () => {
+      reads += 1;
+      if (reads === 1) queueMicrotask(() => deadlines[0]());
+      if (reads >= 4) return { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser('input-cancel-frozen-clock'), {
+        info: { role: 'assistant', messageId: 'late-interruption', parentMessageId: 'input-cancel-frozen-clock', finish: 'cancelled' }, parts: [],
+      }] };
+      return { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [] };
+    },
+  });
+  await assert.rejects(controller.cancel(workspace, job.id, job.ownerSessionId), { code: 'JOB_CANCEL_FAILED' });
+  assert.equal(reads, 1, 'deadline expiry must not depend on clock advancement');
+  assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling');
 });
 
 test('explicit cancel revalidates a gated exact binding after observation and does not stop its continuation winner', async () => {
@@ -944,6 +1012,10 @@ test('foreground interruption after an accepted send stops exactly once and dura
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-interrupted', stateRevision: 4 }),
     waitForCompletion: () => { waitStarted(); return completion; },
+    readSession: async () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 5 }, messages: [
+      completedUser('input-interrupted'),
+      { info: { role: 'assistant', messageId: 'assistant-interrupted', parentMessageId: 'input-interrupted', finish: 'cancelled' }, parts: [] },
+    ] }),
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-interrupted'); stops += 1; }, close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
@@ -1029,13 +1101,17 @@ test('authoritative terminal error fails the job with the exact provider reason 
 });
 
 test('fresh active status remains pending until explicit interruption stops the exact session', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {};
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {}; let reads = 0;
   const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-active-final' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-active-final', stateRevision: 9 }), waitForCompletion: async () => {},
-    readSession: async () => { signalRead(); return { projection: { status: 'running' }, runtime: { stateRevision: 9 }, messages: [] }; },
+    readSession: async () => { reads += 1; signalRead(); return reads === 1
+      ? { projection: { status: 'running' }, runtime: { stateRevision: 9 }, messages: [completedUser('input-active-final')] }
+      : { projection: { status: 'idle' }, runtime: { stateRevision: 10 }, messages: [completedUser('input-active-final'), {
+        info: { role: 'assistant', messageId: 'assistant-active-final', parentMessageId: 'input-active-final', finish: 'cancelled' }, parts: [],
+      }] }; },
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-active-final'); stops += 1; }, close: async () => {},
   };
 
@@ -1065,14 +1141,18 @@ test('unacknowledged stop after interrupting a fresh active status retains the r
 });
 
 test('stale terminal error remains pending and never persists its provider message', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {};
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {}; let reads = 0;
   const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const staleProviderReason = 'stale provider detail must not escape';
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-stale-error' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-stale-error', stateRevision: 15 }), waitForCompletion: async () => {},
-    readSession: async () => { signalRead(); return { projection: { status: 'error', lastError: { message: staleProviderReason } }, runtime: { stateRevision: 14 }, messages: [] }; },
+    readSession: async () => { reads += 1; signalRead(); return reads === 1
+      ? { projection: { status: 'error', lastError: { message: staleProviderReason } }, runtime: { stateRevision: 14 }, messages: [] }
+      : { projection: { status: 'idle' }, runtime: { stateRevision: 16 }, messages: [completedUser('input-stale-error'), {
+        info: { role: 'assistant', messageId: 'assistant-stale-error', parentMessageId: 'input-stale-error', finish: 'cancelled' }, parts: [],
+      }] }; },
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-stale-error'); stops += 1; }, close: async () => {},
   };
 

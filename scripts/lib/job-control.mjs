@@ -7,7 +7,7 @@ import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
-import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity } from './turn-terminal.mjs';
+import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -192,14 +192,15 @@ async function performCancellation(input, attempts, election) {
     await input.options.afterRollbackBeforeSettle?.();
     return { failedAttempt: attempt.attemptId, message, cause: error };
   }
-  if (input.options.readSession && hasTurnBoundary(cancelling)) {
+  const boundary = persistedTurnBoundary(cancelling);
+  if (input.options.readSession && boundary) {
     const settlement = await observeCancellationSettlement(input, cancelling, observedStop?.guard);
     if (settlement.kind === 'stale') return settlement.job;
     if (settlement.kind === 'succeeded') {
       if (!input.options.publishSucceededSnapshot) return cancellationUncertain(input, attempts, attempt, cancelling,
         new Error('ZCode completed during cancellation but no result publisher is available.'));
       const winner = await input.options.publishSucceededSnapshot({ workspace: input.workspace, job: cancelling,
-        snapshot: /** @type {any} */ (settlement).snapshot, turnBoundary: turnBoundary(cancelling) });
+        snapshot: /** @type {any} */ (settlement).snapshot, turnBoundary: boundary });
       return recordCancelledAttempt(input, attempts, attempt, winner);
     }
     if (!['interrupted', 'failed'].includes(settlement.kind)) {
@@ -222,24 +223,45 @@ async function performCancellation(input, attempts, election) {
 async function observeCancellationSettlement(input, job, guard) {
   const duration = nonnegativeSafeInteger(input.options.cancellationObservationMs) ? input.options.cancellationObservationMs : 1_000;
   const interval = nonnegativeSafeInteger(input.options.cancellationObservationIntervalMs) ? input.options.cancellationObservationIntervalMs : 25;
-  const now = input.options.clock ?? Date.now; const deadline = now() + duration; let stoppedActiveTurn = false;
-  for (;;) {
-    let snapshot;
-    try { snapshot = await input.options.readSession(job.zcodeSessionId); }
-    catch (error) { return { kind: 'uncertain', error }; }
-    const classification = classifyCurrentTurnSnapshot(snapshot, turnBoundary(job));
-    if (classification.kind !== 'pending') return { ...classification, snapshot };
-    if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)
-      && hasCurrentTurnActivity(snapshot, turnBoundary(job))) {
-      const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, job, guard);
-      if (revalidated?.kind === 'stale') return { kind: 'stale', job: revalidated.job };
-      try { await input.options.stopSession(job.zcodeSessionId); stoppedActiveTurn = true; }
-      catch (error) { return { kind: 'uncertain', error }; }
+  const boundary = persistedTurnBoundary(job);
+  if (!boundary) return { kind: 'uncertain', error: new Error('The durable turn boundary is incomplete.') };
+  const scheduleTimeout = input.options.setTimeout ?? globalThis.setTimeout;
+  const cancelTimeout = input.options.clearTimeout ?? globalThis.clearTimeout;
+  /** @type {()=>void} */ let expire = () => {};
+  const expiry = new Promise((resolvePromise) => { expire = () => resolvePromise(undefined); });
+  const timer = scheduleTimeout(expire, duration);
+  let stoppedActiveTurn = false;
+  /** @param {()=>Promise<any>} operation @returns {Promise<{kind:'value',value:any}|{kind:'error',error:any}|{kind:'expired'}>} */
+  const bounded = async (operation) => Promise.race([
+    Promise.resolve().then(operation).then((value) => ({ kind: /** @type {const} */ ('value'), value }), (error) => ({ kind: /** @type {const} */ ('error'), error })),
+    expiry.then(() => ({ kind: /** @type {const} */ ('expired') })),
+  ]);
+  try {
+    for (;;) {
+      const read = await bounded(() => input.options.readSession(job.zcodeSessionId));
+      if (read.kind === 'expired') return { kind: 'unresolved' };
+      if (read.kind === 'error') return { kind: 'uncertain', error: read.error };
+      const snapshot = read.value;
+      const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
+      if (classification.kind !== 'pending') return { ...classification, snapshot };
+      if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)
+        && hasCurrentTurnActivity(snapshot, boundary)) {
+        const validation = await bounded(() => revalidateBoundRescueStop(input.options.store, input.workspace, job, guard));
+        if (validation.kind === 'expired') return { kind: 'unresolved' };
+        if (validation.kind === 'error') return { kind: 'uncertain', error: validation.error };
+        if (validation.value?.kind === 'stale') return { kind: 'stale', job: validation.value.job };
+        const stop = await bounded(() => input.options.stopSession(job.zcodeSessionId));
+        if (stop.kind === 'expired') return { kind: 'unresolved' };
+        if (stop.kind === 'error') return { kind: 'uncertain', error: stop.error };
+        stoppedActiveTurn = true;
+      }
+      const wait = await bounded(() => input.options.delay
+        ? input.options.delay(interval)
+        : pollDelay(interval, undefined, scheduleTimeout, cancelTimeout));
+      if (wait.kind === 'expired') return { kind: 'unresolved' };
+      if (wait.kind === 'error') return { kind: 'uncertain', error: wait.error };
     }
-    if (now() >= deadline) return { kind: 'unresolved' };
-    if (interval === 0) await new Promise((resolve) => setImmediate(resolve));
-    else await new Promise((resolve) => setTimeout(resolve, Math.min(interval, Math.max(0, deadline - now()))));
-  }
+  } finally { cancelTimeout(timer); }
 }
 
 /** @param {any} input @param {any} attempts @param {any} attempt @param {any} job @param {unknown} error */
@@ -252,14 +274,6 @@ async function cancellationUncertain(input, attempts, attempt, job, error) {
   return { failedAttempt: attempt.attemptId, message, cause: error };
 }
 
-/** @param {any} job */
-function hasTurnBoundary(job) {
-  return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds);
-}
-/** @param {any} job */
-function turnBoundary(job) {
-  return { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) };
-}
 /** @param {unknown} value */
 function nonnegativeSafeInteger(value) { return Number.isSafeInteger(value) && Number(value) >= 0; }
 

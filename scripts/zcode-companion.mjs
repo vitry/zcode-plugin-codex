@@ -24,7 +24,7 @@ import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
-import { executeJob, extractFinalResult, readResultArtifact, removeResultArtifact, ResumeFailureSettlementError, writeResultArtifact } from './lib/review.mjs';
+import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
@@ -137,16 +137,9 @@ export async function runCompanion(argv, runtime = {}) {
       readSession: (sessionId) => client.readSession(sessionId),
       publishSucceededSnapshot: async ({ workspace, job, snapshot, turnBoundary }) => {
         const result = extractFinalResult(snapshot, job.command, turnBoundary);
-        const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result });
-        try { return await store.finishJob(workspace, job.id, ['cancelling'], 'succeeded', { resultArtifact, exitCode: 0 }); }
-        catch (error) {
-          const winner = await store.readJob(workspace, job.id).catch(() => null);
-          if (winner && ['succeeded', 'failed', 'cancelled'].includes(winner.status)) {
-            if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
-            return winner;
-          }
-          throw error;
-        }
+        return (await publishSuccessfulResultWithLockHeld({
+          input: { store }, job, workspace, dataRoot, result, expectedStatuses: ['cancelling'], returnTerminalWinner: true,
+        })).job;
       } });
     try {
       const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
