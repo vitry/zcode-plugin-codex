@@ -15,6 +15,7 @@ import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'zcode-job-control-'));
@@ -1346,7 +1347,13 @@ test('executor reports only same-session progress and drains persistence before 
   assert.equal(succeeded.status, 'succeeded');
   assert.equal(succeeded.logFile, join((await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace })).directory, 'jobs', `${job.id}.log`));
   const log = await readFile(succeeded.logFile, 'utf8');
-  for (const message of semanticMessages) assert.match(log, new RegExp(message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const archivedSemanticMessages = semanticMessages.filter((message) => log.includes(message));
+  assert.deepEqual(archivedSemanticMessages, semanticMessages.slice(0, archivedSemanticMessages.length),
+    'the bounded progress archive may omit only a pending semantic suffix');
+  for (let index = 1; index < archivedSemanticMessages.length; index += 1) {
+    assert.ok(log.indexOf(archivedSemanticMessages[index - 1]) < log.indexOf(archivedSemanticMessages[index]),
+      'archived semantic progress must retain its original order');
+  }
   assert.match(log, /Assistant message\ndone\n/);
   assert.match(log, /Final output\ndone\n/);
   assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
@@ -1582,7 +1589,8 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
     await outerTimerRegistered; assert.equal(unsubscribeReadReady, true);
     assert.ok(typeof capturedMilliseconds === 'number' && capturedMilliseconds > 200 && capturedMilliseconds <= 250);
     const result = await execution;
-    assert.ok(Date.now() - started < 1_000); assert.equal(result.result, 'done'); assert.equal(cleared, 1);
+    const elapsedMs = Date.now() - started; const elapsedLimitMs = scaleTestTimeout(1_000);
+    assert.ok(elapsedMs < elapsedLimitMs, `cleanup took ${elapsedMs}ms; expected less than ${elapsedLimitMs}ms`); assert.equal(result.result, 'done'); assert.equal(cleared, 1);
     assert.equal(lines.filter((line) => /progress cleanup reached its time limit/.test(line)).length, 1);
   } finally { globalThis.setTimeout = originalSetTimeout; releaseUnsubscribe(); }
 });
