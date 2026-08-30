@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdtemp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -69,14 +69,47 @@ async function partitionRecord(fixture) {
   return JSON.parse(await readFile(fixture.partitionPath, 'utf8')).records[0];
 }
 
+async function treeSnapshot(path, root = path, result = {}) {
+  const stats = await lstat(path, { bigint: true }); const relative = path.slice(root.length) || '.';
+  result[relative] = { ctimeNs: stats.ctimeNs.toString(), mode: Number(stats.mode & 0o777n),
+    mtimeNs: stats.mtimeNs.toString(), size: stats.size.toString(),
+    ...(stats.isFile() ? { bytes: (await readFile(path)).toString('base64') } : {}) };
+  if (stats.isDirectory()) for (const entry of (await readdir(path)).sort()) await treeSnapshot(join(path, entry), root, result);
+  return result;
+}
+
+async function ownerEvidencePath(storage, jobId) {
+  const root = join(storage.directory, 'job-owners');
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(root, entry.name, `${jobId}.json`);
+    try { await access(candidate); return candidate; } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  assert.fail(`owner evidence missing for ${jobId}`);
+}
+
 test('historical repair dry-run validates the exact incident without writing', async () => {
   const fixture = await incidentFixture();
-  const beforeBinding = await readFile(fixture.partitionPath, 'utf8');
-  const beforeJob = await readFile(fixture.currentPath, 'utf8');
+  const beforeTree = await treeSnapshot(fixture.dataRoot);
 
   assert.deepEqual(await fixture.store.repairRescueContinuationBinding(fixture.input), { status: 'repairable' });
-  assert.equal(await readFile(fixture.partitionPath, 'utf8'), beforeBinding);
-  assert.equal(await readFile(fixture.currentPath, 'utf8'), beforeJob);
+  assert.deepEqual(await treeSnapshot(fixture.dataRoot), beforeTree);
+});
+
+test('historical repair never creates a missing data root or incident layout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-binding-repair-absent-'));
+  const workspaceDirectory = join(root, 'workspace'); const dataRoot = join(root, 'missing-data');
+  await mkdir(workspaceDirectory); const workspace = await realpath(workspaceDirectory);
+  const input = { workspace, parentSessionId: 'parent-session', childAgentId: 'rescue-child',
+    childAgentPath: '/root/zcode_rescue_task', bindingKey: 'a'.repeat(64), operationId: 'b'.repeat(64),
+    anchorJobId: 'c'.repeat(64), failedCurrentJobId: 'd'.repeat(64),
+    expectedBindingUpdatedAt: '2026-08-29T00:00:00.000Z' };
+  const store = createStateStore({ dataRoot });
+  await assert.rejects(store.repairRescueContinuationBinding(input), { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+  await assert.rejects(access(dataRoot), { code: 'ENOENT' });
+  await assert.rejects(store.repairRescueContinuationBinding({ ...input, apply: true }),
+    { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+  await assert.rejects(access(dataRoot), { code: 'ENOENT' });
 });
 
 test('historical repair apply changes only currentJobId and monotonically advances updatedAt', async () => {
@@ -156,6 +189,33 @@ test('historical repair rejects running evidence and any active writable Rescue 
   const fixture = await incidentFixture();
   await fixture.store.reserveJob(reservation(fixture.workspace, 'unrelated-active'));
   await assert.rejects(fixture.store.repairRescueContinuationBinding({ ...fixture.input, apply: true }),
+    { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+});
+
+test('historical repair rejects every active writable command but permits read-only jobs', async () => {
+  for (const status of ['queued', 'running', 'cancelling']) {
+    const fixture = await incidentFixture();
+    let blocker = await fixture.store.reserveJob({ ...reservation(fixture.workspace, `blocker-${status}`),
+      command: 'review' });
+    if (status !== 'queued') blocker = await fixture.store.transitionJob(fixture.workspace, blocker.id, ['queued'], 'running');
+    if (status === 'cancelling') await fixture.store.transitionJob(fixture.workspace, blocker.id, ['running'], 'cancelling');
+    await assert.rejects(fixture.store.repairRescueContinuationBinding(fixture.input),
+      { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+  }
+  const fixture = await incidentFixture();
+  await fixture.store.reserveJob({ ...reservation(fixture.workspace, 'read-only'), command: 'review', readOnly: true });
+  assert.deepEqual(await fixture.store.repairRescueContinuationBinding(fixture.input), { status: 'repairable' });
+});
+
+test('historical repair validates only owner evidence relevant to the repair decision', async () => {
+  const fixture = await incidentFixture();
+  const unrelated = await fixture.store.reserveJob({ ...reservation(fixture.workspace, 'unrelated-read-only'),
+    command: 'review', readOnly: true });
+  await writeFile(await ownerEvidencePath(fixture.storage, unrelated.id), '{}\n');
+  assert.deepEqual(await fixture.store.repairRescueContinuationBinding(fixture.input), { status: 'repairable' });
+
+  await writeFile(await ownerEvidencePath(fixture.storage, fixture.first.job.id), '{}\n');
+  await assert.rejects(fixture.store.repairRescueContinuationBinding(fixture.input),
     { code: 'RESCUE_BINDING_REPAIR_INVALID' });
 });
 

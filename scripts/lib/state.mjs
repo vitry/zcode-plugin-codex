@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, readdir, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { lstat, readdir, realpath, unlink } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { isCanonicalCodexAgentPath } from './codex-app-server.mjs';
@@ -369,18 +369,23 @@ export function createStateStore(options) {
     async repairRescueContinuationBinding(input) {
       try {
         validateHistoricalRescueRepairInput(input);
-        const storage = await jobStorage(dataRoot, input.workspace);
+        const storage = await existingJobStorageForRepair(dataRoot, input.workspace);
         return await withFileLock(storage.lockPath, async () => {
           const lockIdentity = await captureStateLockIdentity(storage);
           const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
           await validateOwnerIndexForRepairLocked(storage, jobs);
-          if (jobs.some((job) => job.command === 'rescue' && isActiveWritableJob(job))) throw invalidRescueBindingRepair();
+          const activeWritableJobs = jobs.filter(isActiveWritableJob);
+          if (activeWritableJobs.length > 0) {
+            await readRescueReservationEvidence(storage, activeWritableJobs[0]);
+            throw invalidRescueBindingRepair();
+          }
 
           const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
           const binding = snapshot.records.get(input.bindingKey) ?? null;
           const state = validateHistoricalRescueRepairBinding(binding, input, storage.workspacePath);
           const anchor = await readExactBindingJob(storage, input.anchorJobId);
           const failedCurrent = await readExactBindingJob(storage, input.failedCurrentJobId);
+          await Promise.all([anchor, failedCurrent].map((job) => readRescueReservationEvidence(storage, job)));
           validateHistoricalRescueRepairJobs(anchor, failedCurrent, input, binding, storage.workspacePath);
           if (state === 'already-repaired') return { status: 'already-repaired' };
           if (input.apply !== true) return { status: 'repairable' };
@@ -390,7 +395,7 @@ export function createStateStore(options) {
           await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot,
             bindingSnapshotWith(snapshot, repaired), lockIdentity);
           return { status: 'repaired' };
-        });
+        }, { createLayout: false });
       } catch {
         throw invalidRescueBindingRepair();
       }
@@ -903,7 +908,6 @@ async function validateOwnerIndexForRepairLocked(storage, jobs) {
   const expectedTuples = jobs.map((job) => ownerBindingTuple(job.ownerSessionId, job.id)).sort();
   const actualTuples = layout.bindings.map((binding) => binding.tuple).sort();
   if (!sameStringList(expectedTuples, actualTuples)) throw invalidRescueBindingRepair();
-  for (const job of jobs) await readRescueReservationEvidence(storage, job);
 }
 
 /** @param {any} binding @param {any} input @param {string} workspace */
@@ -1156,6 +1160,26 @@ async function jobStorage(dataRoot, workspace) {
     ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
     lockPath: join(storage.directory, '.state.lock'),
   };
+}
+
+/** Resolve only a complete pre-existing maintenance layout without creating or chmodding any path. @param {string} dataRoot @param {string} workspace */
+async function existingJobStorageForRepair(dataRoot, workspace) {
+  try {
+    const requestedWorkspace = resolve(workspace); const requestedDataRoot = resolve(dataRoot);
+    const [workspacePath, dataRootPath] = await Promise.all([realpath(requestedWorkspace), realpath(requestedDataRoot)]);
+    if (workspacePath !== requestedWorkspace) throw invalidRescueBindingRepair();
+    const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
+    const workspacesDirectory = join(dataRootPath, 'workspaces');
+    const directory = join(workspacesDirectory, workspaceKey);
+    const jobsDirectory = join(directory, 'jobs'); const ownerIndexDirectory = join(directory, 'job-owners');
+    for (const path of [dataRootPath, workspacesDirectory, directory, jobsDirectory, ownerIndexDirectory]) {
+      const stats = await lstat(path);
+      if (stats.isSymbolicLink() || !stats.isDirectory()
+        || process.platform !== 'win32' && (stats.mode & 0o777) !== 0o700) throw invalidRescueBindingRepair();
+    }
+    return { dataRootPath, directory, workspaceKey, workspacePath, jobsDirectory, ownerIndexDirectory,
+      ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'), lockPath: join(directory, '.state.lock') };
+  } catch { throw invalidRescueBindingRepair(); }
 }
 
 /** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation */
