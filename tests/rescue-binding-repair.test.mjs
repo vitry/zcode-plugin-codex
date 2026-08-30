@@ -88,7 +88,7 @@ test('historical repair apply changes only currentJobId and monotonically advanc
     { status: 'repaired' });
   const after = await partitionRecord(fixture);
   assert.equal(after.currentJobId, fixture.input.anchorJobId);
-  assert.ok(Date.parse(after.updatedAt) > Date.parse(before.updatedAt));
+  assert.equal(Date.parse(after.updatedAt), Date.parse(before.updatedAt) + 1);
   assert.deepEqual({ ...after, currentJobId: before.currentJobId, updatedAt: before.updatedAt }, before);
   assert.equal(await readFile(fixture.currentPath, 'utf8'), beforeJob);
 });
@@ -106,6 +106,19 @@ test('historical repair recognizes only the exact already-restored generation', 
   await writeFile(fixture.partitionPath, `${JSON.stringify(partition, null, 2)}\n`);
   await assert.rejects(fixture.store.repairRescueContinuationBinding({ ...fixture.input, apply: true }),
     { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+});
+
+test('historical repair rejects every non-repair timestamp that happens to point back to the anchor', async () => {
+  for (const delta of [-1, 0, 2]) {
+    const fixture = await incidentFixture();
+    await fixture.store.repairRescueContinuationBinding({ ...fixture.input, apply: true });
+    const partition = JSON.parse(await readFile(fixture.partitionPath, 'utf8'));
+    partition.records[0].updatedAt = new Date(Date.parse(fixture.input.expectedBindingUpdatedAt) + delta).toISOString();
+    await writeFile(fixture.partitionPath, `${JSON.stringify(partition, null, 2)}\n`);
+
+    await assert.rejects(fixture.store.repairRescueContinuationBinding({ ...fixture.input, apply: true }),
+      { code: 'RESCUE_BINDING_REPAIR_INVALID' });
+  }
 });
 
 test('historical repair rejects every caller identity or CAS mutation without writes', async () => {
@@ -176,6 +189,9 @@ test('historical repair rejects malformed and partial API requests', async () =>
     await assert.rejects(fixture.store.repairRescueContinuationBinding(input),
       { code: 'RESCUE_BINDING_REPAIR_INVALID' });
   }
+  await assert.rejects(fixture.store.repairRescueContinuationBinding({ ...fixture.input,
+    expectedBindingUpdatedAt: '+275760-09-13T00:00:00.000Z' }),
+  { code: 'RESCUE_BINDING_REPAIR_INVALID' });
 });
 
 function cliArgs(fixture) {

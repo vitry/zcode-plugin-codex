@@ -386,7 +386,7 @@ export function createStateStore(options) {
           if (input.apply !== true) return { status: 'repairable' };
 
           const repaired = validateRescueBinding({ ...binding, currentJobId: input.anchorJobId,
-            updatedAt: new Date(Math.max(Date.now(), Date.parse(binding.updatedAt) + 1)).toISOString() });
+            updatedAt: historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt) });
           await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot,
             bindingSnapshotWith(snapshot, repaired), lockIdentity);
           return { status: 'repaired' };
@@ -883,6 +883,16 @@ function validateHistoricalRescueRepairInput(input) {
     || !isDigest(input.failedCurrentJobId) || input.anchorJobId === input.failedCurrentJobId
     || !isIsoTimestamp(input.expectedBindingUpdatedAt)
     || input.apply !== undefined && typeof input.apply !== 'boolean') throw invalidRescueBindingRepair();
+  historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt);
+}
+
+/** One deterministic generation makes an exact retry distinguishable from every later binding update. @param {string} expected */
+function historicalRescueRepairUpdatedAt(expected) {
+  try {
+    const repaired = new Date(Date.parse(expected) + 1).toISOString();
+    if (Date.parse(repaired) !== Date.parse(expected) + 1) throw new Error('invalid');
+    return repaired;
+  } catch { throw invalidRescueBindingRepair(); }
 }
 
 /** Validate the owner index exactly without invoking its repair path. @param {any} storage @param {any[]} jobs */
@@ -909,8 +919,8 @@ function validateHistoricalRescueRepairBinding(binding, input, workspace) {
   if (!common) throw invalidRescueBindingRepair();
   if (valid.currentJobId === input.failedCurrentJobId
     && valid.updatedAt === input.expectedBindingUpdatedAt) return 'repairable';
-  if (valid.currentJobId !== input.anchorJobId
-    || Date.parse(valid.updatedAt) <= Date.parse(input.expectedBindingUpdatedAt)) throw invalidRescueBindingRepair();
+  const repairedUpdatedAt = historicalRescueRepairUpdatedAt(input.expectedBindingUpdatedAt);
+  if (valid.currentJobId !== input.anchorJobId || valid.updatedAt !== repairedUpdatedAt) throw invalidRescueBindingRepair();
   let expectedOriginal;
   try { expectedOriginal = validateRescueBinding({ ...valid, currentJobId: input.failedCurrentJobId,
     updatedAt: input.expectedBindingUpdatedAt }); } catch { throw invalidRescueBindingRepair(); }
