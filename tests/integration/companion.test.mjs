@@ -4790,6 +4790,96 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
 });
 
+test('captured 0.16.5 true terminal gates fresh and continuation results after false legacy completion', async () => {
+  const context = await fixture();
+  const record = join(context.directory, 'captured-0165-requests.jsonl');
+  const trace = join(context.directory, 'captured-0165-peer-trace.jsonl');
+  const gate = join(context.directory, 'captured-0165-terminal-gate.json');
+  const reached = join(context.directory, 'captured-0165-running.json');
+  await atomicWriteJson(gate, { version: 1, releaseThrough: 0 });
+  const env = {
+    FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165',
+    FAKE_ZCODE_RECORD: record, FAKE_ZCODE_CAPTURED_0165_TRACE: trace,
+    FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: gate, FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED: reached,
+  };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+
+  /** @param {number} turn @param {'--fresh'|'--resume'} mode */
+  async function executeHeldTurn(turn, mode) {
+    let settled = false;
+    const execution = companion(context, ['rescue', mode, `captured 0.16.5 turn ${turn}`], env).finally(() => { settled = true; });
+    await waitFor(async () => {
+      const marker = await readFile(reached, 'utf8').then(JSON.parse).catch(() => null);
+      const traced = await readFile(trace, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+      return marker?.version === 1 && marker?.sendCount === turn && marker?.phase === 'running-after-legacy-complete'
+        && traced.some((entry) => entry.sendCount === turn && entry.phase === 'session-read-pending');
+    }, `captured 0.16.5 turn ${turn} did not reach its pre-terminal gate`);
+    assert.equal(settled, false, 'false legacy completion and running v4 evidence must not settle the companion');
+    const jobs = await store.listOwnedJobs(context.workspace, 'codex-session');
+    assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'running').length, 1);
+    await atomicWriteJson(gate, { version: 1, releaseThrough: turn });
+    const result = await execution;
+    assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+    assert.equal(result.json.job.status, 'succeeded');
+    assert.equal(result.json.result, `captured 0.16.5 result ${turn}`);
+    return result;
+  }
+
+  const fresh = await executeHeldTurn(1, '--fresh');
+  const continuation = await executeHeldTurn(2, '--resume');
+  assert.equal(continuation.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
+  const completedJobs = await store.listOwnedJobs(context.workspace, 'codex-session');
+  assert.equal(completedJobs.length, 2); assert.equal(completedJobs.every((job) => job.status === 'succeeded'), true);
+  assert.equal(new Set(completedJobs.map((job) => job.resultArtifact)).size, 2, 'each turn publishes exactly one distinct result');
+
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 2);
+  const subscribes = requests.filter((request) => request.method === 'v4/conversation/subscribe');
+  const unsubscribes = requests.filter((request) => request.method === 'v4/conversation/unsubscribe');
+  assert.equal(subscribes.length, 2); assert.equal(unsubscribes.length, 2);
+  for (let index = 0; index < subscribes.length; index += 1) {
+    const subscribe = subscribes[index]; const unsubscribe = unsubscribes[index];
+    assert.deepEqual(Object.keys(subscribe.params).sort(), ['clientMode', 'connectionId', 'topic']);
+    assert.equal(subscribe.params.clientMode, 'desktop-continuous');
+    assert.equal(subscribe.params.topic, `conversation/${fresh.json.job.zcodeSessionId}`);
+    assert.deepEqual(unsubscribe.params, {
+      topic: subscribe.params.topic, subscriptionId: `subscription-${fresh.json.job.zcodeSessionId}${index === 0 ? '' : '-2'}`,
+      connectionId: subscribe.params.connectionId,
+    });
+  }
+
+  const peerTrace = (await readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  for (const turn of [1, 2]) {
+    const entries = peerTrace.filter((entry) => entry.sendCount === turn);
+    const protocolEntries = entries.filter((entry) => !entry.phase.startsWith('session-read-'));
+    assert.deepEqual(protocolEntries.map((entry) => entry.phase), ['subscribe-ack', 'initial-frame', 'send-accepted', 'legacy-prompt-completed', 'turn-running', 'turn-terminal']);
+    const ack = protocolEntries[0].message.result.ack;
+    assert.deepEqual(ack.openTiming, { version: 1, initialFrameEncodeMs: 0, sessionRuntimeState: 'warm', snapshotRowCount: 0 });
+    assert.deepEqual(protocolEntries.slice(1).filter((entry) => entry.message.method === 'v4/conversation/frame').map((entry) => entry.message.params.wireVersion), [3, 3, 3]);
+    const running = entries.find((entry) => entry.phase === 'turn-running').message;
+    const terminal = entries.find((entry) => entry.phase === 'turn-terminal').message;
+    assert.equal(running.params.frame.payload.deltas[0].op, 'row.appended');
+    assert.equal(running.params.frame.payload.deltas[0].row.state, 'running');
+    assert.equal(terminal.params.frame.payload.deltas[0].op, 'row.upserted');
+    assert.equal(terminal.params.frame.payload.deltas[0].row.state, 'completedSuccess');
+    assert.equal(terminal.params.frame.payload.deltas[0].row.rowId, running.params.frame.payload.deltas[0].row.rowId);
+    assert.equal(terminal.params.frame.payload.deltas[0].row.turnId, running.params.frame.payload.deltas[0].row.turnId);
+    const pendingRead = entries.find((entry) => entry.phase === 'session-read-pending').message.result;
+    assert.equal(pendingRead.projection.status, 'running');
+    assert.equal(pendingRead.messages.at(-1).info.role, 'user');
+    assert.equal(pendingRead.messages.at(-1).info.semantics.origin, 'real_user');
+    const terminalRead = [...entries].reverse().find((/** @type {any} */ entry) => entry.phase === 'session-read-terminal').message.result;
+    const currentRoot = terminalRead.messages.at(-2); const currentAssistant = terminalRead.messages.at(-1);
+    assert.equal(terminalRead.projection.status, 'idle');
+    assert.equal(currentRoot.info.semantics.origin, 'real_user');
+    assert.equal(currentAssistant.info.semantics.origin, 'agent_runtime');
+    assert.equal(currentAssistant.info.parentMessageId, currentRoot.info.messageId);
+    assert.equal(Number.isSafeInteger(currentAssistant.info.time.completed), true);
+  }
+});
+
 test('trusted bound routing rejects fresh without spawn preparation before job binding or ZCode mutation', async () => {
   const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
   const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };

@@ -212,6 +212,75 @@ function conversationSnapshot(sessionId, seq, rows = []) {
   };
 }
 
+// Captured 0.16.5 qualification scenario. The envelope, nesting, wire version,
+// event order, and turnHeader lifecycle match the controlled real-peer probe.
+// Sanitized ids/content/timestamps replace private probe values. `future*`
+// members are deliberately harmless open-world qualification data, not claimed
+// as fields observed in that capture.
+async function traceCaptured0165(sendIndex, phase, message) {
+  if (process.env.FAKE_ZCODE_CAPTURED_0165_TRACE) {
+    await appendFile(process.env.FAKE_ZCODE_CAPTURED_0165_TRACE, `${JSON.stringify({ sendCount: sendIndex, phase, message })}\n`);
+  }
+}
+
+function captured0165Frame({ sessionId, subscriptionId, ordinal, fromSeq, toSeq, delta }) {
+  const message = conversationNotification({
+    sessionId, subscriptionId, deliveryKind: 'online', ordinal, fromSeq, toSeq, deltas: [delta],
+    logicalFrameId: `captured-frame-${ordinal}`,
+  });
+  message.futureNotificationMetadata = { ignored: true };
+  message.params.futureParamsMetadata = { ignored: true };
+  message.params.frame.futureFrameMetadata = { ignored: true };
+  message.params.frame.payload.futurePayloadMetadata = { ignored: true };
+  delta.futureDeltaMetadata = { ignored: true };
+  delta.row.futureRowMetadata = { ignored: true };
+  return message;
+}
+
+async function captured0165GateReleased(sendIndex) {
+  const gate = process.env.FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE;
+  if (!gate) return true;
+  const value = await readFile(gate, 'utf8').then(JSON.parse).catch(() => null);
+  return value?.version === 1 && Number.isSafeInteger(value.releaseThrough) && value.releaseThrough >= sendIndex;
+}
+
+async function finishCaptured0165Turn({ session, sessionId, subscriptionId, sendIndex, assistant, turnRow }) {
+  while (!await captured0165GateReleased(sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
+  session.messages.push(assistant); session.projectionStatus = 'idle'; session.stateRevision = sendIndex * 2;
+  const terminal = captured0165Frame({
+    sessionId, subscriptionId, ordinal: 3, fromSeq: 1, toSeq: 2,
+    delta: { op: 'row.upserted', row: { ...turnRow, state: 'completedSuccess', endedAt: 1_786_233_607_662 } },
+  });
+  await traceCaptured0165(sendIndex, 'turn-terminal', terminal); send(terminal);
+}
+
+async function sendCaptured0165Turn(message, p, session) {
+  const sendIndex = sendCount; const subscriptionId = conversationSubscriptions.get(p.sessionId);
+  if (!session || !subscriptionId) { send({ id: message.id, error: { code: -32099, message: 'captured fixture requires an active session subscription' } }); return; }
+  const turnMessages = resultMessages(p.sessionId, session.settings.model.current, false, `captured-${sendIndex}`, undefined, p.inputId, `captured 0.16.5 result ${sendIndex}`);
+  turnMessages[0].info.semantics = { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+  turnMessages[1].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+  session.messages.push(turnMessages[0]); session.projectionStatus = 'running'; session.stateRevision = sendIndex * 2 - 1;
+  const accepted = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision: session.stateRevision, futureAdmissionMetadata: { ignored: true } } };
+  await traceCaptured0165(sendIndex, 'send-accepted', accepted); send(accepted);
+  const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: session.stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' }, futureLegacyMetadata: { ignored: true } } };
+  await traceCaptured0165(sendIndex, 'legacy-prompt-completed', legacy); send(legacy);
+  const turnRow = {
+    rowId: 100 + sendIndex, turnId: `captured-turn-${sendIndex}`, createdAt: 1_786_233_600_000,
+    createdAtSeq: 100 + sendIndex, kind: 'turnHeader', origin: 'userInput', state: 'running',
+    startedAt: 1_786_233_601_645,
+  };
+  const running = captured0165Frame({
+    sessionId: p.sessionId, subscriptionId, ordinal: 2, fromSeq: 0, toSeq: 1,
+    delta: { op: 'row.appended', row: turnRow },
+  });
+  await traceCaptured0165(sendIndex, 'turn-running', running); send(running);
+  if (process.env.FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED) {
+    await writeFile(process.env.FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED, JSON.stringify({ version: 1, sendCount: sendIndex, phase: 'running-after-legacy-complete' }));
+  }
+  void finishCaptured0165Turn({ session, sessionId: p.sessionId, subscriptionId, sendIndex, assistant: turnMessages[1], turnRow });
+}
+
 function isUnsupportedRuntimePreferencesResponse(message, pending) {
   return Object.keys(message).length === 2
     && message.id === pending.runtimePreferencesId
@@ -292,6 +361,9 @@ input.on('line', async (line) => {
     case 'session/send': {
       sendCount += 1;
       if (sessions.get(p.sessionId)?.runtimeMaterialized === false) { send({ id: message.id, error: { code: -32099, message: 'fixture cold runtime unavailable', data: { code: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' } } }); break; }
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'captured-0165') {
+        await sendCaptured0165Turn(message, p, sessions.get(p.sessionId)); break;
+      }
       const trustedPrompt = typeof p.content === 'string' ? p.content.split('--- BEGIN UNTRUSTED GIT DATA ---', 1)[0] : '';
       let objectiveResult;
       if (process.env.FAKE_ZCODE_RESULT_FROM_AUTHORIZED_OBJECTIVE === '1') {
@@ -399,6 +471,23 @@ input.on('line', async (line) => {
       }
       const subscriptionCount = (conversationSubscriptionCounts.get(sessionId) ?? 0) + 1; conversationSubscriptionCounts.set(sessionId, subscriptionCount); const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}${subscriptionCount === 1 ? '' : `-${subscriptionCount}`}`; conversationSubscriptions.set(sessionId, subscriptionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'captured-0165') {
+        const sendIndex = sendCount + 1;
+        const response = { id: message.id, result: { ack: {
+          subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1',
+          openTiming: { version: 1, initialFrameEncodeMs: 0, sessionRuntimeState: 'warm', snapshotRowCount: 0 },
+          futureAckMetadata: { ignored: true },
+        }, futureResponseMetadata: { ignored: true } } };
+        await traceCaptured0165(sendIndex, 'subscribe-ack', response); send(response);
+        const initial = conversationNotification({
+          sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 0,
+          logicalFrameId: 'captured-initial-frame', snapshot: conversationSnapshot(sessionId, 0),
+        });
+        initial.futureNotificationMetadata = { ignored: true };
+        initial.params.frame.payload.futurePayloadMetadata = { ignored: true };
+        await traceCaptured0165(sendIndex, 'initial-frame', initial); send(initial);
+        break;
+      }
       const response = { id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } };
       if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
       else if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentStopSubscribe(); }
@@ -463,6 +552,12 @@ input.on('line', async (line) => {
       }
       if (readCount === 1 && ['running', 'terminal'].includes(process.env.FAKE_ZCODE_SESSION_PROGRESS)) {
         result = structuredClone(result); addSessionProgress(result, process.env.FAKE_ZCODE_SESSION_PROGRESS);
+      }
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'captured-0165' && sendCount > 0) {
+        const currentAssistant = result.messages.findLast((entry) => entry?.info?.role === 'assistant');
+        const phase = result.projection.status === 'idle' && currentAssistant?.info?.parentMessageId
+          ? 'session-read-terminal' : 'session-read-pending';
+        await traceCaptured0165(sendCount, phase, { id: message.id, result });
       }
       send({ id: message.id, result });
       if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') sessionProgressRecoveryCompleted.add(p.sessionId);
