@@ -20,7 +20,7 @@
 
 - [ ] **Step 1: Write failing acknowledgement tests**
 
-Add tests showing `subscribeConversation()` accepts an acknowledgement containing valid consumed fields plus nested `openTiming` and unrelated future metadata, while still rejecting missing or malformed `subscriptionId`, `mode`, and `logEpoch`.
+Add tests showing `subscribeConversation()` accepts an acknowledgement containing valid consumed fields plus nested `openTiming` and unrelated future metadata, while still rejecting missing or malformed `subscriptionId`, `mode`, and `logEpoch`. Show that `unsubscribeConversation()` accepts any bounded plain-object result, ignores additive fields, and still rejects a malformed non-object response.
 
 - [ ] **Step 2: Run the acknowledgement tests and verify RED**
 
@@ -30,7 +30,7 @@ Expected: the additive-field case fails with `ZCODE_OUTPUT_INVALID`; malformed c
 
 - [ ] **Step 3: Implement projection-based acknowledgement validation**
 
-Replace exact-key equality with validation of only the consumed fields:
+Replace exact-key equality with validation of only the consumed fields, and validate unsubscribe as a bounded plain object without requiring it to be empty:
 
 ```js
 const ack = result?.ack;
@@ -143,10 +143,12 @@ Expected: current execution reads once and fails or terminalizes early.
 
 - [ ] **Step 4: Implement the coordinator in `executeJob()`**
 
-After send boundary persistence:
+After the initial subscription snapshot establishes the historical baseline, arm the observer immediately before `client.send()`. Persist the accepted send boundary before awaiting or publishing a terminal candidate:
 
 ```js
 conversationObserver.beginTurnBoundary();
+const sendResult = await client.send(...);
+await persistAcceptedBoundary(sendResult);
 const legacyWake = waitForCompletionOrAbort(client.waitForCompletion(sessionId), signal);
 const terminalSnapshot = await awaitCurrentTurnTerminal({
   legacyWake,
@@ -182,7 +184,7 @@ Add a running job with a persisted boundary whose read is `idle + no current-tur
 
 - [ ] **Step 2: Write failing cancellation-gap tests**
 
-Simulate first stop acknowledgement before the current turn appears, followed by a running snapshot. Assert the job remains `cancelling`, a guarded second stop occurs, and local cancellation is published only after coherent terminal evidence.
+Simulate first stop acknowledgement before the current turn appears, followed by a running snapshot. Assert the job remains `cancelling`, bounded observation occurs while the cancellation lock and managed client remain active, a guarded second stop occurs, and local cancellation is published only after coherent interrupted/failed evidence. Also assert completed success wins normally, while observation expiry or uncertainty preserves the writable guard and returns `JOB_CANCEL_FAILED` for later retry.
 
 - [ ] **Step 3: Run tests and verify RED**
 

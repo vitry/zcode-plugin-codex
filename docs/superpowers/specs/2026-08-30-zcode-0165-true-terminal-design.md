@@ -25,7 +25,7 @@ The primary success/failure signal is a validated v4 `turnHeader` lifecycle obse
 - `completedInterrupted` is an interrupted terminal candidate.
 - `failed` is a failed terminal candidate.
 
-Historical or replayed terminal rows cannot finish the current turn. The observer must correlate a terminal row with a new `turnHeader` first observed after the current send boundary. Recovery/snapshot frames may restore lifecycle continuity but cannot silently substitute an unrelated historical turn.
+Historical or replayed terminal rows cannot finish the current turn. After the initial subscription snapshot has established its historical baseline, the observer is armed immediately before `session/send`; it must correlate a terminal row with a new `turnHeader` first observed after that boundary. The accepted input boundary is then persisted before any terminal candidate may be published. Recovery/snapshot frames may restore lifecycle continuity but cannot silently substitute an unrelated historical turn.
 
 After a v4 terminal candidate, the plugin performs an authoritative `session/read`. A successful result is published only when the snapshot contains the current turn's message lineage and completed assistant record.
 
@@ -44,7 +44,7 @@ There is no normal completion timeout. Existing abort/session-end/cancellation c
 
 ## Cancellation and Recovery
 
-An empty successful `session/stop` response is not sufficient cancellation proof during the 0.16.5 admission/start gap. A job remains `cancelling` while current-turn evidence is unresolved. If the current turn later appears active, cancellation issues another guarded stop. The job becomes `cancelled` only after coherent terminal/cancelled evidence; otherwise it remains recoverable rather than being falsely terminalized.
+An empty successful `session/stop` response is not sufficient cancellation proof during the 0.16.5 admission/start gap. A job remains `cancelling` while current-turn evidence is unresolved. While holding the existing cancellation lock, the managed client performs bounded v4/snapshot observation; if the current turn later appears active, cancellation issues another guarded stop. The job becomes `cancelled` only after coherent interrupted/failed evidence. A completed-success result retains the existing terminal-winner semantics. If bounded observation expires or the protocol remains uncertain, the writable guard is preserved and cancellation reports `JOB_CANCEL_FAILED`, so a later cancel or recovery can retry rather than falsely terminalizing the job. No background daemon is introduced.
 
 Foreground execution, orphan recovery, session-end settlement, and cancellation must share one current-turn snapshot classifier. They may choose different actions for the same classification, but they cannot disagree about whether `idle + no current-turn messages` is terminal.
 
