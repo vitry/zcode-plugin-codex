@@ -52,7 +52,7 @@ Binding and job storage schemas do not change. This repair requires no binding m
 
 ## Components
 
-1. `zcode-client.mjs` accepts additive upstream response fields while validating the fields it consumes.
+1. `zcode-client.mjs` and the managed `zcode-broker.mjs` boundary accept additive upstream response fields while validating the fields they consume.
 2. `conversation-progress.mjs` exposes a bounded, validated current-turn lifecycle signal in addition to public progress descriptions.
 3. A focused turn-terminal module classifies snapshots and coordinates v4 terminal signals with snapshot fallback.
 4. `review.mjs` uses the coordinator instead of treating legacy completion as terminal.

@@ -14,13 +14,15 @@
 
 **Files:**
 - Modify: `scripts/lib/zcode-client.mjs`
+- Modify: `scripts/zcode-broker.mjs`
 - Modify: `scripts/lib/conversation-progress.mjs`
 - Test: `tests/zcode-client.test.mjs`
+- Test: existing managed-broker protocol tests selected by implementation
 - Test: `tests/conversation-progress.test.mjs`
 
 - [ ] **Step 1: Write failing acknowledgement tests**
 
-Add tests showing `subscribeConversation()` accepts an acknowledgement containing valid consumed fields plus nested `openTiming` and unrelated future metadata, while still rejecting missing or malformed `subscriptionId`, `mode`, and `logEpoch`. Show that `unsubscribeConversation()` accepts any bounded plain-object result, ignores additive fields, and still rejects a malformed non-object response.
+Add tests showing direct and managed-broker `subscribeConversation()` accept an acknowledgement containing valid consumed fields plus nested `openTiming` and unrelated future metadata, while still rejecting missing or malformed `subscriptionId`, `mode`, and `logEpoch`. Show that direct and managed-broker `unsubscribeConversation()` accept any bounded plain-object result, ignore additive fields, and still reject a malformed non-object response.
 
 - [ ] **Step 2: Run the acknowledgement tests and verify RED**
 
