@@ -26,6 +26,8 @@ test('current-turn classifier keeps initial-invalid, empty idle, user-only, unfi
     snapshot('idle', [user()]),
     snapshot('idle', [user(), assistant()]),
     snapshot('idle', [user(), assistant({ finish: '' })]),
+    snapshot('idle', [assistant({ finish: 'stop', time: { completed: 3 } })]),
+    snapshot('error', [], 7, { lastError: { message: 'unattributed error' } }),
     snapshot('running', [user(), assistant({ finish: 'stop', time: { completed: 3 } })]),
     snapshot('idle', [user(), assistant({ finish: 'stop', time: { completed: 3 } })], 6),
   ];
@@ -40,7 +42,7 @@ test('current-turn classifier succeeds only for a completed visible linked assis
 });
 
 test('current-turn classifier recognizes explicit current-boundary failure and interruption', () => {
-  assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('error', [user()], 7, { lastError: { message: 'provider failed' } }), boundary), { kind: 'failed' });
+  assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('error', [user()], 8, { lastError: { message: 'provider failed' } }), boundary), { kind: 'failed' });
   assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('idle', [user(), assistant({ finish: 'cancelled', time: { completed: 3 } })]), boundary), { kind: 'interrupted' });
   assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('idle', [user(), assistant({ error: { message: 'tool failed' }, time: { completed: 3 } })]), boundary), { kind: 'failed' });
 });
@@ -71,5 +73,22 @@ test('coordinator preserves an authoritative interrupted or failed lifecycle aft
       reconcileIntervalMs: 0,
     });
     assert.deepEqual(result, { kind, snapshot: coherent });
+  }
+});
+
+test('authoritative failed and interrupted lifecycles retain their exact kind across conflicting snapshots', async () => {
+  const conflicts = [
+    ['failed', snapshot('idle', [user(), assistant({ finish: 'cancelled', time: { completed: 3 } })])],
+    ['interrupted', snapshot('error', [user()], 8, { lastError: { message: 'snapshot error' } })],
+  ];
+  for (const [kind, coherent] of conflicts) {
+    const result = await awaitCurrentTurnTerminal({
+      legacyWake: new Promise(() => {}),
+      conversationObserver: { waitForTurnTerminal: async () => ({ kind, turnId: `turn-${kind}` }) },
+      readSnapshot: async () => coherent,
+      turnBoundary: boundary,
+      reconcileIntervalMs: 0,
+    });
+    assert.equal(result.kind, kind);
   }
 });

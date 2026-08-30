@@ -16,8 +16,14 @@ export function classifyCurrentTurnSnapshot(snapshot, boundary = {}) {
   if (!Number.isSafeInteger(revision) || revision < 0 || boundary.stateRevision !== undefined && revision < boundary.stateRevision) return { kind: 'pending' };
   const status = snapshot?.projection?.status;
   if (typeof status !== 'string' || ACTIVE_STATUSES.has(status)) return { kind: 'pending' };
-  if (status === 'error') return { kind: 'failed' };
+  const currentUserRoot = selectCurrentTurnUserRoot(snapshot, boundary);
+  if (status === 'error') {
+    const assistant = selectCurrentTurnAssistant(snapshot, boundary);
+    const revisionAdvanced = boundary.stateRevision !== undefined && revision > boundary.stateRevision;
+    return revisionAdvanced || currentUserRoot && assistant?.info?.error !== undefined ? { kind: 'failed' } : { kind: 'pending' };
+  }
   if (!['idle', 'completed'].includes(status)) return { kind: 'pending' };
+  if (!currentUserRoot) return { kind: 'pending' };
   const assistant = selectCurrentTurnAssistant(snapshot, boundary);
   if (!assistant || !assistantCompleted(assistant)) return { kind: 'pending' };
   if (assistant.info.error !== undefined) return { kind: 'failed' };
@@ -42,6 +48,21 @@ export function selectCurrentTurnAssistant(snapshot, boundary = {}) {
   const currentUserRoots = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds));
   if (currentUserRoots.length !== 1) return undefined;
   return visibleAssistant(newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === currentUserRoots[0].info.messageId).at(-1));
+}
+
+/**
+ * Select the accepted input's persisted real-user root, including the one-root
+ * remapping used by ZCode when its message id differs from the admission id.
+ * @param {any} snapshot
+ * @param {{beforeMessageIds?:Set<string>,inputId?:string}} boundary
+ */
+function selectCurrentTurnUserRoot(snapshot, boundary = {}) {
+  const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
+  const beforeMessageIds = boundary.beforeMessageIds ?? new Set();
+  const roots = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds));
+  const direct = boundary.inputId ? roots.filter((/** @type {any} */ message) => message.info.messageId === boundary.inputId) : [];
+  if (direct.length === 1) return direct[0];
+  return roots.length === 1 ? roots[0] : undefined;
 }
 
 /**
@@ -77,7 +98,7 @@ export async function awaitCurrentTurnTerminal(input) {
     if (classified.kind !== 'pending') {
       const authoritativeKind = authorityState.result?.kind;
       let kind = classified.kind;
-      if (classified.kind === 'succeeded' && (authoritativeKind === 'failed' || authoritativeKind === 'interrupted')) kind = authoritativeKind;
+      if (authoritativeKind === 'failed' || authoritativeKind === 'interrupted') kind = authoritativeKind;
       return { kind, snapshot };
     }
     await delay(interval, input.signal);
