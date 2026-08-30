@@ -107,3 +107,23 @@ test('authoritative failed and interrupted lifecycles retain their exact kind ac
     assert.equal(result.kind, kind);
   }
 });
+
+test('a pre-aborted coordinator observes the already-constructed wake race before throwing', async () => {
+  const controller = new AbortController(); const interruption = new Error('interrupted before coordinator attachment');
+  controller.abort(interruption);
+  /** @type {(reason:unknown)=>void} */ let rejectLegacy = () => {};
+  const legacyWake = new Promise((_resolve, reject) => { rejectLegacy = reject; });
+  /** @type {unknown[]} */ const unhandled = [];
+  const onUnhandled = (/** @type {unknown} */ reason) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await assert.rejects(awaitCurrentTurnTerminal({
+      legacyWake,
+      conversationObserver: { waitForTurnTerminal: () => new Promise(() => {}) },
+      readSnapshot: async () => snapshot('idle'), turnBoundary: boundary, signal: controller.signal,
+    }), (error) => error === interruption);
+    rejectLegacy(interruption);
+    await new Promise((resolve) => setImmediate(resolve)); await Promise.resolve();
+    assert.deepEqual(unhandled, []);
+  } finally { process.off('unhandledRejection', onUnhandled); }
+});

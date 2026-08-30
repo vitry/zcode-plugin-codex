@@ -66,7 +66,8 @@ export async function executeJob(input) {
     jobLogCleaned = true;
     await jobLog?.close(Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
   };
-  const cleanupProgress = async () => {
+  /** @param {string|undefined} [confirmedTerminalKind] */
+  const cleanupProgress = async (confirmedTerminalKind) => {
     if (progressCleaned) return;
     progressCleaned = true;
     try { reporter?.stopAccepting(); } catch { /* progress-only */ }
@@ -82,6 +83,10 @@ export async function executeJob(input) {
       reporter?.diagnose('progress-flush-timeout');
       const timeoutDrain = Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {});
       await waitForOptionalProgress(timeoutDrain, deadline);
+    }
+    if (confirmedTerminalKind) {
+      try { reporter?.confirmTerminal(confirmedTerminalKind); } catch { /* progress-only */ }
+      await waitForOptionalProgress(Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {}), deadline);
     }
     try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
@@ -183,7 +188,7 @@ export async function executeJob(input) {
     const terminal = await awaitCurrentTurnTerminal({
       legacyWake, conversationObserver, readSnapshot: () => client.readSession(activeSessionId), turnBoundary, signal: input.signal,
     });
-    await cleanupProgress();
+    await cleanupProgress(terminal.kind);
     const finalSnapshot = terminal.snapshot;
     remoteTerminalProven = true;
     if (terminal.kind === 'interrupted') {
@@ -237,6 +242,7 @@ export async function executeJob(input) {
         if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
         if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
       } else {
+        let cancellationPublicationApplied = false;
         const cancellation = createJobController({
           store: input.store, dataRoot,
           stopSession: (id) => client.stopSession(id),
@@ -248,10 +254,17 @@ export async function executeJob(input) {
               returnTerminalWinner: true,
               appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
             });
+            cancellationPublicationApplied = publication.appliedFinalization;
             return publication.job;
           },
         });
-        await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+        const cancellationWinner = await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => null);
+        if (cancellationWinner?.status === 'succeeded' && cancellationWinner.resultArtifact) {
+          try {
+            output = { job: cancellationWinner, result: await readResultArtifact({ dataRoot, workspace, artifact: cancellationWinner.resultArtifact }) };
+            appliedFinalization = cancellationPublicationApplied; primaryError = undefined;
+          } catch (artifactError) { primaryError = artifactError; }
+        }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;

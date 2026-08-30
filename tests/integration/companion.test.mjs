@@ -2994,7 +2994,10 @@ async function recoverForeignCompletion() {
       assert.equal(options.ownerId, ownerIdForSession(ownerA.sessionId));
       return {
         listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
-        readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovered-answer', parentMessageId: orphan.inputId }, parts: [{ type: 'text', text: 'owner A recovered result' }] }] }),
+        readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [
+          { info: { role: 'user', messageId: orphan.inputId, synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted owner A task' }] },
+          { info: { role: 'assistant', messageId: 'recovered-answer', parentMessageId: orphan.inputId, finish: 'stop', time: { completed: 8 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'owner A recovered result' }] },
+        ] }),
         close: async () => {},
       };
     },
@@ -3093,15 +3096,16 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(status.json.job.phase, 'finalizing');
   assert.ok(Date.parse(status.json.job.lastActivityAt));
   assert.deepEqual(status.json.job.progressPreview, [
-    'ZCode is retrying the model request.',
     'ZCode tool work is still running.',
     'ZCode completed a tool call.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.',
     'ZCode completed the delegated turn.',
   ]);
   const log = await readFile(status.json.job.logFile, 'utf8');
   const archivedMessages = [
     'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
     'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.',
     'ZCode completed the delegated turn.',
   ];
   let previousIndex = -1;
@@ -3455,6 +3459,7 @@ test('conversation subscribe failure is observational, durable, and preserves th
   assertExactOptionalSinkDegradation(result.stderr, [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] ZCode conversation progress is unavailable.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
     '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
@@ -3470,8 +3475,9 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
   assertExactOptionalSinkDegradation(result.stderr, [
     '[zcode] ZCode started the delegated turn.\n',
-    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
     '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
@@ -3496,7 +3502,7 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/send'), 'foreground send was not accepted');
   child.kill('SIGINT');
   const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
-  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.deepEqual(exit, { code: 130, signal: null }, `${stderr}${stdout}${internal}`);
   const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
   assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
@@ -4592,7 +4598,9 @@ test('an unacknowledged orphan stop preserves WRITABLE_JOB_EXISTS with an honest
     discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
     createManagedZCodeClient: async () => ({
       listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
-      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }),
+      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [
+        { info: { role: 'user', messageId: orphan.inputId, synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted orphan task' }] },
+      ] }),
       stopSession: async () => { stops += 1; throw new Error('stop not acknowledged'); },
       close: async () => {},
     }),
@@ -4918,13 +4926,42 @@ test('resumed rescue cannot reuse a historical visible result when the current t
   assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
 });
 
-test('resumed rescue rejects an unrelated-only new assistant result', async () => {
-  const context = await fixture(); const fresh = await companion(context, ['rescue', '--fresh', 'historical visible']);
-  assert.equal(fresh.code, 0, `${fresh.stderr}${fresh.stdout}`);
-  const resumed = await companion(context, ['rescue', '--resume', 'current unrelated']);
-  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_RESULT_MISSING');
-  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
-  assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
+test('an unrelated-only assistant remains pending until interruption without reusing historical output', async () => {
+  const context = await fixture();
+  const record = join(context.directory, 'unrelated-only.jsonl'); await writeFile(record, '');
+  const completionGate = join(context.directory, 'unrelated-only-completion-gate');
+  const completionReached = join(context.directory, 'unrelated-only-completion-reached'); await writeFile(completionGate, 'held');
+  const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'current unrelated'], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: completionReached },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  try {
+    await waitFor(async () => exited || await readFile(completionReached, 'utf8').then((value) => value === 'blocked').catch(() => false), 'unrelated-only completion gate was not reached');
+    assert.equal(exited, false, `unrelated-only execution exited before completion gate: ${stderr}${stdout}${internal}`);
+    await writeFile(completionGate, 'release');
+    await waitFor(async () => {
+      const calls = await readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+      return calls.some((frame) => frame.method === 'session/read');
+    }, 'unrelated-only turn was not authoritatively inspected');
+    assert.equal(exited, false, `unrelated assistant must not publish a historical result: ${stderr}${stdout}${internal}`);
+    const activeJobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+    assert.equal(activeJobs.length, 1); assert.equal(activeJobs[0].status, 'running');
+  } finally {
+    if (!exited) child.kill('SIGINT');
+  }
+  assert.deepEqual(await exit, { code: 130, signal: null }, `${stderr}${stdout}${internal}`);
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 1);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  await waitFor(async () => (await store.listJobs(context.workspace))[0]?.status === 'cancelled', 'unrelated-only interruption was not durably reconciled');
+  const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].resultArtifact, undefined);
 });
 
 test('foreground rescue accepts a 0.16.3 result linked through a distinct user message id', async () => {

@@ -62,6 +62,45 @@ test('early legacy completion stays nonterminal and later captured-shape v4 prog
   reporter.close();
 });
 
+test('confirmed coordinator terminal emits exactly one fixed finalizing event after a legacy wake', async () => {
+  const lines = []; const persisted = []; const archived = []; const relays = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
+    archive: (event) => archived.push(event), relay: (record) => relays.push(record), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_completed'));
+  assert.deepEqual(reporter.confirmTerminal('succeeded'), {
+    phase: 'finalizing', message: 'ZCode completed the delegated turn.', observedAt,
+  });
+  assert.equal(reporter.confirmTerminal('succeeded'), null);
+  await reporter.flush();
+  assert.equal(lines.filter((line) => line === '[zcode] ZCode completed the delegated turn.\n').length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(archived.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(relays.filter((record) => record.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
+test('confirmed coordinator terminal does not duplicate an already dispatched v4 terminal descriptor', async () => {
+  const lines = []; const persisted = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
+    describeNotification: async () => ({
+      disposition: 'accepted', phase: 'online',
+      events: [{ phase: 'finalizing', message: 'ZCode turn completed.', observedAt }],
+    }), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(conversationFrame({ deltas: [] }));
+  await reporter.flush();
+  assert.equal(reporter.confirmTerminal('succeeded'), null);
+  await reporter.flush();
+  assert.equal(lines.filter((line) => /completed/.test(line)).length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
 test('legacy prompt failure is activity rather than a terminal fence', async () => {
   const lines = [];
   const reporter = progressModule.createProgressReporter({

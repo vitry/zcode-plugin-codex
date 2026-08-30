@@ -59,6 +59,45 @@ function resultMessages(sessionId, model, review, suffix = 'current', selectedMo
       : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : resultText ?? 'done') }];
   return [{ info: { messageId: userId, sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: `part-user-${suffix}`, sessionId, messageId: userId, type: 'text', text: 'hello' }] }, { info: { messageId: assistantId, sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: userId, agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop', ...(structured === undefined ? {} : { structured }) }, parts }];
 }
+function markRealTurn(messagesForTurn) {
+  messagesForTurn[0].info.semantics = { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+  messagesForTurn[1].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+  return messagesForTurn;
+}
+function beginPendingTurn(session, messagesForTurn, linkageMode) {
+  const [user, assistant] = markRealTurn(messagesForTurn);
+  session.pendingTurn = { user, assistant, linkageMode };
+  if (linkageMode === 'orphan-assistant') session.messages.push(assistant);
+  else session.messages.push(user);
+  session.projectionStatus = 'running';
+}
+function completePendingTurn(session) {
+  const pending = session?.pendingTurn;
+  if (!pending) return false;
+  // This mode deliberately emits only an unrelated assistant. The legacy
+  // prompt-completed wake must not erase the still-unproven real turn.
+  if (pending.linkageMode === 'orphan-assistant') return false;
+  session.messages.push(pending.assistant);
+  session.pendingTurn = undefined; session.pendingResult = undefined; session.resultApplied = true;
+  session.projectionStatus = 'idle'; session.stateRevision = Math.max(session.stateRevision ?? 0, 2);
+  return true;
+}
+function interruptPendingTurn(session) {
+  const pending = session?.pendingTurn;
+  if (!pending) return false;
+  if (pending.linkageMode === 'orphan-assistant') {
+    session.messages = session.messages.filter((message) => message !== pending.assistant);
+    session.messages.push(pending.user);
+  }
+  session.messages.push({
+    ...pending.assistant,
+    info: { ...pending.assistant.info, messageId: `${pending.assistant.info.messageId}-interrupted`, parentMessageId: pending.user.info.messageId, finish: 'cancelled', time: { ...pending.assistant.info.time, completed: 4 } },
+    parts: [],
+  });
+  session.pendingTurn = undefined; session.pendingResult = undefined;
+  session.projectionStatus = 'idle'; session.stateRevision = Math.max(session.stateRevision ?? 0, 2);
+  return true;
+}
 function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); const status = value?.projectionStatus ?? 'idle'; const empty = process.env.FAKE_ZCODE_EMPTY_SESSION === '1'; const emptyVariant = process.env.FAKE_ZCODE_EMPTY_SESSION_VARIANT; const projectionSessionId = empty ? emptyVariant === 'conflict' ? 'other-session' : 'unknown' : sessionId; const projectionStatus = empty && emptyVariant === 'non-idle' ? 'running' : status; const runtimeEventSeq = empty && emptyVariant === 'event-seq' ? 1 : 0; const emptyMessages = empty && emptyVariant !== 'messages'; const coldErrorType = value?.runtimeMaterialized === false ? process.env.FAKE_ZCODE_COLD_LAST_ERROR_TYPE ?? 'ZCODE_RUNTIME_MODEL_UNAVAILABLE' : undefined; return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath ?? process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), status), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId: projectionSessionId, status: projectionStatus, mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [], ...(coldErrorType ? { lastError: { type: coldErrorType, message: 'fixture cold runtime unavailable' } } : {}), ...(empty && emptyVariant === 'target' ? { target: { sessionId: 'other-session', targetId: 'target-1', objective: 'foreign', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } } : {}) }, runtime: { eventSeq: runtimeEventSeq, stateRevision: value?.stateRevision ?? 0, pendingRequestIds: [] }, messages: emptyMessages ? [] : value?.messages?.length ? value.messages : value?.pendingResult ? [] : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
 
 function corruptSnapshot(result, variant) {
@@ -91,8 +130,15 @@ function snapshotForMethod(method, sessionId, value = sessions.get(sessionId)) {
   return result;
 }
 
-function addSessionProgress(result, mode) {
-  const assistant = result.messages.findLast((message) => message?.info?.role === 'assistant');
+function addSessionProgress(result, mode, pendingAssistant) {
+  let assistant = result.messages.findLast((message) => message?.info?.role === 'assistant');
+  if (!assistant && pendingAssistant) {
+    assistant = structuredClone(pendingAssistant);
+    assistant.info = { ...assistant.info, time: { created: assistant.info.time?.created ?? 2 } };
+    delete assistant.info.finish; delete assistant.info.error;
+    assistant.parts = [];
+    result.messages.push(assistant);
+  }
   if (!assistant) return result;
   const partBase = { sessionId: assistant.info.sessionId, messageId: assistant.info.messageId };
   const tool = process.env.FAKE_ZCODE_SESSION_PROGRESS_TOOL ?? 'Bash';
@@ -117,10 +163,9 @@ function applyRecoveryMode(session, mode) {
   if (!session || !mode) return;
   session.projectionStatus = mode === 'completed' ? 'completed' : mode === 'stopped' ? 'paused' : 'running';
   if (mode === 'completed' && session.pendingResult && !session.resultApplied) {
-    const pending = session.pendingResult; session.messages.push(...resultMessages(session.sessionId, session.settings.model.current, pending.review, pending.suffix, undefined, pending.inputId));
-    session.resultApplied = true;
-    session.stateRevision = Math.max(session.stateRevision ?? 0, 2);
+    completePendingTurn(session); session.projectionStatus = 'completed';
   }
+  if (mode === 'stopped') interruptPendingTurn(session);
 }
 
 async function record(message) {
@@ -174,7 +219,7 @@ async function scheduleCompletion(sessionId, completion) {
       const state = await readFile(process.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => '');
       if (state.trim() !== 'release') { timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return; }
     }
-    pendingCompletionTimers.delete(sessionId); send(completion);
+    pendingCompletionTimers.delete(sessionId); completePendingTurn(sessions.get(sessionId)); send(completion);
   };
   const completionDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_DELAY_MS ?? 5);
   timer = setTimeout(() => { void deliver(); }, Number.isSafeInteger(completionDelayMs) && completionDelayMs >= 0 ? completionDelayMs : 5); pendingCompletionTimers.set(sessionId, timer);
@@ -374,17 +419,13 @@ input.on('line', async (line) => {
         const review = /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt); const suffix = `turn-${sendCount}`;
         const linkageMode = /current unrelated/i.test(p.content) ? 'orphan-assistant' : /current distinct id/i.test(p.content) ? 'distinct-user' : 'direct-input';
         const inputId = linkageMode === 'direct-input' ? p.inputId : undefined;
-        if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) { session.messages.push(...messages(p.sessionId, session.settings.model.current)); session.pendingResult = { review, suffix, inputId }; }
-        else {
-          let turnMessages = resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult);
-          if (linkageMode === 'orphan-assistant') turnMessages = turnMessages.slice(1);
-          if (linkageMode === 'distinct-user') {
-            turnMessages[0].info.semantics = { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
-            turnMessages[1].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
-            if (process.env.FAKE_ZCODE_LINKAGE_RECORD) await writeFile(process.env.FAKE_ZCODE_LINKAGE_RECORD, JSON.stringify({ inputId: p.inputId, userMessageId: turnMessages[0].info.messageId, assistantParentMessageId: turnMessages[1].info.parentMessageId }));
-          }
-          session.messages.push(...turnMessages);
+        if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) session.messages.push(...messages(p.sessionId, session.settings.model.current));
+        const turnMessages = resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult);
+        if (linkageMode === 'distinct-user' && process.env.FAKE_ZCODE_LINKAGE_RECORD) {
+          await writeFile(process.env.FAKE_ZCODE_LINKAGE_RECORD, JSON.stringify({ inputId: p.inputId, userMessageId: turnMessages[0].info.messageId, assistantParentMessageId: turnMessages[1].info.parentMessageId }));
         }
+        beginPendingTurn(session, turnMessages, linkageMode);
+        if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) session.pendingResult = { review, suffix, inputId };
       }
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (session) session.stateRevision = stateRevision;
@@ -450,8 +491,8 @@ input.on('line', async (line) => {
         }
       }
       const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
-      if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
-      else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
+      if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') { completePendingTurn(session); sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]); }
+      else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') { completePendingTurn(session); send(completion); }
       else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)
         && Number(process.env.FAKE_ZCODE_SUPPRESS_COMPLETION_AT ?? 0) !== sendCount) {
         const existingTimer = pendingCompletionTimers.get(p.sessionId); if (existingTimer) clearTimeout(existingTimer);
@@ -534,7 +575,7 @@ input.on('line', async (line) => {
       }
       let result = snapshotForMethod('session/read', p.sessionId, session);
       if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') {
-        result = structuredClone(result); addSessionProgress(result, 'running');
+        result = structuredClone(result); addSessionProgress(result, 'running', session?.pendingTurn?.assistant);
         const tool = result.messages.flatMap((entry) => entry.parts).find((part) => part.type === 'tool');
         if (tool) tool.state.input.command = 'PRIVATE_LATE_SNAPSHOT';
         const subscriptionId = conversationSubscriptions.get(p.sessionId);
@@ -551,7 +592,7 @@ input.on('line', async (line) => {
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
       if (readCount === 1 && ['running', 'terminal'].includes(process.env.FAKE_ZCODE_SESSION_PROGRESS)) {
-        result = structuredClone(result); addSessionProgress(result, process.env.FAKE_ZCODE_SESSION_PROGRESS);
+        result = structuredClone(result); addSessionProgress(result, process.env.FAKE_ZCODE_SESSION_PROGRESS, session?.pendingTurn?.assistant);
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'captured-0165' && sendCount > 0) {
         const currentAssistant = result.messages.findLast((entry) => entry?.info?.role === 'assistant');
@@ -588,6 +629,7 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_STOP_ERROR_ONCE === '1' && stopCount === 1) { send({ id: message.id, error: { code: -32099, message: 'fixture first stop failed' } }); break; }
       if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
       const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
+      interruptPendingTurn(sessions.get(p.sessionId));
       const response = { id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} };
       if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentStopResponse = response; flushConcurrentStopSubscribe(); }
       else send(response);

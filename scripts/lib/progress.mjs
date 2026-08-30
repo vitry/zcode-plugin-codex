@@ -55,6 +55,12 @@ const KNOWN_PROGRESS = new Map([
   ['prompt_failed', ['waiting', 'ZCode reported legacy failure; awaiting confirmed turn state.']],
 ]);
 
+const CONFIRMED_TERMINALS = new Map([
+  ['succeeded', 'ZCode completed the delegated turn.'],
+  ['failed', 'ZCode failed the delegated turn.'],
+  ['interrupted', 'ZCode interrupted the delegated turn.'],
+]);
+
 /** @param {unknown} notification @param {string} sessionId @param {unknown} observedAt */
 export function normalizeZCodeProgress(notification, sessionId, observedAt) {
   if (!plainObject(notification) || notification.method !== 'state.updated' || !plainObject(notification.params)) return null;
@@ -565,6 +571,15 @@ export function createProgressReporter({
     },
     /** @param {string} kind */
     diagnose(kind) { return diagnose(kind); },
+    /** Publish one terminal event only after the turn coordinator proves the outcome. @param {string} kind */
+    confirmTerminal(kind) {
+      if (closed || terminalSequence !== null || terminalDispatched) return null;
+      const message = CONFIRMED_TERMINALS.get(kind);
+      if (message === undefined) return null;
+      const sequence = observationSequence; observationSequence += 1; terminalSequence = sequence;
+      if (!accepting) relayClosed = false;
+      return dispatch({ phase: 'finalizing', message, observedAt: now() }, sequence);
+    },
     stopAccepting() {
       if (!accepting) return;
       accepting = false; relayClosed = true; stopTimer(); descriptorEpoch += 1;

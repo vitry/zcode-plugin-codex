@@ -168,12 +168,16 @@ function isTransitionalReadError(error) {
 
 /** @template T @param {Promise<T>} promise @param {AbortSignal|undefined} signal */
 function abortable(promise, signal) {
-  if (!signal) return promise;
+  const observed = Promise.resolve(promise);
+  if (!signal) return observed;
+  // The caller may construct a rejecting race immediately before entering this
+  // helper. Observe it before the synchronous aborted check closes that window.
+  observed.catch(() => {});
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    observed.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
   });
 }
 

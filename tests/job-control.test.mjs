@@ -1096,6 +1096,29 @@ test('foreground interruption after an accepted send stops exactly once and dura
   assert.equal(persisted.resultArtifact, undefined);
 });
 
+test('foreground interruption returns the coherent succeeded winner published during cancellation', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0; let waitStarted = () => {};
+  const waiting = new Promise((resolve) => { waitStarted = () => resolve(undefined); });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'interrupted beside completion', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-interrupted-success' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-interrupted-success', stateRevision: 4 }),
+    waitForCompletion: () => { waitStarted(); return new Promise(() => {}); },
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 5 }, messages: [
+      completedUser('input-interrupted-success'),
+      { info: { role: 'assistant', messageId: 'assistant-interrupted-success', parentMessageId: 'input-interrupted-success', finish: 'stop', time: { completed: 5 } }, parts: [{ type: 'text', text: 'completion won the signal race' }] },
+    ] }),
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await waiting; controller.abort(interruption);
+  const output = await execution;
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'completion won the signal race'); assert.equal(stops, 1);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
 test('send transport rejection after abort preserves the interruption and stops exactly once', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const controller = new AbortController(); let stops = 0;
@@ -1661,6 +1684,7 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode is generating a response.\n',
     '[zcode] ZCode started a tool call.\n',
     '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
   ];
   const diagnosticLines = [
     '[zcode] ZCode progress cleanup reached its time limit.\n',
@@ -1681,6 +1705,7 @@ test('executor reports only same-session progress and drains persistence before 
     { sequence: 3, phase: 'running', code: 'model-active' },
     { sequence: 4, phase: 'investigating', code: 'tool-active' },
     { sequence: 5, phase: 'waiting', code: 'waiting' },
+    { sequence: 6, phase: 'finalizing', code: 'finalizing' },
   ]);
   assert.ok(order.lastIndexOf('persist:waiting') < order.indexOf('transition:succeeded'));
   const succeeded = await store.readJob(workspace, job.id);
