@@ -61,6 +61,7 @@ test('packed production install loads and locks on Node 22.13', async (t) => {
   ]) await access(join(pluginRoot, path));
   assert.match(await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
   await assert.rejects(access(join(pluginRoot, 'agents', 'zcode-rescue.md')), { code: 'ENOENT' });
+  await assert.rejects(access(join(pluginRoot, 'tools', 'repair-rescue-continuation-binding.mjs')), { code: 'ENOENT' });
 
   const smoke = `
     const fs = require('node:fs');
