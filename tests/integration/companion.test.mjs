@@ -252,6 +252,49 @@ async function terminateOwnedProcess(pid, killFn = process.kill) {
   assert.equal(await waitForProcessExit(pid, 1_000, killFn), true, `owned process ${pid} was not reaped`);
 }
 
+/** @param {unknown} left @param {unknown} right */
+function sameExactBrokerIdentity(left, right) {
+  if (left === null || right === null) return left === right;
+  return Boolean(left && right && typeof left === 'object' && typeof right === 'object'
+    && !Array.isArray(left) && !Array.isArray(right)
+    && /** @type {any} */ (left).pid === /** @type {any} */ (right).pid
+    && /** @type {any} */ (left).instanceId === /** @type {any} */ (right).instanceId
+    && /** @type {any} */ (left).endpoint === /** @type {any} */ (right).endpoint);
+}
+
+/** @param {unknown} value @param {number} selfPid */
+function validExactBrokerIdentity(value, selfPid) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && validRecordedPid(/** @type {any} */ (value).pid, selfPid)
+    && typeof /** @type {any} */ (value).instanceId === 'string' && /** @type {any} */ (value).instanceId.length > 0
+    && typeof /** @type {any} */ (value).endpoint === 'string' && /** @type {any} */ (value).endpoint.length > 0);
+}
+
+/** @param {{baselineIdentity:unknown,readIdentity:()=>Promise<unknown>,processAlive?:(pid:number)=>boolean,terminate?:(pid:number)=>Promise<void>,selfPid?:number}} input */
+function createExactBrokerCleanupForTest(input) {
+  const alive = input.processAlive ?? processAlive; const terminate = input.terminate ?? terminateOwnedProcess;
+  const selfPid = input.selfPid ?? process.pid; let cleanupComplete = false;
+  /** @type {{pid:number,instanceId:string,endpoint:string}|undefined} */ let recordedIdentity;
+  return {
+    /** @param {unknown} identity */
+    record(identity) { if (!validExactBrokerIdentity(identity, selfPid)) throw new Error('test broker identity is unsafe'); recordedIdentity = /** @type {any} */ (identity); },
+    markComplete() { cleanupComplete = true; },
+    complete() { return cleanupComplete; },
+    async cleanup() {
+      if (cleanupComplete) return;
+      const current = await input.readIdentity();
+      const candidate = recordedIdentity ?? (!sameExactBrokerIdentity(current, input.baselineIdentity) ? current : null);
+      if (candidate === null) { cleanupComplete = true; return; }
+      if (!validExactBrokerIdentity(candidate, selfPid)) return;
+      const exact = /** @type {{pid:number,instanceId:string,endpoint:string}} */ (candidate);
+      if (!alive(exact.pid)) { cleanupComplete = true; return; }
+      if (!sameExactBrokerIdentity(current, exact)) return;
+      await terminate(exact.pid);
+      if (!alive(exact.pid)) cleanupComplete = true;
+    },
+  };
+}
+
 /** @param {unknown} value @param {number} selfPid */
 function validRecordedPid(value, selfPid) { return Number.isSafeInteger(value) && Number(value) > 1 && value !== selfPid; }
 
@@ -4752,23 +4795,40 @@ test('artifact writes reject an existing final symlink without replacing its tar
   assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'failed');
 });
 
+test('exact broker cleanup distinguishes its baseline and is idempotent after dynamic discovery', async () => {
+  let baselineReads = 0; let baselineTerminated = false;
+  const baselineCleanup = createExactBrokerCleanupForTest({
+    baselineIdentity: null, readIdentity: async () => { baselineReads += 1; return null; },
+    terminate: async () => { baselineTerminated = true; },
+  });
+  await baselineCleanup.cleanup(); await baselineCleanup.cleanup();
+  assert.equal(baselineCleanup.complete(), true); assert.equal(baselineReads, 1); assert.equal(baselineTerminated, false);
+
+  const identity = { pid: 4242, instanceId: 'fixture-instance', endpoint: 'fixture-endpoint' };
+  /** @type {number[]} */
+  const terminated = []; let alive = true; let dynamicReads = 0;
+  const dynamicCleanup = createExactBrokerCleanupForTest({
+    baselineIdentity: null, readIdentity: async () => { dynamicReads += 1; return identity; },
+    processAlive: () => alive, terminate: async (pid) => { terminated.push(pid); alive = false; },
+  });
+  await dynamicCleanup.cleanup(); await dynamicCleanup.cleanup();
+  assert.deepEqual(terminated, [identity.pid]); assert.equal(dynamicCleanup.complete(), true); assert.equal(dynamicReads, 1);
+});
+
 test('real CLI cancellation waits for stop acknowledgement and reports stop failure', async (t) => {
   for (const stopFails of [false, true]) {
     const context = await fixture();
     const launch = { command: process.execPath, args: [fake], target: fake };
     const ownerId = ownerIdForSession('codex-session'); const storage = await resolveWorkspaceStorage(context);
     const identityPath = join(storage.directory, 'broker', 'identity.json');
-    /** @type {{pid:number,instanceId:string,endpoint:string}|undefined} */ let brokerIdentity; let client;
-    const terminateExactBroker = async () => {
-      if (!brokerIdentity || !validRecordedPid(brokerIdentity.pid, process.pid) || !processAlive(brokerIdentity.pid)) return;
-      const current = await readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
-      if (current?.pid === brokerIdentity.pid && current.instanceId === brokerIdentity.instanceId && current.endpoint === brokerIdentity.endpoint) await terminateOwnedProcess(brokerIdentity.pid);
-    };
-    t.after(terminateExactBroker);
+    const readBrokerIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    const baselineIdentity = await readBrokerIdentity(); assert.equal(baselineIdentity, null);
+    const exactCleanup = createExactBrokerCleanupForTest({ baselineIdentity, readIdentity: readBrokerIdentity });
+    let client; t.after(exactCleanup.cleanup);
     try {
       client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId, env: { ...context.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...(stopFails ? { FAKE_ZCODE_STOP_ERROR_ONCE: '1' } : {}) } });
       const recordedBroker = JSON.parse(await readFile(identityPath, 'utf8'));
-      brokerIdentity = recordedBroker; assert.equal(validRecordedPid(recordedBroker.pid, process.pid), true);
+      exactCleanup.record(recordedBroker);
       const created = await client.createSession({ workspace: context.workspace });
       const accepted = /** @type {{inputId:string,stateRevision:number}} */ (await client.send(created.session.sessionId, 'hold for cancellation')); await client.close(); client = null;
       const store = createStateStore({ dataRoot: context.dataRoot });
@@ -4790,9 +4850,10 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
       }
       await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace, ownerId, requestTimeoutMs: 750 });
       assert.equal(await waitForProcessExit(recordedBroker.pid, scaleTestTimeout(5_000)), true, `broker ${recordedBroker.pid} did not exit after owner release`);
+      exactCleanup.markComplete();
     } finally {
       await client?.close().catch(() => {});
-      await terminateExactBroker();
+      await exactCleanup.cleanup();
     }
   }
 });
