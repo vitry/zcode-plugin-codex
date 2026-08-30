@@ -249,8 +249,10 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
 
 /** @param {unknown} notification @param {string} topic @param {string} subscriptionId @param {string} sessionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,payloadKind:'snapshot'|'deltas',deltas:ValidatedDelta[]}}|{ok:false,reason:string}} */
 function validateNotification(notification, topic, subscriptionId, sessionId) {
-  if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
-  const wire = notification.params;
+  if (!boundedOpaqueJsonObject(notification)) return { ok: false, reason: 'envelope-shape' };
+  const upstream = /** @type {Record<string,any>} */ (notification);
+  if (upstream.method !== 'v4/conversation/frame' || !plainObject(upstream.params)) return { ok: false, reason: 'envelope-shape' };
+  const wire = upstream.params;
   if (!hasRequiredKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
   if (wire.wireVersion !== CONVERSATION_WIRE_VERSION) return { ok: false, reason: 'wire-version' };
   if (wire.topic !== topic || wire.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };

@@ -100,6 +100,7 @@ test('conversation subscribe accepts additive fields and rejects malformed consu
     { ack: { ...valid.ack, mode: 'replay' } },
     { ack: { ...valid.ack, logEpoch: '' } },
   ];
+  const deep = structuredClone(valid); let nested = deep.future; for (let depth = 0; depth < 65; depth += 1) { nested.next = {}; nested = nested.next; } invalid.push(deep);
   for (const result of invalid) {
     const client = new ZCodeClient({ request: async () => result });
     await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' }), { code: 'ZCODE_OUTPUT_INVALID' });
@@ -112,6 +113,9 @@ test('conversation unsubscribe accepts additive object fields and rejects a non-
   const client = new ZCodeClient({ request: async (method) => method.endsWith('/subscribe') ? { ack: { subscriptionId: 'sub-1', mode: 'snapshot', logEpoch: 'epoch-1' } } : unsubscribeResult });
   const subscription = await client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' });
   await subscription.unsubscribe();
+  unsubscribeResult = { future: {} }; let nested = unsubscribeResult.future; for (let depth = 0; depth < 65; depth += 1) { nested.next = {}; nested = nested.next; }
+  const deepSubscription = await new ZCodeClient({ request: async (method) => method.endsWith('/subscribe') ? { ack: { subscriptionId: 'sub-deep', mode: 'snapshot', logEpoch: 'epoch-deep' } } : unsubscribeResult }).subscribeConversation('session-1', { connectionId: 'companion-deep', clientMode: 'desktop-continuous' });
+  await assert.rejects(deepSubscription.unsubscribe(), { code: 'ZCODE_OUTPUT_INVALID' });
   unsubscribeResult = [];
   const invalidSubscription = await new ZCodeClient({ request: async (method) => method.endsWith('/subscribe') ? { ack: { subscriptionId: 'sub-2', mode: 'snapshot', logEpoch: 'epoch-2' } } : unsubscribeResult }).subscribeConversation('session-1', { connectionId: 'companion-2', clientMode: 'desktop-continuous' });
   await assert.rejects(invalidSubscription.unsubscribe(), { code: 'ZCODE_OUTPUT_INVALID' });
@@ -449,8 +453,9 @@ test('runtime model update accepts additive result fields and rejects malformed 
   const valid = { sessionId: 'session-1', appliedModelRuntimeRevision: 'runtime-revision-1', changed: true };
   // The base result is the captured adapter shape; `future` is unit-only.
   const client = new ZCodeClient({ request: async () => ({ ...valid, future: { opaque: true } }) });
-  assert.deepEqual(await client.updateRuntimeModelConfig('session-1', runtimeModelFixture()), { ...valid, future: { opaque: true } });
-  const invalid = [null, {}, { ...valid, sessionId: 'session-2' }, { ...valid, appliedModelRuntimeRevision: 'other-revision' }, { ...valid, changed: 1 }];
+  assert.deepEqual(await client.updateRuntimeModelConfig('session-1', runtimeModelFixture()), valid);
+  const deeplyNested = { ...valid, future: {} }; let nested = deeplyNested.future; for (let depth = 0; depth < 65; depth += 1) { nested.next = {}; nested = nested.next; }
+  const invalid = [null, {}, { ...valid, sessionId: 'session-2' }, { ...valid, appliedModelRuntimeRevision: 'other-revision' }, { ...valid, changed: 1 }, deeplyNested];
   for (const result of invalid) {
     const client = new ZCodeClient({ request: async () => result });
     await assert.rejects(client.updateRuntimeModelConfig('session-1', runtimeModelFixture()), { code: 'ZCODE_OUTPUT_INVALID' });
@@ -923,7 +928,7 @@ test('typed operation results fail closed when their runtime shape is invalid', 
 });
 
 test('session/stop accepts additive result fields from newer compatible versions', async () => {
-  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); assert.deepEqual(await client.stopSession(created.session.sessionId), { stopped: true }); }, { FAKE_ZCODE_BAD_STOP_EXTRA: '1' });
+  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); assert.deepEqual(await client.stopSession(created.session.sessionId), {}); }, { FAKE_ZCODE_BAD_STOP_EXTRA: '1' });
 });
 
 test('large child stderr is drained without blocking or contaminating protocol stdout', async () => {
@@ -1497,8 +1502,9 @@ test('managed broker subscribe and unsubscribe accept additive upstream fields',
   try {
     await broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'v4/conversation/subscribe', params: { topic, connectionId, clientMode: 'desktop-continuous' } }));
     assert.equal(writes.find((frame) => frame.id === 1)?.result?.ack?.subscriptionId, subscriptionId);
+    assert.deepEqual(writes.find((frame) => frame.id === 1)?.result, { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-additive' } });
     await broker.handleLocal(socket, JSON.stringify({ id: 2, method: 'v4/conversation/unsubscribe', params: { topic, subscriptionId, connectionId } }));
-    assert.deepEqual(writes.find((frame) => frame.id === 2)?.result, { future: { opaque: true } });
+    assert.deepEqual(writes.find((frame) => frame.id === 2)?.result, {});
     assert.equal(broker.conversationSubscriptions.size, 0);
   } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
 });

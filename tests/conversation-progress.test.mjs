@@ -66,6 +66,19 @@ test('accepts additive upstream fields without exposing their values', async () 
   assert.doesNotMatch(JSON.stringify(result), /SECRET/);
 });
 
+test('bounds ignored additive fields across the complete upstream notification', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const mutate of [
+    (frame) => { frame.futureNotification = { nested: { value: undefined } }; },
+    (frame) => { let value = {}; frame.params.futureParams = value; for (let depth = 0; depth < 65; depth += 1) { value.next = {}; value = value.next; } },
+    (frame) => { frame.params.frame.futureFrame = { huge: 'X'.repeat(1_048_577) }; },
+  ]) {
+    const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [] }); mutate(frame);
+    assert.deepEqual(await describer.observe(frame, observedAt), { disposition: 'rejected', reason: 'envelope-shape', events: [] });
+  }
+});
+
 test('ignores future shapes for known row fields the progress projection does not consume', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const toolDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
