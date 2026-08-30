@@ -66,6 +66,60 @@ test('accepts additive upstream fields without exposing their values', async () 
   assert.doesNotMatch(JSON.stringify(result), /SECRET/);
 });
 
+test('ignores future shapes for known row fields the progress projection does not consume', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const toolDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const tool = toolRow({ rowId: 1, toolName: 'Read', status: 'running' });
+  Object.assign(tool.row, {
+    createdAt: { future: 'TOOL_CREATED_SECRET' }, createdAtSeq: 'TOOL_SEQ_SECRET',
+    visibility: { future: 'VISIBILITY_SECRET' }, entityId: { future: 'ENTITY_SECRET' },
+    productTurnId: ['PRODUCT_SECRET'], actions: { canFork: false, future: 'ACTIONS_SECRET' },
+    inputText: { future: 'INPUT_TEXT_SECRET' }, approvalInteractionId: { future: 'APPROVAL_SECRET' },
+    backgrounded: 'BACKGROUND_SECRET', workId: { future: 'WORK_SECRET' },
+    output: 'OUTPUT_SECRET', error: ['ERROR_SECRET'], progress: 'PROGRESS_SECRET', display: 'DISPLAY_SECRET',
+  });
+  const toolResult = await toolDescriber.observe(conversationFrame({ deltas: [tool] }), observedAt);
+  assert.deepEqual(toolResult.events.map((event) => event.message), ['Running tool: Read.']);
+  assert.doesNotMatch(JSON.stringify(toolResult), /SECRET/);
+
+  const turnDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const turn = turnRow({ rowId: 2, state: 'running' });
+  Object.assign(turn.row, {
+    createdAt: { future: 'TURN_CREATED_SECRET' }, createdAtSeq: 'TURN_SEQ_SECRET',
+    visibility: 'VISIBILITY_SECRET', entityId: ['ENTITY_SECRET'], productTurnId: { future: 'PRODUCT_SECRET' },
+    actions: { canFork: false, future: 'ACTIONS_SECRET' }, origin: { future: 'ORIGIN_SECRET' },
+    startedAt: 'START_SECRET', endedAt: { future: 'END_SECRET' }, executionKind: 'EXECUTION_SECRET',
+    sourceCommandId: { future: 'COMMAND_SECRET' }, historyRoundCount: 'HISTORY_SECRET', activeMs: 'ACTIVE_SECRET',
+    workSegments: 'SEGMENTS_SECRET', originMeta: ['ORIGIN_META_SECRET'], fileChanges: 'FILES_SECRET',
+  });
+  const turnResult = await turnDescriber.observe(conversationFrame({ deltas: [turn] }), observedAt);
+  assert.deepEqual(turnResult.events.map((event) => event.message), ['ZCode turn started.']);
+  assert.doesNotMatch(JSON.stringify(turnResult), /SECRET/);
+});
+
+test('ignores future shapes for known envelope snapshot and delta fields it does not consume', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const initialDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const initial = conversationFrame({ deliveryKind: 'initial', fromSeq: 0, toSeq: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) });
+  initial.params.logicalFrameId = { future: 'FRAME_ID_SECRET' };
+  initial.params.frame.sentAt = { future: 'SENT_AT_SECRET' };
+  Object.assign(initial.params.frame.payload.snapshot, {
+    availability: 'AVAILABILITY_SECRET', rows: 'ROWS_SECRET', revision: 'REVISION_SECRET',
+    logEpoch: { future: 'EPOCH_SECRET' }, usage: ['USAGE_SECRET'],
+  });
+  const initialResult = await initialDescriber.observe(initial, observedAt);
+  assert.deepEqual(initialResult, { disposition: 'accepted', phase: 'initial', events: [] });
+  assert.doesNotMatch(JSON.stringify(initialResult), /SECRET/);
+
+  const deltaDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const deltaResult = await deltaDescriber.observe(conversationFrame({ deltas: [
+    { op: 'row.delta', rowId: 'ROW_SECRET', path: { future: 'PATH_SECRET' }, append: ['APPEND_SECRET'] },
+    { op: 'state.updated', patch: 'PATCH_SECRET' },
+  ] }), observedAt);
+  assert.deepEqual(deltaResult, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.doesNotMatch(JSON.stringify(deltaResult), /SECRET/);
+});
+
 test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps production delta operations contiguous', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -136,7 +190,7 @@ test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps produ
   });
 });
 
-test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants without leaking their content', async () => {
+test('rejects malformed oversized or identity-conflicting snapshots and unsafe delta envelopes without leaking content', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const cases = [
     (frame) => { frame.params.frame.payload.snapshot = ['NOT_AN_OBJECT']; },
@@ -144,10 +198,8 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
     (frame) => { frame.params.frame.payload = { kind: 'snapshot', snapshot: { nested: { value: undefined } } }; },
     (frame) => { frame.params.frame.payload.snapshot.protocolVersion = 2; },
     (frame) => { frame.params.frame.payload.snapshot.sessionId = 'foreign'; },
-    (frame) => { frame.params.frame.payload.snapshot.logEpoch = 'unsafe\u0000epoch'; },
     (frame) => { frame.params.frame.payload.snapshot.seq = 2; },
     (frame) => { frame.params.frame.fromSeq = 1; },
-    (frame) => { frame.params.frame.payload.snapshot.rows.window = Array.from({ length: 61 }, () => ({})); },
   ];
   for (const mutate of cases) {
     const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -158,10 +210,8 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
 
   const deltaCases = [
     [{ op: 'row.removed', fromRowId: '1' }, 'row-shape'],
-    [{ op: 'row.delta', rowId: 1, path: 'text\u0000SECRET_PATH', append: 'SECRET_APPEND' }, 'row-shape'],
     [{ op: 'row.delta', rowId: 1, path: 'text', append: 'X'.repeat(1_048_577) }, 'envelope-shape'],
-    [{ op: 'state.updated', patch: ['SECRET_PATCH'] }, 'row-shape'],
-    [{ op: 'state.updated', patch: { nested: { value: undefined } } }, 'row-shape'],
+    [{ op: 'state.updated', patch: { nested: { value: undefined } } }, 'envelope-shape'],
   ];
   for (const [delta, reason] of deltaCases) {
     const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -237,15 +287,18 @@ test('observed unknown rows stay private while a sequence gap requires recovery 
   assert.deepEqual(later.events.map((event) => event.message), ['Read completed.']);
   assert.doesNotMatch(JSON.stringify([first, duplicate, gap, fenced, recovery, later]), /PRIVATE_(?:UNKNOWN|STALE|INTERLEAVED)_ROW/);
 
-  for (const [mutate, reason] of [
-    [(row) => { row.turnId = 'unsafe\nturn'; }, 'row-shape'],
-    [(row) => { row.content = 'x'.repeat(1_048_577); }, 'envelope-shape'],
-  ]) {
+  {
     const strict = await createStructuralDescriber({ sessionId: 'session-observed', subscriptionId: 'subscription-observed', workspace });
-    const delta = unknownRow(1, 'PRIVATE_INVALID_UNKNOWN'); mutate(delta.row);
+    const delta = unknownRow(1, 'PRIVATE_INVALID_UNKNOWN'); delta.row.turnId = 'ignored\nfuture-shape';
     const result = await strict.observe(frame({ ordinal: 1, deltas: [delta] }), observedAt);
-    assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
+    assert.deepEqual(result, { disposition: 'accepted', phase: 'online', events: [] });
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE_INVALID_UNKNOWN/);
+  }
+  {
+    const strict = await createStructuralDescriber({ sessionId: 'session-observed', subscriptionId: 'subscription-observed', workspace });
+    const delta = unknownRow(1, 'x'.repeat(1_048_577));
+    const result = await strict.observe(frame({ ordinal: 1, deltas: [delta] }), observedAt);
+    assert.deepEqual(result, { disposition: 'rejected', reason: 'envelope-shape', events: [] });
   }
 });
 
@@ -407,13 +460,8 @@ test('accepts a new file only when its symlink ancestor canonically stays inside
 test('fails closed on every missing mistyped controlled or unverified consumed field before rendering', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const mutations = [
-    (frame) => { delete frame.params.logicalFrameId; },
     (frame) => { frame.params.logicalFrameOrdinal = '1'; },
-    (frame) => { frame.params.logicalFrameId = 'bad\u0000frame'; },
-    (frame) => { frame.params.frame.sentAt = '2026-08-09T00:00:00.000Z'; },
-    (frame) => { delete frame.params.frame.payload.deltas[0].row.createdAtSeq; },
     (frame) => { frame.params.frame.payload.deltas[0].row.toolName = 'Bash\u0085SECRET'; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.createdAt = Number.NaN; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'completed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'failed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'denied'; },
@@ -424,12 +472,12 @@ test('fails closed on every missing mistyped controlled or unverified consumed f
     const events = await describer.observe(frame, observedAt);
     assert.deepEqual(events, []); assert.doesNotMatch(JSON.stringify(events), /DO_NOT_LEAK|SECRET_EXTRA/);
   }
-  for (const key of ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame']) {
+  for (const key of ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing params.${key}`);
   }
-  for (const key of ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload']) {
+  for (const key of ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'payload']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing frame.${key}`);
@@ -439,7 +487,7 @@ test('fails closed on every missing mistyped controlled or unverified consumed f
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0][key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing delta.${key}`);
   }
-  for (const key of ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind', 'toolCallId', 'toolName', 'status', 'inputText']) {
+  for (const key of ['rowId', 'kind', 'toolCallId', 'toolName', 'status']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0].row[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing tool row.${key}`);
@@ -670,8 +718,10 @@ test('accepts bounded captured multiline tool errors without rendering raw error
   assert.doesNotMatch(JSON.stringify(events), /ERROR_SECRET|first|second|TOOL_FAILED/);
   const huge = toolRow({ rowId: 2, status: 'error' }); huge.row.error = { code: 'TOOL_FAILED', message: '😀'.repeat(300_000) };
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
-  const badCode = toolRow({ rowId: 3, status: 'error' }); badCode.row.error = { code: 'BAD\nCODE', message: 'allowed opaque message' };
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [badCode] }), observedAt), []);
+  const ignoredErrorShape = toolRow({ rowId: 3, status: 'error' }); ignoredErrorShape.row.error = { code: 'BAD\nCODE', message: 'ERROR_SECRET ignored opaque message' };
+  const ignoredErrorEvents = await describer.observe(conversationFrame({ ordinal: 2, deltas: [ignoredErrorShape] }), observedAt);
+  assert.deepEqual(ignoredErrorEvents.map((event) => event.message), ['Bash failed.']);
+  assert.doesNotMatch(JSON.stringify(ignoredErrorEvents), /ERROR_SECRET|BAD/);
 });
 
 test('bounds the prebind subscribe-response buffer to four notifications and drains it in order', async () => {

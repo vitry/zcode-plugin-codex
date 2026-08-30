@@ -7,7 +7,6 @@ const SUCCESS_STATUSES = new Set(['success']);
 const FAILURE_STATUSES = new Set(['error', 'cancelled']);
 const TOOL_STATUSES = new Set([...START_STATUSES, ...SUCCESS_STATUSES, ...FAILURE_STATUSES]);
 const TURN_STATES = new Set(['running', 'completedSuccess', 'completedInterrupted', 'failed']);
-const TURN_ORIGINS = new Set(['userInput', 'backgroundResult', 'goalContinuation', 'editRerun']);
 const MAX_WIRE_TEXT = 1_048_576;
 const MAX_DURATION_MS = 86_400_000;
 const MAX_PUBLIC_MESSAGE_BYTES = 256;
@@ -19,7 +18,6 @@ const MAX_OPAQUE_JSON_DEPTH = 64;
 const MAX_OPAQUE_JSON_NODES = 65_536;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
-const ROW_DELTA_PATHS = new Set(['text', 'inputText', 'output.text', 'summaryText']);
 const SUPPORTED_ROW_KINDS = new Set(['toolCall', 'turnHeader']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
 /** @typedef {{op:string,row:Record<string,any>|null,fromRowId?:number}} ValidatedDelta */
@@ -253,18 +251,18 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
 function validateNotification(notification, topic, subscriptionId, sessionId) {
   if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
   const wire = notification.params;
-  if (!hasRequiredKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
+  if (!hasRequiredKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
   if (wire.wireVersion !== CONVERSATION_WIRE_VERSION) return { ok: false, reason: 'wire-version' };
   if (wire.topic !== topic || wire.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
   if (wire.kind !== 'complete'
     || !['initial', 'online', 'recovery'].includes(wire.deliveryKind)
-    || !boundedIdentifier(wire.logicalFrameId, 256) || !plainObject(wire.frame)) return { ok: false, reason: 'envelope-shape' };
+    || !plainObject(wire.frame)) return { ok: false, reason: 'envelope-shape' };
   if (!positiveInteger(wire.logicalFrameOrdinal)) return { ok: false, reason: 'sequence' };
   const frame = wire.frame;
-  if (!hasRequiredKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])) return { ok: false, reason: 'envelope-shape' };
+  if (!hasRequiredKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'payload'])) return { ok: false, reason: 'envelope-shape' };
   if (frame.topic !== topic || frame.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
   if (!nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq) return { ok: false, reason: 'sequence' };
-  if (!wireTimestamp(frame.sentAt) || !plainObject(frame.payload) || !encodedJsonWithinBound(frame.payload)) return { ok: false, reason: 'envelope-shape' };
+  if (!boundedOpaqueJsonObject(frame.payload)) return { ok: false, reason: 'envelope-shape' };
   if (frame.payload.kind === 'snapshot') {
     if (!hasRequiredKeys(frame.payload, ['kind', 'snapshot']) || !validSnapshot(frame.payload.snapshot, sessionId, frame.fromSeq, frame.toSeq)) return { ok: false, reason: 'envelope-shape' };
     return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, payloadKind: 'snapshot', deltas: [] } };
@@ -283,11 +281,7 @@ function validateDelta(value) {
   if (!plainObject(value) || typeof value.op !== 'string') return { ok: false, reason: 'row-shape' };
   if (value.op === 'row.removed') return hasRequiredKeys(value, ['op', 'fromRowId']) && wireNumber(value.fromRowId)
     ? { ok: true, value: { op: value.op, row: null, fromRowId: value.fromRowId } } : { ok: false, reason: 'row-shape' };
-  if (value.op === 'row.delta') return hasRequiredKeys(value, ['op', 'rowId', 'path', 'append']) && wireNumber(value.rowId)
-    && ROW_DELTA_PATHS.has(value.path) && boundedOpaqueText(value.append)
-    ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
-  if (value.op === 'state.updated') return hasRequiredKeys(value, ['op', 'patch']) && boundedOpaqueJsonObject(value.patch)
-    ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
+  if (value.op === 'row.delta' || value.op === 'state.updated') return { ok: true, value: { op: value.op, row: null } };
   if (!['row.appended', 'row.upserted'].includes(value.op) || !hasRequiredKeys(value, ['op', 'row'])) return { ok: false, reason: 'row-shape' };
   if (!plainObject(value.row) || !safeRowEnvelope(value.row)) return { ok: false, reason: 'row-shape' };
   if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null } };
@@ -298,54 +292,26 @@ function validateDelta(value) {
 function validSnapshot(value, sessionId, fromSeq, toSeq) {
   if (!boundedOpaqueJsonObject(value)) return false;
   const snapshot = /** @type {Record<string,any>} */ (value);
-  if (!hasRequiredKeys(snapshot, [
-    'availability', 'backgroundWorks', 'config', 'control', 'goal', 'inputRouting', 'logEpoch',
-    'meta', 'modelTransition', 'pendingCommands', 'pendingInteractions', 'plan', 'protocolVersion',
-    'queue', 'revision', 'rows', 'seq', 'sessionId', 'usage', 'workspaceHookAdmission',
-  ])) return false;
-  if (snapshot.protocolVersion !== 1 || snapshot.sessionId !== sessionId || !boundedIdentifier(snapshot.logEpoch, 1024)
-    || !wireNumber(snapshot.seq) || snapshot.seq !== toSeq || !wireNumber(snapshot.revision) || fromSeq !== 0) return false;
-  const rows = snapshot.rows;
-  return plainObject(rows) && hasRequiredKeys(rows, ['window', 'totalCount', 'firstRowId'])
-    && Array.isArray(rows.window) && rows.window.length <= 60 && nonnegativeInteger(rows.totalCount)
-    && (rows.firstRowId === null || wireNumber(rows.firstRowId));
+  return hasRequiredKeys(snapshot, ['protocolVersion', 'seq', 'sessionId'])
+    && snapshot.protocolVersion === 1 && snapshot.sessionId === sessionId
+    && wireNumber(snapshot.seq) && snapshot.seq === toSeq && fromSeq === 0;
 }
 
 /** @param {Record<string,any>} row */
 function safeRowEnvelope(row) {
-  if (!wireNumber(row.rowId) || !boundedIdentifier(row.turnId, 1024) || !wireTimestamp(row.createdAt)
-    || !wireNumber(row.createdAtSeq) || !boundedIdentifier(row.kind, 256)
-    || row.visibility !== undefined && row.visibility !== 'visible'
-    || row.entityId !== undefined && !boundedIdentifier(row.entityId, 1024)
-    || row.productTurnId !== undefined && !boundedIdentifier(row.productTurnId, 1024)
-    || !validActions(row.actions)) return false;
-  try { return Buffer.byteLength(JSON.stringify(row)) <= MAX_WIRE_TEXT; } catch { return false; }
+  return boundedIdentifier(row.kind, 256) && boundedOpaqueJsonObject(row);
 }
 
 /** @param {Record<string,any>} row */
 function validateRow(row) {
-  const base = ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind'];
-  if (!wireNumber(row.rowId) || !boundedIdentifier(row.turnId, 1024) || !wireTimestamp(row.createdAt) || !wireNumber(row.createdAtSeq)
-    || row.visibility !== undefined && row.visibility !== 'visible' || row.entityId !== undefined && !boundedIdentifier(row.entityId, 1024)
-    || row.productTurnId !== undefined && !boundedIdentifier(row.productTurnId, 1024) || !validActions(row.actions)) return null;
   if (row.kind === 'toolCall') {
-    const required = [...base, 'toolCallId', 'toolName', 'status', 'inputText'];
-    if (!hasRequiredKeys(row, required) || !boundedIdentifier(row.toolCallId, 1024) || !boundedIdentifier(row.toolName, 256)
-      || !TOOL_STATUSES.has(row.status) || !boundedWireText(row.inputText)
-      || row.startedAt !== undefined && !wireTimestamp(row.startedAt) || row.endedAt !== undefined && !wireTimestamp(row.endedAt)
-      || row.approvalInteractionId !== undefined && !boundedIdentifier(row.approvalInteractionId, 1024)
-      || row.workId !== undefined && !boundedIdentifier(row.workId, 1024) || row.backgrounded !== undefined && row.backgrounded !== true
-      || !validToolOutput(row.output) || !validToolError(row.error) || !validToolProgress(row.progress) || !validToolDisplay(row.display)) return null;
+    const required = ['rowId', 'kind', 'toolCallId', 'toolName', 'status'];
+    if (!hasRequiredKeys(row, required) || !wireNumber(row.rowId) || !boundedIdentifier(row.toolCallId, 1024)
+      || !boundedIdentifier(row.toolName, 256) || !TOOL_STATUSES.has(row.status)) return null;
     return row;
   }
   if (row.kind === 'turnHeader') {
-    const required = [...base, 'origin', 'state', 'startedAt'];
-    if (!hasRequiredKeys(row, required) || !TURN_ORIGINS.has(row.origin) || !TURN_STATES.has(row.state) || !wireTimestamp(row.startedAt)
-      || row.endedAt !== undefined && !wireTimestamp(row.endedAt) || row.executionKind !== undefined && !['agent', 'controlOnly'].includes(row.executionKind)
-      || row.sourceCommandId !== undefined && !boundedIdentifier(row.sourceCommandId, 1024)
-      || row.historyRoundCount !== undefined && !nonnegativeInteger(row.historyRoundCount)
-      || row.activeMs !== undefined && !wireNumber(row.activeMs)
-      || !validWorkSegments(row.workSegments) || !validOriginMeta(row.originMeta) || !validFileChanges(row.fileChanges)) return null;
+    if (!hasRequiredKeys(row, ['rowId', 'kind', 'state']) || !wireNumber(row.rowId) || !TURN_STATES.has(row.state)) return null;
     return row;
   }
   return null;
@@ -460,8 +426,6 @@ function hasRequiredKeys(value, required) { return required.every((key) => Objec
 /** @param {unknown} value @param {number} max */
 function boundedIdentifier(value, max) { return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControl(value); }
 /** @param {unknown} value */
-function boundedWireText(value) { return typeof value === 'string' && value.length <= MAX_WIRE_TEXT && !hasControl(value); }
-/** @param {unknown} value */
 function boundedOpaqueJsonObject(value) {
   if (!plainObject(value)) return false;
   if (!encodedJsonWithinBound(value)) return false;
@@ -496,33 +460,7 @@ function wireTimestamp(value) { return wireNumber(value); }
 /** @param {unknown} value */
 function validObservedAt(value) { if (typeof value !== 'string') return false; try { return new Date(value).toISOString() === value; } catch { return false; } }
 /** @param {unknown} value @returns {value is Record<string,any>} */
-function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
-/** @param {unknown} value */
-function validActions(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && ['canFork', 'canEdit', 'canRetry', 'canRewindFiles'].every((key) => record[key] === undefined || record[key] === true) && (record.editDisposition === undefined || ['rewind', 'fork'].includes(record.editDisposition)); }
-/** @param {unknown} value */
-function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && hasRequiredKeys(value, ['text']) && boundedOpaqueText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && hasRequiredKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
-/** @param {unknown} value */
-function validToolError(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedOpaqueText(value.message); }
-/** @param {unknown} value */
-function validToolProgress(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['bytes', 'updatedAt']) && wireNumber(value.bytes) && wireTimestamp(value.updatedAt) && (value.previewLine === undefined || boundedWireText(value.previewLine)); }
-/** @param {unknown} value */
-function validToolDisplay(value) {
-  if (value === undefined) return true;
-  if (!plainObject(value) || typeof value.kind !== 'string') return false;
-  if (value.kind === 'node_repl_images') return hasRequiredKeys(value, ['kind', 'images']) && Array.isArray(value.images) && value.images.length >= 1 && value.images.length <= 2
-    && value.images.every((image) => plainObject(image) && hasRequiredKeys(image, ['base64', 'mimeType']) && typeof image.base64 === 'string' && image.base64.length >= 1 && image.base64.length <= 204_800 && typeof image.mimeType === 'string' && /^image\/[a-z0-9.+-]+$/iu.test(image.mimeType))
-    && (value.truncated === undefined || typeof value.truncated === 'boolean') && (value.source === undefined || value.source === 'browser_turn_end');
-  if (value.kind === 'task_output') return hasRequiredKeys(value, ['kind', 'retrievalStatus']) && ['success', 'not_ready', 'timeout'].includes(value.retrievalStatus)
-    && (value.taskStatus === undefined || boundedIdentifier(value.taskStatus, 64)) && (value.output === undefined || typeof value.output === 'string' && value.output.length >= 1 && value.output.length <= 2_000) && (value.truncated === undefined || value.truncated === true);
-  if (value.kind === 'respond_to_coordinator') return hasRequiredKeys(value, ['kind', 'status']) && ['success', 'failed'].includes(value.status);
-  if (value.kind === 'mcp_tool') return hasRequiredKeys(value, ['kind', 'serverName', 'toolName']) && boundedIdentifier(value.serverName, 256) && boundedIdentifier(value.toolName, 256) && (value.description === undefined || typeof value.description === 'string' && value.description.length >= 1 && value.description.length <= 4_096);
-  return false;
+function plainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null;
 }
-/** @param {unknown} value */
-function validWorkSegments(value) { return value === undefined || Array.isArray(value) && value.length <= MAX_DELTAS_PER_FRAME && value.every((segment) => plainObject(segment) && hasRequiredKeys(segment, ['segmentId', 'startedAt']) && boundedIdentifier(segment.segmentId, 1024) && wireTimestamp(segment.startedAt) && (segment.triggerEntityId === undefined || boundedIdentifier(segment.triggerEntityId, 1024)) && (segment.endedAt === undefined || wireTimestamp(segment.endedAt)) && (segment.activeMs === undefined || wireNumber(segment.activeMs))); }
-/** @param {unknown} value */
-function validOriginMeta(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['backgroundSource', 'workId', 'title']) && ['bash', 'subagent'].includes(value.backgroundSource) && boundedIdentifier(value.workId, 1024) && boundedIdentifier(value.title, 4_096); }
-/** @param {unknown} value */
-function validFileChanges(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['additions', 'deletions', 'files']) && wireNumber(value.additions) && wireNumber(value.deletions) && wireNumber(value.files) && (value.state === undefined || ['active', 'reverted'].includes(value.state)); }
-/** @param {unknown} value */
-function boundedOpaqueText(value) { return typeof value === 'string' && Buffer.byteLength(value) <= MAX_WIRE_TEXT; }

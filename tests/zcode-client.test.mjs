@@ -1503,6 +1503,31 @@ test('managed broker subscribe and unsubscribe accept additive upstream fields',
   } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('managed broker subscribe rejects every missing or malformed consumed ack field', async (t) => {
+  const validAck = { subscriptionId: 'managed-consumed-subscription', mode: 'snapshot', logEpoch: 'managed-consumed-epoch' };
+  const cases = [
+    ['missing-subscription-id', (ack) => { const result = { ...ack }; delete result.subscriptionId; return result; }],
+    ['malformed-subscription-id', (ack) => ({ ...ack, subscriptionId: 7 })],
+    ['missing-mode', (ack) => { const result = { ...ack }; delete result.mode; return result; }],
+    ['malformed-mode', (ack) => ({ ...ack, mode: { future: true } })],
+    ['missing-log-epoch', (ack) => { const result = { ...ack }; delete result.logEpoch; return result; }],
+    ['malformed-log-epoch', (ack) => ({ ...ack, logEpoch: ['future'] })],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-consumed-'));
+    const ownerId = 'conversation-consumed-owner'; const sessionId = `conversation-consumed-${name}`;
+    const writes = []; const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+    const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'b'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+    broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.reloadOwnership = async () => {};
+    broker.protocol = { request: async (method) => method === 'v4/conversation/subscribe' ? { ack: mutate(validAck), future: { ignored: true } } : {}, close: async () => {} };
+    try {
+      await broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'v4/conversation/subscribe', params: { topic: `conversation/${sessionId}`, connectionId: `connection-${name}`, clientMode: 'desktop-continuous' } }));
+      assert.equal(writes.find((frame) => frame.id === 1)?.error?.data?.pluginError?.code, 'ZCODE_BROKER_INPUT_INVALID');
+      assert.equal(broker.conversationSubscriptions.size, 0); assert.equal(broker.pendingConversationTopics.size, 0);
+    } finally { broker.cancelIdleShutdown(); await broker.close().catch(() => {}); await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
 test('an unsafe conversation acknowledgement faults its protocol generation before retry', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-retry-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const ownerId = 'conversation-retry-owner'; const badAckMarker = join(directory, 'bad-ack-once');
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_BAD_CONVERSATION_ACK_ONCE: '1', FAKE_ZCODE_BAD_CONVERSATION_ACK_MARKER: badAckMarker, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
