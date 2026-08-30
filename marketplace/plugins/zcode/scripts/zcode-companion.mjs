@@ -24,7 +24,7 @@ import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
-import { executeJob, readResultArtifact } from './lib/review.mjs';
+import { executeJob, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
@@ -956,8 +956,34 @@ async function executeWithWorkerLease(context) {
 /** @param {any} context */
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
-  let client; let resumeSucceeded = false;
+  let client; let executeJobEntered = false; let resumeRpcSucceeded = false; let runningPersisted = false;
   const migrationRollback = context.migrationRollback;
+  const activeContinuationProof = job.rescueContinuationOrigin?.kind === 'active-continuation'
+    ? job.rescueContinuationOrigin : undefined;
+  const finishResumeFailure = activeContinuationProof
+    ? (/** @type {unknown} */ error) => store.finishActiveRescueContinuationFailure(cwd, job.id, context.workerLeaseId,
+      activeContinuationProof, 'failed', {
+      error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1,
+    })
+    : migrationRollback ? (/** @type {unknown} */ error) => store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', {
+      error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1,
+    }) : undefined;
+  const activeRollbackAllowed = (/** @type {unknown} */ error) => !runningPersisted && !isInterruption(error)
+    && (!(error instanceof PluginError) || error.code !== 'RESCUE_BINDING_STALE');
+  const convergeResumeFailure = async (/** @type {unknown} */ error) => {
+    if (!finishResumeFailure) return undefined;
+    if (activeContinuationProof) {
+      if (!activeRollbackAllowed(error)) return undefined;
+      try { return await finishResumeFailure(error); }
+      catch (settlementError) {
+        try { return await finishResumeFailure(error); }
+        catch { throw settlementError; }
+      }
+    }
+    if (!migrationRollback) return undefined;
+    if (!resumeRpcSucceeded) return finishResumeFailure(error);
+    return undefined;
+  };
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -966,22 +992,25 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
-      if (resumeSucceeded) return;
-      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
-    } } : {}) });
+    executeJobEntered = true;
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; }, onRunningPersisted: () => { runningPersisted = true; }, ...(finishResumeFailure ? { onResumeFailure: convergeResumeFailure } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
+    const executionError = error instanceof ResumeFailureSettlementError ? error.executionError : error;
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (migrationRollback && !resumeSucceeded && current?.status === 'queued') {
-      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
-    } else if (isInterruption(error) && current?.status === 'queued') {
+    const settlementRequired = migrationRollback && !resumeRpcSucceeded
+      || activeContinuationProof && activeRollbackAllowed(executionError);
+    if (finishResumeFailure && settlementRequired
+      && (current?.status === 'queued' || current === null
+        && (activeContinuationProof && !executeJobEntered || error instanceof ResumeFailureSettlementError))) {
+      await convergeResumeFailure(executionError);
+    } else if (isInterruption(executionError) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
-    } else if (!isInterruption(error) && current?.status === 'queued') {
-      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
+    } else if (!isInterruption(executionError) && current?.status === 'queued') {
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: executionError instanceof Error ? executionError.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
     }
-    throw error;
+    throw executionError;
   }
 }
 
