@@ -4752,27 +4752,47 @@ test('artifact writes reject an existing final symlink without replacing its tar
   assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'failed');
 });
 
-test('real CLI cancellation waits for stop acknowledgement and reports stop failure', async () => {
+test('real CLI cancellation waits for stop acknowledgement and reports stop failure', async (t) => {
   for (const stopFails of [false, true]) {
     const context = await fixture();
     const launch = { command: process.execPath, args: [fake], target: fake };
-    const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: { ...context.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...(stopFails ? { FAKE_ZCODE_ERROR: 'session/stop' } : {}) } });
-    const created = await client.createSession({ workspace: context.workspace });
-    const accepted = /** @type {{inputId:string,stateRevision:number}} */ (await client.send(created.session.sessionId, 'hold for cancellation')); await client.close();
-    const store = createStateStore({ dataRoot: context.dataRoot });
-    const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-    await startWritableRescueForTest(store, context.workspace, queued, {
-      startedAt: new Date().toISOString(), zcodeSessionId: created.session.sessionId,
-    });
-    await store.transitionJob(context.workspace, queued.id, ['running'], 'running', {
-      inputId: accepted.inputId, startRevision: accepted.stateRevision, beforeMessageIds: [],
-    });
-    const cancelled = await companion(context, ['cancel', queued.id]);
-    if (stopFails) {
-      assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');
-      assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
-    } else {
-      assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
+    const ownerId = ownerIdForSession('codex-session'); const storage = await resolveWorkspaceStorage(context);
+    const identityPath = join(storage.directory, 'broker', 'identity.json');
+    /** @type {{pid:number,instanceId:string,endpoint:string}|undefined} */ let brokerIdentity; let client;
+    const terminateExactBroker = async () => {
+      if (!brokerIdentity || !validRecordedPid(brokerIdentity.pid, process.pid) || !processAlive(brokerIdentity.pid)) return;
+      const current = await readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+      if (current?.pid === brokerIdentity.pid && current.instanceId === brokerIdentity.instanceId && current.endpoint === brokerIdentity.endpoint) await terminateOwnedProcess(brokerIdentity.pid);
+    };
+    t.after(terminateExactBroker);
+    try {
+      client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId, env: { ...context.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...(stopFails ? { FAKE_ZCODE_STOP_ERROR_ONCE: '1' } : {}) } });
+      const recordedBroker = JSON.parse(await readFile(identityPath, 'utf8'));
+      brokerIdentity = recordedBroker; assert.equal(validRecordedPid(recordedBroker.pid, process.pid), true);
+      const created = await client.createSession({ workspace: context.workspace });
+      const accepted = /** @type {{inputId:string,stateRevision:number}} */ (await client.send(created.session.sessionId, 'hold for cancellation')); await client.close(); client = null;
+      const store = createStateStore({ dataRoot: context.dataRoot });
+      const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+      await startWritableRescueForTest(store, context.workspace, queued, {
+        startedAt: new Date().toISOString(), zcodeSessionId: created.session.sessionId,
+      });
+      await store.transitionJob(context.workspace, queued.id, ['running'], 'running', {
+        inputId: accepted.inputId, startRevision: accepted.stateRevision, beforeMessageIds: [],
+      });
+      const cancelled = await companion(context, ['cancel', queued.id]);
+      if (stopFails) {
+        assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');
+        assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
+        const retried = await companion(context, ['cancel', queued.id]);
+        assert.equal(retried.code, 0, `${retried.stderr}${retried.stdout}`); assert.equal(retried.json.job.status, 'cancelled');
+      } else {
+        assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
+      }
+      await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace, ownerId, requestTimeoutMs: 750 });
+      assert.equal(await waitForProcessExit(recordedBroker.pid, scaleTestTimeout(5_000)), true, `broker ${recordedBroker.pid} did not exit after owner release`);
+    } finally {
+      await client?.close().catch(() => {});
+      await terminateExactBroker();
     }
   }
 });
