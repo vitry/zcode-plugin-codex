@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, readdir, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { PluginError } from './errors.mjs';
 import { isCanonicalCodexAgentPath } from './codex-app-server.mjs';
@@ -944,9 +945,7 @@ function validateHistoricalRescueRepairJobs(anchor, current, input, binding, wor
     && current.permissionSnapshot.permissionMode === binding.permissionMode
     && current.rescueReservationKind === 'bound' && current.rescueMigrationRollback === undefined
     && current.rescueContinuationOrigin === undefined;
-  const acceptanceEvidence = ['beforeMessageIds', 'effort', 'inputId', 'model', 'promptArtifact',
-    'resultArtifact', 'startRevision', 'startedAt', 'zcodeSessionId'];
-  if (!common || acceptanceEvidence.some((field) => Object.hasOwn(current, field))) throw invalidRescueBindingRepair();
+  if (!common || hasActiveContinuationRunningEvidence(current)) throw invalidRescueBindingRepair();
 }
 
 function invalidRescueBindingRepair() {
@@ -966,6 +965,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
   expectedWorkerLeaseId, proof, patch, publicationHook) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
+    const lockIdentity = await captureStateLockIdentity(storage);
     const forbiddenFields = Object.keys(patch).filter((field) => !JOB_PATCH_FIELDS.has(field));
     if (forbiddenFields.length > 0) {
       throw new PluginError('JOB_PATCH_FORBIDDEN', 'Job patch contains protected or unsupported fields.', {
@@ -983,6 +983,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
     if (job.status === 'failed') {
       if (job.rescueContinuationOrigin !== undefined || hasActiveContinuationRunningEvidence(job)
         || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, true)
+        || !hasExactActiveContinuationTerminalPatch(job, patch, expectedWorkerLeaseId)
         || !isRestoredActiveContinuationBinding(binding, prior)) throw invalidRescueBinding();
       return job;
     }
@@ -1007,6 +1008,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
     delete updated.rescueLegacyJobSpecProof;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
 
+    let expectedSnapshot = snapshot;
     if (!isRestoredActiveContinuationBinding(binding, prior)) {
       if (binding === null || binding.state !== 'active' || binding.currentJobId !== job.id
         || binding.key !== prior.key || binding.operationId !== prior.operationId) throw invalidRescueBinding();
@@ -1015,12 +1017,14 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
       const restored = validateRescueBinding({ ...prior, updatedAt: new Date(Math.max(
         Date.now(), Date.parse(prior.updatedAt) + 1, Date.parse(binding.updatedAt) + 1,
       )).toISOString() });
-      const lockIdentity = await captureStateLockIdentity(storage);
-      await writeBindingPartitionGuarded(storage, prior.parentSessionId, snapshot,
-        bindingSnapshotWith(snapshot, restored), lockIdentity);
+      expectedSnapshot = bindingSnapshotWith(snapshot, restored);
+      await writeBindingPartitionGuarded(storage, prior.parentSessionId, snapshot, expectedSnapshot, lockIdentity);
       await publicationCheckpoint(publicationHook, 'active-continuation-rollback:binding');
     }
+    await assertPublicationGuard(storage, lockIdentity, expectedSnapshot, prior.parentSessionId);
     await atomicWriteJson(path, updated);
+    await publicationCheckpoint(publicationHook, 'active-continuation-rollback:terminal');
+    await assertPublicationGuard(storage, lockIdentity, expectedSnapshot, prior.parentSessionId);
     return updated;
   });
 }
@@ -1773,6 +1777,20 @@ function hasActiveContinuationRunningEvidence(job) {
   return ['beforeMessageIds', 'effort', 'inputId', 'model', 'promptArtifact', 'resultArtifact',
     'startRevision', 'startedAt', 'zcodeSessionId']
     .some((field) => Object.hasOwn(job, field))
+}
+
+/**
+ * Terminal proof is intentionally deleted after publication, so an exact retry can authenticate only
+ * the durable mutable outcome it requested. Require deep equality for every requested field and reject
+ * other terminal patch fields except the generated timestamp and the caller-owned execution fence.
+ * @param {any} job @param {Record<string,unknown>} patch @param {string|null} expectedWorkerLeaseId
+ */
+function hasExactActiveContinuationTerminalPatch(job, patch, expectedWorkerLeaseId) {
+  if (!Object.entries(patch).every(([field, value]) => Object.hasOwn(job, field)
+    && isDeepStrictEqual(job[field], value))) return false;
+  const allowed = new Set([...Object.keys(patch), 'finishedAt']);
+  if (expectedWorkerLeaseId !== null) { allowed.add('childPid'); allowed.add('workerLeaseId'); }
+  return [...JOB_PATCH_FIELDS].every((field) => !Object.hasOwn(job, field) || allowed.has(field));
 }
 
 /** Accept either a wholly unclaimed attempt or the exact caller-owned queued execution fence. @param {any} job

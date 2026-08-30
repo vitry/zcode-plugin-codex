@@ -160,8 +160,9 @@ Historical repair is permitted only when:
 - current is `failed`, has never entered `running`, and has no `startedAt`,
   `zcodeSessionId`, input ID, start revision, accepted-message boundary, result
   artifact, or other evidence of prompt acceptance;
-- no queued, running, or cancelling writable Rescue job exists in the canonical
-  workspace; and
+- no queued, running, or cancelling writable command exists in the canonical
+  workspace, because the StateStore enforces workspace-wide writable exclusivity
+  across Rescue, review, adversarial review, and transfer; and
 - owner index, binding authority, partition, job records, and stable lock
   identity are all valid.
 

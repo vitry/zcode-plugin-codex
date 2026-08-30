@@ -1019,6 +1019,55 @@ test('active continuation failure converges after binding restoration faults bef
   assert.deepEqual(restoredAfterRetry, restoredAfterFault);
 });
 
+test('active continuation failure retry rejects a different generic terminal patch paired with the restored binding', async () => {
+  const base = await activeContinuationFailureFixture();
+  const requestedPatch = { error: { code: 'RESUME_REJECTED', message: 'resume failed before execution' }, exitCode: 1 };
+  const winningPatch = { error: { code: 'GENERIC_SETTLEMENT', message: 'another failure path won' }, exitCode: 70 };
+  const winner = await base.store.finishJob(base.workspace, base.continuation.job.id, ['queued'], 'failed', winningPatch);
+  assert.equal(winner.status, 'failed');
+
+  // Reproduce the durable state that the rollback's binding-first publication can leave behind while
+  // a different terminal writer wins: the binding is exactly restored, but the failed job has another patch.
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+  const [partitionPath] = await bindingFiles(storage.directory); const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+  partition.records[0] = { ...base.proof.priorBinding,
+    updatedAt: new Date(Math.max(Date.now(), Date.parse(base.proof.priorBinding.updatedAt) + 1)).toISOString() };
+  await writeFile(partitionPath, `${JSON.stringify(partition, null, 2)}\n`);
+
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    null, base.proof, 'failed', requestedPatch), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual((await base.store.readJob(base.workspace, base.continuation.job.id)).error, winningPatch.error);
+});
+
+test('active continuation rollback stale lock holder cannot publish the failed job after restoring the binding', async () => {
+  const base = await activeContinuationFailureFixture();
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace });
+  const lockPath = join(storage.directory, '.state.lock');
+  const staleLockPath = `${lockPath}.stale-holder`; const replacementLockPath = `${lockPath}.replacement`;
+  let replaced = false;
+  const faulted = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
+    if (replaced || seam !== 'active-continuation-rollback:binding') return;
+    replaced = true;
+    await rename(lockPath, staleLockPath);
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(join(lockPath, 'advisory.lock'), '', { mode: 0o600 });
+  } });
+  const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
+  let rejection;
+  try {
+    await faulted.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+      null, base.proof, 'failed', patch);
+  } catch (error) { rejection = error; }
+  await rename(lockPath, replacementLockPath); await rename(staleLockPath, lockPath);
+
+  assert.equal(rejection?.code, 'RESCUE_BINDING_INVALID');
+  const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
+  const failed = await base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    null, base.proof, 'failed', patch);
+  assert.equal(failed.status, 'failed');
+});
+
 test('active continuation failure idempotence rejects an unrelated failed job', async () => {
   const base = await activeContinuationFailureFixture();
   const patch = { error: { message: 'resume failed before execution' }, exitCode: 1 };
