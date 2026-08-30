@@ -315,7 +315,7 @@ export async function publishSuccessfulResultWithLockHeld({ input, job, workspac
     if (returnTerminalWinner) return { job: current, result: undefined, appliedFinalization: false };
     throw terminalPublicationError(job.id, current.status);
   }
-  if (!expectedStatuses.includes(current.status)) throw statusPublicationError(job.id, current.status);
+  if (!expectedStatuses.includes(current.status)) throw statusPublicationError(job.id, current.status, expectedStatuses);
   await appendAssistant();
   const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
   try {
@@ -379,9 +379,9 @@ function terminalPublicationError(jobId, status) {
   return new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, { category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status } });
 }
 
-/** @param {string} jobId @param {string} status */
-function statusPublicationError(jobId, status) {
-  return new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, { category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: status, expectedStatuses: ['running'], jobId } });
+/** @param {string} jobId @param {string} status @param {string[]} expectedStatuses */
+function statusPublicationError(jobId, status, expectedStatuses) {
+  return new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, { category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: status, expectedStatuses: [...expectedStatuses], jobId } });
 }
 
 /** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */

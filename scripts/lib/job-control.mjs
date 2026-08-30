@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
@@ -290,7 +291,15 @@ export async function revalidateBoundRescueStop(store, workspace, job, expected,
 /** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */
 async function recordCancelledAttempt(input, attempts, attempt, cancelled) {
   try { await attempts.update(cancelled.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled; }
-  catch (error) { return durableCancelledWinner(cancelledWinnerInput(input), error); }
+  catch (error) {
+    if (cancelled?.status === 'cancelled') return durableCancelledWinner(cancelledWinnerInput(input), error);
+    let durable;
+    try { durable = await input.options.store.readJob(input.workspace, input.jobId); } catch { throw error; }
+    if (TERMINAL.has(cancelled?.status)
+      && cancelled.id === input.jobId && cancelled.ownerSessionId === input.ownerSessionId
+      && isDeepStrictEqual(durable, cancelled)) return durable;
+    throw error;
+  }
 }
 
 /** Resolve only the exact durable cancellation winner; every ambiguous read or identity mismatch preserves the initiating error. @param {{store:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {unknown} error */
