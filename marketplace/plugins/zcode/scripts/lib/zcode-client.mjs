@@ -86,7 +86,7 @@ export class ZCodeClient {
   /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!plainObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); return result; }
+  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!boundedUpstreamObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); return {}; }
   /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await requestBrokerHealth(this, timeoutMs); return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
   /** @param {string[]} [excludeSessionIds] @param {number} [timeoutMs] */
   async releaseOwner(excludeSessionIds, timeoutMs) { if (excludeSessionIds !== undefined && (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId)))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', excludeSessionIds === undefined ? {} : { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
@@ -96,7 +96,7 @@ export class ZCodeClient {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
     validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel', this.initialEmptySessions.has(sessionId));
-    if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
+    if (!validAppliedModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
@@ -105,10 +105,10 @@ export class ZCodeClient {
     requireSessionId(sessionId);
     const copiedRuntimeModel = copyRuntimeModel(runtimeModel);
     const result = await this.protocol.request('session/updateRuntimeModelConfig', { sessionId, runtimeModel: copiedRuntimeModel, applyModelSelection: true });
-    if (!runtimeExactObject(result, ['sessionId', 'appliedModelRuntimeRevision', 'changed'], [])
+    if (!boundedUpstreamObject(result)
       || result.sessionId !== sessionId || result.appliedModelRuntimeRevision !== copiedRuntimeModel.revision
       || typeof result.changed !== 'boolean') throw outputError('session/updateRuntimeModelConfig');
-    return result;
+    return { sessionId: result.sessionId, appliedModelRuntimeRevision: result.appliedModelRuntimeRevision, changed: result.changed };
   }
 
   /** @param {string} sessionId @param {string} thoughtLevel */
@@ -141,7 +141,7 @@ export class ZCodeClient {
       clientMode: options.clientMode,
     }), 'v4/conversation/subscribe');
     const ack = result.ack;
-    if (!exactObjectKeys(result, ['ack']) || !plainObject(ack) || !exactObjectKeys(ack, ['subscriptionId', 'mode', 'logEpoch'])
+    if (!boundedUpstreamObject(result) || !runtimePlainObject(ack)
       || !isBoundedPublicIdentifier(ack.subscriptionId) || !['snapshot', 'resume'].includes(ack.mode) || !isBoundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
     let unsubscribed = false;
     return {
@@ -150,7 +150,7 @@ export class ZCodeClient {
         if (unsubscribed) return;
         unsubscribed = true;
         const response = await this.protocol.request('v4/conversation/unsubscribe', { topic: `conversation/${sessionId}`, subscriptionId: ack.subscriptionId, connectionId: options.connectionId });
-        if (!plainObject(response) || Object.keys(response).length !== 0) throw outputError('v4/conversation/unsubscribe');
+        if (!boundedUpstreamObject(response)) throw outputError('v4/conversation/unsubscribe');
       },
     };
   }
@@ -446,6 +446,25 @@ function runtimePlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null;
 }
+/** @param {unknown} value @returns {value is Record<string,any>} */
+function boundedUpstreamObject(value) {
+  if (!runtimePlainObject(value)) return false;
+  try {
+    const encoded = JSON.stringify(value); if (typeof encoded !== 'string' || Buffer.byteLength(encoded) > DEFAULT_MAX_FRAME_BYTES) return false;
+    const pending = [{ value, depth: 0 }]; const seen = new Set(); let nodes = 0;
+    while (pending.length > 0) {
+      const current = pending.pop(); if (!current || current.depth > 64 || ++nodes > 65_536) return false;
+      const item = current.value;
+      if (item === null || typeof item === 'string' || typeof item === 'boolean') continue;
+      if (typeof item === 'number') { if (!Number.isFinite(item)) return false; continue; }
+      if (typeof item !== 'object' || seen.has(item)) return false;
+      if (!Array.isArray(item) && !runtimePlainObject(item)) return false;
+      seen.add(item);
+      for (const child of Array.isArray(item) ? item : Object.values(item)) pending.push({ value: child, depth: current.depth + 1 });
+    }
+    return true;
+  } catch { return false; }
+}
 /** @param {unknown} value @returns {value is string} */
 function runtimeText(value) {
   return typeof value === 'string' && value.trim().length > 0 && Buffer.byteLength(value) <= RUNTIME_MAX_TEXT_BYTES
@@ -504,7 +523,7 @@ function advertisedThoughtLevels(model) {
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
 /** @param {unknown} value */
-function exactModel(value) { return plainObject(value) && Object.keys(value).every((key) => ['providerId', 'modelId', 'variant'].includes(key)) && Object.hasOwn(value, 'providerId') && Object.hasOwn(value, 'modelId'); }
+function validAppliedModel(value) { return runtimePlainObject(value) && Object.hasOwn(value, 'providerId') && Object.hasOwn(value, 'modelId'); }
 /** @param {unknown} value */
 function requireString(value) { if (!nonEmpty(value)) throw inputError(); }
 /** @param {unknown} value */
@@ -515,8 +534,6 @@ function requireExactObject(value, required, optional) { if (!plainObject(value)
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {unknown} value @returns {value is string} */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
-/** @param {Record<string,any>} value @param {string[]} keys */
-function exactObjectKeys(value, keys) { const actual = Object.keys(value); return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }

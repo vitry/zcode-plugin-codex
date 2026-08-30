@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
+import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -66,7 +68,7 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
@@ -191,6 +193,22 @@ async function performCancellation(input, attempts, election) {
     await input.options.afterRollbackBeforeSettle?.();
     return { failedAttempt: attempt.attemptId, message, cause: error };
   }
+  const boundary = persistedTurnBoundary(cancelling);
+  if (input.options.readSession && boundary) {
+    const settlement = await observeCancellationSettlement(input, cancelling, observedStop?.guard);
+    if (settlement.kind === 'stale') return settlement.job;
+    if (settlement.kind === 'succeeded') {
+      if (!input.options.publishSucceededSnapshot) return cancellationUncertain(input, attempts, attempt, cancelling,
+        new Error('ZCode completed during cancellation but no result publisher is available.'));
+      const winner = await input.options.publishSucceededSnapshot({ workspace: input.workspace, job: cancelling,
+        snapshot: /** @type {any} */ (settlement).snapshot, turnBoundary: boundary });
+      return recordCancelledAttempt(input, attempts, attempt, winner);
+    }
+    if (!['interrupted', 'failed'].includes(settlement.kind)) {
+      return cancellationUncertain(input, attempts, attempt, cancelling,
+        settlement.error ?? new Error('ZCode cancellation observation expired while the current turn remained unresolved.'));
+    }
+  }
   let cancelled;
   try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
   catch (error) {
@@ -201,6 +219,64 @@ async function performCancellation(input, attempts, election) {
   }
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
 }
+
+/** Keep the cancellation lock and managed client alive while the admission gap converges. @param {any} input @param {any} job @param {any} guard */
+async function observeCancellationSettlement(input, job, guard) {
+  const duration = nonnegativeSafeInteger(input.options.cancellationObservationMs) ? input.options.cancellationObservationMs : 1_000;
+  const interval = nonnegativeSafeInteger(input.options.cancellationObservationIntervalMs) ? input.options.cancellationObservationIntervalMs : 25;
+  const boundary = persistedTurnBoundary(job);
+  if (!boundary) return { kind: 'uncertain', error: new Error('The durable turn boundary is incomplete.') };
+  const scheduleTimeout = input.options.setTimeout ?? globalThis.setTimeout;
+  const cancelTimeout = input.options.clearTimeout ?? globalThis.clearTimeout;
+  /** @type {()=>void} */ let expire = () => {};
+  const expiry = new Promise((resolvePromise) => { expire = () => resolvePromise(undefined); });
+  const timer = scheduleTimeout(expire, duration);
+  let stoppedActiveTurn = false;
+  /** @param {()=>Promise<any>} operation @returns {Promise<{kind:'value',value:any}|{kind:'error',error:any}|{kind:'expired'}>} */
+  const bounded = async (operation) => Promise.race([
+    Promise.resolve().then(operation).then((value) => ({ kind: /** @type {const} */ ('value'), value }), (error) => ({ kind: /** @type {const} */ ('error'), error })),
+    expiry.then(() => ({ kind: /** @type {const} */ ('expired') })),
+  ]);
+  try {
+    for (;;) {
+      const read = await bounded(() => input.options.readSession(job.zcodeSessionId));
+      if (read.kind === 'expired') return { kind: 'unresolved' };
+      if (read.kind === 'error') return { kind: 'uncertain', error: read.error };
+      const snapshot = read.value;
+      const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
+      if (classification.kind !== 'pending') return { ...classification, snapshot };
+      if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)
+        && hasCurrentTurnActivity(snapshot, boundary)) {
+        const validation = await bounded(() => revalidateBoundRescueStop(input.options.store, input.workspace, job, guard));
+        if (validation.kind === 'expired') return { kind: 'unresolved' };
+        if (validation.kind === 'error') return { kind: 'uncertain', error: validation.error };
+        if (validation.value?.kind === 'stale') return { kind: 'stale', job: validation.value.job };
+        const stop = await bounded(() => input.options.stopSession(job.zcodeSessionId));
+        if (stop.kind === 'expired') return { kind: 'unresolved' };
+        if (stop.kind === 'error') return { kind: 'uncertain', error: stop.error };
+        stoppedActiveTurn = true;
+      }
+      const wait = await bounded(() => input.options.delay
+        ? input.options.delay(interval)
+        : pollDelay(interval, undefined, scheduleTimeout, cancelTimeout));
+      if (wait.kind === 'expired') return { kind: 'unresolved' };
+      if (wait.kind === 'error') return { kind: 'uncertain', error: wait.error };
+    }
+  } finally { cancelTimeout(timer); }
+}
+
+/** @param {any} input @param {any} attempts @param {any} attempt @param {any} job @param {unknown} error */
+async function cancellationUncertain(input, attempts, attempt, job, error) {
+  const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode cancellation settlement is uncertain.');
+  const winner = await input.options.store.readJob(input.workspace, job.id).catch(() => null);
+  if (winner && TERMINAL.has(winner.status)) return winner;
+  await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'failed-pending-release', message);
+  await input.options.afterRollbackBeforeSettle?.();
+  return { failedAttempt: attempt.attemptId, message, cause: error };
+}
+
+/** @param {unknown} value */
+function nonnegativeSafeInteger(value) { return Number.isSafeInteger(value) && Number(value) >= 0; }
 
 /** @param {any} store @param {string} workspace @param {any} job @param {any} [expected] @param {string} [zcodeSessionId] */
 export async function revalidateBoundRescueStop(store, workspace, job, expected, zcodeSessionId = job.zcodeSessionId) {
@@ -215,7 +291,15 @@ export async function revalidateBoundRescueStop(store, workspace, job, expected,
 /** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */
 async function recordCancelledAttempt(input, attempts, attempt, cancelled) {
   try { await attempts.update(cancelled.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled; }
-  catch (error) { return durableCancelledWinner(cancelledWinnerInput(input), error); }
+  catch (error) {
+    if (cancelled?.status === 'cancelled') return durableCancelledWinner(cancelledWinnerInput(input), error);
+    let durable;
+    try { durable = await input.options.store.readJob(input.workspace, input.jobId); } catch { throw error; }
+    if (TERMINAL.has(cancelled?.status)
+      && cancelled.id === input.jobId && cancelled.ownerSessionId === input.ownerSessionId
+      && isDeepStrictEqual(durable, cancelled)) return durable;
+    throw error;
+  }
 }
 
 /** Resolve only the exact durable cancellation winner; every ambiguous read or identity mismatch preserves the initiating error. @param {{store:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {unknown} error */

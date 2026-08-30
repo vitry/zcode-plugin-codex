@@ -13,6 +13,7 @@ import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
+import { awaitCurrentTurnTerminal, selectCurrentTurnAssistant } from './turn-terminal.mjs';
 import { publicErrorMessage } from './public-text.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
@@ -65,7 +66,8 @@ export async function executeJob(input) {
     jobLogCleaned = true;
     await jobLog?.close(Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
   };
-  const cleanupProgress = async () => {
+  /** @param {string|undefined} [confirmedTerminalKind] */
+  const cleanupProgress = async (confirmedTerminalKind) => {
     if (progressCleaned) return;
     progressCleaned = true;
     try { reporter?.stopAccepting(); } catch { /* progress-only */ }
@@ -81,6 +83,10 @@ export async function executeJob(input) {
       reporter?.diagnose('progress-flush-timeout');
       const timeoutDrain = Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {});
       await waitForOptionalProgress(timeoutDrain, deadline);
+    }
+    if (confirmedTerminalKind) {
+      try { reporter?.confirmTerminal(confirmedTerminalKind); } catch { /* progress-only */ }
+      await waitForOptionalProgress(Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {}), deadline);
     }
     try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
@@ -163,7 +169,13 @@ export async function executeJob(input) {
     });
     if (input.resumeSessionId) input.onRunningPersisted?.();
     input.signal?.throwIfAborted();
-    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
+    const beforeMessageIds = [...snapshotMessageIds(snapshot)];
+    // Arm against the subscription's established historical baseline immediately
+    // before send. A fast v4 terminal may resolve now, but cannot be consumed until
+    // the accepted input boundary below is durable.
+    conversationObserver.waitForTurnTerminal();
+    conversationObserver.beginTurnBoundary();
+    sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
@@ -172,18 +184,31 @@ export async function executeJob(input) {
       reporter.activateAcceptedBoundary({ readSnapshot: () => client.readSession(activeSessionId), describer: sessionDescriber });
     } catch { reporter.activateAcceptedBoundary({}); }
     reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
-    await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
-    await cleanupProgress();
-    const finalSnapshot = await client.readSession(activeSessionId);
-    const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
-    remoteTerminalProven = ['error', 'completed', 'idle'].includes(finalStatus);
-    const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
-    const publication = await publishSuccessfulResult({
-      input, job, workspace, dataRoot, result,
-      appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+    const legacyWake = waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
+    const terminal = await awaitCurrentTurnTerminal({
+      legacyWake, conversationObserver, readSnapshot: () => client.readSession(activeSessionId), turnBoundary, signal: input.signal,
     });
-    output = { job: publication.job, result: publication.result };
-    appliedFinalization = publication.appliedFinalization;
+    await cleanupProgress(terminal.kind);
+    const finalSnapshot = terminal.snapshot;
+    remoteTerminalProven = true;
+    if (terminal.kind === 'interrupted') {
+      const winner = await settleRemoteInterruption({ input, job, workspace, dataRoot });
+      if (winner.status === 'succeeded') output = { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: winner.resultArtifact }) };
+      else throw new PluginError('ZCODE_TURN_INTERRUPTED', 'ZCode interrupted the delegated turn.', { category: 'runtime', remedy: 'Retry the task when the session is ready.' });
+    } else {
+      if (terminal.kind === 'failed' && finalSnapshot?.projection?.status !== 'error') {
+        const message = publicErrorMessage(selectCurrentTurnAssistant(finalSnapshot, turnBoundary)?.info?.error?.message) ?? 'ZCode reported a terminal error.';
+        throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
+      }
+      const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
+      const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
+      const publication = await publishSuccessfulResult({
+        input, job, workspace, dataRoot, result,
+        appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+      });
+      output = { job: publication.job, result: publication.result };
+      appliedFinalization = publication.appliedFinalization;
+    }
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     let current = initialBoundStopGuardComplete ? await input.store.readJob(workspace, job.id).catch(() => running) : null;
@@ -217,8 +242,29 @@ export async function executeJob(input) {
         if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
         if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
       } else {
-        const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
-        await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+        let cancellationPublicationApplied = false;
+        const cancellation = createJobController({
+          store: input.store, dataRoot,
+          stopSession: (id) => client.stopSession(id),
+          readSession: (id) => client.readSession(id),
+          publishSucceededSnapshot: async ({ job: cancelling, snapshot, turnBoundary }) => {
+            const result = extractFinalResult(snapshot, cancelling.command, turnBoundary);
+            const publication = await publishSuccessfulResultWithLockHeld({
+              input, job: cancelling, workspace, dataRoot, result, expectedStatuses: ['cancelling'],
+              returnTerminalWinner: true,
+              appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+            });
+            cancellationPublicationApplied = publication.appliedFinalization;
+            return publication.job;
+          },
+        });
+        const cancellationWinner = await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => null);
+        if (cancellationWinner?.status === 'succeeded' && cancellationWinner.resultArtifact) {
+          try {
+            output = { job: cancellationWinner, result: await readResultArtifact({ dataRoot, workspace, artifact: cancellationWinner.resultArtifact }) };
+            appliedFinalization = cancellationPublicationApplied; primaryError = undefined;
+          } catch (artifactError) { primaryError = artifactError; }
+        }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
@@ -266,25 +312,64 @@ async function waitForOptionalProgress(operation, deadline) {
 
 /** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant:()=>Promise<unknown>}} publication */
 async function publishSuccessfulResult({ input, job, workspace, dataRoot, result, appendAssistant }) {
+  return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, () => publishSuccessfulResultWithLockHeld({
+    input, job, workspace, dataRoot, result, appendAssistant, expectedStatuses: ['running'],
+  }));
+}
+
+/**
+ * Publish a coherent successful snapshot while the caller already owns the job cancellation lock.
+ * @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant?:()=>Promise<unknown>,expectedStatuses?:string[],returnTerminalWinner?:boolean}} publication
+ */
+export async function publishSuccessfulResultWithLockHeld({ input, job, workspace, dataRoot, result, appendAssistant = async () => {}, expectedStatuses = ['running'], returnTerminalWinner = false }) {
+  const current = await input.store.readJob(workspace, job.id);
+  if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }), appliedFinalization: false };
+  if (['failed', 'cancelled'].includes(current.status)) {
+    if (returnTerminalWinner) return { job: current, result: undefined, appliedFinalization: false };
+    throw terminalPublicationError(job.id, current.status);
+  }
+  if (!expectedStatuses.includes(current.status)) throw statusPublicationError(job.id, current.status, expectedStatuses);
+  await appendAssistant();
+  const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
+  try {
+    const succeeded = await input.store.finishJob(workspace, job.id, [current.status], 'succeeded', { resultArtifact, exitCode: 0 });
+    return { job: succeeded, result, appliedFinalization: true };
+  } catch (error) {
+    const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+    if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }), appliedFinalization: true };
+    if ((winner && expectedStatuses.includes(winner.status)) || !winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
+    if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
+    if (returnTerminalWinner && ['succeeded', 'failed', 'cancelled'].includes(winner.status)) return { job: winner, result: undefined, appliedFinalization: false };
+    throw error;
+  }
+}
+
+/** Settle v4-proven remote interruption without requiring another stop acknowledgement. @param {{input:any,job:any,workspace:string,dataRoot:string}} settlement */
+async function settleRemoteInterruption({ input, job, workspace, dataRoot }) {
   return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
-    const current = await input.store.readJob(workspace, job.id);
-    if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }), appliedFinalization: false };
-    if (['failed', 'cancelled'].includes(current.status)) throw terminalPublicationError(job.id, current.status);
-    if (current.status !== 'running') throw statusPublicationError(job.id, current.status);
-    await appendAssistant();
-    const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
-    try {
-      const succeeded = await input.store.finishJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
-      return { job: succeeded, result, appliedFinalization: true };
-    } catch (error) {
-      const winner = await input.store.readJob(workspace, job.id).catch(() => null);
-      if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }), appliedFinalization: true };
-      if (winner?.status === 'running') throw new SuccessfulResultFinalizationError(error, resultArtifact);
-      if (!winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
-      if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
-      throw error;
+    let current = await input.store.readJob(workspace, job.id);
+    if (['cancelled', 'failed', 'succeeded'].includes(current.status)) return current;
+    if (current.status === 'queued') return settleInterruptedFinish(input.store, workspace, job.id, ['queued']);
+    if (current.status === 'running') {
+      try { current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null }); }
+      catch (error) {
+        const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+        if (winner && winner.status !== 'running') current = winner; else throw error;
+      }
     }
+    if (current.status === 'cancelling') return settleInterruptedFinish(input.store, workspace, job.id, ['cancelling']);
+    return current;
   });
+}
+
+/** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expected */
+async function settleInterruptedFinish(store, workspace, jobId, expected) {
+  try { return await store.finishJob(workspace, jobId, expected, 'cancelled', { exitCode: null }); }
+  catch (error) {
+    const winner = await store.readJob(workspace, jobId).catch(() => null);
+    if (winner?.status === 'cancelled') return winner;
+    throw error;
+  }
 }
 
 export class SuccessfulResultFinalizationError extends Error {
@@ -307,9 +392,9 @@ function terminalPublicationError(jobId, status) {
   return new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, { category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status } });
 }
 
-/** @param {string} jobId @param {string} status */
-function statusPublicationError(jobId, status) {
-  return new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, { category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: status, expectedStatuses: ['running'], jobId } });
+/** @param {string} jobId @param {string} status @param {string[]} expectedStatuses */
+function statusPublicationError(jobId, status, expectedStatuses) {
+  return new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, { category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: status, expectedStatuses: [...expectedStatuses], jobId } });
 }
 
 /** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */
@@ -433,18 +518,7 @@ function extractTerminalResultForStatus(snapshot, command, turnBoundary, status)
 
 /** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
 export function extractFinalResult(snapshot, command, turnBoundary = {}) {
-  const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
-  const beforeMessageIds = turnBoundary.beforeMessageIds ?? new Set();
-  const newAssistants = messages.filter((/** @type {any} */ message) => isAssistantResponse(message, beforeMessageIds));
-  const directAssistants = turnBoundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === turnBoundary.inputId) : [];
-  let assistant;
-  if (directAssistants.length) assistant = directAssistants.at(-1);
-  else if (turnBoundary.inputId) {
-    const currentUserRoots = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds));
-    if (currentUserRoots.length !== 1) throw missingResult();
-    assistant = newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === currentUserRoots[0].info.messageId).at(-1);
-  } else assistant = newAssistants.at(-1);
-  if (['hidden', 'debug'].includes(assistant?.info?.semantics?.uiVisibility)) throw missingResult();
+  const assistant = selectCurrentTurnAssistant(snapshot, turnBoundary);
   const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];
   if (!parts.length) throw missingResult();
   const text = parts.join('\n');
@@ -455,18 +529,6 @@ export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   }
   if (!validateJsonSchema(structured, REVIEW_OUTPUT_SCHEMA)) throw invalidReviewResult();
   return `${JSON.stringify(structured, null, 2)}\n`;
-}
-/** @param {any} message @param {Set<string>} beforeMessageIds */
-function isAssistantResponse(message, beforeMessageIds) {
-  const semantics = message?.info?.semantics;
-  return message?.info?.role === 'assistant' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId)
-    && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response');
-}
-/** @param {any} message @param {Set<string>} beforeMessageIds */
-function isCurrentUserRoot(message, beforeMessageIds) {
-  const info = message?.info; const semantics = info?.semantics;
-  return info?.role === 'user' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId) && info.synthetic !== true && info.visibility !== 'model-only' && info.source === undefined
-    && (semantics === undefined || semantics.origin === 'real_user' && semantics.kind === 'user_prompt' && semantics.uiVisibility === 'visible');
 }
 /** @param {any} snapshot */
 function snapshotMessageIds(snapshot) { return new Set((Array.isArray(snapshot?.messages) ? snapshot.messages : []).map((/** @type {any} */ message) => message?.info?.messageId).filter((/** @type {unknown} */ value) => typeof value === 'string')); }
