@@ -168,7 +168,7 @@ async function performCancellation(input, attempts, election) {
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
-  if (job.status === 'cancelling' && attempt.status === 'finalize-pending') {
+  if (job.status === 'cancelling' && attempt.status === 'finalize-pending' && persistedTurnBoundary(job)) {
     let cancelled;
     try {
       cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
@@ -194,6 +194,8 @@ async function performCancellation(input, attempts, election) {
     return { failedAttempt: attempt.attemptId, message, cause: error };
   }
   const boundary = persistedTurnBoundary(cancelling);
+  if (!boundary && job.command === 'rescue' && job.readOnly === false) return cancellationUncertain(input, attempts, attempt, cancelling,
+    new Error('ZCode cancellation cannot be proven before the accepted turn boundary is durable.'));
   if (input.options.readSession && boundary) {
     const settlement = await observeCancellationSettlement(input, cancelling, observedStop?.guard);
     if (settlement.kind === 'stale') return settlement.job;

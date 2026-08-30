@@ -412,6 +412,7 @@ async function openRecoveryJobLog(input, job) {
 }
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error @param {any} jobLog */
 async function stopThenSettle(input, job, client, error, jobLog) {
+  const boundary = persistedTurnBoundary(job);
   const stopped = await stopRemote(input, job, client);
   if (stopped.stale) return stopped.job;
   throwIfRecoveryInterrupted(input, stopped.ok ? undefined : stopped.error);
@@ -422,7 +423,8 @@ async function stopThenSettle(input, job, client, error, jobLog) {
   try { snapshot = await client.readSession(job.zcodeSessionId); }
   catch (readError) { throwIfRecoveryInterrupted(input, readError); /* acknowledged stop is sufficient for status-appropriate settlement */ }
   if (snapshot) throwIfRecoveryInterrupted(input);
-  const boundary = persistedTurnBoundary(job);
+  if (!boundary && job.command === 'rescue' && job.readOnly === false) return retainAfterStopFailure(input, job,
+    recoveryError('The durable accepted turn boundary is incomplete after best-effort stop.'));
   if (snapshot && boundary) {
     const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
     if (classification.kind === 'succeeded') return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail', jobLog);
@@ -476,6 +478,7 @@ function controlChannelUnavailable(error) { return error instanceof PluginError 
 /** Archive SessionEnd control loss only after proving the exact worker lease is free. @param {any} input @param {any} job @param {PluginError} diagnostic */
 async function failEndedUnavailableJob(input, job, diagnostic) {
   throwIfRecoveryInterrupted(input);
+  if (!persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false) return retainAfterStopFailure(input, job, diagnostic);
   if (!isDigest(job.workerLeaseId)) return retainAfterStopFailure(input, job, diagnostic);
   try {
     return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, () => failJob(input, job, diagnostic));

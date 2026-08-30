@@ -617,17 +617,15 @@ test('foreground and background workers persist their exact lease before discove
   }
 });
 
-test('accepted-send crashes without a durable boundary stop remotely or retain the writable guard', async () => {
+test('accepted-send crashes without a durable boundary always retain the writable guard after best-effort stop', async () => {
   for (const stopSucceeds of [true, false]) {
     const fixture = await context(); const { job, store } = await orphanJob(fixture, { boundary: false }); let stops = 0;
     const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
     await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { onStop: () => { stops += 1; }, ...(stopSucceeds ? {} : { stopError: new Error('stop refused') }) }) });
     const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(stops, 1);
-    assert.equal(recovered.status, stopSucceeds ? 'failed' : 'running');
-    if (!stopSucceeds) {
-      assert.match(recovered.lastCancelError, /stop refused/);
-      await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
-    }
+    assert.equal(recovered.status, 'running');
+    if (!stopSucceeds) assert.match(recovered.lastCancelError, /stop refused/);
+    await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
   }
 });
 

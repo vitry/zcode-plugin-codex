@@ -48,6 +48,8 @@ export async function executeJob(input) {
   /** @type {string|undefined} */
   let sessionId;
   let sendAttempted = false; let remoteTerminalProven = false;
+  let admissionBoundaryUnpublished = false;
+  let admissionTargetStale = false;
   /** @type {any} */
   let reporter;
   /** @type {any} */ let conversationObserver;
@@ -179,10 +181,37 @@ export async function executeJob(input) {
     conversationObserver.confirmBaseline();
     // Arm immediately before send. A fast v4 terminal may resolve now, but cannot
     // be consumed until the accepted input boundary below is durable.
-    conversationObserver.waitForTurnTerminal();
-    conversationObserver.beginTurnBoundary();
-    sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
-    running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
+    const admission = await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+      const current = await input.store.readJob(workspace, job.id);
+      if (current.status !== 'running' || current.zcodeSessionId !== activeSessionId
+        || current.workerLeaseId !== running.workerLeaseId) throw statusPublicationError(job.id, current.status, ['running']);
+      const admissionStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, activeSessionId);
+      if (admissionStop?.kind === 'stale') {
+        admissionTargetStale = true;
+        throw statusPublicationError(job.id, admissionStop.job?.status ?? 'stale', ['running']);
+      }
+      input.signal?.throwIfAborted();
+      conversationObserver.waitForTurnTerminal();
+      conversationObserver.beginTurnBoundary();
+      sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
+      try {
+        const accepted = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
+        return { running: accepted, sent };
+      } catch (boundaryError) {
+        const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+        if (sameAcceptedBoundary(winner, sent, beforeMessageIds)) return { running: winner, sent };
+        admissionBoundaryUnpublished = true;
+        if (winner?.status === 'running' && winner.zcodeSessionId === activeSessionId) {
+          const finalStop = await revalidateBoundRescueStop(input.store, workspace, winner, admissionStop?.guard, activeSessionId);
+          if (finalStop?.kind !== 'stale') try { await client.stopSession(activeSessionId); }
+          catch (stopError) {
+            await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
+          }
+        }
+        throw boundaryError;
+      }
+    });
+    running = admission.running; const sent = admission.sent;
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     try {
@@ -247,6 +276,18 @@ export async function executeJob(input) {
         const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
         if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
         if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
+      } else if (current.status === 'running' && !sendAttempted && sessionId) {
+        try {
+          await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+            const candidate = await input.store.readJob(workspace, job.id);
+            if (candidate.status !== 'running' || candidate.zcodeSessionId !== sessionId) return;
+            const finalStop = await revalidateBoundRescueStop(input.store, workspace, candidate, observedBoundStop?.guard, sessionId);
+            if (finalStop?.kind === 'stale') return;
+            await client.stopSession(sessionId);
+            await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+            await input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+          });
+        } catch { /* retain the writable guard when the known no-send session cannot be stopped */ }
       } else {
         let cancellationPublicationApplied = false;
         const cancellation = createJobController({
@@ -273,8 +314,8 @@ export async function executeJob(input) {
         }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
-      let canFail = true;
-      if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
+      let canFail = !admissionBoundaryUnpublished && !admissionTargetStale;
+      if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven && !admissionBoundaryUnpublished) {
         const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
         if (finalStop?.kind === 'stale') canFail = false;
         else {
@@ -314,6 +355,12 @@ async function waitForOptionalProgress(operation, deadline) {
   catch { /* optional progress cleanup */ }
   finally { if (timer !== undefined) clearTimeout(timer); }
   return completed;
+}
+
+/** @param {any} job @param {{inputId:string,stateRevision:number}} sent @param {string[]} beforeMessageIds */
+function sameAcceptedBoundary(job, sent, beforeMessageIds) {
+  return job?.status === 'running' && job.inputId === sent.inputId && job.startRevision === sent.stateRevision
+    && Array.isArray(job.beforeMessageIds) && JSON.stringify(job.beforeMessageIds) === JSON.stringify(beforeMessageIds);
 }
 
 /** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant:()=>Promise<unknown>}} publication */
