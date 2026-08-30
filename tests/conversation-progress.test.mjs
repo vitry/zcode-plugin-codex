@@ -856,6 +856,30 @@ test('a gap during a frame with a staged turn terminal cannot resolve event auth
   assert.deepEqual(await terminal, { kind: 'unavailable' });
 });
 
+test('turn terminal authority uses the final mutation for its row within one atomic frame', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const trailingDelta of [
+    captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' }),
+    { op: 'row.removed', fromRowId: 1 },
+  ]) {
+    const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    await observer.observe(conversationFrame({
+      ordinal: 1, fromSeq: 0, toSeq: 1,
+      deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })],
+    }), observedAt);
+    const result = await observer.observe(conversationFrame({
+      ordinal: 2, fromSeq: 1, toSeq: 2,
+      deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }), trailingDelta],
+    }), observedAt);
+    assert.deepEqual(result.events, []);
+    assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
+    await assertPromisePending(terminal);
+    observer.markGap();
+    assert.deepEqual(await terminal, { kind: 'unavailable' });
+  }
+});
+
 test('accepts bounded captured multiline tool output without rendering any raw output', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });

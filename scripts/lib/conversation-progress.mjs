@@ -168,11 +168,13 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (sequenceGap) { needsRecovery = true; return rejected('sequence'); }
     const stagedToolStates = new Map(toolStates);
     const stagedRowStates = new Map(rowStates);
+    /** @type {Map<number,{turnId:string,state:string}>} */ const stagedFrameTurnStates = new Map();
     const staged = [];
     /** @type {{kind:'succeeded'|'interrupted'|'failed',turnId:string}|null} */ let stagedTerminalResult = null;
     for (const delta of frame.deltas) {
       if (delta.op === 'row.removed') {
         applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
+        for (const rowId of stagedFrameTurnStates.keys()) if (rowId >= /** @type {number} */ (delta.fromRowId)) stagedFrameTurnStates.delete(rowId);
         continue;
       }
       if (!delta.row) continue;
@@ -183,6 +185,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         if (event && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push(event);
       } else {
         const row = delta.row;
+        stagedFrameTurnStates.set(row.rowId, { turnId: row.turnId, state: row.state });
         const previous = stagedRowStates.get(row.rowId);
         const turnIdentity = `${row.rowId}\u0000${row.turnId}`;
         const identitySeen = seenTurnIdentities.has(turnIdentity);
@@ -190,11 +193,6 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         if (!identitySeen && identityTrackable) seenTurnIdentities.add(turnIdentity);
         if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
           if (previous !== undefined || stagedRowStates.size < MAX_TRACKED_ROWS) stagedRowStates.set(row.rowId, row.state);
-          const trackedTurn = authoritativeTurn;
-          if (authorityState === 'waiting-terminal' && trackedTurn?.rowId === row.rowId && trackedTurn?.turnId === row.turnId) {
-            if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-            stagedTerminalResult = { kind: row.state === 'completedSuccess' ? 'succeeded' : row.state === 'completedInterrupted' ? 'interrupted' : 'failed', turnId: row.turnId };
-          }
           continue;
         }
         if (previous === undefined && stagedRowStates.size >= MAX_TRACKED_ROWS) {
@@ -211,6 +209,13 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       }
     }
     if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
+    const trackedTurn = authoritativeTurn;
+    const finalTurnState = trackedTurn ? stagedFrameTurnStates.get(trackedTurn.rowId) : undefined;
+    if (authorityState === 'waiting-terminal' && trackedTurn && finalTurnState?.turnId === trackedTurn.turnId
+      && ['completedSuccess', 'completedInterrupted', 'failed'].includes(finalTurnState.state)) {
+      if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: finalTurnState.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
+      stagedTerminalResult = { kind: finalTurnState.state === 'completedSuccess' ? 'succeeded' : finalTurnState.state === 'completedInterrupted' ? 'interrupted' : 'failed', turnId: trackedTurn.turnId };
+    }
     replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
     lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
     if (stagedTerminalResult) resolveAuthoritativeTerminal(stagedTerminalResult.kind, stagedTerminalResult.turnId);
