@@ -3499,7 +3499,7 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
 
   const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/send'), 'foreground send was not accepted');
+  await waitForAcceptedBoundary(context, recorded, 'foreground send boundary was not durably accepted');
   child.kill('SIGINT');
   const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
   assert.deepEqual(exit, { code: 130, signal: null }, `${stderr}${stdout}${internal}`);
