@@ -6,6 +6,7 @@ import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
+import { classifyCurrentTurnSnapshot } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -209,7 +210,16 @@ async function reconcileOrphan(input, job) {
     catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error, jobLog); }
     throwIfRecoveryInterrupted(input);
     if (!Number.isSafeInteger(snapshot?.runtime?.stateRevision) || snapshot.runtime.stateRevision < job.startRevision) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is older than the accepted turn boundary.'), jobLog);
+    const boundary = currentTurnBoundary(job);
+    const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
     const remoteStatus = snapshot?.projection?.status;
+    if (classification.kind === 'succeeded') return completeJob(input, job, snapshot, 'fail', jobLog);
+    if (classification.kind === 'failed') return job.status === 'cancelling'
+      ? cancelJob(input, job)
+      : failJob(input, job, recoveryError(snapshot?.projection?.lastError?.message ?? 'ZCode reported a terminal error during recovery.'));
+    if (classification.kind === 'interrupted') return job.status === 'cancelling'
+      ? cancelJob(input, job)
+      : failJob(input, job, recoveryError('The remote turn was interrupted before recovery completed.'));
     if (REMOTE_ACTIVE.has(remoteStatus)) {
       if (job.status === 'cancelling' || input.intent === 'scavenge') return stopThenSettle(input, job, client, recoveryError('The remote turn remained active after its executor exited.'), jobLog);
       return job;
@@ -217,9 +227,8 @@ async function reconcileOrphan(input, job) {
     if (remoteStatus === 'paused') return job.status === 'cancelling'
       ? stopThenSettle(input, job, client, recoveryError('The cancelling remote turn is paused.'), jobLog)
       : failJob(input, job, recoveryError('The orphaned remote turn is paused.'));
-    if (remoteStatus === 'error') return failJob(input, job, recoveryError(snapshot?.projection?.lastError?.message ?? 'ZCode reported a terminal error during recovery.'));
     if (!['completed', 'idle'].includes(remoteStatus)) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is ambiguous.'), jobLog);
-    return completeJob(input, job, snapshot, 'fail', jobLog);
+    return job;
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     if (error instanceof SuccessfulResultFinalizationError) throw error;
@@ -233,6 +242,10 @@ async function reconcileOrphan(input, job) {
 
 /** @param {any} job */
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
+/** @param {any} job */
+function currentTurnBoundary(job) {
+  return { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) };
+}
 /** Resolve exact rollback evidence for atomic queued terminalization. @param {any} input @param {any} job */
 async function queuedMigrationRollback(input, job) {
   return readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job, store: input.store,
@@ -316,8 +329,10 @@ async function settleEndedRemoteJob(input, job) {
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(controlChannelUnavailable(error) ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error)) : await retainAfterStopFailure(input, job, error)); }
     throwIfRecoveryInterrupted(input);
-    const completed = await completeEndedJob(input, job, snapshot, jobLog);
+    const initialClassification = hasBoundary(job) ? classifyCurrentTurnSnapshot(snapshot, currentTurnBoundary(job)) : { kind: 'pending' };
+    const completed = initialClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
     if (completed) return classifyEndedSettlement(completed);
+    if (['interrupted', 'failed'].includes(initialClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
     const revalidated = await revalidateBoundRescueStop(input, job, observedStop?.guard);
     if (revalidated?.kind === 'stale') return classifyEndedSettlement(revalidated.job);
@@ -326,8 +341,12 @@ async function settleEndedRemoteJob(input, job) {
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await cancelJob(input, job)); }
     throwIfRecoveryInterrupted(input);
-    const racedCompletion = await completeEndedJob(input, job, snapshot, jobLog);
-    return classifyEndedSettlement(racedCompletion ?? await cancelJob(input, job));
+    const settledClassification = hasBoundary(job) ? classifyCurrentTurnSnapshot(snapshot, currentTurnBoundary(job)) : { kind: 'pending' };
+    const racedCompletion = settledClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
+    if (racedCompletion) return classifyEndedSettlement(racedCompletion);
+    if (['interrupted', 'failed'].includes(settledClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
+    return classifyEndedSettlement(await retainAfterStopFailure(input, job,
+      recoveryError('SessionEnd cancellation settlement remains unresolved after stop acknowledgement.')));
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     if (error instanceof SuccessfulResultFinalizationError) throw error;
@@ -340,12 +359,11 @@ async function settleEndedRemoteJob(input, job) {
 
 /** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot @param {any} jobLog */
 async function completeEndedJob(input, job, snapshot, jobLog) {
-  if (!hasBoundary(job) || !Number.isSafeInteger(snapshot?.runtime?.stateRevision)
-    || snapshot.runtime.stateRevision < job.startRevision || !['completed', 'idle'].includes(snapshot?.projection?.status)) return null;
+  if (!hasBoundary(job) || classifyCurrentTurnSnapshot(snapshot, currentTurnBoundary(job)).kind !== 'succeeded') return null;
   let resultArtifact;
   let result;
   try {
-    result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
+    result = extractFinalResult(snapshot, job.command, currentTurnBoundary(job));
     resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
   } catch { return null; }
   const finalization = await finishRecoveredResult(input, job, resultArtifact);
@@ -403,9 +421,13 @@ async function stopThenSettle(input, job, client, error, jobLog) {
   try { snapshot = await client.readSession(job.zcodeSessionId); }
   catch (readError) { throwIfRecoveryInterrupted(input, readError); /* acknowledged stop is sufficient for status-appropriate settlement */ }
   if (snapshot) throwIfRecoveryInterrupted(input);
-  if (snapshot && hasBoundary(job) && Number.isSafeInteger(snapshot?.runtime?.stateRevision) && snapshot.runtime.stateRevision >= job.startRevision
-    && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail', jobLog);
-  return job.status === 'cancelling' ? cancelJob(input, job) : failJob(input, job, error);
+  if (snapshot && hasBoundary(job)) {
+    const classification = classifyCurrentTurnSnapshot(snapshot, currentTurnBoundary(job));
+    if (classification.kind === 'succeeded') return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail', jobLog);
+    if (job.status === 'cancelling' && ['interrupted', 'failed'].includes(classification.kind)) return cancelJob(input, job);
+    if (classification.kind === 'pending') return retainAfterStopFailure(input, job, recoveryError('ZCode cancellation settlement remains unresolved after stop acknowledgement.'));
+  }
+  return job.status === 'cancelling' ? retainAfterStopFailure(input, job, error) : failJob(input, job, error);
 }
 /** @param {any} input @param {any} job @param {any} client */
 async function stopRemote(input, job, client) {

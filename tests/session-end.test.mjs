@@ -170,9 +170,16 @@ async function executeJob(input) {
 }
 
 function completed(text = 'session end completion') {
+  return coherentTerminal('input-a', text);
+}
+
+function coherentTerminal(inputId, text = 'session end completion', finish = 'stop') {
   return {
     projection: { status: 'completed' }, runtime: { stateRevision: 8 },
-    messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'input-a' }, parts: [{ type: 'text', text }] }],
+    messages: [
+      { info: { role: 'user', messageId: inputId }, parts: [{ type: 'text', text: 'task' }] },
+      { info: { role: 'assistant', messageId: `answer-${inputId}`, parentMessageId: inputId, finish }, parts: [{ type: 'text', text }] },
+    ],
   };
 }
 
@@ -197,7 +204,7 @@ function executorClient(text = 'executor result') {
     createSession: async () => ({ session: { sessionId: 'remote-a' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: () => () => {},
     send: async () => ({ inputId: 'input-a', stateRevision: 7 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 7 }, messages: [{ info: { role: 'assistant', messageId: 'executor-answer', parentMessageId: 'input-a' }, parts: [{ type: 'text', text }] }] }),
+    readSession: async () => coherentTerminal('input-a', text),
     close: async () => {},
   };
 }
@@ -287,13 +294,36 @@ test('SessionEnd publishes a completed first read with an artifact and never sto
   assert.equal(await readFile(join(storage.directory, stored.resultArtifact), 'utf8'), 'already complete');
 });
 
-test('SessionEnd cancels an active turn only after acknowledged stop and noncompleted reread', async () => {
+test('SessionEnd cancels an active turn only after acknowledged stop and coherent interrupted reread', async () => {
   const input = await fixture(); const value = await job(input); let stops = 0; let closes = 0;
   await settle(input, async (current) => clientFor(current, {
-    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, {
+      projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [
+        { info: { role: 'user', messageId: 'input-a' }, parts: [{ type: 'text', text: 'task' }] },
+        { info: { role: 'assistant', messageId: 'cancelled-answer', parentMessageId: 'input-a', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }] },
+      ],
+    }],
     onStop: () => { stops += 1; }, onClose: () => { closes += 1; },
   }));
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled'); assert.equal(stops, 1); assert.equal(closes, 1);
+});
+
+test('SessionEnd retains an unresolved empty idle admission gap for later coherent settlement', async () => {
+  const input = await fixture(); await job(input); let phase = 0; let stops = 0;
+  const reads = [
+    [{ projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] }],
+    [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, {
+      projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [
+        { info: { role: 'user', messageId: 'input-a' }, parts: [{ type: 'text', text: 'task' }] },
+        { info: { role: 'assistant', messageId: 'interrupted-after-gap', parentMessageId: 'input-a', finish: 'cancelled' }, parts: [] },
+      ],
+    }],
+  ];
+  const createClient = async (current) => clientFor(current, { reads: reads[phase], onStop: () => { stops += 1; } });
+  const first = await settleOutcome(input, createClient);
+  assert.equal(first.kind, 'retained-writable-guard'); assert.equal(first.job.status, 'running'); assert.equal(stops, 0);
+  phase = 1; const second = await settleOutcome(input, createClient);
+  assert.equal(second.kind, 'confirmed-cancellation'); assert.equal(second.job.status, 'cancelled'); assert.equal(stops, 1);
 });
 
 test('orphan recovery does not stop a bound session after a continuation winner advances the current job', async () => {
@@ -342,7 +372,7 @@ test('SessionEnd closes only the exact active operation after acknowledged cance
   const settlement = await settleOutcome(input, async (current) => clientFor(current, {
     reads: [
       { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
-      { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] },
+      coherentTerminal(`input-${active.executor.agentId}`, 'cancelled', 'cancelled'),
     ],
   }));
 
@@ -458,7 +488,7 @@ test('SessionEnd cancellation evidence follows a failed CAS winner', async () =>
   const settlement = await settleOutcome({ ...input, store: wrapped }, async (current) => clientFor(current, {
     reads: [
       { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
-      { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] },
+      coherentTerminal(`input-${active.executor.agentId}`, 'cancelled', 'cancelled'),
     ],
   }));
   const stored = await input.store.readJob(input.workspace, active.job.id);
@@ -486,7 +516,7 @@ test('SessionEnd completion evidence follows a cancelled CAS winner', async () =
   };
 
   const settlement = await settleOutcome({ ...input, store: wrapped }, async (current) => clientFor(current, {
-    reads: [{ ...completed('completion lost CAS'), messages: [{ info: { role: 'assistant', messageId: 'cas-answer', parentMessageId: `input-${active.executor.agentId}` }, parts: [{ type: 'text', text: 'completion lost CAS' }] }] }],
+    reads: [coherentTerminal(`input-${active.executor.agentId}`, 'completion lost CAS')],
   }));
   const stored = await input.store.readJob(input.workspace, active.job.id);
 
@@ -504,7 +534,7 @@ test('SessionEnd preserves the exact binding when completion races an acknowledg
   const settlement = await settleOutcome(input, async (current) => clientFor(current, {
     reads: [
       { projection: { status: 'waiting' }, runtime: { stateRevision: 8 }, messages: [] },
-      { ...completed('race won'), messages: [{ info: { role: 'assistant', messageId: 'race-answer', parentMessageId: `input-${active.executor.agentId}` }, parts: [{ type: 'text', text: 'race won' }] }] },
+      coherentTerminal(`input-${active.executor.agentId}`, 'race won'),
     ],
   }));
   const stored = await input.store.readJob(input.workspace, active.job.id);
@@ -578,7 +608,7 @@ test('SessionEnd does not archive broker absence without an exact worker lease',
 test('SessionEnd can stop through a reachable broker while the exact worker lease is held', async () => {
   const input = await fixture(); const lease = 'a'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let stops = 0;
   await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async (current) => clientFor(current, {
-    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, coherentTerminal(value.inputId, 'cancelled', 'cancelled')],
     onStop: () => { stops += 1; },
   })));
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
@@ -721,7 +751,7 @@ test('SessionEnd never overwrites a terminal executor race', async () => {
       return input.store.transitionJob(workspace, jobId, expected, next, patch);
     },
   };
-  await settle({ ...input, store: wrapped }, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] }));
+  await settle({ ...input, store: wrapped }, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, coherentTerminal(value.inputId, 'cancelled', 'cancelled')] }));
   const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'failed'); assert.equal(stored.error.message, 'executor failed first');
 });
 
@@ -742,7 +772,7 @@ test('executeJob respects a SessionEnd completion winner without rewriting its r
   const output = await executeJob({
     job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient('late executor result'), task: 'finish',
     onBoundaryPersisted: async (running) => {
-      await settle(input, async (current) => clientFor(current, { reads: [{ ...completed('maintenance result'), messages: [{ info: { role: 'assistant', messageId: 'maintenance-answer', parentMessageId: running.inputId }, parts: [{ type: 'text', text: 'maintenance result' }] }] }] }));
+      await settle(input, async (current) => clientFor(current, { reads: [coherentTerminal(running.inputId, 'maintenance result')] }));
     },
   });
   const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
@@ -756,7 +786,7 @@ test('executeJob does not write a result after SessionEnd cancellation wins', as
   const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' });
   await assert.rejects(executeJob({
     job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient(), task: 'finish',
-    onBoundaryPersisted: async () => settle(input, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] })),
+    onBoundaryPersisted: async (running) => settle(input, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, coherentTerminal(running.inputId, 'cancelled', 'cancelled')] })),
   }), { code: 'JOB_TERMINAL' });
   const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   assert.equal(stored.status, 'cancelled'); await assert.rejects(readFile(join(storage.directory, 'results', `${reservation.id}.md`)), { code: 'ENOENT' });
@@ -770,9 +800,9 @@ test('late child success and progress cannot mutate a SessionEnd cancellation wi
   };
   await assert.rejects(executeJob({
     job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client, task: 'finish late',
-    onBoundaryPersisted: async () => {
+    onBoundaryPersisted: async (running) => {
       await settle(input, async (current) => clientFor(current, {
-        reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+        reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, coherentTerminal(running.inputId, 'cancelled', 'cancelled')],
       }));
       cancelledWinner = await input.store.readJob(input.workspace, reservation.id);
       observe({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: 'remote-a', revision: 9, reason: 'tool_call_started', patch: {} } });
@@ -792,7 +822,9 @@ test('competing SessionEnd and orphan recovery elect exactly one terminal settle
     const ending = settle(input, async (current) => {
       let reads = 0;
       return {
-        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
+        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; return reads === 1
+          ? { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }
+          : coherentTerminal(value.inputId, 'cancelled', 'cancelled'); },
         stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); stops += 1; announceStop(); await stopGate; },
         close: async () => {},
       };

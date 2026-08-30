@@ -431,6 +431,62 @@ test('running cancellation acknowledges stop and restores running on stop failur
   assert.equal(restored.status, 'running'); assert.match(String(restored.lastCancelError), /refused/);
 });
 
+test('cancellation bridges the 0.16.5 admission gap with a second guarded stop and coherent interruption', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'admission-gap' });
+  let running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-admission-gap' });
+  running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-admission-gap', startRevision: 7, beforeMessageIds: ['historical'] });
+  const snapshots = [
+    { projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] },
+    { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [completedUser('input-admission-gap')] },
+    { projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [completedUser('input-admission-gap'), {
+      info: { role: 'assistant', messageId: 'assistant-admission-gap', parentMessageId: 'input-admission-gap', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }],
+    }] },
+  ];
+  let reads = 0; let stops = 0;
+  const controller = createJobController({
+    store, dataRoot: join(root, 'data'), cancellationObservationMs: 1_000, cancellationObservationIntervalMs: 0,
+    stopSession: async () => { assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); stops += 1; },
+    readSession: async (sessionId) => { assert.equal(sessionId, running.zcodeSessionId); return snapshots[Math.min(reads++, snapshots.length - 1)]; },
+  });
+  const winner = await controller.cancel(workspace, job.id, job.ownerSessionId);
+  assert.equal(winner.status, 'cancelled'); assert.equal(stops, 2); assert.equal(reads, 3);
+});
+
+test('cancellation preserves a coherent completed-success terminal winner', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-success-winner' });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-success' });
+  await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-cancel-success', startRevision: 3, beforeMessageIds: [] });
+  let stops = 0;
+  const winner = await createJobController({
+    store, dataRoot: join(root, 'data'), stopSession: async () => { stops += 1; },
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 4 }, messages: [completedUser('input-cancel-success'), {
+      info: { role: 'assistant', messageId: 'assistant-cancel-success', parentMessageId: 'input-cancel-success', finish: 'stop' }, parts: [{ type: 'text', text: 'completion won cancellation' }],
+    }] }), publishSucceededSnapshot: async ({ workspace: targetWorkspace, job: targetJob }) => {
+      const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace: targetWorkspace });
+      await mkdir(join(storage.directory, 'results'), { recursive: true });
+      const resultArtifact = `results/${targetJob.id}.md`; await writeFile(join(storage.directory, resultArtifact), 'completion won cancellation', { mode: 0o600 });
+      return store.finishJob(targetWorkspace, targetJob.id, ['cancelling'], 'succeeded', { resultArtifact, exitCode: 0 });
+    },
+  }).cancel(workspace, job.id, job.ownerSessionId);
+  assert.equal(stops, 1); assert.equal(winner.status, 'succeeded'); assert.ok(winner.resultArtifact);
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  assert.equal(await readFile(join(storage.directory, winner.resultArtifact), 'utf8'), 'completion won cancellation');
+});
+
+test('cancellation observation expiry preserves the cancelling writable guard for retry', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-expiry' });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-expiry' });
+  await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: 'input-cancel-expiry', startRevision: 2, beforeMessageIds: [] });
+  const controller = createJobController({
+    store, dataRoot: join(root, 'data'), cancellationObservationMs: 0,
+    stopSession: async () => {}, readSession: async () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [] }),
+  });
+  await assert.rejects(controller.cancel(workspace, job.id, job.ownerSessionId), { code: 'JOB_CANCEL_FAILED' });
+  const retained = await store.readJob(workspace, job.id);
+  assert.equal(retained.status, 'cancelling'); assert.equal(retained.lastCancelError, undefined);
+  await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'blocked-by-guard' }), { code: 'WRITABLE_JOB_EXISTS' });
+});
+
 test('explicit cancel revalidates a gated exact binding after observation and does not stop its continuation winner', async () => {
   const { root, workspace, store } = await setup();
   const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'cancel-race-child', agentType: 'zcode-rescue', agentPath: '/root/cancel-race-child', workspace, parentPermissionMode: 'workspace-write' };

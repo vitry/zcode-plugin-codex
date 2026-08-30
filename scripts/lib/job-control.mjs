@@ -7,6 +7,7 @@ import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
+import { classifyCurrentTurnSnapshot } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -66,7 +67,7 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
@@ -191,6 +192,21 @@ async function performCancellation(input, attempts, election) {
     await input.options.afterRollbackBeforeSettle?.();
     return { failedAttempt: attempt.attemptId, message, cause: error };
   }
+  if (input.options.readSession && hasTurnBoundary(cancelling)) {
+    const settlement = await observeCancellationSettlement(input, cancelling, observedStop?.guard);
+    if (settlement.kind === 'stale') return settlement.job;
+    if (settlement.kind === 'succeeded') {
+      if (!input.options.publishSucceededSnapshot) return cancellationUncertain(input, attempts, attempt, cancelling,
+        new Error('ZCode completed during cancellation but no result publisher is available.'));
+      const winner = await input.options.publishSucceededSnapshot({ workspace: input.workspace, job: cancelling,
+        snapshot: /** @type {any} */ (settlement).snapshot, turnBoundary: turnBoundary(cancelling) });
+      return recordCancelledAttempt(input, attempts, attempt, winner);
+    }
+    if (!['interrupted', 'failed'].includes(settlement.kind)) {
+      return cancellationUncertain(input, attempts, attempt, cancelling,
+        settlement.error ?? new Error('ZCode cancellation observation expired while the current turn remained unresolved.'));
+    }
+  }
   let cancelled;
   try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
   catch (error) {
@@ -201,6 +217,50 @@ async function performCancellation(input, attempts, election) {
   }
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
 }
+
+/** Keep the cancellation lock and managed client alive while the admission gap converges. @param {any} input @param {any} job @param {any} guard */
+async function observeCancellationSettlement(input, job, guard) {
+  const duration = nonnegativeSafeInteger(input.options.cancellationObservationMs) ? input.options.cancellationObservationMs : 1_000;
+  const interval = nonnegativeSafeInteger(input.options.cancellationObservationIntervalMs) ? input.options.cancellationObservationIntervalMs : 25;
+  const now = input.options.clock ?? Date.now; const deadline = now() + duration; let stoppedActiveTurn = false;
+  for (;;) {
+    let snapshot;
+    try { snapshot = await input.options.readSession(job.zcodeSessionId); }
+    catch (error) { return { kind: 'uncertain', error }; }
+    const classification = classifyCurrentTurnSnapshot(snapshot, turnBoundary(job));
+    if (classification.kind !== 'pending') return { ...classification, snapshot };
+    if (!stoppedActiveTurn && ['running', 'waiting', 'paused'].includes(snapshot?.projection?.status)) {
+      const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, job, guard);
+      if (revalidated?.kind === 'stale') return { kind: 'stale', job: revalidated.job };
+      try { await input.options.stopSession(job.zcodeSessionId); stoppedActiveTurn = true; }
+      catch (error) { return { kind: 'uncertain', error }; }
+    }
+    if (now() >= deadline) return { kind: 'unresolved' };
+    if (interval === 0) await new Promise((resolve) => setImmediate(resolve));
+    else await new Promise((resolve) => setTimeout(resolve, Math.min(interval, Math.max(0, deadline - now()))));
+  }
+}
+
+/** @param {any} input @param {any} attempts @param {any} attempt @param {any} job @param {unknown} error */
+async function cancellationUncertain(input, attempts, attempt, job, error) {
+  const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode cancellation settlement is uncertain.');
+  const winner = await input.options.store.readJob(input.workspace, job.id).catch(() => null);
+  if (winner && TERMINAL.has(winner.status)) return winner;
+  await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'failed-pending-release', message);
+  await input.options.afterRollbackBeforeSettle?.();
+  return { failedAttempt: attempt.attemptId, message, cause: error };
+}
+
+/** @param {any} job */
+function hasTurnBoundary(job) {
+  return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds);
+}
+/** @param {any} job */
+function turnBoundary(job) {
+  return { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) };
+}
+/** @param {unknown} value */
+function nonnegativeSafeInteger(value) { return Number.isSafeInteger(value) && Number(value) >= 0; }
 
 /** @param {any} store @param {string} workspace @param {any} job @param {any} [expected] @param {string} [zcodeSessionId] */
 export async function revalidateBoundRescueStop(store, workspace, job, expected, zcodeSessionId = job.zcodeSessionId) {
