@@ -265,6 +265,35 @@ test('workspace scavenging distinguishes unavailable established control channel
   }
 });
 
+test('workspace scavenging retains boundaryless writable guards when control cannot disprove an accepted send', async () => {
+  for (const status of ['running', 'cancelling']) for (const stage of ['create', 'list', 'read', 'missing']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture, { boundary: false, status, turnId: `${status}-${stage}` });
+    const unavailable = new PluginError('ZCODE_DISCONNECTED', `private ${stage} control details`, { category: 'runtime', remedy: 'Restart the operation.' });
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    await scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      reconcileOwnership: async () => {},
+      createClient: async () => {
+        if (stage === 'create') throw unavailable;
+        return {
+          listSessions: async () => {
+            if (stage === 'list') throw unavailable;
+            return { sessions: stage === 'missing' ? [] : [{ sessionId: job.zcodeSessionId }] };
+          },
+          stopSession: async () => {},
+          readSession: async () => { if (stage === 'read') throw unavailable; return activeCurrentTurn(undefined, 'idle'); },
+          close: async () => {},
+        };
+      },
+    });
+    const recovered = await store.readJob(fixture.workspace, job.id);
+    assert.equal(recovered.status, 'running', `${status}/${stage}`);
+    assert.equal(typeof recovered.lastCancelError, 'string', `${status}/${stage}`);
+    assert.ok(Buffer.byteLength(recovered.lastCancelError, 'utf8') <= 2_048, `${status}/${stage}`);
+    assert.doesNotMatch(recovered.lastCancelError, /private/, `${status}/${stage}`);
+  }
+});
+
 test('workspace scavenging ignores read-only and terminal jobs', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
   const terminal = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'old-terminal', ownerTurnId: 'terminal', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });

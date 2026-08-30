@@ -189,7 +189,7 @@ async function reconcileOrphan(input, job) {
     } catch (error) {
       throwIfRecoveryInterrupted(input, error);
       return input.intent === 'scavenge' && controlChannelUnavailable(error)
-        ? failJob(input, job, unavailableOrphanError('managed-establishment'))
+        ? settleUnavailableOrMissingOrphan(input, job, unavailableOrphanError('managed-establishment'))
         : retainAfterStopFailure(input, job, error);
     }
     if (!client) {
@@ -199,10 +199,10 @@ async function reconcileOrphan(input, job) {
     jobLog = await openRecoveryJobLog(input, job);
     let listed;
     try { listed = await client.listSessions(); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error, jobLog); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? settleUnavailableOrMissingOrphan(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error, jobLog); }
     throwIfRecoveryInterrupted(input);
     if (!Array.isArray(listed?.sessions)) return stopThenSettle(input, job, client, recoveryError('ZCode session listing is malformed during recovery.'), jobLog);
-    if (!listed.sessions.some((/** @type {any} */ session) => session.sessionId === job.zcodeSessionId)) return failJob(input, job, recoveryError('ZCode session is missing during recovery.'));
+    if (!listed.sessions.some((/** @type {any} */ session) => session.sessionId === job.zcodeSessionId)) return settleUnavailableOrMissingOrphan(input, job, recoveryError('ZCode session is missing during recovery.'));
     if (job.command === 'transfer') return stopThenSettle(input, job, client, recoveryError('Transfer worker exited before local finalization.'), jobLog);
     const boundary = persistedTurnBoundary(job);
     if (!boundary) return stopThenSettle(input, job, client, recoveryError('The durable turn boundary is incomplete.'), jobLog);
@@ -239,7 +239,7 @@ async function reconcileOrphan(input, job) {
     const current = await input.store.readJob(input.workspace, job.id);
     if (TERMINAL.has(current.status)) return current;
     return input.intent === 'scavenge' && controlChannelUnavailable(error)
-      ? failJob(input, current, establishedUnavailableOrphanError(error))
+      ? settleUnavailableOrMissingOrphan(input, current, establishedUnavailableOrphanError(error))
       : stopThenSettle(input, current, client, error, jobLog);
   } finally { await client?.close().catch(() => {}); await jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS); }
 }
@@ -417,7 +417,7 @@ async function stopThenSettle(input, job, client, error, jobLog) {
   if (stopped.stale) return stopped.job;
   throwIfRecoveryInterrupted(input, stopped.ok ? undefined : stopped.error);
   if (!stopped.ok) return input.intent === 'scavenge' && controlChannelUnavailable(stopped.error)
-    ? failJob(input, job, establishedUnavailableOrphanError(stopped.error))
+    ? settleUnavailableOrMissingOrphan(input, job, establishedUnavailableOrphanError(stopped.error))
     : retainAfterStopFailure(input, job, stopped.error);
   let snapshot;
   try { snapshot = await client.readSession(job.zcodeSessionId); }
@@ -475,6 +475,12 @@ function isInterruption(error) { return error instanceof PluginError && error.co
 function throwIfRecoveryInterrupted(input, error) { input.signal?.throwIfAborted(); if (isInterruption(error)) throw error; }
 /** @param {unknown} error */
 function controlChannelUnavailable(error) { return error instanceof PluginError && CONTROL_CHANNEL_UNAVAILABLE.has(error.code); }
+/** Preserve an unproven writable accepted-send gap; historical bounded turns retain archival behavior. @param {any} input @param {any} job @param {unknown} diagnostic */
+function settleUnavailableOrMissingOrphan(input, job, diagnostic) {
+  return !persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false
+    ? retainAfterStopFailure(input, job, diagnostic)
+    : failJob(input, job, diagnostic);
+}
 /** Archive SessionEnd control loss only after proving the exact worker lease is free. @param {any} input @param {any} job @param {PluginError} diagnostic */
 async function failEndedUnavailableJob(input, job, diagnostic) {
   throwIfRecoveryInterrupted(input);
