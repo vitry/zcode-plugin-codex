@@ -861,6 +861,8 @@ test('turn terminal authority uses the final mutation for its row within one ato
   for (const trailingDelta of [
     captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' }),
     { op: 'row.removed', fromRowId: 1 },
+    toolRow({ rowId: 1, toolCallId: 'replacement-tool' }),
+    { op: 'row.upserted', row: { rowId: 1, kind: 'futureRowKind', futurePayload: { added: true } } },
   ]) {
     const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
@@ -872,7 +874,7 @@ test('turn terminal authority uses the final mutation for its row within one ato
       ordinal: 2, fromSeq: 1, toSeq: 2,
       deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }), trailingDelta],
     }), observedAt);
-    assert.deepEqual(result.events, []);
+    assert.equal(result.events.some((event) => event.phase === 'finalizing'), false);
     assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
     await assertPromisePending(terminal);
     observer.markGap();

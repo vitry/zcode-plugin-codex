@@ -20,7 +20,7 @@ const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
 const SUPPORTED_ROW_KINDS = new Set(['toolCall', 'turnHeader']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
-/** @typedef {{op:string,row:Record<string,any>|null,fromRowId?:number}} ValidatedDelta */
+/** @typedef {{op:string,row:Record<string,any>|null,fromRowId?:number,rowMutationId?:number|null}} ValidatedDelta */
 /** @typedef {{kind:'succeeded'|'interrupted'|'failed',turnId:string}|{kind:'unavailable'}} TurnTerminalResult */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
@@ -176,6 +176,12 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
         for (const rowId of stagedFrameTurnStates.keys()) if (rowId >= /** @type {number} */ (delta.fromRowId)) stagedFrameTurnStates.delete(rowId);
         continue;
+      }
+      if (delta.rowMutationId !== undefined) {
+        if (delta.rowMutationId === null) {
+          stagedFrameTurnStates.clear();
+          if (authorityState === 'waiting-terminal') makeAuthorityUnavailable();
+        } else stagedFrameTurnStates.delete(delta.rowMutationId);
       }
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
@@ -396,8 +402,9 @@ function validateDelta(value) {
   if (value.op === 'row.delta' || value.op === 'state.updated') return { ok: true, value: { op: value.op, row: null } };
   if (!['row.appended', 'row.upserted'].includes(value.op) || !hasRequiredKeys(value, ['op', 'row'])) return { ok: false, reason: 'row-shape' };
   if (!plainObject(value.row) || !safeRowEnvelope(value.row)) return { ok: false, reason: 'row-shape' };
-  if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null } };
-  const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
+  const rowMutationId = wireNumber(value.row.rowId) ? value.row.rowId : null;
+  if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null, rowMutationId } };
+  const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row, rowMutationId: row.rowId } } : { ok: false, reason: 'row-shape' };
 }
 
 /** @param {unknown} value @param {string} sessionId @param {number} fromSeq @param {number} toSeq */
