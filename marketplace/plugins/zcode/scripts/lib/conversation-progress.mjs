@@ -44,7 +44,7 @@ export function normalizePreview(value, limit = PREVIEW_LIMIT) {
 /**
  * @param {{sessionId:string,subscriptionId:string,workspace:string}} options
  * @param {{resolvePath?:(value:unknown,workspaceRoot:string)=>Promise<string|null>,pathTimeoutMs?:number}} [dependencies]
- * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}>}
+ * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,confirmBaseline:()=>{kind:'ready'|'unavailable'},baselineReadiness:()=>string,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}>}
  */
 export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }, dependencies = {}) {
   const workspaceRoot = await realpath(resolve(workspace));
@@ -64,12 +64,13 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   /** @type {number|undefined} */
   let lastSeq;
   let terminal = false; let needsRecovery = false;
+  let baselineState = 'waiting';
   let authorityState = 'idle';
   /** @type {{rowId:number,turnId:string}|null} */ let authoritativeTurn = null;
   /** @type {(result:TurnTerminalResult)=>void} */ let resolveTurnTerminal;
   /** @type {Promise<TurnTerminalResult>} */ let turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
 
-  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}} */
+  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,confirmBaseline:()=>{kind:'ready'|'unavailable'},baselineReadiness:()=>string,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,markGap:()=>void,markTerminal:()=>void}} */
   const api = {
     observe(notification, observedAt) {
       if (terminal) return Promise.resolve(ignored('terminal'));
@@ -79,6 +80,8 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         drain();
       });
     },
+    confirmBaseline,
+    baselineReadiness: () => baselineState,
     beginTurnBoundary,
     waitForTurnTerminal: prepareTurnTerminalWait,
     terminalAuthorityState: () => authorityState,
@@ -90,6 +93,14 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   function resetAuthorityCycle() {
     turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
     authoritativeTurn = null; authorityState = 'idle';
+  }
+  function makeBaselineUnavailable() {
+    if (baselineState === 'ready' || baselineState === 'unavailable') return;
+    baselineState = 'unavailable'; makeAuthorityUnavailable();
+  }
+  function confirmBaseline() {
+    if (baselineState !== 'ready') makeBaselineUnavailable();
+    return baselineState === 'ready' ? { kind: /** @type {const} */ ('ready') } : { kind: /** @type {const} */ ('unavailable') };
   }
   function prepareTurnTerminalWait() {
     if (authorityState === 'resolved') {
@@ -112,8 +123,8 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (authorityState !== 'waiting-terminal') return;
     authorityState = 'resolved'; resolveTurnTerminal({ kind, turnId });
   }
-  function markGap() { if (!terminal) { needsRecovery = true; makeAuthorityUnavailable(); } }
-  function latchTerminal() { terminal = true; makeAuthorityUnavailable(); while (pending.length > 0) pending.shift()?.resolve(ignored('terminal')); }
+  function markGap() { if (!terminal) { needsRecovery = true; makeBaselineUnavailable(); makeAuthorityUnavailable(); } }
+  function latchTerminal() { terminal = true; makeBaselineUnavailable(); makeAuthorityUnavailable(); while (pending.length > 0) pending.shift()?.resolve(ignored('terminal')); }
 
   function drain() {
     if (active || pending.length === 0) return;
@@ -138,6 +149,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
       resetLifecycleState();
       absorbSnapshotTurnIdentities(frame.snapshotTurnIdentities);
+      if (frame.snapshotTurnIdentities !== null && baselineState === 'waiting') baselineState = 'ready';
       return accepted('initial');
     }
     if (frame.deliveryKind === 'recovery') {
@@ -150,10 +162,14 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         needsRecovery = true; return rejected('sequence');
       }
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
-      if (frame.payloadKind === 'snapshot') { resetLifecycleState(); absorbSnapshotTurnIdentities(frame.snapshotTurnIdentities); }
-      else absorbRecovery(frame.deltas);
+      if (frame.payloadKind === 'snapshot') {
+        resetLifecycleState(); absorbSnapshotTurnIdentities(frame.snapshotTurnIdentities);
+        if (frame.snapshotTurnIdentities !== null && baselineState === 'waiting') baselineState = 'ready';
+      }
+      else { if (baselineState === 'waiting') makeBaselineUnavailable(); absorbRecovery(frame.deltas); }
       return accepted('recovery');
     }
+    if (baselineState === 'waiting') makeBaselineUnavailable();
     if (frame.payloadKind === 'snapshot') {
       if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
       if (authorityState === 'waiting-running' || authorityState === 'waiting-terminal') makeAuthorityUnavailable();
@@ -290,6 +306,7 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
   /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */ const buffered = [];
   let binding = false; let disabled = false; let terminal = false; let prebindGap = false;
+  let baselineState = 'waiting';
   let authorityState = 'idle';
   /** @type {(result:TurnTerminalResult)=>void} */ let resolveTurnTerminal;
   /** @type {Promise<TurnTerminalResult>} */ let turnTerminal = new Promise((resolveResult) => { resolveTurnTerminal = resolveResult; });
@@ -299,6 +316,10 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   const makeAuthorityUnavailable = () => {
     if (authorityState === 'resolved' || authorityState === 'unavailable') return;
     authorityState = 'unavailable'; resolveTurnTerminal({ kind: 'unavailable' });
+  };
+  const makeBaselineUnavailable = () => {
+    if (baselineState === 'ready' || baselineState === 'unavailable') return;
+    baselineState = 'unavailable'; makeAuthorityUnavailable();
   };
   const bridgeAuthority = () => {
     if (!describer || bridgedDescriber === describer) return;
@@ -319,11 +340,12 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
     }
     return turnTerminal;
   };
-  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
+  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,confirmBaseline:()=>{kind:'ready'|'unavailable'},baselineReadiness:()=>string,beginTurnBoundary:()=>void,waitForTurnTerminal:()=>Promise<TurnTerminalResult>,terminalAuthorityState:()=>string,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
     observe(notification, observedAt) {
       if (terminal || disabled) return Promise.resolve(ignored(terminal ? 'terminal' : 'disabled'));
       if (describer && !binding) return describer.observe(notification, observedAt).then((result) => {
         authorityState = describer?.terminalAuthorityState() ?? authorityState;
+        baselineState = describer?.baselineReadiness() ?? baselineState;
         return result;
       });
       if (buffered.length >= MAX_PENDING_OBSERVATIONS) {
@@ -344,12 +366,21 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
           const item = buffered.shift(); if (!item) break;
           item.resolve(await describer.observe(item.notification, item.observedAt));
           authorityState = describer.terminalAuthorityState();
+          baselineState = describer.baselineReadiness();
         }
         if (prebindGap) describer.markGap();
+        baselineState = describer.baselineReadiness();
       } catch (error) {
-        disabled = true; makeAuthorityUnavailable(); resolveBufferedEmpty(); throw error;
+        disabled = true; makeBaselineUnavailable(); makeAuthorityUnavailable(); resolveBufferedEmpty(); throw error;
       } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
     },
+    confirmBaseline() {
+      if (baselineState !== 'ready') makeBaselineUnavailable();
+      const baseline = describer?.confirmBaseline();
+      if (baseline?.kind === 'unavailable') { baselineState = 'unavailable'; makeAuthorityUnavailable(); }
+      return baselineState === 'ready' ? { kind: /** @type {const} */ ('ready') } : { kind: /** @type {const} */ ('unavailable') };
+    },
+    baselineReadiness: () => baselineState,
     beginTurnBoundary() {
       if (terminal || disabled) { makeAuthorityUnavailable(); return; }
       if (authorityState === 'resolved') resetAuthorityCycle();
@@ -359,16 +390,17 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
     },
     waitForTurnTerminal: prepareTurnTerminalWait,
     terminalAuthorityState: () => authorityState,
-    fail() { disabled = true; makeAuthorityUnavailable(); resolveBufferedEmpty(); },
+    fail() { disabled = true; makeBaselineUnavailable(); makeAuthorityUnavailable(); resolveBufferedEmpty(); },
     markGap() {
       if (terminal || disabled) return;
       if (describer) describer.markGap();
       else if (prebindGap) return;
       else prebindGap = true;
+      makeBaselineUnavailable();
       makeAuthorityUnavailable();
       resolveBufferedEmpty('recovery-required');
     },
-    markTerminal() { terminal = true; describer?.markTerminal(); makeAuthorityUnavailable(); resolveBufferedEmpty(); },
+    markTerminal() { terminal = true; describer?.markTerminal(); makeBaselineUnavailable(); makeAuthorityUnavailable(); resolveBufferedEmpty(); },
   });
 }
 
