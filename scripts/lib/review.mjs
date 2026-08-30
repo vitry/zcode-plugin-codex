@@ -48,6 +48,7 @@ export async function executeJob(input) {
   /** @type {string|undefined} */
   let sessionId;
   let sendAttempted = false; let remoteTerminalProven = false;
+  let sendAdmissionUnknown = false;
   let admissionBoundaryUnpublished = false;
   let admissionTargetStale = false;
   /** @type {any} */
@@ -193,7 +194,10 @@ export async function executeJob(input) {
       input.signal?.throwIfAborted();
       conversationObserver.waitForTurnTerminal();
       conversationObserver.beginTurnBoundary();
-      sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
+      let sent;
+      try {
+        sent = await boundedStep(() => { sendAttempted = true; return client.send(activeSessionId, prompt); }, input.signal);
+      } catch (error) { if (sendAttempted) sendAdmissionUnknown = true; throw error; }
       try {
         const accepted = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
         return { running: accepted, sent };
@@ -202,10 +206,11 @@ export async function executeJob(input) {
         if (sameAcceptedBoundary(winner, sent, beforeMessageIds)) return { running: winner, sent };
         admissionBoundaryUnpublished = true;
         if (winner?.status === 'running' && winner.zcodeSessionId === activeSessionId) {
-          const finalStop = await revalidateBoundRescueStop(input.store, workspace, winner, admissionStop?.guard, activeSessionId);
-          if (finalStop?.kind !== 'stale') try { await client.stopSession(activeSessionId); }
-          catch (stopError) {
-            await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
+          try {
+            const finalStop = await revalidateBoundRescueStop(input.store, workspace, winner, admissionStop?.guard, activeSessionId);
+            if (finalStop?.kind !== 'stale') await client.stopSession(activeSessionId);
+          } catch (compensationError) {
+            await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(compensationError).message }).catch(() => {});
           }
         }
         throw boundaryError;
@@ -314,16 +319,15 @@ export async function executeJob(input) {
         }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
-      let canFail = !admissionBoundaryUnpublished && !admissionTargetStale;
+      let canFail = !sendAdmissionUnknown && !admissionBoundaryUnpublished && !admissionTargetStale;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven && !admissionBoundaryUnpublished) {
-        const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
-        if (finalStop?.kind === 'stale') canFail = false;
-        else {
-          try { await client.stopSession(sessionId); }
-          catch (stopError) {
-            await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
-            canFail = false;
-          }
+        try {
+          const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
+          if (finalStop?.kind === 'stale') canFail = false;
+          else await client.stopSession(sessionId);
+        } catch (cleanupError) {
+          await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(cleanupError).message }).catch(() => {});
+          canFail = false;
         }
       }
       if (canFail) try { await input.store.finishJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), exitCode: 1 }); } catch (finalizeError) { primaryError = finalizeError; }

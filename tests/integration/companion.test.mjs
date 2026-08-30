@@ -4756,11 +4756,17 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
   for (const stopFails of [false, true]) {
     const context = await fixture();
     const launch = { command: process.execPath, args: [fake], target: fake };
-    const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: { ...context.env, ...(stopFails ? { FAKE_ZCODE_ERROR: 'session/stop' } : {}) } });
-    const created = await client.createSession({ workspace: context.workspace }); await client.close();
+    const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: { ...context.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...(stopFails ? { FAKE_ZCODE_ERROR: 'session/stop' } : {}) } });
+    const created = await client.createSession({ workspace: context.workspace });
+    const accepted = /** @type {{inputId:string,stateRevision:number}} */ (await client.send(created.session.sessionId, 'hold for cancellation')); await client.close();
     const store = createStateStore({ dataRoot: context.dataRoot });
     const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-    await startWritableRescueForTest(store, context.workspace, queued, { zcodeSessionId: created.session.sessionId });
+    await startWritableRescueForTest(store, context.workspace, queued, {
+      startedAt: new Date().toISOString(), zcodeSessionId: created.session.sessionId,
+    });
+    await store.transitionJob(context.workspace, queued.id, ['running'], 'running', {
+      inputId: accepted.inputId, startRevision: accepted.stateRevision, beforeMessageIds: [],
+    });
     const cancelled = await companion(context, ['cancel', queued.id]);
     if (stopFails) {
       assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');

@@ -448,11 +448,13 @@ test('running cancellation retains a boundaryless guard after a bare acknowledge
 
 test('send admission holds the cancellation fence until the accepted boundary is durable', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'admission-fence' });
-  let releaseSend = () => {}; let signalSend = () => {};
+  let releaseSend = () => {}; let signalSend = () => {}; let signalFollower = () => {}; let releaseFollower = () => {};
   /** @type {Promise<any>|undefined} */
   let cancelPromise;
   const sendEntered = new Promise((resolve) => { signalSend = () => resolve(undefined); });
   const sendGate = new Promise((resolve) => { releaseSend = () => resolve(undefined); });
+  const followerSelected = new Promise((resolve) => { signalFollower = () => resolve(undefined); });
+  const followerGate = new Promise((resolve) => { releaseFollower = () => resolve(undefined); });
   /** @type {string[]} */ const events = []; const interruption = new Error('boundary callback stopped execution');
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-admission-fence' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
@@ -466,12 +468,15 @@ test('send admission holds the cancellation fence until the accepted boundary is
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task',
     onBoundaryPersisted: async () => { events.push('boundary-durable'); await /** @type {Promise<any>} */ (cancelPromise); throw interruption; } });
   await sendEntered;
-  const controller = createJobController({ store, dataRoot: join(root, 'data'), stopSession: client.stopSession, readSession: client.readSession });
+  const controller = createJobController({
+    store, dataRoot: join(root, 'data'), stopSession: client.stopSession, readSession: client.readSession,
+    afterFollowerSelected: async () => { signalFollower(); await followerGate; },
+  });
   let cancelSettled = false;
   cancelPromise = controller.cancel(workspace, job.id, job.ownerSessionId).finally(() => { cancelSettled = true; });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await followerSelected;
   assert.equal(cancelSettled, false); assert.deepEqual(events, ['send-entered']);
-  releaseSend();
+  releaseFollower(); releaseSend();
   const winner = await cancelPromise;
   assert.equal(winner.status, 'cancelled');
   await assert.rejects(execution, (error) => error === interruption);
@@ -1905,7 +1910,7 @@ test('slow send has no progress side effects until accepted', async () => {
   assert.equal((await execution).job.status, 'succeeded'); assert.match(lines[0], /started the delegated turn/);
 });
 
-test('rejected send never activates progress or heartbeat', async () => {
+test('ambiguous rejected send never activates progress or heartbeat and retains its guard', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {string[]} */
   const lines = [];
@@ -1915,8 +1920,9 @@ test('rejected send never activates progress or heartbeat', async () => {
     setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => { throw new Error('send rejected'); }, stopSession: async () => {}, close: async () => {},
   };
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => new Date().toISOString(), setInterval: () => { intervalCalls += 1; return { unref() {} }; }, clearInterval: () => {} } }), /send rejected/);
-  const failed = await store.readJob(workspace, job.id);
-  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.equal(failed.status, 'failed'); assert.equal(failed.phase, undefined); assert.equal(failed.progressPreview, undefined);
+  const retained = await store.readJob(workspace, job.id);
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.equal(retained.status, 'running'); assert.equal(retained.phase, undefined); assert.equal(retained.progressPreview, undefined);
+  await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'after-ambiguous-rejected-send' }), { code: 'WRITABLE_JOB_EXISTS' });
 });
 
 test('writer failure stays observational while progress persists and the exact result succeeds', async () => {
@@ -2122,6 +2128,99 @@ test('accepted send with boundary persistence failure retains the writable guard
     if (!stopSucceeds) assert.match(persisted.lastCancelError, /stop not acknowledged/);
     await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'later' }), { code: 'WRITABLE_JOB_EXISTS' });
   }
+});
+
+test('ambiguous send admission errors preserve the original error and boundaryless writable guard without retry', async (t) => {
+  /** @type {Array<[string, PluginError]>} */
+  const cases = [
+    ['accepted then disconnected', new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.' })],
+    ['request timeout', new PluginError('ZCODE_REQUEST_TIMEOUT', 'ZCode request timed out: session/send.', { category: 'timeout', remedy: 'Retry the operation.', details: { method: 'session/send', timeoutMs: 30_000 } })],
+    ['invalid response', new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/send result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.', details: { method: 'session/send' } })],
+    ['missing response', new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/send result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.', details: { method: 'session/send' } })],
+  ];
+  for (const [name, sendError] of cases) await t.test(name, async () => {
+    const { root, workspace, store } = await setup();
+    const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: `ambiguous-send-${name.replaceAll(' ', '-')}` });
+    let sends = 0; let stops = 0; let remoteAccepted = false;
+    const client = {
+      createSession: async () => ({ session: { sessionId: `zs-${name.replaceAll(' ', '-')}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+      setPermissionHandler: () => {}, subscribe: silentSubscribe,
+      send: async () => { sends += 1; remoteAccepted = name === 'accepted then disconnected'; throw sendError; },
+      stopSession: async () => { stops += 1; if (name === 'accepted then disconnected') throw new Error('ambiguous send stop refused'); }, close: async () => {},
+    };
+    const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+    assert.equal(caught, sendError); assert.equal(sends, 1); assert.equal(stops, 1);
+    if (name === 'accepted then disconnected') assert.equal(remoteAccepted, true);
+    const persisted = await store.readJob(workspace, job.id);
+    assert.equal(persisted.status, 'running'); assert.equal(persisted.inputId, undefined); assert.equal(persisted.finishedAt, undefined);
+    if (name === 'accepted then disconnected') assert.equal(persisted.lastCancelError, 'ambiguous send stop refused');
+    await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: `later-${name.replaceAll(' ', '-')}` }), { code: 'WRITABLE_JOB_EXISTS' });
+  });
+});
+
+test('boundary publication preserves its original error when guarded stop revalidation also fails', async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'boundary-double-failure-child', agentType: 'zcode-rescue', agentPath: '/root/boundary-double-failure-child', workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation, ownerTurnId: 'boundary-double-failure' }, executor });
+  const workerLeaseId = 'f'.repeat(64);
+  const job = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId });
+  const boundaryError = new Error('accepted boundary fsync refused');
+  const compensationError = new Error(`guard revalidation refused ${'x'.repeat(4_000)}`);
+  let revalidations = 0; let stops = 0;
+  const wrapped = {
+    ...store,
+    transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expectedStatuses, /** @type {string} */ nextStatus, /** @type {Record<string,any>} */ patch = {}) => {
+      if (patch.inputId) throw boundaryError;
+      return store.transitionJob(workspaceArg, jobId, expectedStatuses, nextStatus, patch);
+    },
+    revalidateBoundRescueStop: async (/** @type {any} */ input) => {
+      revalidations += 1;
+      if (revalidations === 3) throw compensationError;
+      return store.revalidateBoundRescueStop(input);
+    },
+  };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-boundary-double-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'accepted-boundary-double-failure', stateRevision: 2 }),
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const caught = await executeJobProduction({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', childPid: 999_999, workerLeaseId }).catch((error) => error);
+  assert.equal(caught, boundaryError); assert.equal(revalidations, 3); assert.equal(stops, 0);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'running'); assert.match(persisted.lastCancelError, /^guard revalidation refused /);
+  assert.ok(Buffer.byteLength(persisted.lastCancelError) <= 2_048);
+});
+
+test('ambiguous send preserves its original error when guarded cleanup revalidation also fails', async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'send-double-failure-child', agentType: 'zcode-rescue', agentPath: '/root/send-double-failure-child', workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation, ownerTurnId: 'send-double-failure' }, executor });
+  const workerLeaseId = 'e'.repeat(64);
+  const job = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_998, workerLeaseId });
+  const sendError = new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.' });
+  const cleanupError = new Error(`cleanup guard refused ${'y'.repeat(4_000)}`);
+  let revalidations = 0; let sends = 0; let stops = 0;
+  const wrapped = {
+    ...store,
+    revalidateBoundRescueStop: async (/** @type {any} */ input) => {
+      revalidations += 1;
+      if (revalidations === 3) throw cleanupError;
+      return store.revalidateBoundRescueStop(input);
+    },
+  };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-send-double-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => { sends += 1; throw sendError; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const caught = await executeJobProduction({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', childPid: 999_998, workerLeaseId }).catch((error) => error);
+  assert.equal(caught, sendError); assert.equal(sends, 1); assert.equal(revalidations, 3); assert.equal(stops, 0);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'running'); assert.match(persisted.lastCancelError, /^cleanup guard refused /);
+  assert.ok(Buffer.byteLength(persisted.lastCancelError) <= 2_048);
+  await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'after-send-double-failure' }), { code: 'WRITABLE_JOB_EXISTS' });
 });
 
 test('wait and read ambiguity retain the running guard when remote stop is unacknowledged', async () => {
