@@ -18,13 +18,13 @@ export function classifyCurrentTurnSnapshot(snapshot, boundary = {}) {
   if (typeof status !== 'string' || ACTIVE_STATUSES.has(status)) return { kind: 'pending' };
   const currentUserRoot = selectCurrentTurnUserRoot(snapshot, boundary);
   if (status === 'error') {
-    const assistant = selectCurrentTurnAssistant(snapshot, boundary);
+    const assistant = selectLinkedCurrentTurnAssistant(snapshot, boundary, currentUserRoot);
     const revisionAdvanced = boundary.stateRevision !== undefined && revision > boundary.stateRevision;
     return revisionAdvanced || currentUserRoot && assistant?.info?.error !== undefined ? { kind: 'failed' } : { kind: 'pending' };
   }
   if (!['idle', 'completed'].includes(status)) return { kind: 'pending' };
   if (!currentUserRoot) return { kind: 'pending' };
-  const assistant = selectCurrentTurnAssistant(snapshot, boundary);
+  const assistant = selectLinkedCurrentTurnAssistant(snapshot, boundary, currentUserRoot);
   if (!assistant || !assistantCompleted(assistant)) return { kind: 'pending' };
   if (assistant.info.error !== undefined) return { kind: 'failed' };
   const finish = assistant.info.finish;
@@ -63,6 +63,16 @@ function selectCurrentTurnUserRoot(snapshot, boundary = {}) {
   const direct = boundary.inputId ? roots.filter((/** @type {any} */ message) => message.info.messageId === boundary.inputId) : [];
   if (direct.length === 1) return direct[0];
   return roots.length === 1 ? roots[0] : undefined;
+}
+
+/** @param {any} snapshot @param {{beforeMessageIds?:Set<string>}} boundary @param {any} root */
+function selectLinkedCurrentTurnAssistant(snapshot, boundary, root) {
+  if (!root) return undefined;
+  const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
+  const beforeMessageIds = boundary.beforeMessageIds ?? new Set();
+  const assistant = messages.filter((/** @type {any} */ message) => isAssistantResponse(message, beforeMessageIds)
+    && message.info.parentMessageId === root.info.messageId).at(-1);
+  return visibleAssistant(assistant);
 }
 
 /**

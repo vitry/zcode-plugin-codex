@@ -27,6 +27,7 @@ test('current-turn classifier keeps initial-invalid, empty idle, user-only, unfi
     snapshot('idle', [user(), assistant()]),
     snapshot('idle', [user(), assistant({ finish: '' })]),
     snapshot('idle', [assistant({ finish: 'stop', time: { completed: 3 } })]),
+    snapshot('idle', [user('persisted-input'), assistant({ finish: 'stop', time: { completed: 3 } }, 'input-current')]),
     snapshot('error', [], 7, { lastError: { message: 'unattributed error' } }),
     snapshot('running', [user(), assistant({ finish: 'stop', time: { completed: 3 } })]),
     snapshot('idle', [user(), assistant({ finish: 'stop', time: { completed: 3 } })], 6),
