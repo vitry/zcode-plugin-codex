@@ -14,7 +14,7 @@ import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
-import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
+import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 async function setup() {
@@ -56,7 +56,7 @@ function resumedExecutionClient(options = {}) {
     setThoughtLevel: async (/** @type {string} */ id, /** @type {string} */ effort) => { calls.push(`effort:${effort}`); assert.equal(id, sessionId); return resumeSnapshot(); },
     send: async () => { sends += 1; calls.push('send'); if (sendError) throw sendError; return { inputId: 'input-cold-resume', stateRevision: 1 }; },
     waitForCompletion: async () => { completed = true; },
-    readSession: async () => { calls.push('read'); return completed ? { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cold-resume', parentMessageId: 'input-cold-resume' }, parts: [{ type: 'text', text: 'done' }] }] } : resumeSnapshot(); },
+    readSession: async () => { calls.push('read'); return completed ? { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cold-resume', parentMessageId: 'input-cold-resume', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] } : resumeSnapshot(); },
     stopSession: async () => { calls.push('stop'); }, close: async () => { calls.push('close'); },
   }, sends: () => sends };
 }
@@ -933,7 +933,7 @@ test('completion that wins the signal race remains successful', async () => {
     createSession: async () => ({ session: { sessionId: 'zs-completion-wins' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-completion-wins', stateRevision: 6 }), waitForCompletion: async () => {},
-    readSession: async () => { controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return { projection: { status: 'completed' }, runtime: { stateRevision: 6 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-completion-wins', parentMessageId: 'input-completion-wins' }, parts: [{ type: 'text', text: 'done' }] }] }; },
+    readSession: async () => { controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return { projection: { status: 'completed' }, runtime: { stateRevision: 6 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-completion-wins', parentMessageId: 'input-completion-wins', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }; },
     stopSession: async () => { stops += 1; }, close: async () => {},
   };
   const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
@@ -966,56 +966,59 @@ test('authoritative terminal error fails the job with the exact provider reason 
   assert.equal(persisted.resultArtifact, undefined);
 });
 
-test('fresh active final status stops the exact session before failing the job', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
+test('fresh active status remains pending until explicit interruption stops the exact session', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {};
+  const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-active-final' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-active-final', stateRevision: 9 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 9 }, messages: [] }),
+    readSession: async () => { signalRead(); return { projection: { status: 'running' }, runtime: { stateRevision: 9 }, messages: [] }; },
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-active-final'); stops += 1; }, close: async () => {},
   };
 
-  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }), { code: 'ZCODE_TERMINAL_STATE_INVALID' });
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await readStarted; assert.equal((await store.readJob(workspace, job.id)).status, 'running'); controller.abort(interruption);
+  await assert.rejects(execution, (error) => error === interruption);
   const persisted = await store.readJob(workspace, job.id);
-  assert.equal(stops, 1); assert.equal(persisted.status, 'failed');
+  assert.equal(stops, 1); assert.equal(persisted.status, 'cancelled');
 });
 
-test('unacknowledged stop for a fresh active final status retains the running guard', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
+test('unacknowledged stop after interrupting a fresh active status retains the running guard', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {};
+  const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-active-unacknowledged' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-active-unacknowledged', stateRevision: 11 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'waiting' }, runtime: { stateRevision: 12 }, messages: [] }),
+    readSession: async () => { signalRead(); return { projection: { status: 'waiting' }, runtime: { stateRevision: 12 }, messages: [] }; },
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-active-unacknowledged'); stops += 1; throw new Error(`stop refused ${'x'.repeat(4_000)}`); }, close: async () => {},
   };
 
-  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }), { code: 'ZCODE_TERMINAL_STATE_INVALID' });
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await readStarted; controller.abort(interruption); await assert.rejects(execution, (error) => error === interruption);
   const persisted = await store.readJob(workspace, job.id);
   assert.equal(stops, 1); assert.equal(persisted.status, 'running'); assert.match(persisted.lastCancelError, /^stop refused /);
   assert.ok(Buffer.byteLength(persisted.lastCancelError) <= 2_048);
 });
 
-test('stale terminal error follows ambiguous stop semantics without persisting its provider message', async () => {
-  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
+test('stale terminal error remains pending and never persists its provider message', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0; let signalRead = () => {};
+  const readStarted = new Promise((resolve) => { signalRead = () => resolve(undefined); }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'test interruption');
   const staleProviderReason = 'stale provider detail must not escape';
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-stale-error' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-stale-error', stateRevision: 15 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'error', lastError: { message: staleProviderReason } }, runtime: { stateRevision: 14 }, messages: [] }),
+    readSession: async () => { signalRead(); return { projection: { status: 'error', lastError: { message: staleProviderReason } }, runtime: { stateRevision: 14 }, messages: [] }; },
     stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-stale-error'); stops += 1; }, close: async () => {},
   };
 
-  await assert.rejects(
-    executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }),
-    { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
-  );
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await readStarted; controller.abort(interruption); await assert.rejects(execution, (error) => error === interruption);
   const persisted = await store.readJob(workspace, job.id);
-  assert.equal(stops, 1); assert.equal(persisted.status, 'failed');
-  assert.equal(persisted.error.message, 'ZCode completion did not produce a success-compatible terminal state.');
-  assert.notEqual(persisted.error.message, staleProviderReason);
+  assert.equal(stops, 1); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.error, undefined);
+  assert.notEqual(JSON.stringify(persisted), staleProviderReason);
 });
 
 test('an interruption before session creation is observed at the safe boundary and cancels the queued job', async () => {
@@ -1124,7 +1127,7 @@ test('ordinary execution keeps a pending accepted completion alive without stopp
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-no-deadline', stateRevision: 4 }),
     waitForCompletion: async () => completion,
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 5 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-no-deadline', parentMessageId: 'input-no-deadline' }, parts: [{ type: 'text', text: 'completed after pending' }] }] }),
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 5 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-no-deadline', parentMessageId: 'input-no-deadline', finish: 'stop' }, parts: [{ type: 'text', text: 'completed after pending' }] }] }),
     stopSession: async () => { stops += 1; }, close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', onBoundaryPersisted: async () => signalRunning() });
@@ -1134,6 +1137,73 @@ test('ordinary execution keeps a pending accepted completion alive without stopp
   resolveCompletion();
   const output = await execution;
   assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'completed after pending'); assert.equal(stops, 0);
+});
+
+test('0.16.5 foreground execution treats legacy completion as admission and waits for the true turn terminal', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const sessionId = 'zs-0165-true-terminal'; const subscriptionId = 'subscription-0165';
+  /** @type {null|((message:any)=>void)} */ let handler = null;
+  const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('0.16.5 progress handler missing'); handler(message); };
+  let trueTerminal = false; let reads = 0; let boundaryDurable = false; let signalBoundary = () => {};
+  const boundaryReached = new Promise((resolve) => { signalBoundary = () => resolve(undefined); });
+  const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision: 1, reason: 'prompt_completed', patch: {}, futureNotificationField: true } };
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {},
+    subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { handler = null; }; },
+    subscribeConversation: async () => {
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484, snapshot: boundedSnapshotFixture({ sessionId, seq: 484 }) })));
+      return { subscriptionId, unsubscribe: async () => {} };
+    },
+    send: async () => ({ inputId: 'input-0165', stateRevision: 7 }),
+    waitForCompletion: async () => { emit(legacy); },
+    readSession: async () => {
+      assert.equal(boundaryDurable, true, 'legacy admission must not permit a read before the accepted boundary is durable');
+      reads += 1;
+      if (!trueTerminal) return { projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] };
+      return { projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [
+        { info: { role: 'user', messageId: 'input-0165', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'task' }] },
+        { info: { role: 'assistant', messageId: 'assistant-0165', parentMessageId: 'input-0165', time: { created: 2, completed: 3 }, finish: 'stop', semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'real 0.16.5 result' }] },
+      ] };
+    },
+    stopSession: async () => {}, close: async () => {},
+  };
+  const execution = executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task',
+    onBoundaryPersisted: async () => { boundaryDurable = true; signalBoundary(); },
+  });
+  execution.catch(() => {});
+  await boundaryReached; await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+  assert.ok(reads >= 1, 'legacy admission should wake transitional snapshot reconciliation');
+  emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 484, toSeq: 485, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'running' })] })));
+  trueTerminal = true;
+  emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 3, fromSeq: 485, toSeq: 486, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'completedSuccess' })] })));
+  const output = await execution;
+  assert.equal(output.result, 'real 0.16.5 result');
+  assert.equal(output.job.status, 'succeeded');
+});
+
+test('snapshot fallback keeps empty idle and unfinished 0.16.5 reads pending until a coherent current-turn result', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  let reads = 0;
+  const user = { info: { role: 'user', messageId: 'input-fallback', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'task' }] };
+  const unfinished = { info: { role: 'assistant', messageId: 'assistant-fallback', parentMessageId: 'input-fallback', time: { created: 2 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'partial' }] };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-0165-fallback' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-fallback', stateRevision: 7 }), waitForCompletion: async () => {},
+    readSession: async () => {
+      reads += 1;
+      if (reads === 1) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/read result.', { category: 'protocol', remedy: 'retry', details: { method: 'session/read' } });
+      if (reads === 2) return { projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] };
+      if (reads === 3) return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [user, unfinished] };
+      return { projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [user, { ...unfinished, info: { ...unfinished.info, time: { created: 2, completed: 3 }, finish: 'stop' }, parts: [{ type: 'text', text: 'fallback result' }] }] };
+    },
+    stopSession: async () => {}, close: async () => {},
+  };
+  const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
+  assert.equal(reads, 4); assert.equal(output.result, 'fallback result'); assert.equal(output.job.status, 'succeeded');
 });
 
 test('executor activates bounded snapshot progress only after the exact accepted boundary is durable and keeps final read authoritative', async () => {
@@ -1173,7 +1243,7 @@ test('executor activates bounded snapshot progress only after the exact accepted
         };
       }
       readKinds.push('final');
-      return { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-final', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'authoritative result' }] }] };
+      return { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-final', parentMessageId: 'accepted-input', finish: 'stop' }, parts: [{ type: 'text', text: 'authoritative result' }] }] };
     },
     close: async () => {},
   };
@@ -1215,7 +1285,7 @@ test('successful result finalization failure stays recoverable and is never rewr
   const wrapped = { ...store, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next === 'succeeded') { successWrites += 1; throw storageError; } failedWrites += 1; return store.finishJob(workspaceArg, jobId, expected, next, patch); } };
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-success-finalize-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
-    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-success-finalize-failure', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-success', parentMessageId: 'input-success-finalize-failure' }, parts: [{ type: 'text', text: 'recoverable result' }] }] }), close: async () => {},
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-success-finalize-failure', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-success', parentMessageId: 'input-success-finalize-failure', finish: 'stop' }, parts: [{ type: 'text', text: 'recoverable result' }] }] }), close: async () => {},
   };
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), (error) => error === storageError || /** @type {any} */ (error)?.cause === storageError);
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(workspace, job.id)).status, 'running');
@@ -1225,21 +1295,21 @@ test('successful result finalization failure stays recoverable and is never rewr
 test('successful finalization apply-then-throw returns the durable winner', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', 'ack lost after apply', { category: 'storage', remedy: 'read winner' }); let failedWrites = 0;
   const wrapped = { ...store, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next === 'succeeded') { await store.finishJob(workspaceArg, jobId, expected, next, patch); throw storageError; } failedWrites += 1; return store.finishJob(workspaceArg, jobId, expected, next, patch); } };
-  const client = { createSession: async () => ({ session: { sessionId: 'zs-apply-then-throw' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-apply-then-throw', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-applied', parentMessageId: 'input-apply-then-throw' }, parts: [{ type: 'text', text: 'applied result' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs-apply-then-throw' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-apply-then-throw', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-applied', parentMessageId: 'input-apply-then-throw', finish: 'stop' }, parts: [{ type: 'text', text: 'applied result' }] }] }), close: async () => {} };
   const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }); assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'applied result'); assert.equal(failedWrites, 0);
 });
 
 test('successful finalization winner read failures preserve its artifact without rewriting failed', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', 'finish failed before apply', { category: 'storage', remedy: 'retry recovery' }); let finalizeFailed = false; let winnerReadFailures = 0; let failedWrites = 0;
   const wrapped = { ...store, readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId) => { if (finalizeFailed) { winnerReadFailures += 1; throw new Error('winner read unavailable'); } return store.readJob(workspaceArg, jobId); }, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next === 'succeeded') { finalizeFailed = true; throw storageError; } failedWrites += 1; return store.finishJob(workspaceArg, jobId, expected, next, patch); } };
-  const client = { createSession: async () => ({ session: { sessionId: 'zs-winner-read-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-winner-read-failure', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-read-failed', parentMessageId: 'input-winner-read-failure' }, parts: [{ type: 'text', text: 'retain on read failure' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs-winner-read-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-winner-read-failure', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-read-failed', parentMessageId: 'input-winner-read-failure', finish: 'stop' }, parts: [{ type: 'text', text: 'retain on read failure' }] }] }), close: async () => {} };
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), (error) => error === storageError || /** @type {any} */ (error)?.cause === storageError); assert.equal(winnerReadFailures, 2); assert.equal(failedWrites, 0); assert.equal((await store.readJob(workspace, job.id)).status, 'running'); const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace }); assert.equal(await readFile(join(storage.directory, 'results', `${job.id}.md`), 'utf8'), 'retain on read failure');
 });
 
 test('successful apply-then-throw recovers when the first winner read fails', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', 'apply ack and first read lost', { category: 'storage', remedy: 'read winner again' }); let applied = false; let winnerReadFailed = false; let failedWrites = 0;
   const wrapped = { ...store, readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId) => { if (applied && !winnerReadFailed) { winnerReadFailed = true; throw new Error('first winner read unavailable'); } return store.readJob(workspaceArg, jobId); }, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next === 'succeeded') { await store.finishJob(workspaceArg, jobId, expected, next, patch); applied = true; throw storageError; } failedWrites += 1; return store.finishJob(workspaceArg, jobId, expected, next, patch); } };
-  const client = { createSession: async () => ({ session: { sessionId: 'zs-apply-read-recovery' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-apply-read-recovery', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-apply-read', parentMessageId: 'input-apply-read-recovery' }, parts: [{ type: 'text', text: 'recovered after second read' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs-apply-read-recovery' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-apply-read-recovery', stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-apply-read', parentMessageId: 'input-apply-read-recovery', finish: 'stop' }, parts: [{ type: 'text', text: 'recovered after second read' }] }] }), close: async () => {} };
   const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }); assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'recovered after second read'); assert.equal(failedWrites, 0); assert.equal(winnerReadFailed, true);
 });
 
@@ -1247,7 +1317,7 @@ test('outer successful-finalization recovery removes an artifact rejected by a t
   for (const winnerStatus of ['failed', 'cancelled', 'succeeded']) await t.test(winnerStatus, async () => {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', `finalization lost to ${winnerStatus}`, { category: 'storage', remedy: 'read terminal winner' }); let finalizeStarted = false; let winnerReads = 0;
     const wrapped = { ...store, readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId) => { if (finalizeStarted && ++winnerReads === 1) throw new Error('inner winner read unavailable'); return store.readJob(workspaceArg, jobId); }, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next !== 'succeeded') return store.finishJob(workspaceArg, jobId, expected, next, patch); finalizeStarted = true; if (winnerStatus === 'failed') await store.finishJob(workspaceArg, jobId, ['running'], 'failed', { error: { message: 'terminal winner' }, exitCode: 1 }); else if (winnerStatus === 'cancelled') { await store.transitionJob(workspaceArg, jobId, ['running'], 'cancelling', { lastCancelError: null }); await store.finishJob(workspaceArg, jobId, ['cancelling'], 'cancelled', { exitCode: null }); } else await store.finishJob(workspaceArg, jobId, ['running'], 'succeeded', { resultArtifact: 'results/winner.md', exitCode: 0 }); throw storageError; } };
-    const client = { createSession: async () => ({ session: { sessionId: `zs-outer-${winnerStatus}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: `input-outer-${winnerStatus}`, stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-outer-${winnerStatus}`, parentMessageId: `input-outer-${winnerStatus}` }, parts: [{ type: 'text', text: `outer ${winnerStatus}` }] }] }), close: async () => {} };
+    const client = { createSession: async () => ({ session: { sessionId: `zs-outer-${winnerStatus}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: `input-outer-${winnerStatus}`, stateRevision: 1 }), waitForCompletion: async () => {}, readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-outer-${winnerStatus}`, parentMessageId: `input-outer-${winnerStatus}`, finish: 'stop' }, parts: [{ type: 'text', text: `outer ${winnerStatus}` }] }] }), close: async () => {} };
     await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), (error) => error === storageError || /** @type {any} */ (error)?.cause === storageError); assert.equal(winnerReads, 2); const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace }); await assert.rejects(readFile(join(storage.directory, 'results', `${job.id}.md`)), (error) => /** @type {any} */ (error)?.code === 'ENOENT');
   });
 });
@@ -1269,7 +1339,7 @@ test('executor reports only same-session progress and drains persistence before 
     ...store,
     updateJobProgress: async (/** @type {string} */ _workspaceArg, /** @type {string} */ _jobId, /** @type {any} */ event) => {
       persisted.push(event);
-      if (event.phase === 'finalizing') { signalFinalizingEntered(); await finalizingGate; }
+      if (event.phase === 'waiting') { signalFinalizingEntered(); await finalizingGate; }
       order.push(`persist:${event.phase}`);
       return event;
     },
@@ -1294,7 +1364,7 @@ test('executor reports only same-session progress and drains persistence before 
       emit(notification('zs-progress', 'tool_call_started', 3));
       emit(notification('zs-progress', 'prompt_completed', 4));
     },
-    readSession: async () => { readSessionCalls += 1; return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }; },
+    readSession: async () => { readSessionCalls += 1; return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }; },
     close: async () => { closes += 1; throw new Error('close refused after success'); },
   };
   const execution = executeJob({
@@ -1310,7 +1380,7 @@ test('executor reports only same-session progress and drains persistence before 
   await finalizingEntered;
   await new Promise((resolve) => setImmediate(resolve));
   try {
-    assert.equal(readSessionCalls, 0); assert.equal(successFinishes, 0); assert.equal(order.includes('transition:succeeded'), false);
+    assert.equal(readSessionCalls, 1); assert.equal(successFinishes, 0); assert.equal(order.includes('transition:succeeded'), false);
   } finally { releaseFinalizing(); }
   const result = await execution;
   assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
@@ -1319,7 +1389,7 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode completed a tool call.\n',
     '[zcode] ZCode is generating a response.\n',
     '[zcode] ZCode started a tool call.\n',
-    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
   ];
   const diagnosticLines = [
     '[zcode] ZCode progress cleanup reached its time limit.\n',
@@ -1339,10 +1409,9 @@ test('executor reports only same-session progress and drains persistence before 
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
     { sequence: 3, phase: 'running', code: 'model-active' },
     { sequence: 4, phase: 'investigating', code: 'tool-active' },
-    { sequence: 5, phase: 'finalizing', code: 'finalizing' },
+    { sequence: 5, phase: 'waiting', code: 'waiting' },
   ]);
-  assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
-  assert.equal(order.filter((entry) => entry === 'persist:waiting').length, persistedMessages.length - semanticMessages.length);
+  assert.ok(order.lastIndexOf('persist:waiting') < order.indexOf('transition:succeeded'));
   const succeeded = await store.readJob(workspace, job.id);
   assert.equal(succeeded.status, 'succeeded');
   assert.equal(succeeded.logFile, join((await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace })).directory, 'jobs', `${job.id}.log`));
@@ -1382,7 +1451,7 @@ test('each job-log failure stage emits one fixed safe diagnostic without changin
       },
       setPermissionHandler: () => {}, subscribe: silentSubscribe,
       send: async () => { if (failure === 'archive') await replaceLog(); return { inputId: `input-log-${failure}`, stateRevision: 1 }; }, waitForCompletion: async () => {},
-      readSession: async () => { if (failure === 'assistant') await replaceLog(); return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}` }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }; },
+      readSession: async () => { if (failure === 'assistant') await replaceLog(); return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}`, finish: 'stop' }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }; },
       close: async () => {},
     };
     /** @type {string[]} */ const lines = [];
@@ -1409,7 +1478,7 @@ test('slow send has no progress side effects until accepted', async () => {
     createSession: async () => ({ session: { sessionId: 'zs-slow-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => { signalSendStarted(); return sendCompletion; }, waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-slow-send', parentMessageId: 'input-slow-send' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-slow-send', parentMessageId: 'input-slow-send', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => currentTime, setInterval: (callback) => { intervalCalls += 1; fireInterval = callback; return { unref() {} }; }, clearInterval: () => {} } });
   await sendStarted;
@@ -1443,7 +1512,7 @@ test('writer failure stays observational while progress persists and the exact r
     createSession: async () => ({ session: { sessionId: 'zs-writer-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); }, progressRelayWriter: () => { throw new Error('PRIVATE_RELAY_FAILURE'); } });
   assert.equal(result.result, 'done');
@@ -1459,7 +1528,7 @@ test('preview persistence failure stays observational while writer and exact res
     createSession: async () => ({ session: { sessionId: 'zs-preview-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-preview-failure', stateRevision: 1 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-preview-failure', parentMessageId: 'input-preview-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-preview-failure', parentMessageId: 'input-preview-failure', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: (line) => lines.push(line) });
   assert.equal(result.result, 'done'); assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
@@ -1480,7 +1549,7 @@ test('subscription acknowledgement waits for a structurally valid public identif
     subscribeConversation: async () => ({ subscriptionId: 'subscription-\u0085-secret', unsubscribe: async () => {} }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-bad-conversation-ack', stateRevision: 1 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-bad-conversation-ack', parentMessageId: 'input-bad-conversation-ack' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-bad-conversation-ack', parentMessageId: 'input-bad-conversation-ack', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const result = await executeJob({
     job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
@@ -1509,7 +1578,7 @@ test('a never-settling conversation unsubscribe cannot block authoritative succe
     subscribeConversation: async () => ({ subscriptionId: 'subscription-1', unsubscribe: () => { unsubscribeCalls += 1; return new Promise(() => {}); } }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-unsubscribe-hang', stateRevision: 1 }), waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-unsubscribe-hang', parentMessageId: 'input-unsubscribe-hang' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-unsubscribe-hang', parentMessageId: 'input-unsubscribe-hang', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' });
   const terminal = await authoritativeSuccess;
@@ -1534,7 +1603,7 @@ test('executor stops notification intake then bounded-drains already received se
     }; },
     setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cleanup-drain', stateRevision: 1 }),
     waitForCompletion: async () => { handler?.(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deltas: [toolRow({ input: { command: 'echo drain me' } })] }))); },
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-drain', parentMessageId: 'input-cleanup-drain' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-drain', parentMessageId: 'input-cleanup-drain', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line) });
   assert.equal(result.result, 'done'); assert.equal(localUnsubscribed, true);
@@ -1561,7 +1630,7 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
     subscribe: () => () => {},
     setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cleanup-ready-io', stateRevision: 1 }),
     waitForCompletion: async () => {},
-    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-ready-io', parentMessageId: 'input-cleanup-ready-io' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-ready-io', parentMessageId: 'input-cleanup-ready-io', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
   const originalSetTimeout = globalThis.setTimeout;
   /** @param {(...args:any[])=>void} callback @param {number} milliseconds @param {...any} args */
@@ -1648,7 +1717,7 @@ test('wait and read ambiguity retain the running guard when remote stop is unack
 
 test('artifact directory fsync failure fails the job before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
   const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' }); let syncs = 0;
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { syncs += 1; if (syncs === 2) throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
   const failed = await store.readJob(workspace, job.id); assert.equal(failed.status, 'failed'); assert.equal(failed.resultArtifact, undefined);
