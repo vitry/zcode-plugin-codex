@@ -208,12 +208,12 @@ test('current-turn result rejects an empty new assistant instead of using histor
 });
 
 test('current-turn result accepts a newly added visible structured assistant message', () => {
-  const structured = { findings: [] }; const snapshot = { messages: [assistant([{ type: 'text', text: 'historical' }], undefined, undefined, 'assistant-old'), assistant([{ type: 'text', text: '{}'}], structured, undefined, 'assistant-new')] };
+  const structured = { findings: [] }; const snapshot = { messages: [assistant([{ type: 'text', text: 'historical' }], undefined, undefined, 'assistant-old'), user('input-current'), assistant([{ type: 'text', text: '{}'}], structured, undefined, 'assistant-new')] };
   assert.equal(extractFinalResult(snapshot, 'review', { beforeMessageIds: new Set(['assistant-old']), inputId: 'input-current' }), `${JSON.stringify(structured, null, 2)}\n`);
 });
 
 test('current-turn result prefers assistant messages linked to the send input over unrelated new messages', () => {
-  const snapshot = { messages: [assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'input-current'), user('user-other'), assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'user-other')] };
+  const snapshot = { messages: [user('input-current'), assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'input-current'), user('user-other'), assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'user-other')] };
   assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
 });
 
@@ -284,14 +284,14 @@ test('current-turn result rejects direct and indirect assistants with non-respon
   assert.throws(() => extractFinalResult(direct, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
 });
 
-test('direct input linkage locks hidden or empty results without falling back to an indirect root', () => {
+test('an unpersisted admission-id assistant cannot override the sole persisted prompt root', () => {
   const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
   for (const direct of [
     assistant([{ type: 'text', text: 'hidden' }], undefined, semantics('agent_runtime', 'assistant_response', 'hidden'), 'assistant-direct-hidden', 'input-current'),
     assistant([{ type: 'text', text: '' }], undefined, semantics('agent_runtime', 'assistant_response'), 'assistant-direct-empty', 'input-current'),
   ]) {
     const snapshot = { messages: [user('user-other'), assistant([{ type: 'text', text: 'fallback' }], undefined, undefined, 'assistant-other', 'user-other'), direct] };
-    assert.throws(() => extractFinalResult(snapshot, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+    assert.equal(extractFinalResult(snapshot, 'rescue', boundary), 'fallback');
   }
 });
 

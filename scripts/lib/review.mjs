@@ -186,7 +186,10 @@ export async function executeJob(input) {
     await cleanupProgress();
     const finalSnapshot = terminal.snapshot;
     remoteTerminalProven = true;
-    if (terminal.kind === 'interrupted') throw new PluginError('JOB_INTERRUPTED', 'ZCode interrupted the delegated turn.', { category: 'runtime', remedy: 'Retry the task when the session is ready.' });
+    if (terminal.kind === 'interrupted') {
+      await settleRemoteInterruption({ input, job, workspace, dataRoot });
+      throw new PluginError('ZCODE_TURN_INTERRUPTED', 'ZCode interrupted the delegated turn.', { category: 'runtime', remedy: 'Retry the task when the session is ready.' });
+    }
     if (terminal.kind === 'failed' && finalSnapshot?.projection?.status !== 'error') {
       const message = publicErrorMessage(selectCurrentTurnAssistant(finalSnapshot, turnBoundary)?.info?.error?.message) ?? 'ZCode reported a terminal error.';
       throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
@@ -299,6 +302,18 @@ async function publishSuccessfulResult({ input, job, workspace, dataRoot, result
       if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
       throw error;
     }
+  });
+}
+
+/** Settle v4-proven remote interruption without requiring another stop acknowledgement. @param {{input:any,job:any,workspace:string,dataRoot:string}} settlement */
+async function settleRemoteInterruption({ input, job, workspace, dataRoot }) {
+  return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+    let current = await input.store.readJob(workspace, job.id);
+    if (['cancelled', 'failed', 'succeeded'].includes(current.status)) return current;
+    if (current.status === 'queued') return input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null });
+    if (current.status === 'running') current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null });
+    if (current.status === 'cancelling') return input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+    return current;
   });
 }
 

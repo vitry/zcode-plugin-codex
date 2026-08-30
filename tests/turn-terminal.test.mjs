@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { awaitCurrentTurnTerminal, classifyCurrentTurnSnapshot } from '../scripts/lib/turn-terminal.mjs';
+import { awaitCurrentTurnTerminal, classifyCurrentTurnSnapshot, selectCurrentTurnAssistant } from '../scripts/lib/turn-terminal.mjs';
 
 const boundary = { beforeMessageIds: new Set(['historical-user', 'historical-assistant']), inputId: 'input-current', stateRevision: 7 };
 
@@ -61,6 +61,14 @@ test('current-turn classifier uses the sole new real-user root when ZCode remaps
   const messages = [user('persisted-input'), assistant({ finish: 'stop' }, 'persisted-input')];
   assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('completed', messages), boundary), { kind: 'succeeded' });
   assert.deepEqual(classifyCurrentTurnSnapshot(snapshot('completed', [user('one'), user('two'), ...messages.slice(1)]), boundary), { kind: 'pending' });
+});
+
+test('classification and result selection use the same completed remapped-root assistant', () => {
+  const completed = assistant({ messageId: 'assistant-completed', finish: 'stop' }, 'persisted-input');
+  const partialDirect = assistant({ messageId: 'assistant-partial' }, 'input-current');
+  const candidate = snapshot('completed', [user('persisted-input'), completed, partialDirect]);
+  assert.deepEqual(classifyCurrentTurnSnapshot(candidate, boundary), { kind: 'succeeded' });
+  assert.equal(selectCurrentTurnAssistant(candidate, boundary), completed);
 });
 
 test('coordinator preserves an authoritative interrupted or failed lifecycle after a coherent read', async () => {

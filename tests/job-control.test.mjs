@@ -1208,6 +1208,34 @@ test('snapshot fallback keeps empty idle and unfinished 0.16.5 reads pending unt
   assert.equal(reads, 4); assert.equal(output.result, 'fallback result'); assert.equal(output.job.status, 'succeeded');
 });
 
+test('remotely proven interrupted turn settles cancelled without issuing a redundant stop', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const sessionId = 'zs-remote-interrupted'; const subscriptionId = 'subscription-remote-interrupted';
+  /** @type {null|((message:any)=>void)} */ let handler = null; let stops = 0;
+  const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('conversation handler missing'); handler(message); };
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { handler = null; }; },
+    subscribeConversation: async () => {
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 0, snapshot: boundedSnapshotFixture({ sessionId, seq: 0 }) })));
+      return { subscriptionId, unsubscribe: async () => {} };
+    },
+    send: async () => ({ inputId: 'input-remote-interrupted', stateRevision: 1 }),
+    waitForCompletion: async () => {
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 0, toSeq: 1, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-remote-interrupted', state: 'running' })] })));
+      emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 3, fromSeq: 1, toSeq: 2, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-remote-interrupted', state: 'completedInterrupted' })] })));
+    },
+    readSession: async () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [
+      completedUser('input-remote-interrupted'),
+      { info: { role: 'assistant', messageId: 'assistant-remote-interrupted', parentMessageId: 'input-remote-interrupted', finish: 'cancelled', time: { completed: 3 } }, parts: [{ type: 'text', text: 'partial' }] },
+    ] }),
+    stopSession: async () => { stops += 1; throw new Error('redundant stop must not run'); }, close: async () => {},
+  };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+  assert.equal(caught.code, 'ZCODE_TURN_INTERRUPTED'); assert.equal(stops, 0);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
 test('executor activates bounded snapshot progress only after the exact accepted boundary is durable and keeps final read authoritative', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {string[]} */

@@ -42,12 +42,9 @@ export function selectCurrentTurnAssistant(snapshot, boundary = {}) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
   const beforeMessageIds = boundary.beforeMessageIds ?? new Set();
   const newAssistants = messages.filter((/** @type {any} */ message) => isAssistantResponse(message, beforeMessageIds));
-  const directAssistants = boundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === boundary.inputId) : [];
-  if (directAssistants.length) return visibleAssistant(directAssistants.at(-1));
   if (!boundary.inputId) return visibleAssistant(newAssistants.at(-1));
-  const currentUserRoots = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds));
-  if (currentUserRoots.length !== 1) return undefined;
-  return visibleAssistant(newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === currentUserRoots[0].info.messageId).at(-1));
+  const root = selectCurrentTurnUserRoot(snapshot, boundary);
+  return selectLinkedCurrentTurnAssistant(snapshot, boundary, root);
 }
 
 /**
