@@ -1053,6 +1053,44 @@ test('active continuation failure converges after binding restoration faults bef
   assert.deepEqual(restoredAfterRetry, restoredAfterFault);
 });
 
+test('active continuation failure terminal publication fault retains the exact failed result for idempotent retry', async () => {
+  const base = await activeContinuationFailureFixture(); const workerLeaseId = '5'.repeat(64);
+  const commitment = '4'.repeat(64); const job = base.continuation.job;
+  const executionReservation = { version: 1, capabilityDigest: '3'.repeat(64), reservationId: '2'.repeat(64),
+    jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: base.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  await base.store.publishJobSpecCommitment(base.workspace, job.id, commitment, executionReservation);
+  await base.store.bindJobExecutionReservationLease(base.workspace, job.id, {
+    capabilityDigest: executionReservation.capabilityDigest,
+    reservationId: executionReservation.reservationId, workerLeaseId,
+  });
+  const claimed = await base.store.claimJobWorkerForExecution(base.workspace, job.id,
+    { childPid: 999_999_999, workerLeaseId }, undefined, { sealedCommitment: commitment });
+  const patch = { error: { code: 'RESUME_REJECTED', message: 'claimed resume failed' }, exitCode: 1 };
+  const faulted = createStateStore({ dataRoot: base.dataRoot,
+    testOnlyPublicationHook: throwingAt('active-continuation-rollback:terminal') });
+
+  await assert.rejects(faulted.finishActiveRescueContinuationFailure(base.workspace, job.id,
+    workerLeaseId, base.proof, 'failed', patch), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+
+  const durable = await base.store.readJob(base.workspace, job.id);
+  assert.equal(durable.status, 'failed'); assert.deepEqual(durable.error, patch.error);
+  assert.equal(durable.exitCode, patch.exitCode); assert.ok(durable.finishedAt);
+  assert.equal(durable.childPid, claimed.childPid); assert.equal(durable.workerLeaseId, workerLeaseId);
+  assert.equal(durable.rescueContinuationOrigin, undefined); assert.equal(durable.rescueExecutionClaim, undefined);
+  assert.equal(durable.rescueJobSpecCommitment, undefined); assert.equal(durable.rescueLegacyJobSpecProof, undefined);
+  assert.equal(durable.rescueExecutionReservation.workerLeaseId, workerLeaseId);
+  const restored = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+  assert.deepEqual({ ...restored, updatedAt: base.proof.priorBinding.updatedAt }, base.proof.priorBinding);
+
+  assert.deepEqual(await base.store.finishActiveRescueContinuationFailure(base.workspace, job.id,
+    workerLeaseId, base.proof, 'failed', patch), durable);
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, job.id,
+    workerLeaseId, base.proof, 'failed', { ...patch, exitCode: 70 }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await base.store.readJob(base.workspace, job.id), durable);
+});
+
 test('active continuation failure retry rejects a different generic terminal patch paired with the restored binding', async () => {
   const base = await activeContinuationFailureFixture();
   const requestedPatch = { error: { code: 'RESUME_REJECTED', message: 'resume failed before execution' }, exitCode: 1 };

@@ -17,11 +17,12 @@
 - Modify: `scripts/lib/state.mjs`
 - Modify: `tests/rescue-binding.test.mjs`
 
-- [ ] Add focused StateStore tests before production changes. Reserve a normal active-v3 continuation, then prove a new `finishActiveRescueContinuationFailure(workspace, jobId, proof, 'failed', patch)` operation:
+- [ ] Add focused StateStore tests before production changes. Reserve a normal active-v3 continuation, then prove a new `finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, 'failed', patch)` operation:
   - leaves the attempt as a retained failed job;
   - restores the byte-equivalent prior binding except for a strictly monotonic `updatedAt`;
   - removes private continuation/execution proof from the terminal job;
-  - rejects a changed binding key, operation, current job, prior binding, non-queued job, started job, claimed job, or mismatched workspace;
+  - rejects a changed binding key, operation, current job, prior binding, non-queued job, started job, mismatched workspace, or an execution fence that does not match `expectedWorkerLeaseId`;
+  - requires a wholly unclaimed job when `expectedWorkerLeaseId` is `null`; when it is the exact claimed production lease, accepts the job only if every worker lease, execution claim, and reservation authority agrees, and rejects foreign or missing claims;
   - is idempotent when the first call restored the binding and terminalized the same job;
   - converges safely when a publication checkpoint throws after binding restoration but before job publication.
 
@@ -37,6 +38,7 @@ node --test --test-name-pattern='active continuation failure' tests/rescue-bindi
 await store.finishActiveRescueContinuationFailure(
   workspace,
   job.id,
+  expectedWorkerLeaseId,
   job.rescueContinuationOrigin,
   'failed',
   { error: serializeError(error) },
@@ -208,4 +210,3 @@ node tools/repair-rescue-continuation-binding.mjs \
 ```
 
 - [ ] Require the dry-run result to be exactly `repairable`; then repeat with `--apply`. Perform a final read-only invocation and require `already-repaired`. Independently verify the binding points to the anchor session `sess_0dc45ef1-c2ae-4e17-8840-b33660c94666`, the failed attempt is unchanged, and no ZCode session was created or resumed by the repair.
-
