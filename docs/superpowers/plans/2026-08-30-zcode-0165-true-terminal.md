@@ -222,7 +222,7 @@ Commit: `fix: reconcile ZCode cancellation admission gaps`
 
 - [ ] **Step 1: Add an end-to-end fake-peer regression**
 
-The fixture must emit the exact 0.16.5 order: accepted send, false legacy completion, delayed v4 running, delayed v4 terminal, and coherent final read. Test fresh and continuation execution, plus harmless additive fields.
+The fixture must reproduce the actual captured 0.16.5 request/response and event shapes and order: accepted send, false legacy completion, delayed v4 running, delayed v4 terminal, and coherent final read. Preserve real field nesting, enum values, and additive-field placement; sanitize only identifiers, paths, timestamps, and content. Test fresh and continuation execution. Clearly label any smaller synthetic unknown-field projection cases as unit-only rather than captured protocol fixtures.
 
 - [ ] **Step 2: Verify RED before fixture-aware production integration**
 

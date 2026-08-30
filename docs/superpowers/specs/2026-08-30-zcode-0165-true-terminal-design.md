@@ -81,4 +81,6 @@ Tests will reproduce the captured 0.16.5 ordering:
 8. recovery refusing to terminalize an unresolved empty-idle snapshot;
 9. unchanged normal behavior for the existing 0.16.3 fixtures.
 
+Protocol fixtures used for integration qualification must preserve the field nesting, state vocabulary, notification ordering, and additive-field placement observed from the real 0.16.5 app-server or verified bundled adapter. They may sanitize identifiers, paths, timestamps, and task content, but must not invent a convenient wire shape. Smaller unit tests may add synthetic unknown fields solely to prove open-world projection behavior and must remain clearly distinguishable from captured-shape regressions.
+
 Focused tests must demonstrate RED before production changes, then GREEN. The full repository check and real isolated 0.16.5 probe are required before the PR is considered ready.
