@@ -253,7 +253,7 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
 function validateNotification(notification, topic, subscriptionId, sessionId) {
   if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
   const wire = notification.params;
-  if (!exactKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
+  if (!hasRequiredKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
   if (wire.wireVersion !== CONVERSATION_WIRE_VERSION) return { ok: false, reason: 'wire-version' };
   if (wire.topic !== topic || wire.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
   if (wire.kind !== 'complete'
@@ -261,15 +261,15 @@ function validateNotification(notification, topic, subscriptionId, sessionId) {
     || !boundedIdentifier(wire.logicalFrameId, 256) || !plainObject(wire.frame)) return { ok: false, reason: 'envelope-shape' };
   if (!positiveInteger(wire.logicalFrameOrdinal)) return { ok: false, reason: 'sequence' };
   const frame = wire.frame;
-  if (!exactKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])) return { ok: false, reason: 'envelope-shape' };
+  if (!hasRequiredKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])) return { ok: false, reason: 'envelope-shape' };
   if (frame.topic !== topic || frame.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
   if (!nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq) return { ok: false, reason: 'sequence' };
   if (!wireTimestamp(frame.sentAt) || !plainObject(frame.payload) || !encodedJsonWithinBound(frame.payload)) return { ok: false, reason: 'envelope-shape' };
   if (frame.payload.kind === 'snapshot') {
-    if (!exactKeys(frame.payload, ['kind', 'snapshot']) || !validSnapshot(frame.payload.snapshot, sessionId, frame.fromSeq, frame.toSeq)) return { ok: false, reason: 'envelope-shape' };
+    if (!hasRequiredKeys(frame.payload, ['kind', 'snapshot']) || !validSnapshot(frame.payload.snapshot, sessionId, frame.fromSeq, frame.toSeq)) return { ok: false, reason: 'envelope-shape' };
     return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, payloadKind: 'snapshot', deltas: [] } };
   }
-  if (!exactKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
+  if (!hasRequiredKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
     || !Array.isArray(frame.payload.deltas) || frame.payload.deltas.length > MAX_DELTAS_PER_FRAME) return { ok: false, reason: 'envelope-shape' };
   const deltas = [];
   for (const value of frame.payload.deltas) {
@@ -281,14 +281,14 @@ function validateNotification(notification, topic, subscriptionId, sessionId) {
 /** @param {unknown} value @returns {{ok:true,value:ValidatedDelta}|{ok:false,reason:string}} */
 function validateDelta(value) {
   if (!plainObject(value) || typeof value.op !== 'string') return { ok: false, reason: 'row-shape' };
-  if (value.op === 'row.removed') return exactKeys(value, ['op', 'fromRowId']) && wireNumber(value.fromRowId)
+  if (value.op === 'row.removed') return hasRequiredKeys(value, ['op', 'fromRowId']) && wireNumber(value.fromRowId)
     ? { ok: true, value: { op: value.op, row: null, fromRowId: value.fromRowId } } : { ok: false, reason: 'row-shape' };
-  if (value.op === 'row.delta') return exactKeys(value, ['op', 'rowId', 'path', 'append']) && wireNumber(value.rowId)
+  if (value.op === 'row.delta') return hasRequiredKeys(value, ['op', 'rowId', 'path', 'append']) && wireNumber(value.rowId)
     && ROW_DELTA_PATHS.has(value.path) && boundedOpaqueText(value.append)
     ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
-  if (value.op === 'state.updated') return exactKeys(value, ['op', 'patch']) && boundedOpaqueJsonObject(value.patch)
+  if (value.op === 'state.updated') return hasRequiredKeys(value, ['op', 'patch']) && boundedOpaqueJsonObject(value.patch)
     ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
-  if (!['row.appended', 'row.upserted'].includes(value.op) || !exactKeys(value, ['op', 'row'])) return { ok: false, reason: 'row-shape' };
+  if (!['row.appended', 'row.upserted'].includes(value.op) || !hasRequiredKeys(value, ['op', 'row'])) return { ok: false, reason: 'row-shape' };
   if (!plainObject(value.row) || !safeRowEnvelope(value.row)) return { ok: false, reason: 'row-shape' };
   if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null } };
   const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
@@ -298,15 +298,15 @@ function validateDelta(value) {
 function validSnapshot(value, sessionId, fromSeq, toSeq) {
   if (!boundedOpaqueJsonObject(value)) return false;
   const snapshot = /** @type {Record<string,any>} */ (value);
-  if (!exactKeys(snapshot, [
+  if (!hasRequiredKeys(snapshot, [
     'availability', 'backgroundWorks', 'config', 'control', 'goal', 'inputRouting', 'logEpoch',
     'meta', 'modelTransition', 'pendingCommands', 'pendingInteractions', 'plan', 'protocolVersion',
     'queue', 'revision', 'rows', 'seq', 'sessionId', 'usage', 'workspaceHookAdmission',
-  ], ['subagents'])) return false;
+  ])) return false;
   if (snapshot.protocolVersion !== 1 || snapshot.sessionId !== sessionId || !boundedIdentifier(snapshot.logEpoch, 1024)
     || !wireNumber(snapshot.seq) || snapshot.seq !== toSeq || !wireNumber(snapshot.revision) || fromSeq !== 0) return false;
   const rows = snapshot.rows;
-  return plainObject(rows) && exactKeys(rows, ['window', 'totalCount', 'firstRowId'])
+  return plainObject(rows) && hasRequiredKeys(rows, ['window', 'totalCount', 'firstRowId'])
     && Array.isArray(rows.window) && rows.window.length <= 60 && nonnegativeInteger(rows.totalCount)
     && (rows.firstRowId === null || wireNumber(rows.firstRowId));
 }
@@ -325,14 +325,12 @@ function safeRowEnvelope(row) {
 /** @param {Record<string,any>} row */
 function validateRow(row) {
   const base = ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind'];
-  const baseOptional = ['entityId', 'productTurnId', 'visibility', 'actions'];
   if (!wireNumber(row.rowId) || !boundedIdentifier(row.turnId, 1024) || !wireTimestamp(row.createdAt) || !wireNumber(row.createdAtSeq)
     || row.visibility !== undefined && row.visibility !== 'visible' || row.entityId !== undefined && !boundedIdentifier(row.entityId, 1024)
     || row.productTurnId !== undefined && !boundedIdentifier(row.productTurnId, 1024) || !validActions(row.actions)) return null;
   if (row.kind === 'toolCall') {
     const required = [...base, 'toolCallId', 'toolName', 'status', 'inputText'];
-    const optional = [...baseOptional, 'input', 'output', 'display', 'error', 'progress', 'approvalInteractionId', 'backgrounded', 'workId', 'startedAt', 'endedAt'];
-    if (!exactKeys(row, required, optional) || !boundedIdentifier(row.toolCallId, 1024) || !boundedIdentifier(row.toolName, 256)
+    if (!hasRequiredKeys(row, required) || !boundedIdentifier(row.toolCallId, 1024) || !boundedIdentifier(row.toolName, 256)
       || !TOOL_STATUSES.has(row.status) || !boundedWireText(row.inputText)
       || row.startedAt !== undefined && !wireTimestamp(row.startedAt) || row.endedAt !== undefined && !wireTimestamp(row.endedAt)
       || row.approvalInteractionId !== undefined && !boundedIdentifier(row.approvalInteractionId, 1024)
@@ -342,8 +340,7 @@ function validateRow(row) {
   }
   if (row.kind === 'turnHeader') {
     const required = [...base, 'origin', 'state', 'startedAt'];
-    const optional = [...baseOptional, 'executionKind', 'sourceCommandId', 'historyRoundCount', 'endedAt', 'activeMs', 'workSegments', 'originMeta', 'fileChanges'];
-    if (!exactKeys(row, required, optional) || !TURN_ORIGINS.has(row.origin) || !TURN_STATES.has(row.state) || !wireTimestamp(row.startedAt)
+    if (!hasRequiredKeys(row, required) || !TURN_ORIGINS.has(row.origin) || !TURN_STATES.has(row.state) || !wireTimestamp(row.startedAt)
       || row.endedAt !== undefined && !wireTimestamp(row.endedAt) || row.executionKind !== undefined && !['agent', 'controlOnly'].includes(row.executionKind)
       || row.sourceCommandId !== undefined && !boundedIdentifier(row.sourceCommandId, 1024)
       || row.historyRoundCount !== undefined && !nonnegativeInteger(row.historyRoundCount)
@@ -458,8 +455,8 @@ export async function containedRelativePath(value, workspaceRoot) {
 
 /** @param {string} root @param {string} candidate */
 function isContained(root, candidate) { const value = relative(root, candidate); return value === '' || !isAbsolute(value) && value !== '..' && !value.startsWith(`..${sep}`); }
-/** @param {Record<string,any>} value @param {string[]} required @param {string[]} [optional] */
-function exactKeys(value, required, optional = []) { const keys = Object.keys(value); return required.every((key) => Object.hasOwn(value, key)) && keys.every((key) => required.includes(key) || optional.includes(key)); }
+/** @param {Record<string,any>} value @param {string[]} required */
+function hasRequiredKeys(value, required) { return required.every((key) => Object.hasOwn(value, key)); }
 /** @param {unknown} value @param {number} max */
 function boundedIdentifier(value, max) { return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControl(value); }
 /** @param {unknown} value */
@@ -501,31 +498,31 @@ function validObservedAt(value) { if (typeof value !== 'string') return false; t
 /** @param {unknown} value @returns {value is Record<string,any>} */
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {unknown} value */
-function validActions(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, [], ['canFork', 'canEdit', 'canRetry', 'canRewindFiles', 'editDisposition']) && ['canFork', 'canEdit', 'canRetry', 'canRewindFiles'].every((key) => record[key] === undefined || record[key] === true) && (record.editDisposition === undefined || ['rewind', 'fork'].includes(record.editDisposition)); }
+function validActions(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && ['canFork', 'canEdit', 'canRetry', 'canRewindFiles'].every((key) => record[key] === undefined || record[key] === true) && (record.editDisposition === undefined || ['rewind', 'fork'].includes(record.editDisposition)); }
 /** @param {unknown} value */
-function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, ['text'], ['truncated']) && boundedOpaqueText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && exactKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
+function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && hasRequiredKeys(value, ['text']) && boundedOpaqueText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && hasRequiredKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
 /** @param {unknown} value */
-function validToolError(value) { return value === undefined || plainObject(value) && exactKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedOpaqueText(value.message); }
+function validToolError(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedOpaqueText(value.message); }
 /** @param {unknown} value */
-function validToolProgress(value) { return value === undefined || plainObject(value) && exactKeys(value, ['bytes', 'updatedAt'], ['previewLine']) && wireNumber(value.bytes) && wireTimestamp(value.updatedAt) && (value.previewLine === undefined || boundedWireText(value.previewLine)); }
+function validToolProgress(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['bytes', 'updatedAt']) && wireNumber(value.bytes) && wireTimestamp(value.updatedAt) && (value.previewLine === undefined || boundedWireText(value.previewLine)); }
 /** @param {unknown} value */
 function validToolDisplay(value) {
   if (value === undefined) return true;
   if (!plainObject(value) || typeof value.kind !== 'string') return false;
-  if (value.kind === 'node_repl_images') return exactKeys(value, ['kind', 'images'], ['truncated', 'source']) && Array.isArray(value.images) && value.images.length >= 1 && value.images.length <= 2
-    && value.images.every((image) => plainObject(image) && exactKeys(image, ['base64', 'mimeType']) && typeof image.base64 === 'string' && image.base64.length >= 1 && image.base64.length <= 204_800 && typeof image.mimeType === 'string' && /^image\/[a-z0-9.+-]+$/iu.test(image.mimeType))
+  if (value.kind === 'node_repl_images') return hasRequiredKeys(value, ['kind', 'images']) && Array.isArray(value.images) && value.images.length >= 1 && value.images.length <= 2
+    && value.images.every((image) => plainObject(image) && hasRequiredKeys(image, ['base64', 'mimeType']) && typeof image.base64 === 'string' && image.base64.length >= 1 && image.base64.length <= 204_800 && typeof image.mimeType === 'string' && /^image\/[a-z0-9.+-]+$/iu.test(image.mimeType))
     && (value.truncated === undefined || typeof value.truncated === 'boolean') && (value.source === undefined || value.source === 'browser_turn_end');
-  if (value.kind === 'task_output') return exactKeys(value, ['kind', 'retrievalStatus'], ['taskStatus', 'output', 'truncated']) && ['success', 'not_ready', 'timeout'].includes(value.retrievalStatus)
+  if (value.kind === 'task_output') return hasRequiredKeys(value, ['kind', 'retrievalStatus']) && ['success', 'not_ready', 'timeout'].includes(value.retrievalStatus)
     && (value.taskStatus === undefined || boundedIdentifier(value.taskStatus, 64)) && (value.output === undefined || typeof value.output === 'string' && value.output.length >= 1 && value.output.length <= 2_000) && (value.truncated === undefined || value.truncated === true);
-  if (value.kind === 'respond_to_coordinator') return exactKeys(value, ['kind', 'status']) && ['success', 'failed'].includes(value.status);
-  if (value.kind === 'mcp_tool') return exactKeys(value, ['kind', 'serverName', 'toolName'], ['description']) && boundedIdentifier(value.serverName, 256) && boundedIdentifier(value.toolName, 256) && (value.description === undefined || typeof value.description === 'string' && value.description.length >= 1 && value.description.length <= 4_096);
+  if (value.kind === 'respond_to_coordinator') return hasRequiredKeys(value, ['kind', 'status']) && ['success', 'failed'].includes(value.status);
+  if (value.kind === 'mcp_tool') return hasRequiredKeys(value, ['kind', 'serverName', 'toolName']) && boundedIdentifier(value.serverName, 256) && boundedIdentifier(value.toolName, 256) && (value.description === undefined || typeof value.description === 'string' && value.description.length >= 1 && value.description.length <= 4_096);
   return false;
 }
 /** @param {unknown} value */
-function validWorkSegments(value) { return value === undefined || Array.isArray(value) && value.length <= MAX_DELTAS_PER_FRAME && value.every((segment) => plainObject(segment) && exactKeys(segment, ['segmentId', 'startedAt'], ['triggerEntityId', 'endedAt', 'activeMs']) && boundedIdentifier(segment.segmentId, 1024) && wireTimestamp(segment.startedAt) && (segment.triggerEntityId === undefined || boundedIdentifier(segment.triggerEntityId, 1024)) && (segment.endedAt === undefined || wireTimestamp(segment.endedAt)) && (segment.activeMs === undefined || wireNumber(segment.activeMs))); }
+function validWorkSegments(value) { return value === undefined || Array.isArray(value) && value.length <= MAX_DELTAS_PER_FRAME && value.every((segment) => plainObject(segment) && hasRequiredKeys(segment, ['segmentId', 'startedAt']) && boundedIdentifier(segment.segmentId, 1024) && wireTimestamp(segment.startedAt) && (segment.triggerEntityId === undefined || boundedIdentifier(segment.triggerEntityId, 1024)) && (segment.endedAt === undefined || wireTimestamp(segment.endedAt)) && (segment.activeMs === undefined || wireNumber(segment.activeMs))); }
 /** @param {unknown} value */
-function validOriginMeta(value) { return value === undefined || plainObject(value) && exactKeys(value, ['backgroundSource', 'workId', 'title']) && ['bash', 'subagent'].includes(value.backgroundSource) && boundedIdentifier(value.workId, 1024) && boundedIdentifier(value.title, 4_096); }
+function validOriginMeta(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['backgroundSource', 'workId', 'title']) && ['bash', 'subagent'].includes(value.backgroundSource) && boundedIdentifier(value.workId, 1024) && boundedIdentifier(value.title, 4_096); }
 /** @param {unknown} value */
-function validFileChanges(value) { return value === undefined || plainObject(value) && exactKeys(value, ['additions', 'deletions', 'files'], ['state']) && wireNumber(value.additions) && wireNumber(value.deletions) && wireNumber(value.files) && (value.state === undefined || ['active', 'reverted'].includes(value.state)); }
+function validFileChanges(value) { return value === undefined || plainObject(value) && hasRequiredKeys(value, ['additions', 'deletions', 'files']) && wireNumber(value.additions) && wireNumber(value.deletions) && wireNumber(value.files) && (value.state === undefined || ['active', 'reverted'].includes(value.state)); }
 /** @param {unknown} value */
 function boundedOpaqueText(value) { return typeof value === 'string' && Buffer.byteLength(value) <= MAX_WIRE_TEXT; }

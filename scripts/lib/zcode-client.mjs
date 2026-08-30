@@ -96,7 +96,7 @@ export class ZCodeClient {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
     validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel', this.initialEmptySessions.has(sessionId));
-    if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
+    if (!validAppliedModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
@@ -105,7 +105,7 @@ export class ZCodeClient {
     requireSessionId(sessionId);
     const copiedRuntimeModel = copyRuntimeModel(runtimeModel);
     const result = await this.protocol.request('session/updateRuntimeModelConfig', { sessionId, runtimeModel: copiedRuntimeModel, applyModelSelection: true });
-    if (!runtimeExactObject(result, ['sessionId', 'appliedModelRuntimeRevision', 'changed'], [])
+    if (!runtimePlainObject(result)
       || result.sessionId !== sessionId || result.appliedModelRuntimeRevision !== copiedRuntimeModel.revision
       || typeof result.changed !== 'boolean') throw outputError('session/updateRuntimeModelConfig');
     return result;
@@ -141,7 +141,7 @@ export class ZCodeClient {
       clientMode: options.clientMode,
     }), 'v4/conversation/subscribe');
     const ack = result.ack;
-    if (!exactObjectKeys(result, ['ack']) || !plainObject(ack) || !exactObjectKeys(ack, ['subscriptionId', 'mode', 'logEpoch'])
+    if (!runtimePlainObject(result) || !runtimePlainObject(ack)
       || !isBoundedPublicIdentifier(ack.subscriptionId) || !['snapshot', 'resume'].includes(ack.mode) || !isBoundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
     let unsubscribed = false;
     return {
@@ -150,7 +150,7 @@ export class ZCodeClient {
         if (unsubscribed) return;
         unsubscribed = true;
         const response = await this.protocol.request('v4/conversation/unsubscribe', { topic: `conversation/${sessionId}`, subscriptionId: ack.subscriptionId, connectionId: options.connectionId });
-        if (!plainObject(response) || Object.keys(response).length !== 0) throw outputError('v4/conversation/unsubscribe');
+        if (!runtimePlainObject(response)) throw outputError('v4/conversation/unsubscribe');
       },
     };
   }
@@ -504,7 +504,7 @@ function advertisedThoughtLevels(model) {
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
 /** @param {unknown} value */
-function exactModel(value) { return plainObject(value) && Object.keys(value).every((key) => ['providerId', 'modelId', 'variant'].includes(key)) && Object.hasOwn(value, 'providerId') && Object.hasOwn(value, 'modelId'); }
+function validAppliedModel(value) { return runtimePlainObject(value) && Object.hasOwn(value, 'providerId') && Object.hasOwn(value, 'modelId'); }
 /** @param {unknown} value */
 function requireString(value) { if (!nonEmpty(value)) throw inputError(); }
 /** @param {unknown} value */
@@ -515,8 +515,6 @@ function requireExactObject(value, required, optional) { if (!plainObject(value)
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {unknown} value @returns {value is string} */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
-/** @param {Record<string,any>} value @param {string[]} keys */
-function exactObjectKeys(value, keys) { const actual = Object.keys(value); return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }

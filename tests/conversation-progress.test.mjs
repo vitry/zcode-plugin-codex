@@ -33,10 +33,10 @@ test('returns fixed structural compatibility outcomes without retaining rejected
 
   const cases = [
     ['wire-version', (frame) => { frame.params.wireVersion = 99; }],
-    ['envelope-shape', (frame) => { frame.params.hostile = 'ENVELOPE_SECRET'; }],
+    ['envelope-shape', (frame) => { delete frame.params.frame; }],
     ['sequence', (frame) => { frame.params.frame.fromSeq = -1; }],
     ['topic', (frame) => { frame.params.topic = 'conversation/TOPIC_SECRET'; }],
-    ['row-shape', (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'ROW_SECRET'; }],
+    ['row-shape', (frame) => { frame.params.frame.payload.deltas[0].row.status = 'STATUS_SECRET'; }],
   ];
   for (const [reason, mutate] of cases) {
     const frame = conversationFrame({ deltas: [toolRow({ input: { command: 'COMMAND_SECRET' } })] }); mutate(frame);
@@ -44,6 +44,26 @@ test('returns fixed structural compatibility outcomes without retaining rejected
     assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
     assert.doesNotMatch(JSON.stringify(result), /SECRET/);
   }
+});
+
+test('accepts additive upstream fields without exposing their values', async () => {
+  // The base frame is the captured wire-v3 shape; every `future*` member below
+  // is a synthetic unit-only projection probe, not a claimed 0.16.5 capture.
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const frame = conversationFrame({ deltas: [toolRow({ toolName: 'Read', status: 'running' })] });
+  frame.futureNotification = 'NOTIFICATION_SECRET';
+  frame.params.futureParams = { value: 'PARAMS_SECRET' };
+  frame.params.frame.futureFrame = { value: 'FRAME_SECRET' };
+  frame.params.frame.payload.futurePayload = { value: 'PAYLOAD_SECRET' };
+  frame.params.frame.payload.deltas[0].futureDelta = { value: 'DELTA_SECRET' };
+  frame.params.frame.payload.deltas[0].row.futureRow = { value: 'ROW_SECRET' };
+  const result = await describer.observe(frame, observedAt);
+  assert.deepEqual(result, {
+    disposition: 'accepted', phase: 'online',
+    events: [{ phase: 'running', message: 'Running tool: Read.', observedAt }],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /SECRET/);
 });
 
 test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps production delta operations contiguous', async () => {
@@ -121,7 +141,6 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
   const cases = [
     (frame) => { frame.params.frame.payload.snapshot = ['NOT_AN_OBJECT']; },
     (frame) => { frame.params.frame.payload.snapshot = { huge: 'S'.repeat(1_048_577) }; },
-    (frame) => { frame.params.frame.payload.hostile = 'EXTRA'; },
     (frame) => { frame.params.frame.payload = { kind: 'snapshot', snapshot: { nested: { value: undefined } } }; },
     (frame) => { frame.params.frame.payload.snapshot.protocolVersion = 2; },
     (frame) => { frame.params.frame.payload.snapshot.sessionId = 'foreign'; },
@@ -129,7 +148,6 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
     (frame) => { frame.params.frame.payload.snapshot.seq = 2; },
     (frame) => { frame.params.frame.fromSeq = 1; },
     (frame) => { frame.params.frame.payload.snapshot.rows.window = Array.from({ length: 61 }, () => ({})); },
-    (frame) => { frame.params.frame.payload.snapshot.hostile = 'EXTRA'; },
   ];
   for (const mutate of cases) {
     const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -140,7 +158,6 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
 
   const deltaCases = [
     [{ op: 'row.removed', fromRowId: '1' }, 'row-shape'],
-    [{ op: 'row.removed', fromRowId: 1, extra: 'SECRET_EXTRA' }, 'row-shape'],
     [{ op: 'row.delta', rowId: 1, path: 'text\u0000SECRET_PATH', append: 'SECRET_APPEND' }, 'row-shape'],
     [{ op: 'row.delta', rowId: 1, path: 'text', append: 'X'.repeat(1_048_577) }, 'envelope-shape'],
     [{ op: 'state.updated', patch: ['SECRET_PATCH'] }, 'row-shape'],
@@ -387,22 +404,16 @@ test('accepts a new file only when its symlink ancestor canonically stays inside
   assert.equal(events[0].message, 'Writing: real/new.txt.');
 });
 
-test('fails closed on every missing extra mistyped controlled or unverified captured field before rendering', async () => {
+test('fails closed on every missing mistyped controlled or unverified consumed field before rendering', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const mutations = [
     (frame) => { delete frame.params.logicalFrameId; },
-    (frame) => { frame.params.hostile = 'SECRET_EXTRA'; },
     (frame) => { frame.params.logicalFrameOrdinal = '1'; },
     (frame) => { frame.params.logicalFrameId = 'bad\u0000frame'; },
     (frame) => { frame.params.frame.sentAt = '2026-08-09T00:00:00.000Z'; },
-    (frame) => { frame.params.frame.hostile = 'SECRET_EXTRA'; },
-    (frame) => { frame.params.frame.payload.hostile = 'SECRET_EXTRA'; },
-    (frame) => { frame.params.frame.payload.deltas[0].hostile = 'SECRET_EXTRA'; },
     (frame) => { delete frame.params.frame.payload.deltas[0].row.createdAtSeq; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'SECRET_EXTRA'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.toolName = 'Bash\u0085SECRET'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.createdAt = Number.NaN; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.display = { kind: 'mcp_tool', serverName: 'server', toolName: 'tool', hostile: 'SECRET_EXTRA' }; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'completed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'failed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'denied'; },
@@ -433,9 +444,6 @@ test('fails closed on every missing extra mistyped controlled or unverified capt
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0].row[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing tool row.${key}`);
   }
-  const hostileTurn = conversationFrame({ deltas: [turnRow()] }); hostileTurn.params.frame.payload.deltas[0].row.originMeta = { backgroundSource: 'bash', workId: 'work', title: 'title', hostile: 'SECRET_EXTRA' };
-  const turnDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
-  assert.deepEqual(await turnDescriber.observe(hostileTurn, observedAt), []);
 });
 
 test('rejects discontinuities without trusting their watermark and accepts an authoritative snapshot reset', async () => {
