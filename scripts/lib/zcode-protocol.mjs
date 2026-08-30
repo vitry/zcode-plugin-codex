@@ -8,6 +8,17 @@ export const DEFAULT_MAX_OUTBOUND_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_DRAIN_TIMEOUT_MS = 1_000;
 export const MAX_DRAIN_TIMEOUT_MS = 30_000;
 export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_failed']);
+const correlatedResponseErrors = new WeakSet();
+
+/** True only for an error delivered in a response correlated to this request. @param {unknown} error */
+export function isCorrelatedZCodeResponseError(error) {
+  return error instanceof Error && (correlatedResponseErrors.has(error)
+    || error instanceof PluginError && error.code === 'ZCODE_REQUEST_FAILED'
+      && error.details?.method === 'session/send' && Number.isSafeInteger(error.details?.rpcCode));
+}
+
+/** @template {Error} T @param {T} error @returns {T} */
+function markCorrelatedResponseError(error) { correlatedResponseErrors.add(error); return error; }
 
 export class ZCodeProtocolClient {
   /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number, acceptBrokerControl?:boolean }} [options] */
@@ -205,13 +216,13 @@ export class ZCodeProtocolClient {
       if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const remote = message.error.data?.pluginError;
       if (plainObject(remote) && nonEmpty(remote.code) && nonEmpty(remote.category) && nonEmpty(remote.remedy)) {
-        pending.reject(new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} }));
+        pending.reject(markCorrelatedResponseError(new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} })));
         return;
       }
       /** @type {{method:string,rpcCode:unknown,remoteCode?:string}} */
       const details = { method: pending.method, rpcCode: message.error.code };
       if (isSafeRemoteCode(message.error.data?.code)) details.remoteCode = message.error.data.code;
-      pending.reject(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details }));
+      pending.reject(markCorrelatedResponseError(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details })));
     } else pending.resolve(message.result);
   }
 

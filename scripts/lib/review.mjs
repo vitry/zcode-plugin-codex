@@ -18,6 +18,7 @@ import { publicErrorMessage } from './public-text.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
+import { isCorrelatedZCodeResponseError } from './zcode-protocol.mjs';
 
 const READ_TOOLS = /^(read|inspect|search|list|find|glob|grep|git(?:[-_ ]?(?:status|diff|log|show))?)$/i;
 const MUTATING_TOOLS = /(write|edit|patch|delete|remove|create|exec|shell|command|install|move|rename|commit|push)/i;
@@ -197,7 +198,7 @@ export async function executeJob(input) {
       let sent;
       try {
         sent = await boundedStep(() => { sendAttempted = true; return client.send(activeSessionId, prompt); }, input.signal);
-      } catch (error) { if (sendAttempted) sendAdmissionUnknown = true; throw error; }
+      } catch (error) { if (sendAttempted && !isCorrelatedZCodeResponseError(error)) sendAdmissionUnknown = true; throw error; }
       try {
         const accepted = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
         return { running: accepted, sent };

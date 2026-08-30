@@ -13,6 +13,7 @@ import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCode
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { isCorrelatedZCodeResponseError } from '../scripts/lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
 import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts.mjs';
@@ -811,7 +812,11 @@ test('malformed, oversized, disconnect and request error fail closed', async (t)
     [{ FAKE_ZCODE_ERROR: 'session/list' }, {}, 'ZCODE_REQUEST_FAILED'],
   ];
   for (const [env, options, code] of cases) await t.test(code, () => withClient(async (client) => {
-    await assert.rejects(client.listSessions(), { code });
+    await assert.rejects(client.listSessions(), (error) => {
+      assert.equal(error.code, code);
+      assert.equal(isCorrelatedZCodeResponseError(error), code === 'ZCODE_REQUEST_FAILED');
+      return true;
+    });
   }, env, options));
 });
 
