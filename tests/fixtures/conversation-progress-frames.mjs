@@ -1,8 +1,8 @@
 // @ts-nocheck
-// ZCode 0.16.3 bundle evidence (zcode.cjs): wire version 3 complete frames use
-// the eight outer and six inner keys below. Snapshot frames use the bounded
-// protocol-version-1 body fixture; delta frames use the five production ops.
-// Tool rows retain these exact lifecycle fields and status values.
+// ZCode wire-v3 envelope evidence was originally recorded from 0.16.3 and was
+// re-verified against the installed 0.16.5 zcode.cjs bundle and the controlled
+// probe-v4-terminal.mjs run. Only fields consumed by these tests are asserted;
+// upstream responses and events remain open-world.
 export function conversationFrame({
   sessionId = 'session-1', subscriptionId = 'sub-1', deliveryKind = 'online',
   ordinal = 1, fromSeq = Math.max(0, ordinal - 1), toSeq = ordinal, deltas = [], snapshot,
@@ -23,7 +23,7 @@ export function conversationFrame({
 }
 
 // The snapshot body is deliberately opaque to the public progress projection.
-// These neutral values preserve only the captured 0.16.3 key names and bounded
+// These neutral values preserve only the re-verified 0.16.5 key names and bounded
 // JSON shape; tests must not turn private nested snapshot fields into a contract.
 export function boundedSnapshotFixture(overrides = {}) {
   return {
@@ -48,4 +48,14 @@ export function toolRow({ rowId = 1, toolCallId = `tool-${rowId}`, toolName = 'B
 
 export function turnRow({ rowId = 100, state = 'running' } = {}) {
   return { op: 'row.upserted', row: { rowId, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: rowId, kind: 'turnHeader', origin: 'userInput', state, startedAt: 1_786_233_600_000 } };
+}
+
+// Shape and lifecycle states observed by the controlled ZCode 0.16.5 terminal
+// probe: userInput turnHeader running, followed by the same rowId/turnId in a
+// terminal state. Synthetic variants in unit tests change only correlation data.
+export function captured0165TurnRow({ rowId = 100, turnId = 'turn-1', origin = 'userInput', state = 'running' } = {}) {
+  const delta = turnRow({ rowId, state });
+  delta.row.turnId = turnId;
+  delta.row.origin = origin;
+  return delta;
 }

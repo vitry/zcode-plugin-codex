@@ -405,8 +405,10 @@ function validSnapshot(value, sessionId, fromSeq, toSeq) {
 /** @param {unknown} value @returns {string[]|null} */
 function snapshotTurnIdentities(value) {
   const snapshot = /** @type {Record<string,any>} */ (value);
-  const window = snapshot.rows?.window;
-  if (!Array.isArray(window) || window.length > MAX_TRACKED_ROWS) return null;
+  const rows = snapshot.rows;
+  if (!plainObject(rows) || !Array.isArray(rows.window) || rows.window.length > MAX_TRACKED_ROWS
+    || !nonnegativeInteger(rows.totalCount) || rows.totalCount !== rows.window.length) return null;
+  const window = rows.window;
   const identities = [];
   for (const row of window) {
     if (!plainObject(row) || row.kind !== 'turnHeader') continue;
