@@ -1817,7 +1817,7 @@ test('owner release aborts its unlocked winner read after a reset compensation m
   });
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(1_000)); releaseOutcome = releasing.then((value) => ({ kind: 'fulfilled', value }), (error) => ({ kind: 'rejected', error })); void releaseOutcome.then(() => { releaseOutcomeSettled = true; });
   const boundary = await Promise.race([secondWriteEntered.then(() => 'second-write'), releaseOutcome.then(() => 'release-settled')]); assert.equal(boundary, 'second-write'); assert.equal(writes, 2);
-  await assert.rejects(releasing, { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' });
+  await withTestDeadlineKeepalive(() => assert.rejects(releasing, { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' }));
   for (let turn = 0; turn < 100 && broker.releaseTasks.size; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
   assert.equal(broker.releaseTasks.size, 0);
   assert.equal(observedSignal?.aborted, true); assert.equal(observedSignal, compensationSignal); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(broker.sessionOwners.get(siblingId)?.ownerId, ownerId); assert.equal(broker.uncertainOwnerReleases.get(sessionId), ownerId); assert.equal(broker.uncertainOwnerReleases.get(siblingId), ownerId); assert.equal(broker.stoppingSessions.has(sessionId), false); assert.equal(broker.stoppingSessions.has(siblingId), false);
