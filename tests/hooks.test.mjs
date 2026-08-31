@@ -152,7 +152,7 @@ async function routedExecutorFixture(t, label) {
   return { origin, data, target, start, caller, originDirectory, targetDirectory, routePath, executorPath };
 }
 
-async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {}, executor }) {
+async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {}, executor, onClient }) {
   const store = createStateStore({ dataRoot: data });
   const reservation = { workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
   let value = executor === undefined ? await store.reserveJob(reservation)
@@ -162,6 +162,7 @@ async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId,
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...peerEnv } });
   let sent;
   try {
+    onClient?.(client);
     await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
     sent = await client.send(remoteSessionId, 'recover this accepted turn');
   } finally { await client.close(); }
@@ -172,13 +173,16 @@ async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId,
   return { store, job: value };
 }
 
-test('accepted writable fixture closes its managed client when create or send fails', async () => {
+test('accepted writable fixture closes its managed client when create or send fails', async (t) => {
   for (const method of ['session/create', 'session/send']) {
     const { cwd, data } = await workspace(); const ownerSessionId = `fixture-${method.replace('/', '-')}-failure`;
-    await assert.rejects(acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: `${ownerSessionId}-remote`, peerEnv: { FAKE_ZCODE_ERROR: method } }), { code: 'ZCODE_REQUEST_FAILED' });
-    const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8'));
-    await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
-    assert.equal(await waitForProcessExitForTest(identity.pid), true, `failed ${method} fixture setup must not retain its authenticated broker socket`);
+    let client; const cleanup = await createNaturalBrokerCleanupForTest({ data, cwd, ownerSessionId, closeFallback: () => client?.close() }); t.after(cleanup);
+    try {
+      await assert.rejects(acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: `${ownerSessionId}-remote`, peerEnv: { FAKE_ZCODE_ERROR: method }, onClient: (value) => { client = value; } }), { code: 'ZCODE_REQUEST_FAILED' });
+      const identity = await cleanup.identity();
+      await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
+      assert.equal(await waitForProcessExitForTest(identity.pid), true, `failed ${method} fixture setup must not retain its authenticated broker socket`);
+    } finally { await cleanup(); }
   }
 });
 
@@ -219,6 +223,41 @@ async function releaseOwnerUntilBrokerExitForTest(input) {
   }
   const diagnostics = errors.length ? `; release errors: ${errors.map((error) => error?.message ?? String(error)).join(' | ')}` : '';
   assert.equal(isAlive(input.pid), false, `fixture broker ${input.pid} did not exit naturally${diagnostics}`);
+}
+
+async function createNaturalBrokerCleanupForTest(input) {
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.data, workspace: input.cwd }); const identityPath = join(storage.directory, 'broker/identity.json');
+  const readIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+  assert.equal(await readIdentity(), null, 'fixture must start without a broker identity');
+  let recordedIdentity; let cleanupComplete = false;
+  const identity = async () => {
+    const deadline = Date.now() + 5_000;
+    while (!recordedIdentity && Date.now() < deadline) { recordedIdentity = await readIdentity(); if (!recordedIdentity) await new Promise((resolve) => setTimeout(resolve, 25)); }
+    return recordedIdentity;
+  };
+  const cleanup = async () => {
+    if (cleanupComplete) return;
+    const errors = [];
+    try { await input.beforeCleanup?.(); } catch (error) { errors.push(error); }
+    try { await input.closeFallback?.(); } catch (error) { errors.push(error); }
+    const brokerIdentity = await identity();
+    if (brokerIdentity) {
+      assert.equal(Number.isSafeInteger(brokerIdentity.pid) && brokerIdentity.pid > 1 && brokerIdentity.pid !== process.pid, true, 'fixture broker pid is unsafe');
+      assert.equal(typeof brokerIdentity.instanceId === 'string' && brokerIdentity.instanceId.length > 0, true, 'fixture broker instance is invalid');
+      assert.equal(typeof brokerIdentity.endpoint === 'string' && brokerIdentity.endpoint.length > 0, true, 'fixture broker endpoint is invalid');
+      assert.equal(typeof brokerIdentity.brokerToken === 'string' && brokerIdentity.brokerToken.length > 0, true, 'fixture broker token is invalid');
+      try {
+        await releaseOwnerUntilBrokerExitForTest({
+          pid: brokerIdentity.pid,
+          release: () => releaseManagedZCodeOwner({ dataRoot: input.data, workspace: input.cwd, ownerId: ownerIdForSession(input.ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs }),
+        });
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, `natural broker cleanup failed: ${errors.map((error) => error?.message ?? String(error)).join(' | ')}`);
+    cleanupComplete = true;
+  };
+  cleanup.identity = identity;
+  return cleanup;
 }
 
 test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
@@ -1256,32 +1295,10 @@ test('SessionEnd archives a job when a reachable broker has no existing protocol
 test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async (t) => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); const stopGate = join(data, 'bounded-stop.gate'); const stopReached = join(data, 'bounded-stop.reached'); const ownerSessionId = 'bounded-owner';
   await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' })); await writeFile(stopGate, 'hold');
-  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identityPath = join(storage.directory, 'broker/identity.json'); const readBrokerIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
-  assert.equal(await readBrokerIdentity(), null, 'fixture must start without a broker identity');
-  let setupStarted = false; let cleanupComplete = false; let recordedIdentity;
-  const cleanupBroker = async () => {
-    if (cleanupComplete) return;
-    await writeFile(stopGate, 'release');
-    if (!recordedIdentity && setupStarted) {
-      const identityDeadline = Date.now() + 5_000;
-      while (!recordedIdentity && Date.now() < identityDeadline) { recordedIdentity = await readBrokerIdentity(); if (!recordedIdentity) await new Promise((resolve) => setTimeout(resolve, 25)); }
-    }
-    if (!recordedIdentity) { cleanupComplete = true; return; }
-    assert.equal(Number.isSafeInteger(recordedIdentity.pid) && recordedIdentity.pid > 1 && recordedIdentity.pid !== process.pid, true, 'fixture broker pid is unsafe');
-    assert.equal(typeof recordedIdentity.instanceId === 'string' && recordedIdentity.instanceId.length > 0, true, 'fixture broker instance is invalid');
-    assert.equal(typeof recordedIdentity.endpoint === 'string' && recordedIdentity.endpoint.length > 0, true, 'fixture broker endpoint is invalid');
-    assert.equal(typeof recordedIdentity.brokerToken === 'string' && recordedIdentity.brokerToken.length > 0, true, 'fixture broker token is invalid');
-    await releaseOwnerUntilBrokerExitForTest({
-      pid: recordedIdentity.pid,
-      release: () => releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs }),
-    });
-    cleanupComplete = true;
-  };
+  const cleanupBroker = await createNaturalBrokerCleanupForTest({ data, cwd, ownerSessionId, beforeCleanup: () => writeFile(stopGate, 'release') });
   t.after(cleanupBroker);
   try {
-    setupStarted = true;
     const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached } });
-    recordedIdentity = await readBrokerIdentity();
     const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
     assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
   } finally { await cleanupBroker(); }
