@@ -451,7 +451,7 @@ export function createProgressReporter({
       const current = accepting && epoch === descriptorEpoch;
       const events = current
         ? Array.isArray(description) ? description : recordDescriptionResult(description, epoch)
-        : Array.isArray(description) ? description : plainObject(description) && description.disposition === 'accepted' && Array.isArray(description.events) ? description.events : [];
+        : [];
       if (!Array.isArray(events)) return;
       item.relaySource = plainObject(description) && description.disposition === 'accepted'
         ? relaySourceForAcceptedDescriptor(item.notification)

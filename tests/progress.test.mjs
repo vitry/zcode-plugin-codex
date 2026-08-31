@@ -812,6 +812,37 @@ test('stopAccepting fences a held structural rejection from every progress mutat
   reporter.close();
 });
 
+test('stopAccepting drops every event from a held accepted online descriptor', async () => {
+  const lines = []; const persisted = []; const probes = [];
+  let releaseHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((resolve) => {
+    releaseHeld = () => resolve({
+      disposition: 'accepted', phase: 'online',
+      events: [{ phase: 'running', message: 'LATE_PRIVATE_EVENT', observedAt }],
+    });
+  });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: () => { markHeldStarted(); return held; },
+    persistProbe: async (probe) => probes.push(probe),
+    persist: async (event) => persisted.push(event),
+    write: (line) => lines.push(line),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); releaseHeld();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  reporter.close();
+});
+
 test('stopAccepting silently settles a held descriptor rejection without retrying it', async () => {
   const diagnostics = []; const probes = []; const lines = []; const persisted = []; let fallbackCalls = 0;
   let rejectHeld = () => {}; let markHeldStarted = () => {};

@@ -55,24 +55,42 @@ const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached it
 const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
 const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
 
-/** The progress archive is degraded only after the shared cleanup deadline,
- * either immediately before final completion or after all semantic lines;
- * the independently fenced job log may then report its own terminal suffix.
+/** Semantic progress preserves its authoritative partial order while optional
+ * sink diagnostics may race within their explicitly bounded relationships.
  * @param {string} actual @param {string[]} semanticLines */
 function assertExactOptionalSinkDegradation(actual, semanticLines) {
-  const progressSuffixes = [[], [PROGRESS_CLEANUP_TIMEOUT_LINE], [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE]];
-  const finalSemanticIndex = Math.max(semanticLines.length - 1, 0);
-  const candidates = progressSuffixes.flatMap((suffix) => {
-    const progressPlacements = [
-      [...semanticLines, ...suffix],
-      [...semanticLines.slice(0, finalSemanticIndex), ...suffix, ...semanticLines.slice(finalSemanticIndex)],
-    ];
-    return progressPlacements.flatMap((lines) => [lines, [...lines, JOB_LOG_DISABLED_LINE]]);
-  }).map((lines) => lines.join(''));
-  assert.ok(candidates.includes(actual), `unexpected optional sink degradation sequence:\n${actual}`);
+  const failure = `unexpected optional sink degradation sequence:\n${actual}`;
+  const actualLines = /** @type {string[]} */ (actual.match(/[^\n]*\n/gu) ?? []);
+  assert.equal(actualLines.join(''), actual, failure);
+  assert.equal(new Set(semanticLines).size, semanticLines.length, failure);
+  const firstSemantic = /** @type {string} */ (semanticLines[0]);
+  const lastSemantic = /** @type {string} */ (semanticLines.at(-1));
+  assert.equal(typeof firstSemantic, 'string', failure); assert.equal(typeof lastSemantic, 'string', failure);
+  const optionalLines = [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE, JOB_LOG_DISABLED_LINE];
+  const allowed = new Set([...semanticLines, ...optionalLines]);
+  assert.ok(actualLines.every((line) => allowed.has(line)), failure);
+  const count = (/** @type {string} */ line) => actualLines.filter((candidate) => candidate === line).length;
+  for (const line of semanticLines) assert.equal(count(line), 1, failure);
+  for (const line of optionalLines) assert.ok(count(line) <= 1, failure);
+
+  const indexOf = (/** @type {string} */ line) => actualLines.indexOf(line);
+  const unsubscribeLines = semanticLines.filter((line) => line.includes('conversation progress cleanup was incomplete'));
+  const authoritativeLines = semanticLines.filter((line) => !unsubscribeLines.includes(line));
+  for (let index = 1; index < authoritativeLines.length; index += 1) {
+    assert.ok(indexOf(authoritativeLines[index - 1]) < indexOf(authoritativeLines[index]), failure);
+  }
+  for (const line of unsubscribeLines) {
+    assert.ok(indexOf(firstSemantic) < indexOf(line) && indexOf(line) < indexOf(lastSemantic), failure);
+  }
+  const timeoutIndex = indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE);
+  const archiveIndex = indexOf(PROGRESS_ARCHIVE_DISABLED_LINE);
+  const jobLogIndex = indexOf(JOB_LOG_DISABLED_LINE);
+  if (timeoutIndex !== -1) assert.ok(indexOf(firstSemantic) < timeoutIndex, failure);
+  if (archiveIndex !== -1) assert.ok(timeoutIndex !== -1 && timeoutIndex < archiveIndex, failure);
+  if (jobLogIndex !== -1) assert.equal(jobLogIndex, actualLines.length - 1, failure);
 }
 
-test('optional sink degradation may precede final completion without reordering semantic lines', () => {
+test('optional sink degradation accepts only its exact diagnostic partial orders', () => {
   const semanticLines = [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
@@ -84,15 +102,37 @@ test('optional sink degradation may precede final completion without reordering 
     PROGRESS_CLEANUP_TIMEOUT_LINE,
     semanticLines.at(-1),
   ].join(''), semanticLines);
-  assert.throws(() => assertExactOptionalSinkDegradation([
+  assertExactOptionalSinkDegradation([
     semanticLines[0],
     PROGRESS_CLEANUP_TIMEOUT_LINE,
     ...semanticLines.slice(1),
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[2], semanticLines[1], semanticLines[3],
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+  ].join(''), semanticLines);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[1], semanticLines[0], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[3], semanticLines[1], semanticLines[2],
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
   assert.throws(() => assertExactOptionalSinkDegradation([
     ...semanticLines.slice(0, -1),
     PROGRESS_ARCHIVE_DISABLED_LINE,
     semanticLines.at(-1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], PROGRESS_ARCHIVE_DISABLED_LINE, PROGRESS_CLEANUP_TIMEOUT_LINE, ...semanticLines.slice(1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], JOB_LOG_DISABLED_LINE, ...semanticLines.slice(1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[1], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    ...semanticLines, '[zcode] unexpected diagnostic.\n',
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
 });
 
@@ -3200,19 +3240,22 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
-  const context = await fixture(); const record = join(context.directory, 'conversation-progress-requests.jsonl');
-  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_RECORD: record });
-  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
-  assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
-  assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
-  assert.doesNotMatch(result.stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
-  const status = await companion(context, ['status', result.json.job.id]);
-  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
-  assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
-  assert.equal(status.json.job.progressProbe.state, 'online');
-  assert.equal(status.json.job.progressProbe.acceptedOnline, 2);
-  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    env: { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' },
+    completionAfterProbe: { state: 'online', acceptedOnline: 2 },
+  });
+  const stderr = scenario.lines.join('');
+  assert.equal(scenario.output.result, 'done');
+  assert.match(stderr, /\[zcode\] Running command: npm test\./);
+  assert.match(stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
+  assert.doesNotMatch(stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
+  assert.match(JSON.stringify(scenario.stored.progressPreview), /Running command: npm test/);
+  assert.doesNotMatch(JSON.stringify(scenario.stored.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 2);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
 test('conversation scenario teardown settles its started execution after probe waiting fails', async () => {
