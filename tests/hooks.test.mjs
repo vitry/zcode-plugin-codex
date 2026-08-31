@@ -186,71 +186,11 @@ async function writeGateConfig(data, cwd, value) { const storage = await resolve
 function stopFields(input) { const copy = { ...input }; delete copy.prompt; return copy; }
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
-function validExactBrokerIdentityForTest(value, selfPid = process.pid) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && Number.isSafeInteger(value.pid) && value.pid > 1 && value.pid !== selfPid
-    && typeof value.instanceId === 'string' && value.instanceId.length > 0
-    && typeof value.endpoint === 'string' && value.endpoint.length > 0);
-}
-
-function sameExactBrokerIdentityForTest(left, right) {
-  return Boolean(left && right && left.pid === right.pid
-    && left.instanceId === right.instanceId && left.endpoint === right.endpoint);
-}
-
 async function waitForProcessExitForTest(pid, timeoutMs = process.platform === 'win32' ? 5_000 : 2_000, isAlive = processAlive) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && isAlive(pid)) await new Promise((resolve) => setTimeout(resolve, 25));
   return !isAlive(pid);
 }
-
-function createExactBrokerCleanupForTest(input) {
-  const selfPid = input.selfPid ?? process.pid;
-  if (!validExactBrokerIdentityForTest(input.recordedIdentity, selfPid)) throw new Error('test broker identity is unsafe');
-  const recorded = input.recordedIdentity; const isAlive = input.isAlive ?? processAlive;
-  const kill = input.kill ?? process.kill; const waitForExit = input.waitForExit ?? ((pid) => waitForProcessExitForTest(pid, undefined, isAlive));
-  let complete = false;
-  return async () => {
-    if (complete) return;
-    const current = await input.readIdentity();
-    if (!sameExactBrokerIdentityForTest(current, recorded)) return;
-    if (!isAlive(recorded.pid)) { complete = true; return; }
-    try { kill(recorded.pid, 'SIGTERM'); } catch (error) { if (error?.code !== 'ESRCH') throw error; }
-    if (await waitForExit(recorded.pid)) { complete = true; return; }
-    const afterTerm = await input.readIdentity();
-    assert.equal(sameExactBrokerIdentityForTest(afterTerm, recorded), true, 'broker identity changed before the recorded process exited');
-    try { kill(recorded.pid, 'SIGKILL'); } catch (error) { if (error?.code !== 'ESRCH') throw error; }
-    assert.equal(await waitForExit(recorded.pid), true, `exact broker ${recorded.pid} was not reaped`);
-    complete = true;
-  };
-}
-
-test('hook broker teardown terminates only its exact recorded identity and waits once', async () => {
-  const recorded = { pid: 42_424, instanceId: 'a'.repeat(48), endpoint: '/test/exact-broker.sock' };
-  const foreign = { ...recorded, instanceId: 'b'.repeat(48) };
-  const killed = []; const waited = [];
-  const cleanup = createExactBrokerCleanupForTest({
-    recordedIdentity: recorded,
-    readIdentity: async () => foreign,
-    kill: (pid, signal) => { killed.push([pid, signal]); },
-    waitForExit: async (pid) => { waited.push(pid); return true; },
-    isAlive: () => true,
-    selfPid: 99_999,
-  });
-  await cleanup();
-  assert.deepEqual(killed, []); assert.deepEqual(waited, []);
-
-  const exactCleanup = createExactBrokerCleanupForTest({
-    recordedIdentity: recorded,
-    readIdentity: async () => recorded,
-    kill: (pid, signal) => { killed.push([pid, signal]); },
-    waitForExit: async (pid) => { waited.push(pid); return true; },
-    isAlive: () => true,
-    selfPid: 99_999,
-  });
-  await exactCleanup(); await exactCleanup();
-  assert.deepEqual(killed, [[recorded.pid, 'SIGTERM']]); assert.deepEqual(waited, [recorded.pid]);
-});
 
 test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
   const hooks = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8'));
@@ -1285,13 +1225,38 @@ test('SessionEnd archives a job when a reachable broker has no existing protocol
 });
 
 test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async (t) => {
-  const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
-  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'bounded-owner', remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_METHOD: 'session/stop' } });
-  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identityPath = join(storage.directory, 'broker/identity.json'); const recordedIdentity = JSON.parse(await readFile(identityPath, 'utf8'));
-  const cleanupBroker = createExactBrokerCleanupForTest({ recordedIdentity, readIdentity: () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null) }); t.after(cleanupBroker);
-  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'bounded-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
-  assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
-  await cleanupBroker(); assert.equal(processAlive(recordedIdentity.pid), false, 'bounded settlement fixture broker must be reaped before the test returns');
+  const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); const stopGate = join(data, 'bounded-stop.gate'); const stopReached = join(data, 'bounded-stop.reached'); const ownerSessionId = 'bounded-owner';
+  await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' })); await writeFile(stopGate, 'hold');
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identityPath = join(storage.directory, 'broker/identity.json'); const readBrokerIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+  assert.equal(await readBrokerIdentity(), null, 'fixture must start without a broker identity');
+  let setupStarted = false; let cleanupComplete = false; let recordedIdentity;
+  const cleanupBroker = async () => {
+    if (cleanupComplete) return;
+    await writeFile(stopGate, 'release');
+    if (!recordedIdentity && setupStarted) {
+      const identityDeadline = Date.now() + 5_000;
+      while (!recordedIdentity && Date.now() < identityDeadline) { recordedIdentity = await readBrokerIdentity(); if (!recordedIdentity) await new Promise((resolve) => setTimeout(resolve, 25)); }
+    }
+    if (!recordedIdentity) { cleanupComplete = true; return; }
+    assert.equal(Number.isSafeInteger(recordedIdentity.pid) && recordedIdentity.pid > 1 && recordedIdentity.pid !== process.pid, true, 'fixture broker pid is unsafe');
+    assert.equal(typeof recordedIdentity.instanceId === 'string' && recordedIdentity.instanceId.length > 0, true, 'fixture broker instance is invalid');
+    assert.equal(typeof recordedIdentity.endpoint === 'string' && recordedIdentity.endpoint.length > 0, true, 'fixture broker endpoint is invalid');
+    assert.equal(typeof recordedIdentity.brokerToken === 'string' && recordedIdentity.brokerToken.length > 0, true, 'fixture broker token is invalid');
+    for (let attempt = 0; attempt < 3 && processAlive(recordedIdentity.pid); attempt += 1) {
+      await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
+      if (await waitForProcessExitForTest(recordedIdentity.pid)) break;
+    }
+    assert.equal(processAlive(recordedIdentity.pid), false, `bounded settlement fixture broker ${recordedIdentity.pid} must exit naturally`);
+    cleanupComplete = true;
+  };
+  t.after(cleanupBroker);
+  try {
+    setupStarted = true;
+    const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached } });
+    recordedIdentity = await readBrokerIdentity();
+    const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+    assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
+  } finally { await cleanupBroker(); }
 });
 
 test('a failed SessionEnd stop is later settled by reservation scavenging before owner B is admitted', async (t) => {
