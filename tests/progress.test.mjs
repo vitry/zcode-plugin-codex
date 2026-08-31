@@ -812,19 +812,20 @@ test('stopAccepting fences a held structural rejection from every progress mutat
   reporter.close();
 });
 
-test('stopAccepting drops every event from a held accepted online descriptor', async () => {
+test('stopAccepting bounded-drains a held accepted online descriptor while fencing later intake', async () => {
   const lines = []; const persisted = []; const probes = [];
   let releaseHeld = () => {}; let markHeldStarted = () => {};
   const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
   const held = new Promise((resolve) => {
     releaseHeld = () => resolve({
       disposition: 'accepted', phase: 'online',
-      events: [{ phase: 'running', message: 'LATE_PRIVATE_EVENT', observedAt }],
+      events: [{ phase: 'running', message: 'ZCode safely completed pre-stop work.', observedAt }],
     });
   });
+  let descriptions = 0;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a',
-    describeNotification: () => { markHeldStarted(); return held; },
+    describeNotification: () => { descriptions += 1; markHeldStarted(); return held; },
     persistProbe: async (probe) => probes.push(probe),
     persist: async (event) => persisted.push(event),
     write: (line) => lines.push(line),
@@ -832,14 +833,19 @@ test('stopAccepting drops every event from a held accepted online descriptor', a
     setInterval: () => ({ unref() {} }), clearInterval: () => {},
   });
   reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
-  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
 
-  reporter.stopAccepting(); releaseHeld();
+  reporter.stopAccepting();
+  assert.equal(reporter.observe({ method: 'v4/conversation/frame', secret: 'POST_STOP_SECRET' }), null);
+  assert.equal(descriptions, 1);
+  releaseHeld();
   await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
 
-  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
-  assert.equal(probes.length, beforePersists);
-  assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  assert.deepEqual(lines, ['[zcode] ZCode safely completed pre-stop work.\n']);
+  assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode safely completed pre-stop work.', observedAt }]);
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  assert.equal(reporter.probeSnapshot().acceptedOnline, 1);
+  assert.deepEqual(probes.at(-1), reporter.probeSnapshot());
+  assert.doesNotMatch(`${lines.join('')}${JSON.stringify(persisted)}${JSON.stringify(probes)}`, /POST_STOP_SECRET/);
   reporter.close();
 });
 

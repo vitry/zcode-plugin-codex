@@ -258,20 +258,26 @@ export function createProgressReporter({
     if (claimAdjacentHeartbeat) adjacentHeartbeatClaimed = true;
     return true;
   };
-  /** @param {unknown} result @param {number} epoch */
-  const recordDescriptionResult = (result, epoch) => {
-    if (!accepting || epoch !== descriptorEpoch) return [];
-    if (!plainObject(result) || !Array.isArray(result.events)) return [];
-    if (result.disposition === 'accepted' && ['initial', 'online', 'recovery'].includes(result.phase)) {
-      const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
+  /** @param {Record<string, unknown>} result */
+  const recordAcceptedDescription = (result) => {
+    const phase = result.phase;
+    if (result.disposition === 'accepted' && (phase === 'initial' || phase === 'online' || phase === 'recovery') && Array.isArray(result.events)) {
+      const field = phase === 'initial' ? 'acceptedInitial' : phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
       progressProbe[field] = saturatingIncrement(progressProbe[field]);
       const hasBoundedPublicEvent = result.events.slice(0, MAX_PROGRESS_PENDING_EVENTS).some(validPublicEvent);
-      if (result.phase === 'online' && hasBoundedPublicEvent) {
+      if (phase === 'online' && hasBoundedPublicEvent) {
         cleanupSnapshotFallback();
         progressProbe.state = 'online'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = false;
       }
       persistProbeSnapshot(); return result.events;
     }
+    return [];
+  };
+  /** @param {unknown} result @param {number} epoch */
+  const recordDescriptionResult = (result, epoch) => {
+    if (!accepting || epoch !== descriptorEpoch) return [];
+    if (!plainObject(result) || !Array.isArray(result.events)) return [];
+    if (result.disposition === 'accepted') return recordAcceptedDescription(result);
     if (result.disposition === 'rejected' && PROBE_REJECTION_REASONS.includes(result.reason)) {
       progressProbe.rejected[result.reason] = saturatingIncrement(progressProbe.rejected[result.reason]);
       persistProbeSnapshot();
@@ -448,10 +454,11 @@ export function createProgressReporter({
     catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
     const tracked = described.then((description) => {
       if (closed) return;
-      const current = accepting && epoch === descriptorEpoch;
-      const events = current
-        ? Array.isArray(description) ? description : recordDescriptionResult(description, epoch)
-        : [];
+      const currentEpoch = epoch === descriptorEpoch;
+      const current = accepting && currentEpoch;
+      const events = !currentEpoch ? []
+        : current ? Array.isArray(description) ? description : recordDescriptionResult(description, epoch)
+          : Array.isArray(description) ? description : plainObject(description) ? recordAcceptedDescription(description) : [];
       if (!Array.isArray(events)) return;
       item.relaySource = plainObject(description) && description.disposition === 'accepted'
         ? relaySourceForAcceptedDescriptor(item.notification)
@@ -582,7 +589,7 @@ export function createProgressReporter({
     },
     stopAccepting() {
       if (!accepting) return;
-      accepting = false; relayClosed = true; stopTimer(); descriptorEpoch += 1;
+      accepting = false; relayClosed = true; stopTimer();
       for (const item of logicalPending) if (item.kind === 'descriptor' && item.state === 'pending' && item !== activeDescriptor) item.state = 'dropped';
       descriptorOverflowed = false; pumpLogical();
     },
