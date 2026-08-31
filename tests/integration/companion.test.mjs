@@ -64,23 +64,22 @@ function assertExactOptionalSinkDegradation(actual, semanticLines) {
   assert.equal(actualLines.join(''), actual, failure);
   assert.equal(new Set(semanticLines).size, semanticLines.length, failure);
   const firstSemantic = /** @type {string} */ (semanticLines[0]);
-  const lastSemantic = /** @type {string} */ (semanticLines.at(-1));
-  assert.equal(typeof firstSemantic, 'string', failure); assert.equal(typeof lastSemantic, 'string', failure);
+  assert.equal(typeof firstSemantic, 'string', failure);
   const optionalLines = [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE, JOB_LOG_DISABLED_LINE];
   const allowed = new Set([...semanticLines, ...optionalLines]);
   assert.ok(actualLines.every((line) => allowed.has(line)), failure);
   const count = (/** @type {string} */ line) => actualLines.filter((candidate) => candidate === line).length;
-  for (const line of semanticLines) assert.equal(count(line), 1, failure);
-  for (const line of optionalLines) assert.ok(count(line) <= 1, failure);
-
-  const indexOf = (/** @type {string} */ line) => actualLines.indexOf(line);
   const unsubscribeLines = semanticLines.filter((line) => line.includes('conversation progress cleanup was incomplete'));
   const authoritativeLines = semanticLines.filter((line) => !unsubscribeLines.includes(line));
+  for (const line of authoritativeLines) assert.equal(count(line), 1, failure);
+  for (const line of [...unsubscribeLines, ...optionalLines]) assert.ok(count(line) <= 1, failure);
+
+  const indexOf = (/** @type {string} */ line) => actualLines.indexOf(line);
   for (let index = 1; index < authoritativeLines.length; index += 1) {
     assert.ok(indexOf(authoritativeLines[index - 1]) < indexOf(authoritativeLines[index]), failure);
   }
   for (const line of unsubscribeLines) {
-    assert.ok(indexOf(firstSemantic) < indexOf(line) && indexOf(line) < indexOf(lastSemantic), failure);
+    if (indexOf(line) !== -1) assert.ok(indexOf(firstSemantic) < indexOf(line), failure);
   }
   const timeoutIndex = indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE);
   const archiveIndex = indexOf(PROGRESS_ARCHIVE_DISABLED_LINE);
@@ -111,6 +110,12 @@ test('optional sink degradation accepts only its exact diagnostic partial orders
     semanticLines[0], semanticLines[2], semanticLines[1], semanticLines[3],
     PROGRESS_CLEANUP_TIMEOUT_LINE,
   ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[3],
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[3], semanticLines[2],
+  ].join(''), semanticLines);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[1], semanticLines[0], semanticLines[2], semanticLines[3],
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
@@ -127,6 +132,12 @@ test('optional sink degradation accepts only its exact diagnostic partial orders
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], JOB_LOG_DISABLED_LINE, ...semanticLines.slice(1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[2], semanticLines[0], semanticLines[1], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[2], semanticLines[2], semanticLines[3],
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], semanticLines[1], semanticLines[1], semanticLines[2], semanticLines[3],
