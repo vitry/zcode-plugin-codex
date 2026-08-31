@@ -255,7 +255,7 @@ export async function executeJob(input) {
     }
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
-    let current = initialBoundStopGuardComplete ? await input.store.readJob(workspace, job.id).catch(() => running) : null;
+    try { let current = initialBoundStopGuardComplete ? await input.store.readJob(workspace, job.id).catch(() => running) : null;
     let resumeFailureSettlementRejected = false;
     if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
       try {
@@ -335,6 +335,9 @@ export async function executeJob(input) {
         }
       }
       if (canFail) try { await input.store.finishJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), exitCode: 1 }); } catch (finalizeError) { primaryError = finalizeError; }
+    }
+    } catch (reconciliationError) {
+      primaryError = reconciliationError;
     }
   }
   // Cleanup order is part of the progress lifecycle contract.

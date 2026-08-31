@@ -1382,6 +1382,33 @@ test('session creation completion observes abort before configuration and stops 
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
 
+test('queued interruption releases the local turn when stop revalidation reconciliation fails', async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'reconciliation-failure-child', agentType: 'zcode-rescue', agentPath: '/root/reconciliation-failure-child', workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation }, executor });
+  const workerLeaseId = 'f'.repeat(64); const job = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'model interrupted');
+  const reconciliationError = new Error('queued stop revalidation failed');
+  const sessionId = 'zs-queued-reconciliation-failure'; let revalidations = 0;
+  /** @type {string[]} */ const cleanupCalls = [];
+  const wrapped = { ...store, revalidateBoundRescueStop: async (/** @type {any} */ input) => {
+    revalidations += 1;
+    if (revalidations === 2) throw reconciliationError;
+    return store.revalidateBoundRescueStop(input);
+  } };
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'old' }, available: [] } }, messages: [] }),
+    setModel: async () => { controller.abort(interruption); throw new Error('model transport closed'); },
+    stopSession: async () => { throw new Error('stop must not run after failed revalidation'); },
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const caught = await executeJobProduction({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', model: { providerId: 'p', modelId: 'new' }, childPid: 999_999, workerLeaseId, signal: controller.signal }).catch((error) => error);
+  assert.equal(caught, reconciliationError);
+  assert.equal(revalidations, 2);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+});
+
 test('resume transport rejection after abort preserves the interruption and stops the known session once', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const controller = new AbortController(); let stops = 0;
