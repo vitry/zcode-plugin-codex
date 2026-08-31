@@ -10,6 +10,7 @@ import { PluginError } from '../scripts/lib/errors.mjs';
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
+import { JOB_LOG_DISABLED_LINE } from '../scripts/lib/job-log-runtime.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld } from '../scripts/lib/review.mjs';
@@ -160,7 +161,18 @@ function isValidTerminalProgressTail(tail, expected) {
   const timeoutIndexes = tail.flatMap((message, index) => message === expected.timeout ? [index] : []);
   const archiveIndexes = tail.flatMap((message, index) => message === expected.archive ? [index] : []);
   if (terminalIndexes.length !== 1 || timeoutIndexes.length > 1 || archiveIndexes.length > 1) return false;
-  return archiveIndexes.length === 0 || timeoutIndexes.length === 1 && timeoutIndexes[0] < archiveIndexes[0];
+  return true;
+}
+
+/** @param {string[]} lines */
+function progressLinesWithoutFinalJobLogDegradation(lines) {
+  const tail = lines.slice(5);
+  const indexes = lines.flatMap((line, index) => line === JOB_LOG_DISABLED_LINE ? [index] : []);
+  assert.ok(indexes.length <= 1, `unexpected repeated job-log degradation:\n${JSON.stringify(tail)}`);
+  if (indexes.length === 1) {
+    assert.equal(indexes[0], lines.length - 1, `job-log degradation must be the final public line:\n${JSON.stringify(tail)}`);
+  }
+  return { lines: indexes.length === 1 ? lines.slice(0, -1) : lines, jobLogDisabled: indexes.length === 1 };
 }
 
 /** @param {string} root @param {string} workspace @param {string} jobId */
@@ -181,12 +193,26 @@ test('terminal progress tail validation rejects histories outside the bounded cl
   assert.equal(isValidTerminalProgressTail(['timeout', 'terminal', 'archive'], expected), true);
   assert.equal(isValidTerminalProgressTail(['terminal', 'timeout', 'archive'], expected), true);
   assert.equal(isValidTerminalProgressTail(['timeout', 'archive', 'terminal'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'archive'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['archive', 'terminal'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['archive', 'timeout', 'terminal'], expected), true);
   assert.equal(isValidTerminalProgressTail([], expected), false);
   assert.equal(isValidTerminalProgressTail(['terminal', 'terminal'], expected), false);
   assert.equal(isValidTerminalProgressTail(['terminal', 'timeout', 'timeout'], expected), false);
-  assert.equal(isValidTerminalProgressTail(['terminal', 'archive'], expected), false);
-  assert.equal(isValidTerminalProgressTail(['archive', 'timeout', 'terminal'], expected), false);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'archive', 'archive'], expected), false);
   assert.equal(isValidTerminalProgressTail(['terminal', 'unexpected'], expected), false);
+});
+
+test('terminal progress line partition isolates only one final job-log degradation', () => {
+  const prefix = ['one', 'two', 'three', 'four', 'five'];
+  assert.deepEqual(progressLinesWithoutFinalJobLogDegradation([...prefix, 'terminal']), {
+    lines: [...prefix, 'terminal'], jobLogDisabled: false,
+  });
+  assert.deepEqual(progressLinesWithoutFinalJobLogDegradation([...prefix, 'terminal', JOB_LOG_DISABLED_LINE]), {
+    lines: [...prefix, 'terminal'], jobLogDisabled: true,
+  });
+  assert.throws(() => progressLinesWithoutFinalJobLogDegradation([...prefix, JOB_LOG_DISABLED_LINE, 'terminal']), /final public line/u);
+  assert.throws(() => progressLinesWithoutFinalJobLogDegradation([...prefix, JOB_LOG_DISABLED_LINE, JOB_LOG_DISABLED_LINE]), /repeated job-log/u);
 });
 
 test('bound Rescue status selects the exact binding current job and returns only the fixed safe projection', async () => {
@@ -1841,17 +1867,21 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode progress cleanup reached its time limit.\n',
     '[zcode] ZCode progress archive was disabled.\n',
   ];
-  assert.deepEqual(lines.slice(0, 5), semanticLines.slice(0, 5));
-  assert.equal(isValidTerminalProgressTail(lines.slice(5), {
+  const publicProgress = progressLinesWithoutFinalJobLogDegradation(lines);
+  const progressLines = publicProgress.lines;
+  assert.deepEqual(progressLines.slice(0, 5), semanticLines.slice(0, 5));
+  const progressLineTail = progressLines.slice(5);
+  assert.equal(isValidTerminalProgressTail(progressLineTail, {
     terminal: semanticLines[5], timeout: diagnosticLines[0], archive: diagnosticLines[1],
-  }), true);
+  }), true, `unexpected terminal progress line tail:\n${JSON.stringify(progressLineTail)}`);
   const semanticMessages = semanticLines.map((line) => line.slice(8, -1));
   const diagnosticMessages = diagnosticLines.map((line) => line.slice(8, -1));
   const persistedMessages = persisted.map((event) => event.message);
   assert.deepEqual(persistedMessages.slice(0, 5), semanticMessages.slice(0, 5));
-  assert.equal(isValidTerminalProgressTail(persistedMessages.slice(5), {
+  const persistedTail = persistedMessages.slice(5);
+  assert.equal(isValidTerminalProgressTail(persistedTail, {
     terminal: semanticMessages[5], timeout: diagnosticMessages[0], archive: diagnosticMessages[1],
-  }), true);
+  }), true, `unexpected terminal persisted progress tail:\n${JSON.stringify(persistedTail)}`);
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
@@ -1873,9 +1903,11 @@ test('executor reports only same-session progress and drains persistence before 
       'archived semantic progress must retain its original order');
   }
   assert.match(log, /Assistant message\ndone\n/);
-  assert.match(log, /Final output\ndone\n/);
   assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
-  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  const finalOutputCount = (log.match(/Final output\ndone\n/g) ?? []).length;
+  assert.ok([0, 1].includes(finalOutputCount));
+  assert.equal((log.match(/Final output/g) ?? []).length, finalOutputCount);
+  if (finalOutputCount === 0) assert.equal(publicProgress.jobLogDisabled, true, 'missing final mirror must emit one final job-log degradation');
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
 });
 

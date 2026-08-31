@@ -81,9 +81,6 @@ function assertExactForegroundProgressState(job, semanticMessages) {
   const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
   const terminal = 'ZCode completed the delegated turn.';
   for (const diagnostic of diagnostics) assert.ok(preview.filter((message) => message === diagnostic).length <= 1, failure);
-  const timeoutIndex = preview.indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1));
-  const archiveIndex = preview.indexOf(PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1));
-  if (archiveIndex !== -1) assert.ok(timeoutIndex !== -1 && timeoutIndex < archiveIndex, failure);
 
   /** @type {Map<string,string>} */
   const phases = new Map();
@@ -102,8 +99,7 @@ function assertExactForegroundProgressState(job, semanticMessages) {
   const enumerateSuffixes = (suffix, used) => {
     allowedPreviews.add(JSON.stringify([...handshakeWindow, ...suffix].slice(-4)));
     for (const message of suffixCandidates) {
-      if (used.has(message)
-        || message === PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1) && !used.has(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1))) continue;
+      if (used.has(message)) continue;
       enumerateSuffixes([...suffix, message], new Set([...used, message]));
     }
   };
@@ -141,7 +137,7 @@ function assertExactOptionalSinkDegradation(actual, semanticLines) {
   const archiveIndex = indexOf(PROGRESS_ARCHIVE_DISABLED_LINE);
   const jobLogIndex = indexOf(JOB_LOG_DISABLED_LINE);
   if (timeoutIndex !== -1) assert.ok(indexOf(firstSemantic) < timeoutIndex, failure);
-  if (archiveIndex !== -1) assert.ok(timeoutIndex !== -1 && timeoutIndex < archiveIndex, failure);
+  if (archiveIndex !== -1) assert.ok(indexOf(firstSemantic) < archiveIndex, failure);
   if (jobLogIndex !== -1) assert.equal(jobLogIndex, actualLines.length - 1, failure);
 }
 
@@ -178,14 +174,17 @@ test('optional sink degradation accepts only its exact diagnostic partial orders
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], semanticLines[3], semanticLines[1], semanticLines[2],
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
-  assert.throws(() => assertExactOptionalSinkDegradation([
+  assertExactOptionalSinkDegradation([
     ...semanticLines.slice(0, -1),
     PROGRESS_ARCHIVE_DISABLED_LINE,
     semanticLines.at(-1),
-  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
-  assert.throws(() => assertExactOptionalSinkDegradation([
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
     semanticLines[0], PROGRESS_ARCHIVE_DISABLED_LINE, PROGRESS_CLEANUP_TIMEOUT_LINE, ...semanticLines.slice(1),
-  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    ...semanticLines, PROGRESS_ARCHIVE_DISABLED_LINE,
+  ].join(''), semanticLines);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], JOB_LOG_DISABLED_LINE, ...semanticLines.slice(1),
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
@@ -194,6 +193,9 @@ test('optional sink degradation accepts only its exact diagnostic partial orders
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], semanticLines[1], semanticLines[2], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], PROGRESS_ARCHIVE_DISABLED_LINE, ...semanticLines.slice(1), PROGRESS_ARCHIVE_DISABLED_LINE,
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
   assert.throws(() => assertExactOptionalSinkDegradation([
     semanticLines[0], semanticLines[1], semanticLines[1], semanticLines[2], semanticLines[3],
@@ -222,11 +224,17 @@ test('bounded foreground progress state accepts the captured Windows terminal pe
       'ZCode progress cleanup reached its time limit.', 'ZCode progress archive was disabled.',
     ],
   }, semanticMessages);
+  assertExactForegroundProgressState({
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode completed a tool call.', 'ZCode reported legacy completion; awaiting confirmed turn state.',
+      'ZCode completed the delegated turn.', 'ZCode progress archive was disabled.',
+    ],
+  }, semanticMessages);
   for (const invalid of [
     { ...capturedWindowsState, phase: 'finalizing' },
     { ...capturedWindowsState, progressPreview: [...capturedWindowsState.progressPreview.slice(1), 'ZCode completed a tool call.'] },
     { ...capturedWindowsState, progressPreview: ['ZCode completed the delegated turn.'] },
-    { ...capturedWindowsState, progressPreview: ['ZCode progress archive was disabled.', 'ZCode progress cleanup reached its time limit.'] },
+    { ...capturedWindowsState, progressPreview: ['ZCode progress archive was disabled.', 'ZCode progress archive was disabled.'] },
     { ...capturedWindowsState, phase: 'running', progressPreview: semanticMessages.slice(1, 5) },
     { ...capturedWindowsState, progressPreview: [
       'ZCode tool work is still running.', 'ZCode completed a tool call.',
