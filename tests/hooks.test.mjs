@@ -1314,12 +1314,28 @@ test('a failed SessionEnd stop is later settled by reservation scavenging before
   assert.equal(admitted.type, 'background'); assert.equal(admitted.job.ownerSessionId, 'fallback-owner-b'); assert.ok(['succeeded', 'failed'].includes((await store.readJob(cwd, job.id)).status), 'reservation scavenging must safely terminalize the released orphan before admission');
 });
 
-test('SessionEnd drains deferred owner batches without touching siblings or looping on failures', async () => {
+test('SessionEnd makes bounded owner-release progress and a later retry drains the retained suffix without touching siblings', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const owner = ownerIdForSession('many'); const sibling = ownerIdForSession('sibling');
-  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
+  const ownerSessions = [...Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`), 'new-active-session'];
+  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: ownerSessions.slice(0, -1) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_DELAY_ONCE_MS: '300' } }); await client.createSession({ workspace: cwd, sessionId: 'new-active-session' }); await client.close();
-  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500, 'repeated release must remain inside the native hook budget');
-  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions; assert.deepEqual(owners, { 'sibling-session': sibling });
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const ownershipPath = join(storage.directory, 'broker/session-owners.json');
+  const readOwners = async () => JSON.parse(await readFile(ownershipPath, 'utf8')).sessions;
+  const waitForOwners = async (predicate) => {
+    const deadline = Date.now() + 1_000; let owners;
+    do { owners = await readOwners(); if (predicate(owners)) return owners; await new Promise((resolve) => setTimeout(resolve, 10)); } while (Date.now() < deadline);
+    return owners;
+  };
+  const ownerSuffix = (owners) => Object.keys(owners).filter((sessionId) => owners[sessionId] === owner);
+  const boundedSuffix = (owners) => {
+    const retained = ownerSuffix(owners);
+    return owners['sibling-session'] === sibling && Object.keys(owners).length === retained.length + 1
+      && retained.length < ownerSessions.length && (retained.length === 0 || retained.every((sessionId, index) => sessionId === ownerSessions[ownerSessions.length - retained.length + index]));
+  };
+  const firstStarted = Date.now(); const firstEnded = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(firstEnded.code, 0, firstEnded.stderr); assert.ok(Date.now() - firstStarted < 2_500, 'first release must remain inside the native hook budget');
+  const firstOwners = await waitForOwners(boundedSuffix); assert.equal(boundedSuffix(firstOwners), true, 'first release must either finish or retain only a strict owner suffix');
+  const secondStarted = Date.now(); const secondEnded = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(secondEnded.code, 0, secondEnded.stderr); assert.ok(Date.now() - secondStarted < 2_500, 'retry release must remain inside the native hook budget');
+  const owners = await waitForOwners((value) => Object.keys(value).length === 1 && value['sibling-session'] === sibling); assert.deepEqual(owners, { 'sibling-session': sibling });
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'new-active-session'), 'a newer active session beyond the first 16 mappings must be stopped'); assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'sibling-session'));
 });
 
