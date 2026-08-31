@@ -80,8 +80,6 @@ function assertExactForegroundProgressState(job, semanticMessages) {
   }
   const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
   const terminal = 'ZCode completed the delegated turn.';
-  const terminalIndex = preview.indexOf(terminal);
-  if (terminalIndex !== -1) assert.ok(preview.indexOf(legacy) !== -1 && preview.indexOf(legacy) < terminalIndex, failure);
   for (const diagnostic of diagnostics) assert.ok(preview.filter((message) => message === diagnostic).length <= 1, failure);
   const timeoutIndex = preview.indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1));
   const archiveIndex = preview.indexOf(PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1));
@@ -98,18 +96,18 @@ function assertExactForegroundProgressState(job, semanticMessages) {
   assert.equal(job.phase, phases.get(preview.at(-1)), failure);
 
   const handshakeWindow = semanticMessages.slice(0, 6).slice(-4);
-  const suffixCandidates = [legacy, terminal, ...diagnostics];
-  const allowedPreviews = new Set();
+  const suffixCandidates = [terminal, ...diagnostics];
+  const allowedPreviews = new Set([JSON.stringify(handshakeWindow)]);
   /** @param {string[]} suffix @param {Set<string>} used */
   const enumerateSuffixes = (suffix, used) => {
     allowedPreviews.add(JSON.stringify([...handshakeWindow, ...suffix].slice(-4)));
     for (const message of suffixCandidates) {
-      if (used.has(message) || message === terminal && !used.has(legacy)
+      if (used.has(message)
         || message === PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1) && !used.has(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1))) continue;
       enumerateSuffixes([...suffix, message], new Set([...used, message]));
     }
   };
-  enumerateSuffixes([], new Set());
+  enumerateSuffixes([legacy], new Set([legacy]));
   assert.ok(allowedPreviews.has(JSON.stringify(preview)), failure);
 }
 
@@ -218,12 +216,22 @@ test('bounded foreground progress state accepts the captured Windows terminal pe
     ],
   };
   assertExactForegroundProgressState(capturedWindowsState, semanticMessages);
+  assertExactForegroundProgressState({
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode completed the delegated turn.', CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE,
+      'ZCode progress cleanup reached its time limit.', 'ZCode progress archive was disabled.',
+    ],
+  }, semanticMessages);
   for (const invalid of [
     { ...capturedWindowsState, phase: 'finalizing' },
     { ...capturedWindowsState, progressPreview: [...capturedWindowsState.progressPreview.slice(1), 'ZCode completed a tool call.'] },
     { ...capturedWindowsState, progressPreview: ['ZCode completed the delegated turn.'] },
     { ...capturedWindowsState, progressPreview: ['ZCode progress archive was disabled.', 'ZCode progress cleanup reached its time limit.'] },
     { ...capturedWindowsState, phase: 'running', progressPreview: semanticMessages.slice(1, 5) },
+    { ...capturedWindowsState, progressPreview: [
+      'ZCode tool work is still running.', 'ZCode completed a tool call.',
+      CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE, 'ZCode reported legacy completion; awaiting confirmed turn state.',
+    ] },
   ]) assert.throws(() => assertExactForegroundProgressState(invalid, semanticMessages), /unexpected bounded foreground progress state/);
 });
 
