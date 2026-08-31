@@ -3611,7 +3611,7 @@ test('snapshot read rejection degrades once to lifecycle-only and preserves auth
 test('later accepted online recovery stops snapshot reads and discards a delayed old result', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode turn started.\n',
+    heartbeat: true, completionAfterProbe: { state: 'online', acceptedOnline: 1 },
     env: { FAKE_ZCODE_SESSION_PROGRESS_RECOVERY: '1', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
