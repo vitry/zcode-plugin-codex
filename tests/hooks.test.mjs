@@ -160,15 +160,34 @@ async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId,
   const worker = { childPid: 999_999, workerLeaseId: 'd'.repeat(64) };
   value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...peerEnv } });
-  await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
-  const sent = await client.send(remoteSessionId, 'recover this accepted turn');
-  await client.close();
+  let sent;
+  try {
+    await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
+    sent = await client.send(remoteSessionId, 'recover this accepted turn');
+  } finally { await client.close(); }
   value = await store.transitionJob(cwd, value.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(), zcodeSessionId: remoteSessionId, ...worker,
   });
   value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds: ['message-user-history', 'message-assistant-history'] });
   return { store, job: value };
 }
+
+test('accepted writable fixture closes its managed client when create or send fails', async () => {
+  for (const method of ['session/create', 'session/send']) {
+    const { cwd, data } = await workspace(); const ownerSessionId = `fixture-${method.replace('/', '-')}-failure`;
+    await assert.rejects(acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: `${ownerSessionId}-remote`, peerEnv: { FAKE_ZCODE_ERROR: method } }), { code: 'ZCODE_REQUEST_FAILED' });
+    const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8'));
+    await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
+    assert.equal(await waitForProcessExitForTest(identity.pid), true, `failed ${method} fixture setup must not retain its authenticated broker socket`);
+  }
+});
+
+test('hook broker cleanup retries a transient owner release and preserves final failures', async () => {
+  let alive = true; let releases = 0;
+  await releaseOwnerUntilBrokerExitForTest({ pid: 42_426, isAlive: () => alive, waitForExit: async () => !alive, release: async () => { releases += 1; if (releases === 1) throw new Error('transient release'); alive = false; } });
+  assert.equal(releases, 2);
+  await assert.rejects(releaseOwnerUntilBrokerExitForTest({ pid: 42_427, isAlive: () => true, waitForExit: async () => false, release: async () => { throw new Error('persistent release'); } }), /persistent release/);
+});
 
 async function exactBindingRecordBytes(data, cwd, childAgentId) {
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
@@ -190,6 +209,16 @@ async function waitForProcessExitForTest(pid, timeoutMs = process.platform === '
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && isAlive(pid)) await new Promise((resolve) => setTimeout(resolve, 25));
   return !isAlive(pid);
+}
+
+async function releaseOwnerUntilBrokerExitForTest(input) {
+  const isAlive = input.isAlive ?? processAlive; const waitForExit = input.waitForExit ?? ((pid) => waitForProcessExitForTest(pid, undefined, isAlive)); const errors = [];
+  for (let attempt = 0; attempt < 3 && isAlive(input.pid); attempt += 1) {
+    try { await input.release(); } catch (error) { errors.push(error); }
+    if (!isAlive(input.pid) || await waitForExit(input.pid)) return;
+  }
+  const diagnostics = errors.length ? `; release errors: ${errors.map((error) => error?.message ?? String(error)).join(' | ')}` : '';
+  assert.equal(isAlive(input.pid), false, `fixture broker ${input.pid} did not exit naturally${diagnostics}`);
 }
 
 test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
@@ -1242,11 +1271,10 @@ test('SessionEnd remains bounded when existing stop acknowledgement is unavailab
     assert.equal(typeof recordedIdentity.instanceId === 'string' && recordedIdentity.instanceId.length > 0, true, 'fixture broker instance is invalid');
     assert.equal(typeof recordedIdentity.endpoint === 'string' && recordedIdentity.endpoint.length > 0, true, 'fixture broker endpoint is invalid');
     assert.equal(typeof recordedIdentity.brokerToken === 'string' && recordedIdentity.brokerToken.length > 0, true, 'fixture broker token is invalid');
-    for (let attempt = 0; attempt < 3 && processAlive(recordedIdentity.pid); attempt += 1) {
-      await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
-      if (await waitForProcessExitForTest(recordedIdentity.pid)) break;
-    }
-    assert.equal(processAlive(recordedIdentity.pid), false, `bounded settlement fixture broker ${recordedIdentity.pid} must exit naturally`);
+    await releaseOwnerUntilBrokerExitForTest({
+      pid: recordedIdentity.pid,
+      release: () => releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs }),
+    });
     cleanupComplete = true;
   };
   t.after(cleanupBroker);
