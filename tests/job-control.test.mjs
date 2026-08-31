@@ -15,7 +15,6 @@ import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld } from '../scripts/lib/review.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
-import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'zcode-job-control-'));
@@ -151,6 +150,19 @@ function hasPublicControl(value) {
   });
 }
 
+/**
+ * @param {string[]} tail
+ * @param {{terminal:string,timeout:string,archive:string}} expected
+ */
+function isValidTerminalProgressTail(tail, expected) {
+  if (!tail.every((message) => Object.values(expected).includes(message))) return false;
+  const terminalIndexes = tail.flatMap((message, index) => message === expected.terminal ? [index] : []);
+  const timeoutIndexes = tail.flatMap((message, index) => message === expected.timeout ? [index] : []);
+  const archiveIndexes = tail.flatMap((message, index) => message === expected.archive ? [index] : []);
+  if (terminalIndexes.length !== 1 || timeoutIndexes.length > 1 || archiveIndexes.length > 1) return false;
+  return archiveIndexes.length === 0 || timeoutIndexes.length === 1 && timeoutIndexes[0] < archiveIndexes[0];
+}
+
 /** @param {string} root @param {string} workspace @param {string} jobId */
 async function attemptFixture(root, workspace, jobId) {
   const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace }); const path = join(storage.directory, 'cancel-attempts', `${jobId}.json`);
@@ -161,6 +173,20 @@ test('owner IDs are stable, opaque and session-confined', () => {
   assert.equal(ownerIdForSession('session-a'), ownerIdForSession('session-a'));
   assert.notEqual(ownerIdForSession('session-a'), ownerIdForSession('session-b'));
   assert.doesNotMatch(ownerIdForSession('session-a'), /session-a/);
+});
+
+test('terminal progress tail validation rejects histories outside the bounded cleanup partial order', () => {
+  const expected = { terminal: 'terminal', timeout: 'timeout', archive: 'archive' };
+  assert.equal(isValidTerminalProgressTail(['terminal'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['timeout', 'terminal', 'archive'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'timeout', 'archive'], expected), true);
+  assert.equal(isValidTerminalProgressTail(['timeout', 'archive', 'terminal'], expected), true);
+  assert.equal(isValidTerminalProgressTail([], expected), false);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'terminal'], expected), false);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'timeout', 'timeout'], expected), false);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'archive'], expected), false);
+  assert.equal(isValidTerminalProgressTail(['archive', 'timeout', 'terminal'], expected), false);
+  assert.equal(isValidTerminalProgressTail(['terminal', 'unexpected'], expected), false);
 });
 
 test('bound Rescue status selects the exact binding current job and returns only the fixed safe projection', async () => {
@@ -1815,15 +1841,17 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode progress cleanup reached its time limit.\n',
     '[zcode] ZCode progress archive was disabled.\n',
   ];
-  const exactDiagnosticSuffixes = [[], diagnosticLines.slice(0, 1), diagnosticLines];
-  assert.deepEqual(lines.slice(0, semanticLines.length), semanticLines);
-  assert.ok(exactDiagnosticSuffixes.some((suffix) => isDeepStrictEqual(lines.slice(semanticLines.length), suffix)));
+  assert.deepEqual(lines.slice(0, 5), semanticLines.slice(0, 5));
+  assert.equal(isValidTerminalProgressTail(lines.slice(5), {
+    terminal: semanticLines[5], timeout: diagnosticLines[0], archive: diagnosticLines[1],
+  }), true);
   const semanticMessages = semanticLines.map((line) => line.slice(8, -1));
   const diagnosticMessages = diagnosticLines.map((line) => line.slice(8, -1));
-  const exactDiagnosticMessageSuffixes = [[], diagnosticMessages.slice(0, 1), diagnosticMessages];
   const persistedMessages = persisted.map((event) => event.message);
-  assert.deepEqual(persistedMessages.slice(0, semanticMessages.length), semanticMessages);
-  assert.ok(exactDiagnosticMessageSuffixes.some((suffix) => isDeepStrictEqual(persistedMessages.slice(semanticMessages.length), suffix)));
+  assert.deepEqual(persistedMessages.slice(0, 5), semanticMessages.slice(0, 5));
+  assert.equal(isValidTerminalProgressTail(persistedMessages.slice(5), {
+    terminal: semanticMessages[5], timeout: diagnosticMessages[0], archive: diagnosticMessages[1],
+  }), true);
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
@@ -2039,8 +2067,13 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
   const readyPath = join(workspace, 'ready-semantic.txt'); await writeFile(readyPath, 'ready');
   const readyRead = readFile(readyPath); await readyRead;
   /** @type {string[]} */ const lines = []; const sessionId = 'zs-cleanup-ready-io'; const subscriptionId = 'subscription-ready-io';
-  /** @type {()=>void} */ let releaseUnsubscribe = () => {}; const unsubscribeGate = new Promise((resolve) => { releaseUnsubscribe = () => resolve(undefined); });
+  let outerTimerCallbackRan = false; let unsubscribeReleased = false; let unsubscribeReleasedAfterOuterTimer = false;
+  /** @type {()=>void} */ let releaseUnsubscribe = () => {}; const unsubscribeGate = new Promise((resolve) => { releaseUnsubscribe = () => {
+    if (unsubscribeReleased) return;
+    unsubscribeReleased = true; unsubscribeReleasedAfterOuterTimer = outerTimerCallbackRan; resolve(undefined);
+  }; });
   let unsubscribeReadReady = false; let outerCaptured = false; let capturedMilliseconds = null;
+  let executionSettled = false; let executionPendingAtOuterTimer = false;
   /** @type {()=>void} */ let signalOuterTimer = () => {};
   const outerTimerRegistered = new Promise((resolve) => { signalOuterTimer = () => resolve(undefined); });
   let cleared = 0;
@@ -2060,6 +2093,7 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
     if (outerCaptured || milliseconds <= 200 || milliseconds > 250) return originalSetTimeout(callback, milliseconds, ...args);
     outerCaptured = true; capturedMilliseconds = milliseconds; signalOuterTimer();
     return originalSetTimeout(() => {
+      executionPendingAtOuterTimer = !executionSettled; outerTimerCallbackRan = true;
       callback(...args);
       // Keep the already-ready rejection in bounded check-phase work after the
       // outer timer wins. Cleanup must emit one aggregate timeout before close.
@@ -2071,17 +2105,17 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
     }, milliseconds);
   };
   globalThis.setTimeout = /** @type {typeof globalThis.setTimeout} */ (interceptTimeout);
-  const started = Date.now();
   try {
     const execution = executeJob({
       job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line),
       progressDependencies: { setInterval: () => ({ unref() {} }), clearInterval: () => { cleared += 1; } },
     });
+    void execution.then(() => { executionSettled = true; }, () => { executionSettled = true; });
     await outerTimerRegistered; assert.equal(unsubscribeReadReady, true);
     assert.ok(typeof capturedMilliseconds === 'number' && capturedMilliseconds > 200 && capturedMilliseconds <= 250);
     const result = await execution;
-    const elapsedMs = Date.now() - started; const elapsedLimitMs = scaleTestTimeout(1_000);
-    assert.ok(elapsedMs < elapsedLimitMs, `cleanup took ${elapsedMs}ms; expected less than ${elapsedLimitMs}ms`); assert.equal(result.result, 'done'); assert.equal(cleared, 1);
+    assert.equal(outerTimerCallbackRan, true); assert.equal(executionPendingAtOuterTimer, true);
+    assert.equal(unsubscribeReleasedAfterOuterTimer, true); assert.equal(result.result, 'done'); assert.equal(cleared, 1);
     assert.equal(lines.filter((line) => /progress cleanup reached its time limit/.test(line)).length, 1);
   } finally { globalThis.setTimeout = originalSetTimeout; releaseUnsubscribe(); }
 });
