@@ -1806,12 +1806,14 @@ test('owner release aborts its unlocked winner read after a reset compensation m
         await Promise.race([operation, new Promise((_, rejectPromise) => { timer = setTimeout(() => rejectPromise(new Error(`owner release cleanup timed out: ${describeResidual()}`)), scaleTestTimeout(500)); })]);
       } finally { clearTimeout(timer); }
     };
+    try { await waitForCleanup(releaseOutcome ?? Promise.resolve(), () => `caller residual=${releaseOutcome ? (releaseOutcomeSettled ? 'settled' : 'pending') : 'not-started'}`); } catch (error) { cleanupErrors.push(error); }
     try {
-      try { await waitForCleanup(releaseOutcome ?? Promise.resolve(), () => `caller residual=${releaseOutcome ? (releaseOutcomeSettled ? 'settled' : 'pending') : 'not-started'}`); } catch (error) { cleanupErrors.push(error); }
       for (let turn = 0; turn < 100 && broker.releaseTasks.size; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
-      try { await waitForCleanup(Promise.allSettled([...broker.releaseTasks]), () => `task residual=${broker.releaseTasks.size}`); } catch (error) { cleanupErrors.push(error); }
-      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, `owner release cleanup failed: caller residual=${releaseOutcome ? (releaseOutcomeSettled ? 'settled' : 'pending') : 'not-started'}; task residual=${broker.releaseTasks.size}`);
-    } finally { await rm(directory, { recursive: true, force: true }); }
+      await waitForCleanup(Promise.allSettled([...broker.releaseTasks]), () => `task residual=${broker.releaseTasks.size}`);
+    } catch (error) { cleanupErrors.push(error); }
+    try { await rm(directory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, `owner release cleanup failed: caller residual=${releaseOutcome ? (releaseOutcomeSettled ? 'settled' : 'pending') : 'not-started'}; task residual=${broker.releaseTasks.size}`);
   });
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(1_000)); releaseOutcome = releasing.then((value) => ({ kind: 'fulfilled', value }), (error) => ({ kind: 'rejected', error })); void releaseOutcome.then(() => { releaseOutcomeSettled = true; });
   const boundary = await Promise.race([secondWriteEntered.then(() => 'second-write'), releaseOutcome.then(() => 'release-settled')]); assert.equal(boundary, 'second-write'); assert.equal(writes, 2);
