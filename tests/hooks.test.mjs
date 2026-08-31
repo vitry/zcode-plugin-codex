@@ -19,6 +19,7 @@ import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.
 import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
 import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -1322,7 +1323,7 @@ test('SessionEnd makes bounded owner-release progress and a later retry drains t
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const ownershipPath = join(storage.directory, 'broker/session-owners.json');
   const readOwners = async () => JSON.parse(await readFile(ownershipPath, 'utf8')).sessions;
   const waitForOwners = async (predicate) => {
-    const deadline = Date.now() + 1_000; let owners;
+    const deadline = Date.now() + scaleTestTimeout(1_000); let owners;
     do { owners = await readOwners(); if (predicate(owners)) return owners; await new Promise((resolve) => setTimeout(resolve, 10)); } while (Date.now() < deadline);
     return owners;
   };
