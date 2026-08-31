@@ -30,9 +30,11 @@ test('CI timeout multiplier is bounded and defaults to one', () => {
   assert.equal(scaleTestTimeout(500, { ZCODE_TEST_TIMEOUT_MULTIPLIER: '3' }), 1_500);
 });
 
-async function withTestDeadlineKeepalive(operation) {
-  const keepalive = setInterval(() => {}, 1_000);
-  try { return await operation(); } finally { clearInterval(keepalive); }
+async function withTestDeadlineKeepalive(operation, timeoutMs = 2_000) {
+  /** @type {NodeJS.Timeout|undefined} */ let guard;
+  try {
+    return await Promise.race([operation(), new Promise((_, rejectPromise) => { guard = setTimeout(() => rejectPromise(new Error('test deadline keepalive timed out')), timeoutMs); })]);
+  } finally { clearTimeout(guard); }
 }
 
 async function boundedTestPromise(promise, label, timeoutMs = 1_000) {
@@ -45,6 +47,10 @@ async function boundedTestPromise(promise, label, timeoutMs = 1_000) {
     })]);
   } finally { clearTimeout(timer); }
 }
+
+test('test deadline keepalive bounds an operation that never settles', { timeout: scaleTestTimeout(500) }, async () => {
+  await assert.rejects(withTestDeadlineKeepalive(() => new Promise(() => {}), scaleTestTimeout(50)), /test deadline keepalive timed out/u);
+});
 
 async function compactBrokerTemp() {
   const base = process.platform === 'win32' ? tmpdir() : realpathSync('/tmp');
@@ -1816,8 +1822,10 @@ test('owner release aborts its unlocked winner read after a reset compensation m
     if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, `owner release cleanup failed: caller residual=${releaseOutcome ? (releaseOutcomeSettled ? 'settled' : 'pending') : 'not-started'}; task residual=${broker.releaseTasks.size}`);
   });
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(1_000)); releaseOutcome = releasing.then((value) => ({ kind: 'fulfilled', value }), (error) => ({ kind: 'rejected', error })); void releaseOutcome.then(() => { releaseOutcomeSettled = true; });
-  const boundary = await Promise.race([secondWriteEntered.then(() => 'second-write'), releaseOutcome.then(() => 'release-settled')]); assert.equal(boundary, 'second-write'); assert.equal(writes, 2);
-  await withTestDeadlineKeepalive(() => assert.rejects(releasing, { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' }));
+  await withTestDeadlineKeepalive(async () => {
+    const boundary = await Promise.race([secondWriteEntered.then(() => 'second-write'), releaseOutcome.then(() => 'release-settled')]); assert.equal(boundary, 'second-write'); assert.equal(writes, 2);
+    await assert.rejects(releasing, { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' });
+  }, scaleTestTimeout(2_000));
   for (let turn = 0; turn < 100 && broker.releaseTasks.size; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
   assert.equal(broker.releaseTasks.size, 0);
   assert.equal(observedSignal?.aborted, true); assert.equal(observedSignal, compensationSignal); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(broker.sessionOwners.get(siblingId)?.ownerId, ownerId); assert.equal(broker.uncertainOwnerReleases.get(sessionId), ownerId); assert.equal(broker.uncertainOwnerReleases.get(siblingId), ownerId); assert.equal(broker.stoppingSessions.has(sessionId), false); assert.equal(broker.stoppingSessions.has(siblingId), false);
