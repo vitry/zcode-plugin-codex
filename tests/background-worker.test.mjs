@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -10,22 +11,35 @@ import { startBackgroundWorker } from '../scripts/lib/background-worker.mjs';
 
 test('background startup timeout terminates and reaps the unacknowledged worker', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-background-worker-'));
-  const worker = join(directory, 'worker.mjs'); const pidFile = join(directory, 'pid');
+  const worker = join(directory, 'worker.mjs');
   t.after(() => rm(directory, { force: true, recursive: true }));
-  await writeFile(worker, "import { writeFileSync } from 'node:fs'; writeFileSync(process.env.PID_FILE, String(process.pid)); setInterval(() => {}, 1000);\n");
+  await writeFile(worker, 'setInterval(() => {}, 1000);\n');
+  /** @type {import('node:child_process').ChildProcess|undefined} */ let child;
+  let triggerDeadline = () => {}; let scheduled; let exitObserved = false;
+  let markSpawned = () => {}; let markExited = () => {};
+  const spawned = new Promise((resolve) => { markSpawned = () => resolve(undefined); });
+  const exited = new Promise((resolve) => { markExited = () => resolve(undefined); });
+  const spawnWorker = /** @type {any} */ ((/** @type {string} */ command, /** @type {string[]} */ args, /** @type {any} */ options) => {
+    const exactChild = spawn(command, args, options); child = exactChild;
+    exactChild.once('spawn', markSpawned);
+    exactChild.once('exit', () => { exitObserved = true; markExited(); });
+    return exactChild;
+  });
 
-  await assert.rejects(startBackgroundWorker({
+  const pending = startBackgroundWorker({
     companionPath: worker, jobId: 'a'.repeat(64), executionCapability: 'private-capability', cwd: directory,
-    env: { ...process.env, PID_FILE: pidFile }, timeoutMs: 100,
-  }), { code: 'BACKGROUND_WORKER_START_TIMEOUT' });
-
-  const pid = Number(await readFile(pidFile, 'utf8'));
-  const reapDeadline = Date.now() + 2_000;
-  while (Date.now() < reapDeadline) {
-    try { process.kill(pid, 0); } catch { break; }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    env: process.env, timeoutMs: 100,
+    dependencies: {
+      spawn: spawnWorker,
+      setTimeout: (callback, milliseconds) => { triggerDeadline = callback; scheduled = milliseconds; return callback; },
+      clearTimeout: () => {},
+    },
+  });
+  await spawned; assert.equal(scheduled, 100); triggerDeadline();
+  await assert.rejects(pending, { code: 'BACKGROUND_WORKER_START_TIMEOUT' });
+  assert.equal(exitObserved, true);
+  await exited;
+  assert.ok(child && (child.exitCode !== null || child.signalCode !== null));
 });
 
 test('background startup schedules the production acknowledgement deadline at 30 seconds', async (t) => {
