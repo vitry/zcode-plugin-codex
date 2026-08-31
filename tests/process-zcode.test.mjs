@@ -282,7 +282,7 @@ test('releaseTurn is local and idempotent and rejects a pending observer', async
   assert.equal(protocol.subscribers.size, 0);
   assert.equal(child.stdin.readableLength, 0, 'local release must not send an upstream RPC');
   for (const invalid of ['', 'bad\nsession', null]) {
-    assert.throws(() => client.observeCompletion(invalid), { code: 'ZCODE_INPUT_INVALID' });
+    await assert.rejects(client.observeCompletion(invalid), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
     assert.throws(() => client.releaseTurn(invalid), { code: 'ZCODE_INPUT_INVALID' });
   }
 });
@@ -307,6 +307,42 @@ test('releaseTurn aborts and clears permission task state without writing a stal
   assert.equal(protocol.serverTaskControllers.size, 0);
   assert.equal(protocol.serverTasks.size, 0);
   assert.equal(child.stdin.readableLength, 0);
+});
+
+test('completion expiry cancels pending permission tasks before late resolution or rejection', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+    const protocol = new ZCodeProtocolClient(child); const failures = [];
+    protocol.setCloseHandler((error) => failures.push(error));
+    protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+    const observed = protocol.observeCompletion('session-1');
+    const originalSetTimeout = globalThis.setTimeout; let expire;
+    globalThis.setTimeout = (callback, timeoutMs, ...args) => {
+      if (timeoutMs === 10 * 60_000) { expire = () => callback(...args); return { unref() {} }; }
+      return originalSetTimeout(callback, timeoutMs, ...args);
+    };
+    try { protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } })); }
+    finally { globalThis.setTimeout = originalSetTimeout; }
+    await observed;
+    assert.equal(typeof expire, 'function');
+
+    let handlerSignal; let settle;
+    protocol.setPermissionHandler((_request, signal) => {
+      handlerSignal = signal;
+      return new Promise((resolve, reject) => { settle = outcome === 'resolve' ? () => resolve({ decision: 'deny' }) : () => reject(new Error('late rejection')); });
+    });
+    protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expire();
+    assert.equal(handlerSignal.aborted, true, outcome);
+    assert.equal(protocol.turnState('session-1'), null, outcome);
+    for (const collection of [protocol.serverTasks, protocol.serverTaskControllers, protocol.serverTaskSessions, protocol.serverTasksByController, protocol.permissionRequestIds]) assert.equal(collection.size, 0, outcome);
+    settle();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(child.stdin.readableLength, 0, outcome);
+    assert.equal(protocol.closed, false, outcome);
+    assert.deepEqual(failures, [], outcome);
+  }
 });
 
 test('ordinary completion waiting remains destructive', async () => {
