@@ -54,6 +54,64 @@ const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill ca
 const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached its time limit.\n';
 const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
 const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
+const CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE = 'ZCode conversation progress cleanup was incomplete.';
+
+/** The durable preview is bounded and optional cleanup may win after the
+ * authoritative result. Only the exact semantic/diagnostic partial order is valid.
+ * @param {any} job @param {string[]} semanticMessages */
+function assertExactForegroundProgressState(job, semanticMessages) {
+  const failure = `unexpected bounded foreground progress state:\n${JSON.stringify(job)}`;
+  const preview = job?.progressPreview;
+  assert.equal(job?.status, 'succeeded', failure);
+  assert.ok(Array.isArray(preview) && preview.length > 0 && preview.length <= 4, failure);
+  assert.equal(new Set(semanticMessages).size, semanticMessages.length, failure);
+  const diagnostics = [
+    CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE,
+    PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1),
+    PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1),
+  ];
+  const allowed = new Set([...semanticMessages, ...diagnostics]);
+  assert.ok(preview.every((message) => allowed.has(message)), failure);
+  assert.equal(new Set(preview).size, preview.length, failure);
+
+  const semantic = preview.filter((message) => semanticMessages.includes(message));
+  for (let index = 1; index < semantic.length; index += 1) {
+    assert.ok(semanticMessages.indexOf(semantic[index - 1]) < semanticMessages.indexOf(semantic[index]), failure);
+  }
+  const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
+  const terminal = 'ZCode completed the delegated turn.';
+  const terminalIndex = preview.indexOf(terminal);
+  if (terminalIndex !== -1) assert.ok(preview.indexOf(legacy) !== -1 && preview.indexOf(legacy) < terminalIndex, failure);
+  for (const diagnostic of diagnostics) assert.ok(preview.filter((message) => message === diagnostic).length <= 1, failure);
+  const timeoutIndex = preview.indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1));
+  const archiveIndex = preview.indexOf(PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1));
+  if (archiveIndex !== -1) assert.ok(timeoutIndex !== -1 && timeoutIndex < archiveIndex, failure);
+
+  /** @type {Map<string,string>} */
+  const phases = new Map();
+  phases.set(/** @type {string} */ (semanticMessages[0]), 'starting');
+  for (const message of semanticMessages.slice(1, 3)) phases.set(message, 'running');
+  phases.set(/** @type {string} */ (semanticMessages[3]), 'waiting');
+  for (const message of semanticMessages.slice(4, 6)) phases.set(message, 'running');
+  phases.set(legacy, 'waiting'); phases.set(terminal, 'finalizing');
+  for (const message of diagnostics) phases.set(message, 'waiting');
+  assert.equal(job.phase, phases.get(preview.at(-1)), failure);
+
+  const handshakeWindow = semanticMessages.slice(0, 6).slice(-4);
+  const suffixCandidates = [legacy, terminal, ...diagnostics];
+  const allowedPreviews = new Set();
+  /** @param {string[]} suffix @param {Set<string>} used */
+  const enumerateSuffixes = (suffix, used) => {
+    allowedPreviews.add(JSON.stringify([...handshakeWindow, ...suffix].slice(-4)));
+    for (const message of suffixCandidates) {
+      if (used.has(message) || message === terminal && !used.has(legacy)
+        || message === PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1) && !used.has(PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1))) continue;
+      enumerateSuffixes([...suffix, message], new Set([...used, message]));
+    }
+  };
+  enumerateSuffixes([], new Set());
+  assert.ok(allowedPreviews.has(JSON.stringify(preview)), failure);
+}
 
 /** Semantic progress preserves its authoritative partial order while optional
  * sink diagnostics may race within their explicitly bounded relationships.
@@ -145,6 +203,28 @@ test('optional sink degradation accepts only its exact diagnostic partial orders
   assert.throws(() => assertExactOptionalSinkDegradation([
     ...semanticLines, '[zcode] unexpected diagnostic.\n',
   ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+});
+
+test('bounded foreground progress state accepts the captured Windows terminal persistence race and rejects invalid shapes', () => {
+  const semanticMessages = [
+    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
+    'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.', 'ZCode completed the delegated turn.',
+  ];
+  const capturedWindowsState = {
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode is retrying the model request.', 'ZCode tool work is still running.',
+      'ZCode completed a tool call.', 'ZCode reported legacy completion; awaiting confirmed turn state.',
+    ],
+  };
+  assertExactForegroundProgressState(capturedWindowsState, semanticMessages);
+  for (const invalid of [
+    { ...capturedWindowsState, phase: 'finalizing' },
+    { ...capturedWindowsState, progressPreview: [...capturedWindowsState.progressPreview.slice(1), 'ZCode completed a tool call.'] },
+    { ...capturedWindowsState, progressPreview: ['ZCode completed the delegated turn.'] },
+    { ...capturedWindowsState, progressPreview: ['ZCode progress archive was disabled.', 'ZCode progress cleanup reached its time limit.'] },
+    { ...capturedWindowsState, phase: 'running', progressPreview: semanticMessages.slice(1, 5) },
+  ]) assert.throws(() => assertExactForegroundProgressState(invalid, semanticMessages), /unexpected bounded foreground progress state/);
 });
 
 /** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
@@ -540,19 +620,34 @@ async function companionWithArchiveHandshake(context, args) {
     FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_NONCE: nonce, FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_REACHED: reached,
   });
   let result;
+  /** @type {string|undefined} */ let durableJobId;
   try {
     const storage = await resolveWorkspaceStorage(context);
     for (const [index, message] of expected.entries()) {
       await waitFor(async () => {
-        const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
-        for (const name of names.filter((candidate) => candidate.endsWith('.log'))) {
-          if ((await readFile(join(storage.directory, 'jobs', name), 'utf8').catch(() => '')).includes(message)) return true;
+        const jobsDirectory = join(storage.directory, 'jobs');
+        if (durableJobId) {
+          const job = await readFile(join(jobsDirectory, `${durableJobId}.json`), 'utf8').then(JSON.parse).catch(() => null);
+          const log = await readFile(join(jobsDirectory, `${durableJobId}.log`), 'utf8').catch(() => '');
+          return job?.id === durableJobId && job.workspace === storage.workspacePath
+            && job.command === 'rescue' && job.status === 'running'
+            && job.progressPreview?.includes(message) && log.includes(message);
+        }
+        const names = await readdir(jobsDirectory).catch(() => []);
+        for (const name of names.filter((candidate) => /^[a-f0-9]{64}\.json$/u.test(candidate))) {
+          const job = await readFile(join(jobsDirectory, name), 'utf8').then(JSON.parse).catch(() => null);
+          if (job?.workspace !== storage.workspacePath || job.command !== 'rescue' || job.status !== 'running'
+            || !job.progressPreview?.includes(message)) continue;
+          const jobId = name.slice(0, -'.json'.length);
+          const log = await readFile(join(jobsDirectory, `${jobId}.log`), 'utf8').catch(() => '');
+          if (job.id === jobId && log.includes(message)) { durableJobId = jobId; return true; }
         }
         return false;
-      }, `archive did not durably append semantic event ${index + 1}`);
+      }, `exact job did not durably persist semantic event ${index + 1} to both preview and archive`);
       await atomicWriteJson(gate, { version: 1, nonce, acknowledged: index + 1 });
     }
     result = await execution;
+    assert.equal(result.json?.job?.id, durableJobId, 'archive handshake must remain pinned to the completed current job');
     assert.deepEqual(JSON.parse(await readFile(reached, 'utf8')), { version: 1, nonce, sequence: expected.length });
   } finally {
     await atomicWriteJson(gate, { version: 1, nonce, acknowledged: expected.length }).catch(() => {});
@@ -3210,30 +3305,35 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(result.json.job.status, 'succeeded'); assert.equal(result.json.result, 'done');
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, result.json.job.resultArtifact), 'utf8'), result.json.result);
-  assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
-  assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
-  assert.match(result.stderr, /\[zcode\] ZCode started a tool call\./);
-  assert.match(result.stderr, /\[zcode\] ZCode completed a tool call\./);
-  const status = await companion(context, ['status', result.json.job.id]);
-  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
-  assert.equal(status.json.job.phase, 'finalizing');
-  assert.ok(Date.parse(status.json.job.lastActivityAt));
-  assert.deepEqual(status.json.job.progressPreview, [
-    'ZCode tool work is still running.',
-    'ZCode completed a tool call.',
-    'ZCode reported legacy completion; awaiting confirmed turn state.',
-    'ZCode completed the delegated turn.',
-  ]);
-  const log = await readFile(status.json.job.logFile, 'utf8');
-  const archivedMessages = [
+  const semanticMessages = [
     'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
     'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
-    'ZCode reported legacy completion; awaiting confirmed turn state.',
-    'ZCode completed the delegated turn.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.', 'ZCode completed the delegated turn.',
   ];
+  assertExactOptionalSinkDegradation(result.stderr, [
+    ...semanticMessages.slice(0, -1).map((message) => `[zcode] ${message}\n`),
+    `[zcode] ${CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE}\n`,
+    `[zcode] ${semanticMessages.at(-1)}\n`,
+  ]);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
+  assert.equal(status.json.job.status, 'succeeded');
+  assert.ok(Date.parse(status.json.job.lastActivityAt));
+  assertExactForegroundProgressState(status.json.job, semanticMessages);
+  const log = await readFile(status.json.job.logFile, 'utf8');
+  const archivedMessages = semanticMessages.slice(0, 6);
   let previousIndex = -1;
   for (const message of archivedMessages) {
+    assert.equal(log.split(message).length - 1, 1, `${message} must be archived exactly once`);
     const index = log.indexOf(message); assert.ok(index > previousIndex, `${message} must be archived in receive order`); previousIndex = index;
+  }
+  const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
+  const terminal = 'ZCode completed the delegated turn.';
+  const legacyCount = log.split(legacy).length - 1; const terminalCount = log.split(terminal).length - 1;
+  assert.ok([0, 1].includes(legacyCount)); assert.ok([0, 1].includes(terminalCount));
+  if (terminalCount === 1) {
+    assert.equal(legacyCount, 1);
+    assert.ok(log.indexOf(legacy) < log.indexOf(terminal), 'archived terminal completion must follow legacy completion');
   }
   const assistantBlock = 'Assistant message\ndone\n';
   const finalBlock = 'Final output\ndone\n';
