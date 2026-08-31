@@ -1726,10 +1726,38 @@ test('owner release cleans sixteen subscriptions concurrently within one shared 
 });
 
 test('an idle owner release keeps its valid stop acknowledgement through malformed cleanup', async (t) => {
-  for (const closeMode of ['1000ms', 'nonsettle']) await t.test(closeMode, { timeout: 2_000 }, async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-close-budget-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = `release-close-owner-${closeMode}`; const sessionId = `release-close-session-${closeMode}`; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '9'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.conversationSubscriptions.set('release-close-subscription', { socket, topic: `conversation/${sessionId}`, subscriptionId: `release-close-sub-${closeMode}`, connectionId: `release-close-connection-${closeMode}`, sessionId, ownerId }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; let closeCalls = 0; const protocol = { request: async (method) => method === 'session/stop' ? {} : [], cancelTurn() {}, close: () => { closeCalls += 1; if (closeMode === 'nonsettle') return new Promise(() => {}); return new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, 1_000); timer.unref?.(); }); } }; broker.protocol = protocol;
-    const started = Date.now(); let timeout; const timedOut = Symbol('release-timeout'); const outcome = await Promise.race([broker.releaseOwner(socket, ownerId, []), new Promise((resolvePromise) => { timeout = setTimeout(() => resolvePromise(timedOut), 700); })]); clearTimeout(timeout); const elapsed = Date.now() - started;
-    assert.notEqual(outcome, timedOut); assert.ok(elapsed < 550, `release waited for protocol close cleanup: ${elapsed}ms`); assert.deepEqual(outcome.releasedSessionIds, [sessionId]); assert.deepEqual(outcome.failedSessionIds, []); assert.equal(closeCalls, 1); assert.equal(broker.orphanedConversationSubscriptions.size, 1); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(Object.hasOwn(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, sessionId), false); await rm(directory, { recursive: true, force: true });
+  for (const closeMode of ['1000ms', 'nonsettle']) await t.test(closeMode, { timeout: scaleTestTimeout(3_000) }, async (subtest) => {
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-close-budget-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = `release-close-owner-${closeMode}`; const sessionId = `release-close-session-${closeMode}`; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '9'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.conversationSubscriptions.set('release-close-subscription', { socket, topic: `conversation/${sessionId}`, subscriptionId: `release-close-sub-${closeMode}`, connectionId: `release-close-connection-${closeMode}`, sessionId, ownerId }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true;
+    let closeCalls = 0; let closeSettled = false; let closeDelayMs; let signalCloseEntered; let resolveDelayedClose; let releasing;
+    const closeEntered = new Promise((resolvePromise) => { signalCloseEntered = resolvePromise; });
+    const delayedClose = new Promise((resolvePromise) => { resolveDelayedClose = resolvePromise; }).then(() => { closeSettled = true; });
+    const protocol = {
+      request: async (method) => method === 'session/stop' ? {} : [], cancelTurn() {},
+      close: () => {
+        closeCalls += 1; closeDelayMs = closeMode === '1000ms' ? 1_000 : undefined; signalCloseEntered();
+        return closeMode === 'nonsettle' ? new Promise(() => {}) : delayedClose;
+      },
+    };
+    broker.protocol = protocol;
+    subtest.after(async () => {
+      resolveDelayedClose(); const cleanupErrors = [];
+      try { if (releasing) await withTestDeadlineKeepalive(() => releasing, scaleTestTimeout(500)); } catch (error) { cleanupErrors.push(error); }
+      try { await rm(directory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
+      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'owner release close fixture cleanup failed');
+    });
+
+    let releaseSettled = false;
+    releasing = broker.releaseOwner(socket, ownerId, []);
+    void releasing.then(() => { releaseSettled = true; }, () => { releaseSettled = true; });
+    await withTestDeadlineKeepalive(() => closeEntered, scaleTestTimeout(2_000));
+    assert.equal(releaseSettled, false); assert.equal(closeSettled, false);
+    const outcome = await withTestDeadlineKeepalive(() => releasing, scaleTestTimeout(2_000));
+    assert.equal(releaseSettled, true); assert.equal(closeSettled, false); assert.equal(closeDelayMs, closeMode === '1000ms' ? 1_000 : undefined);
+    assert.deepEqual(outcome.releasedSessionIds, [sessionId]); assert.deepEqual(outcome.failedSessionIds, []); assert.equal(closeCalls, 1); assert.equal(broker.releaseTasks.size, 0); assert.equal(broker.admission.ownerStates.has(ownerId), false); assert.equal(broker.admission.sessionLeases.has(sessionId), false); assert.equal(broker.admission.activeSessionCount, 0); assert.equal(broker.admission.activeCount, 0); assert.equal(broker.stoppingSessions.has(sessionId), false); assert.equal(broker.retiredProtocolGeneration?.status, 'pending'); assert.equal(broker.orphanedConversationSubscriptions.size, 1); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(Object.hasOwn(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, sessionId), false);
+    if (closeMode === '1000ms') {
+      const retired = broker.retiredProtocolGeneration; resolveDelayedClose(); await retired.closePromise;
+      assert.equal(closeSettled, true); assert.equal(broker.retiredProtocolGeneration, null); assert.equal(broker.orphanedConversationSubscriptions.size, 0);
+    }
   });
 });
 
