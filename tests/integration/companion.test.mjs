@@ -55,17 +55,46 @@ const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached it
 const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
 const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
 
-/** The progress archive is degraded only after the shared cleanup deadline;
+/** The progress archive is degraded only after the shared cleanup deadline,
+ * either immediately before final completion or after all semantic lines;
  * the independently fenced job log may then report its own terminal suffix.
  * @param {string} actual @param {string[]} semanticLines */
 function assertExactOptionalSinkDegradation(actual, semanticLines) {
   const progressSuffixes = [[], [PROGRESS_CLEANUP_TIMEOUT_LINE], [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE]];
-  const candidates = progressSuffixes.flatMap((suffix) => [
-    [...semanticLines, ...suffix],
-    [...semanticLines, ...suffix, JOB_LOG_DISABLED_LINE],
-  ]).map((lines) => lines.join(''));
+  const finalSemanticIndex = Math.max(semanticLines.length - 1, 0);
+  const candidates = progressSuffixes.flatMap((suffix) => {
+    const progressPlacements = [
+      [...semanticLines, ...suffix],
+      [...semanticLines.slice(0, finalSemanticIndex), ...suffix, ...semanticLines.slice(finalSemanticIndex)],
+    ];
+    return progressPlacements.flatMap((lines) => [lines, [...lines, JOB_LOG_DISABLED_LINE]]);
+  }).map((lines) => lines.join(''));
   assert.ok(candidates.includes(actual), `unexpected optional sink degradation sequence:\n${actual}`);
 }
+
+test('optional sink degradation may precede final completion without reordering semantic lines', () => {
+  const semanticLines = [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
+    '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ];
+  assertExactOptionalSinkDegradation([
+    ...semanticLines.slice(0, -1),
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+    semanticLines.at(-1),
+  ].join(''), semanticLines);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0],
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+    ...semanticLines.slice(1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    ...semanticLines.slice(0, -1),
+    PROGRESS_ARCHIVE_DISABLED_LINE,
+    semanticLines.at(-1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+});
 
 /** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
  * @param {any} job @param {any} spec @param {string} capability */
