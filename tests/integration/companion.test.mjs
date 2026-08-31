@@ -704,7 +704,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
       gateDeadline = setTimeout(() => {
         gateTimedOut = true;
         void releaseGate().then((released) => { if (!released) abortHeldExecution(); }).finally(signalGateDeadline);
-      }, 15_000);
+      }, DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS);
       gateDeadline.unref?.();
     }
     const execution = (options.runExecution ?? runCompanion)(['rescue', '--fresh', `${scenario} conversation compatibility`], {
