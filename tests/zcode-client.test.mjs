@@ -1794,30 +1794,41 @@ test('owner release revalidates its authoritative winner inside the sibling comp
   const result = await broker.releaseOwner(socket, ownerId, [], Date.now() + 2_000); assert.deepEqual(result.releasedSessionIds, []); assert.deepEqual(result.failedSessionIds.sort(), [sessionId, siblingId].sort()); assert.deepEqual(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, before); assert.equal(broker.uncertainOwnerReleases.size, 0); await rm(directory, { recursive: true, force: true });
 });
 
-test('owner release aborts its unlocked winner read after a reset compensation misses the deadline', { timeout: scaleTestTimeout(3_000) }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-compensation-deadline-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'release-compensation-deadline-owner'; const sessionId = 'release-compensation-deadline-session'; const siblingId = 'release-compensation-deadline-sibling'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.sessionOwners.set(siblingId, { ownerId, socket, claimToken: null }); broker.activeSessionSockets.set(sessionId, { socket, token: 'release-compensation-deadline-turn', baseline: 1, inputId: 'release-compensation-deadline-input' }); broker.activeSessions.add(sessionId); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId, [siblingId]: ownerId } })); broker.ownershipStoreEstablished = true; const protocol = { request: async () => ({}), cancelTurn() {} }; broker.protocol = protocol; let writes = 0; let observedSignal; let compensationSignal; broker.writeOwnerStore = async (sessions, options) => { writes += 1; if (writes === 1) { await atomicWriteJson(ownershipPath, { version: 1, sessions }); retireTestSessionLease(broker, siblingId); broker.clearProtocolGeneration(protocol); return; } compensationSignal = options.signal; await new Promise((resolvePromise, rejectPromise) => { if (options.signal.aborted) { rejectPromise(options.signal.reason); return; } options.signal.addEventListener('abort', () => rejectPromise(options.signal.reason), { once: true }); }); };
+test('owner release aborts its unlocked winner read after a reset compensation misses the deadline', { timeout: scaleTestTimeout(3_000) }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-compensation-deadline-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'release-compensation-deadline-owner'; const sessionId = 'release-compensation-deadline-session'; const siblingId = 'release-compensation-deadline-sibling'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.sessionOwners.set(siblingId, { ownerId, socket, claimToken: null }); broker.activeSessionSockets.set(sessionId, { socket, token: 'release-compensation-deadline-turn', baseline: 1, inputId: 'release-compensation-deadline-input' }); broker.activeSessions.add(sessionId); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId, [siblingId]: ownerId } })); broker.ownershipStoreEstablished = true; const protocol = { request: async () => ({}), cancelTurn() {} }; broker.protocol = protocol; let writes = 0; let observedSignal; let compensationSignal; broker.writeOwnerStore = async (sessions, options) => { writes += 1; if (writes === 1) { await atomicWriteJson(ownershipPath, { version: 1, sessions }); retireTestSessionLease(broker, siblingId); broker.clearProtocolGeneration(protocol); return; } if (writes > 2) { await atomicWriteJson(ownershipPath, { version: 1, sessions }); return; } compensationSignal = options.signal; await new Promise((resolvePromise, rejectPromise) => { if (options.signal.aborted) { rejectPromise(options.signal.reason); return; } options.signal.addEventListener('abort', () => rejectPromise(options.signal.reason), { once: true }); }); };
   let enterSecondWrite = () => {}; const secondWriteEntered = new Promise((resolvePromise) => { enterSecondWrite = resolvePromise; }); const writeOwnerStore = broker.writeOwnerStore; broker.writeOwnerStore = async (...args) => { const operation = writeOwnerStore(...args); if (writes === 2) enterSecondWrite(); return operation; };
   broker.readOwnerStoreUnlocked = async (_allowMissing, options = {}) => { observedSignal = options.signal; if (!observedSignal) return await new Promise(() => {}); observedSignal.throwIfAborted(); return { exists: true, sessions: Object.create(null) }; };
-  const originalSetTimeout = globalThis.setTimeout; const originalClearTimeout = globalThis.clearTimeout; const deadlineTimers = new Set();
+  const originalSetTimeout = globalThis.setTimeout; const originalClearTimeout = globalThis.clearTimeout; const deadlineTimers = new Set(); let globalsRestored = false; let releaseOutcome;
+  const restoreGlobals = () => { if (globalsRestored) return; globalsRestored = true; globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout; };
+  const bounded = async (promise, label, milliseconds = scaleTestTimeout(250)) => { let timer; try { return await Promise.race([promise, new Promise((_resolvePromise, rejectPromise) => { timer = originalSetTimeout(() => rejectPromise(new Error(label)), milliseconds); })]); } finally { if (timer) originalClearTimeout(timer); } };
+  const driveReleaseTimers = async () => { for (let turn = 0; turn < 100 && broker.releaseTasks.size; turn += 1) { for (const timer of deadlineTimers) timer.fire(); await new Promise((resolvePromise) => setImmediate(resolvePromise)); } };
   globalThis.setTimeout = /** @type {typeof globalThis.setTimeout} */ ((callback, milliseconds, ...args) => {
     if (milliseconds <= 50_000 || milliseconds > 60_000) return originalSetTimeout(callback, milliseconds, ...args);
     const timer = { active: true, unref() {}, fire() { if (!this.active) return; this.active = false; callback(...args); } }; deadlineTimers.add(timer); return timer;
   });
   globalThis.clearTimeout = /** @type {typeof globalThis.clearTimeout} */ ((timer) => { if (deadlineTimers.has(timer)) timer.active = false; else originalClearTimeout(timer); });
+  t.after(async () => {
+    restoreGlobals(); const cleanupErrors = [];
+    for (const timer of deadlineTimers) timer.fire(); await driveReleaseTimers();
+    if (releaseOutcome) try { await bounded(releaseOutcome, 'owner release caller did not settle during cleanup'); } catch (error) { cleanupErrors.push(error); }
+    if (broker.releaseTasks.size) try { await bounded(Promise.allSettled([...broker.releaseTasks]), 'tracked owner release did not settle during cleanup'); } catch (error) { cleanupErrors.push(error); }
+    if (broker.releaseTasks.size) cleanupErrors.push(new Error('tracked owner release remained after cleanup'));
+    try { await rm(directory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0]; if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'owner release deadline test cleanup failed');
+  });
   try {
-    const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 60_000); await secondWriteEntered;
+    const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 60_000);
+    releaseOutcome = releasing.then((value) => ({ kind: 'fulfilled', value }), (error) => ({ kind: 'rejected', error }));
+    await bounded(secondWriteEntered, 'second compensation write boundary was not reached');
     assert.equal(writes, 2); assert.ok([...deadlineTimers].filter((timer) => timer.active).length >= 2, 'caller and continuation deadlines must both be captured');
     for (const timer of deadlineTimers) timer.fire();
-    await assert.rejects(releasing, { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' });
+    const callerOutcome = await bounded(releaseOutcome, 'owner release caller did not settle after its deadline'); assert.equal(callerOutcome.kind, 'rejected'); assert.equal(callerOutcome.error?.code, 'ZCODE_OWNER_RELEASE_TIMEOUT');
     // Aborting compensation may register another continuation deadline. Drive
     // only this release's uniquely ranged timers until its tracked task settles.
-    for (let turn = 0; turn < 100 && broker.releaseTasks.size; turn += 1) {
-      for (const timer of deadlineTimers) timer.fire();
-      await new Promise((resolvePromise) => setImmediate(resolvePromise));
-    }
+    await driveReleaseTimers();
     assert.equal(broker.releaseTasks.size, 0);
     assert.equal(observedSignal?.aborted, true); assert.equal(observedSignal, compensationSignal); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(broker.sessionOwners.get(siblingId)?.ownerId, ownerId); assert.equal(broker.uncertainOwnerReleases.get(sessionId), ownerId); assert.equal(broker.uncertainOwnerReleases.get(siblingId), ownerId); assert.equal(broker.stoppingSessions.has(sessionId), false); assert.equal(broker.stoppingSessions.has(siblingId), false);
-  } finally { globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout; await rm(directory, { recursive: true, force: true }); }
+  } finally { restoreGlobals(); }
 });
 
 test('owner release rejects non-object stop results before local or durable side effects', async (t) => {
