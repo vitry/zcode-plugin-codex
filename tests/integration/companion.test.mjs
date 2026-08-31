@@ -3479,7 +3479,7 @@ test('snapshot fallback emits a terminal-only safe event when the call first app
 test('snapshot read rejection degrades once to lifecycle-only and preserves authoritative completion', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+    heartbeat: true, completionAfterProbe: { state: 'lifecycle-only' },
     env: { FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL: '1' },
   });
   const fallback = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
