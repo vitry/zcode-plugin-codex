@@ -1187,10 +1187,14 @@ test('tracked job fields persist through their legal lifecycle phases', async ()
   assert.deepEqual(await store.readJob(workspace, succeededJob.id), succeeded);
 
   const failedJob = await store.reserveJob({ workspace, ...jobInput });
-  const failedFinishedAt = new Date(Date.parse(failedJob.createdAt) + 2_000).toISOString();
-  assert.equal(Date.parse(failedFinishedAt) - Date.parse(failedJob.createdAt), 2_000,
-    'failed terminal time must be derived from the failed job timeline');
-  await store.transitionJob(workspace, failedJob.id, ['queued'], 'running');
+  const failedRunning = await store.transitionJob(workspace, failedJob.id, ['queued'], 'running', {
+    startedAt: failedJob.createdAt,
+  });
+  assert.equal(typeof failedRunning.startedAt, 'string', 'failed terminal time requires the persisted running phase anchor');
+  const failedActivityAt = failedRunning.lastActivityAt ?? failedRunning.startedAt;
+  const failedFinishedAt = new Date(Date.parse(failedActivityAt) + 2_000).toISOString();
+  assert.equal(Date.parse(failedFinishedAt) - Date.parse(failedActivityAt), 2_000,
+    'failed terminal time must be derived from the persisted running timeline');
   const failed = await store.transitionJob(workspace, failedJob.id, ['running'], 'failed', {
     error: { code: 'BROKER_FAILED', message: 'broker stopped' },
     exitCode: 1,
@@ -1200,11 +1204,15 @@ test('tracked job fields persist through their legal lifecycle phases', async ()
   assert.deepEqual(await store.readJob(workspace, failedJob.id), failed);
 
   const cancelledJob = await store.reserveJob({ workspace, ...jobInput });
-  const cancelledFinishedAt = new Date(Date.parse(cancelledJob.createdAt) + 2_000).toISOString();
-  assert.equal(Date.parse(cancelledFinishedAt) - Date.parse(cancelledJob.createdAt), 2_000,
-    'cancelled terminal time must be derived from the cancelled job timeline');
-  await store.transitionJob(workspace, cancelledJob.id, ['queued'], 'running');
-  await store.transitionJob(workspace, cancelledJob.id, ['running'], 'cancelling');
+  const cancelledRunning = await store.transitionJob(workspace, cancelledJob.id, ['queued'], 'running', {
+    startedAt: cancelledJob.createdAt,
+  });
+  assert.equal(typeof cancelledRunning.startedAt, 'string', 'cancelled terminal time requires the persisted running phase anchor');
+  const cancelling = await store.transitionJob(workspace, cancelledJob.id, ['running'], 'cancelling');
+  const cancellingActivityAt = cancelling.lastActivityAt ?? cancelling.startedAt;
+  const cancelledFinishedAt = new Date(Date.parse(cancellingActivityAt) + 2_000).toISOString();
+  assert.equal(Date.parse(cancelledFinishedAt) - Date.parse(cancellingActivityAt), 2_000,
+    'cancelled terminal time must be derived from the persisted cancelling timeline');
   const cancelled = await store.transitionJob(workspace, cancelledJob.id, ['cancelling'], 'cancelled', {
     error: 'cancelled by caller',
     exitCode: null,
