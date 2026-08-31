@@ -2062,7 +2062,7 @@ test('executor stops notification intake then bounded-drains already received se
   assert.match(lines.join(''), /conversation progress cleanup was incomplete/);
 });
 
-test('executor cleanup aggregates a late ready-I/O rejection before terminal close', async () => {
+test('executor cleanup aggregates a late ready-I/O rejection before terminal close', { timeout: 10_000 }, async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const readyPath = join(workspace, 'ready-semantic.txt'); await writeFile(readyPath, 'ready');
   const readyRead = readFile(readyPath); await readyRead;
@@ -2074,6 +2074,9 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
   }; });
   let unsubscribeReadReady = false; let outerCaptured = false; let capturedMilliseconds = null;
   let executionSettled = false; let executionPendingAtOuterTimer = false;
+  let finalizingRelayWhileUnsubscribePending = false;
+  /** @type {()=>void} */ let signalFinalizingRelay = () => {};
+  const finalizingRelayObserved = new Promise((resolve) => { signalFinalizingRelay = () => resolve(undefined); });
   /** @type {()=>void} */ let signalOuterTimer = () => {};
   const outerTimerRegistered = new Promise((resolve) => { signalOuterTimer = () => resolve(undefined); });
   let cleared = 0;
@@ -2095,28 +2098,30 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
     return originalSetTimeout(() => {
       executionPendingAtOuterTimer = !executionSettled; outerTimerCallbackRan = true;
       callback(...args);
-      // Keep the already-ready rejection in bounded check-phase work after the
-      // outer timer wins. Cleanup must emit one aggregate timeout before close.
-      queueMicrotask(() => {
-        let checks = 6;
-        const releaseAfterChecks = () => { if (checks === 0) releaseUnsubscribe(); else { checks -= 1; setImmediate(releaseAfterChecks); } };
-        releaseAfterChecks();
-      });
     }, milliseconds);
   };
   globalThis.setTimeout = /** @type {typeof globalThis.setTimeout} */ (interceptTimeout);
   try {
     const execution = executeJob({
       job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line),
+      progressRelayWriter: (record) => {
+        if (record.code === 'finalizing') {
+          finalizingRelayWhileUnsubscribePending = !unsubscribeReleased; signalFinalizingRelay();
+        }
+      },
       progressDependencies: { setInterval: () => ({ unref() {} }), clearInterval: () => { cleared += 1; } },
     });
     void execution.then(() => { executionSettled = true; }, () => { executionSettled = true; });
     await outerTimerRegistered; assert.equal(unsubscribeReadReady, true);
     assert.ok(typeof capturedMilliseconds === 'number' && capturedMilliseconds > 200 && capturedMilliseconds <= 250);
+    await finalizingRelayObserved;
+    assert.equal(finalizingRelayWhileUnsubscribePending, true); assert.equal(unsubscribeReleased, false);
+    assert.equal(lines.filter((line) => /progress cleanup reached its time limit/.test(line)).length, 1);
+    releaseUnsubscribe();
     const result = await execution;
     assert.equal(outerTimerCallbackRan, true); assert.equal(executionPendingAtOuterTimer, true);
     assert.equal(unsubscribeReleasedAfterOuterTimer, true); assert.equal(result.result, 'done'); assert.equal(cleared, 1);
-    assert.equal(lines.filter((line) => /progress cleanup reached its time limit/.test(line)).length, 1);
+    assert.equal(lines.filter((line) => /conversation progress cleanup was incomplete/.test(line)).length, 1);
   } finally { globalThis.setTimeout = originalSetTimeout; releaseUnsubscribe(); }
 });
 
