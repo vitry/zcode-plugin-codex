@@ -342,7 +342,7 @@ export async function executeJob(input) {
   try {
     if (sessionId && typeof client.releaseTurn === 'function') client.releaseTurn(sessionId);
   } catch (cleanupError) {
-    if (!primaryError) primaryError = cleanupError;
+    if (!primaryError && output?.job?.status !== 'succeeded') primaryError = cleanupError;
   }
   await client.close().catch(() => {});
   if (!primaryError && appliedFinalization && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
