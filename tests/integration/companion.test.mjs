@@ -651,7 +651,7 @@ async function companionWithArchiveHandshake(context, args) {
           if (job.id === jobId && log.includes(message)) { durableJobId = jobId; return true; }
         }
         return false;
-      }, `exact job did not durably persist semantic event ${index + 1} to both preview and archive`);
+      }, `exact job did not durably persist semantic event ${index + 1} to both preview and archive`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
       await atomicWriteJson(gate, { version: 1, nonce, acknowledged: index + 1 });
     }
     result = await execution;
@@ -794,7 +794,7 @@ async function waitForDurableConversationProbe(context, record, ownerSessionId, 
       return true;
     }
     return false;
-  }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`);
+  }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
 }
 
 /** @param {any} context @param {{sessionId:string,turnId:string,permissionMode:string}} owner */
