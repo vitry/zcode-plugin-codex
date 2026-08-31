@@ -26,6 +26,8 @@ ZCode 0.16.5 can emit that legacy notification immediately after admission, then
 
 Add a narrowly named protocol/client operation for observing the next validated completion notification without consuming the active turn. It must apply the same session, timeout, active-turn, duplicate-waiter, and `isCompletionFor` validation used by `waitForCompletion()`, but resolution must not call `abortTurn()` and must not consume turn ownership.
 
+An observer timeout removes only that observer; it does not silently acquire authority to end the turn. Executor teardown remains responsible for local release. Add an idempotent client-level local release operation that cancels outstanding local completion observation and clears the protocol turn without sending an upstream stop request.
+
 The existing `waitForCompletion()` remains unchanged in observable behavior: queued or live completion resolution consumes the turn, while timeout and cancellation retain their present destructive cleanup semantics.
 
 Only `executeJob` switches its `legacyWake` construction to the non-destructive observer. The coordinator continues to use the wake solely to trigger authoritative v4/snapshot reconciliation.
