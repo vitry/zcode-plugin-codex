@@ -1512,20 +1512,35 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const sessionId = 'zs-0165-true-terminal'; const subscriptionId = 'subscription-0165';
   /** @type {null|((message:any)=>void)} */ let handler = null;
+  /** @type {null|((request:any)=>any)} */ let permissionHandler = null;
   const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('0.16.5 progress handler missing'); handler(message); };
   let trueTerminal = false; let reads = 0; let boundaryDurable = false; let signalBoundary = () => {};
+  /** @type {any} */ let permissionDecision; let signalPermission = () => {};
+  const permissionDecided = new Promise((resolve) => { signalPermission = () => resolve(undefined); });
+  /** @type {string[]} */ const cleanupCalls = [];
   const boundaryReached = new Promise((resolve) => { signalBoundary = () => resolve(undefined); });
   const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision: 1, reason: 'prompt_completed', patch: {}, futureNotificationField: true } };
   const client = {
     createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
-    setPermissionHandler: () => {},
+    setPermissionHandler: (/** @type {(request:any)=>any} */ nextHandler) => { permissionHandler = nextHandler; },
     subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { handler = null; }; },
     subscribeConversation: async () => {
       emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484, snapshot: boundedSnapshotFixture({ sessionId, seq: 484 }) })));
       return { subscriptionId, unsubscribe: async () => {} };
     },
     send: async () => ({ inputId: 'input-0165', stateRevision: 7 }),
-    waitForCompletion: async () => { emit(legacy); },
+    waitForCompletion: async () => { throw new Error('executor must use non-destructive completion observation'); },
+    observeCompletion: async () => {
+      emit(legacy);
+      setImmediate(() => {
+        if (!permissionHandler) throw new Error('0.16.5 permission handler missing');
+        permissionDecision = permissionHandler({
+          sessionId, toolName: 'Write', riskLevel: 'medium',
+          options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }],
+        });
+        signalPermission();
+      });
+    },
     readSession: async () => {
       assert.equal(boundaryDurable, true, 'legacy admission must not permit a read before the accepted boundary is durable');
       reads += 1;
@@ -1535,15 +1550,18 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
         { info: { role: 'assistant', messageId: 'assistant-0165', parentMessageId: 'input-0165', time: { created: 2, completed: 3 }, finish: 'stop', semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'real 0.16.5 result' }] },
       ] };
     },
-    stopSession: async () => {}, close: async () => {},
+    stopSession: async () => {},
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); },
+    close: async () => { cleanupCalls.push('close'); },
   };
   const execution = executeJob({
     job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task',
     onBoundaryPersisted: async () => { boundaryDurable = true; signalBoundary(); },
   });
   execution.catch(() => {});
-  await boundaryReached; await new Promise((resolve) => setTimeout(resolve, 40));
+  await boundaryReached; await Promise.race([permissionDecided, execution]); await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+  assert.deepEqual(permissionDecision, { decision: 'allow' });
   assert.ok(reads >= 1, 'legacy admission should wake transitional snapshot reconciliation');
   emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 484, toSeq: 485, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'running' })] })));
   trueTerminal = true;
@@ -1551,6 +1569,28 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   const output = await execution;
   assert.equal(output.result, 'real 0.16.5 result');
   assert.equal(output.job.status, 'succeeded');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+});
+
+test('executor releases the local turn before close on failure and preserves the primary error', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const sessionId = 'zs-release-failure-cleanup';
+  const primary = new PluginError('PRIMARY_RELEASE_TEST', 'primary execution failure', { category: 'protocol', remedy: 'retain primary' });
+  const releaseError = new Error('local release failed');
+  /** @type {string[]} */ const cleanupCalls = [];
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-release-failure-cleanup', stateRevision: 1 }),
+    observeCompletion: async () => { throw primary; },
+    waitForCompletion: async () => { throw new Error('legacy waiter must not be used'); },
+    stopSession: async () => {},
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); throw releaseError; },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+  assert.equal(caught, primary);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
 });
 
 test('execution does not wait indefinitely for a late initial baseline and uses coherent snapshot fallback', { timeout: 10_000 }, async () => {
