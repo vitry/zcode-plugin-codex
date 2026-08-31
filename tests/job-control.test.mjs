@@ -2062,7 +2062,7 @@ test('executor stops notification intake then bounded-drains already received se
   assert.match(lines.join(''), /conversation progress cleanup was incomplete/);
 });
 
-test('executor cleanup aggregates a late ready-I/O rejection before terminal close', { timeout: 10_000 }, async () => {
+test('executor cleanup aggregates a late ready-I/O rejection before terminal close', { timeout: 10_000 }, async (t) => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const readyPath = join(workspace, 'ready-semantic.txt'); await writeFile(readyPath, 'ready');
   const readyRead = readFile(readyPath); await readyRead;
@@ -2100,6 +2100,7 @@ test('executor cleanup aggregates a late ready-I/O rejection before terminal clo
       callback(...args);
     }, milliseconds);
   };
+  t.after(() => { globalThis.setTimeout = originalSetTimeout; releaseUnsubscribe(); });
   globalThis.setTimeout = /** @type {typeof globalThis.setTimeout} */ (interceptTimeout);
   try {
     const execution = executeJob({
