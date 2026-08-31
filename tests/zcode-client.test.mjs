@@ -832,7 +832,6 @@ test('managed send preserves upstream rejection provenance without blessing ambi
     ['upstream disconnect', { FAKE_ZCODE_DISCONNECT: 'session/send' }, {}, 'ZCODE_DISCONNECTED', false],
     ['upstream malformed frame', { FAKE_ZCODE_MALFORMED: 'session/send' }, {}, 'ZCODE_PROTOCOL_MALFORMED', false],
     ['malformed success', { FAKE_ZCODE_BAD_RESULT: 'session/send' }, {}, 'ZCODE_OUTPUT_INVALID', false],
-    ['upstream timeout', { FAKE_ZCODE_SUPPRESS_METHOD: 'session/send' }, { requestTimeoutMs: scaleTestTimeout(150) }, 'ZCODE_REQUEST_TIMEOUT', false],
   ];
   for (const [name, env, options, code, correlated] of cases) await t.test(name, () => withFreshManagedClient(async (client, workspace) => {
     const created = await client.createSession({ workspace });
@@ -840,6 +839,24 @@ test('managed send preserves upstream rejection provenance without blessing ambi
       assert.equal(error.code, code); assert.equal(isCorrelatedZCodeResponseError(error), correlated); return true;
     });
   }, env, options));
+});
+
+test('managed send reports an ambiguous broker timeout without response correlation', async () => {
+  const sendTimeoutMs = scaleTestTimeout(150);
+  const startupDelayMs = sendTimeoutMs + 50;
+  await withFreshManagedClient(async (client, workspace) => {
+    const created = await client.createSession({ workspace });
+    client.protocol.requestTimeoutMs = sendTimeoutMs;
+    await assert.rejects(client.send(created.session.sessionId, 'probe ambiguous broker timeout'), (error) => {
+      assert.equal(error.code, 'ZCODE_REQUEST_TIMEOUT');
+      assert.deepEqual(error.details, { method: 'session/send', timeoutMs: sendTimeoutMs });
+      assert.equal(isCorrelatedZCodeResponseError(error), false);
+      return true;
+    });
+  }, {
+    FAKE_ZCODE_DELAY_MS: String(startupDelayMs),
+    FAKE_ZCODE_SUPPRESS_METHOD: 'session/send',
+  }, { requestTimeoutMs: scaleTestTimeout(2_000) });
 });
 
 test('request failures retain only a bounded safe remote error code', async (t) => {
