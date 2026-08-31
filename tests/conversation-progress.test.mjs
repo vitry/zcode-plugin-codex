@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createConversationProgressDescriber as createStructuralDescriber, createDeferredConversationProgressObserver as createStructuralDeferredObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
-import { boundedSnapshotFixture, conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
+import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-09T00:00:01.000Z';
 
@@ -19,6 +19,234 @@ function createDeferredConversationProgressObserver(...args) {
   const observer = createStructuralDeferredObserver(...args);
   return { ...observer, observe: async (...observeArgs) => (await observer.observe(...observeArgs)).events };
 }
+
+async function assertPromisePending(promise) {
+  const pending = Symbol('pending');
+  assert.equal(await Promise.race([promise, new Promise((resolve) => setImmediate(() => resolve(pending)))]), pending);
+}
+
+test('turn terminal authority follows the captured 0.16.5 user-input running-to-terminal lifecycle', async () => {
+  // Captured by probe-v4-terminal.mjs against ZCode 0.16.5: the initial
+  // snapshot precedes post-send userInput turnHeader running and terminal rows.
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  await observer.bind('sub-1');
+  await observer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484,
+    snapshot: boundedSnapshotFixture({ seq: 484 }),
+  }), observedAt);
+  const terminal = observer.waitForTurnTerminal();
+  observer.beginTurnBoundary();
+  assert.equal(observer.terminalAuthorityState(), 'waiting-running');
+  await observer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 484, toSeq: 485,
+    deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-current', state: 'running' })],
+  }), observedAt);
+  assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
+  await observer.observe(conversationFrame({
+    ordinal: 3, fromSeq: 485, toSeq: 486,
+    deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-current', state: 'completedSuccess' })],
+  }), observedAt);
+  assert.deepEqual(await terminal, { kind: 'succeeded', turnId: 'turn-current' });
+  assert.equal(observer.terminalAuthorityState(), 'resolved');
+});
+
+test('turn terminal authority ignores historical, unstarted, background, and mismatched turn rows', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  await observer.bind('sub-1');
+  await observer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 10,
+    snapshot: boundedSnapshotFixture({ seq: 10, rows: { firstRowId: 1, totalCount: 1, window: [captured0165TurnRow({ state: 'completedSuccess' }).row] } }),
+  }), observedAt);
+  const terminal = observer.waitForTurnTerminal();
+  observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({ ordinal: 2, fromSeq: 10, toSeq: 11, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'historical', state: 'completedSuccess' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [captured0165TurnRow({ rowId: 2, turnId: 'background', origin: 'backgroundWork', state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 4, fromSeq: 12, toSeq: 13, deltas: [captured0165TurnRow({ rowId: 10, turnId: 'turn-current', state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 5, fromSeq: 13, toSeq: 14, deltas: [captured0165TurnRow({ rowId: 11, turnId: 'turn-current', state: 'completedSuccess' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 6, fromSeq: 14, toSeq: 15, deltas: [captured0165TurnRow({ rowId: 12, turnId: 'turn-foreign', state: 'completedSuccess' })] }), observedAt);
+  await assertPromisePending(terminal);
+  await observer.observe(conversationFrame({ ordinal: 7, fromSeq: 15, toSeq: 16, deltas: [captured0165TurnRow({ rowId: 10, turnId: 'turn-current', state: 'completedInterrupted' })] }), observedAt);
+  assert.deepEqual(await terminal, { kind: 'interrupted', turnId: 'turn-current' });
+});
+
+test('turn terminal authority maps captured terminal states and validates consumed identity fields', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const [state, kind] of [['completedSuccess', 'succeeded'], ['completedInterrupted', 'interrupted'], ['failed', 'failed']]) {
+    const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+    await observer.bind('sub-1');
+    await observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    await observer.observe(conversationFrame({ ordinal: 2, deltas: [captured0165TurnRow({ rowId: 20, turnId: `turn-${kind}`, state: 'running' })] }), observedAt);
+    await observer.observe(conversationFrame({ ordinal: 3, deltas: [captured0165TurnRow({ rowId: 20, turnId: `turn-${kind}`, state })] }), observedAt);
+    assert.deepEqual(await terminal, { kind, turnId: `turn-${kind}` });
+  }
+
+  for (const mutate of [
+    (row) => { delete row.turnId; },
+    (row) => { row.turnId = 'bad\nturn'; },
+    (row) => { delete row.origin; },
+    (row) => { row.origin = { future: true }; },
+  ]) {
+    const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+    await observer.bind('sub-1');
+    await observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    const delta = captured0165TurnRow(); mutate(delta.row);
+    assert.deepEqual(await observer.observe(conversationFrame({ ordinal: 2, deltas: [delta] }), observedAt), { disposition: 'rejected', reason: 'row-shape', events: [] });
+    assert.equal(observer.terminalAuthorityState(), 'unavailable');
+    assert.deepEqual(await terminal, { kind: 'unavailable' });
+  }
+});
+
+test('turn terminal authority becomes deterministically unavailable on failure, gaps, overflow, and incompatible frames', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const failed = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const failedTerminal = failed.waitForTurnTerminal(); failed.beginTurnBoundary(); failed.fail();
+  assert.equal(failed.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await failedTerminal, { kind: 'unavailable' });
+
+  const gapped = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const gappedTerminal = gapped.waitForTurnTerminal(); await gapped.bind('sub-1'); gapped.beginTurnBoundary();
+  gapped.markGap();
+  await gapped.observe(conversationFrame({ ordinal: 1, deliveryKind: 'recovery', deltas: [captured0165TurnRow({ state: 'running' })] }), observedAt);
+  await gapped.observe(conversationFrame({ ordinal: 2, deltas: [captured0165TurnRow({ state: 'completedSuccess' })] }), observedAt);
+  assert.deepEqual(await gappedTerminal, { kind: 'unavailable' });
+
+  const incompatible = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const incompatibleTerminal = incompatible.waitForTurnTerminal();
+  await incompatible.bind('sub-1'); incompatible.beginTurnBoundary();
+  const badFrame = conversationFrame({ deltas: [captured0165TurnRow()] }); badFrame.params.wireVersion = 99;
+  assert.equal((await incompatible.observe(badFrame, observedAt)).reason, 'wire-version');
+  assert.deepEqual(await incompatibleTerminal, { kind: 'unavailable' });
+
+  const overflowing = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const overflowingTerminal = overflowing.waitForTurnTerminal();
+  overflowing.beginTurnBoundary();
+  for (let ordinal = 1; ordinal <= 5; ordinal += 1) overflowing.observe(conversationFrame({ ordinal, deltas: [] }), observedAt);
+  assert.equal(overflowing.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await overflowingTerminal, { kind: 'unavailable' });
+});
+
+test('turn terminal authority preserves a running frame buffered across deferred bind', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const terminal = observer.waitForTurnTerminal();
+  observer.beginTurnBoundary();
+  const initial = observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+  const running = observer.observe(conversationFrame({ ordinal: 2, deltas: [captured0165TurnRow({ rowId: 44, turnId: 'turn-prebind', state: 'running' })] }), observedAt);
+  await observer.bind('sub-1'); await initial; await running;
+  await observer.observe(conversationFrame({ ordinal: 3, deltas: [captured0165TurnRow({ rowId: 44, turnId: 'turn-prebind', state: 'failed' })] }), observedAt);
+  assert.deepEqual(await terminal, { kind: 'failed', turnId: 'turn-prebind' });
+});
+
+test('pre-baseline online history cannot obtain turn authority when the initial snapshot arrives late', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const terminal = observer.waitForTurnTerminal();
+  observer.beginTurnBoundary();
+  const running = observer.observe(conversationFrame({
+    ordinal: 1, fromSeq: 0, toSeq: 1,
+    deltas: [captured0165TurnRow({ rowId: 44, turnId: 'turn-historical', state: 'running' })],
+  }), observedAt);
+  const failed = observer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 1, toSeq: 2,
+    deltas: [captured0165TurnRow({ rowId: 44, turnId: 'turn-historical', state: 'failed' })],
+  }), observedAt);
+  const lateInitial = observer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 3, fromSeq: 0, toSeq: 2,
+    snapshot: boundedSnapshotFixture({ seq: 2 }),
+  }), observedAt);
+
+  await observer.bind('sub-1');
+  assert.equal((await running).disposition, 'accepted');
+  assert.equal((await failed).disposition, 'accepted');
+  assert.equal((await lateInitial).reason, 'stale');
+  assert.equal(observer.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
+test('turn terminal authority becomes unavailable when bounded identity tracking cannot admit the current turn', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  for (let batch = 0; batch < 4; batch += 1) {
+    await observer.observe(conversationFrame({ ordinal: batch + 1, deltas: Array.from({ length: 64 }, (_, index) => turnRow({ rowId: batch * 64 + index + 1, state: 'running' })) }), observedAt);
+  }
+  const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({ ordinal: 5, deltas: [turnRow({ rowId: 300, state: 'running' })] }), observedAt);
+  assert.equal(observer.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
+test('turn terminal authority never reuses a historical turn identity replayed after the boundary', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 1, snapshot: boundedSnapshotFixture({ seq: 1, rows: { firstRowId: 7, totalCount: 1, window: [turnRow({ rowId: 7, state: 'completedSuccess' }).row] } }) }), observedAt);
+  const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({ ordinal: 2, deltas: [turnRow({ rowId: 7, state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ rowId: 7, state: 'completedSuccess' })] }), observedAt);
+  assert.equal(observer.terminalAuthorityState(), 'waiting-running');
+  observer.markGap();
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
+test('turn terminal authority rejects a partial initial snapshot as an incomplete historical baseline', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await observer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 1,
+    snapshot: boundedSnapshotFixture({
+      seq: 1,
+      rows: { firstRowId: 8, totalCount: 2, window: [captured0165TurnRow({ rowId: 8, turnId: 'visible-history', state: 'completedSuccess' }).row] },
+    }),
+  }), observedAt);
+  const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({ ordinal: 2, deltas: [captured0165TurnRow({ rowId: 7, turnId: 'omitted-history', state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 3, deltas: [captured0165TurnRow({ rowId: 7, turnId: 'omitted-history', state: 'completedSuccess' })] }), observedAt);
+  assert.equal(observer.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
+test('wait-before-begin rearm never returns the previous resolved turn', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+  const first = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({ ordinal: 2, deltas: [turnRow({ rowId: 1, state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ rowId: 1, state: 'completedSuccess' })] }), observedAt);
+  assert.deepEqual(await first, { kind: 'succeeded', turnId: 'turn-1' });
+
+  const second = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await assertPromisePending(second);
+  await observer.observe(conversationFrame({ ordinal: 4, deltas: [captured0165TurnRow({ rowId: 2, turnId: 'turn-2', state: 'running' })] }), observedAt);
+  await observer.observe(conversationFrame({ ordinal: 5, deltas: [captured0165TurnRow({ rowId: 2, turnId: 'turn-2', state: 'failed' })] }), observedAt);
+  assert.deepEqual(await second, { kind: 'failed', turnId: 'turn-2' });
+});
+
+test('rearming a closed direct or deferred observer cannot return the previous turn terminal', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const direct = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await direct.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+  const directFirst = direct.waitForTurnTerminal(); direct.beginTurnBoundary();
+  await direct.observe(conversationFrame({ ordinal: 2, deltas: [turnRow({ rowId: 1, state: 'running' })] }), observedAt);
+  await direct.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ rowId: 1, state: 'completedSuccess' })] }), observedAt);
+  assert.deepEqual(await directFirst, { kind: 'succeeded', turnId: 'turn-1' });
+  direct.markTerminal(); const directNext = direct.waitForTurnTerminal(); direct.beginTurnBoundary();
+  assert.equal(direct.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await directNext, { kind: 'unavailable' });
+
+  const deferred = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  await deferred.bind('sub-1');
+  await deferred.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+  const deferredFirst = deferred.waitForTurnTerminal(); deferred.beginTurnBoundary();
+  await deferred.observe(conversationFrame({ ordinal: 2, deltas: [turnRow({ rowId: 2, state: 'running' })] }), observedAt);
+  await deferred.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ rowId: 2, state: 'completedSuccess' })] }), observedAt);
+  assert.deepEqual(await deferredFirst, { kind: 'succeeded', turnId: 'turn-1' });
+  deferred.fail(); const deferredNext = deferred.waitForTurnTerminal(); deferred.beginTurnBoundary();
+  assert.equal(deferred.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await deferredNext, { kind: 'unavailable' });
+});
 
 test('returns fixed structural compatibility outcomes without retaining rejected frame data', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
@@ -33,10 +261,10 @@ test('returns fixed structural compatibility outcomes without retaining rejected
 
   const cases = [
     ['wire-version', (frame) => { frame.params.wireVersion = 99; }],
-    ['envelope-shape', (frame) => { frame.params.hostile = 'ENVELOPE_SECRET'; }],
+    ['envelope-shape', (frame) => { delete frame.params.frame; }],
     ['sequence', (frame) => { frame.params.frame.fromSeq = -1; }],
     ['topic', (frame) => { frame.params.topic = 'conversation/TOPIC_SECRET'; }],
-    ['row-shape', (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'ROW_SECRET'; }],
+    ['row-shape', (frame) => { frame.params.frame.payload.deltas[0].row.status = 'STATUS_SECRET'; }],
   ];
   for (const [reason, mutate] of cases) {
     const frame = conversationFrame({ deltas: [toolRow({ input: { command: 'COMMAND_SECRET' } })] }); mutate(frame);
@@ -44,6 +272,93 @@ test('returns fixed structural compatibility outcomes without retaining rejected
     assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
     assert.doesNotMatch(JSON.stringify(result), /SECRET/);
   }
+});
+
+test('accepts additive upstream fields without exposing their values', async () => {
+  // The base frame is the captured wire-v3 shape; every `future*` member below
+  // is a synthetic unit-only projection probe, not a claimed 0.16.5 capture.
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const frame = conversationFrame({ deltas: [toolRow({ toolName: 'Read', status: 'running' })] });
+  frame.futureNotification = 'NOTIFICATION_SECRET';
+  frame.params.futureParams = { value: 'PARAMS_SECRET' };
+  frame.params.frame.futureFrame = { value: 'FRAME_SECRET' };
+  frame.params.frame.payload.futurePayload = { value: 'PAYLOAD_SECRET' };
+  frame.params.frame.payload.deltas[0].futureDelta = { value: 'DELTA_SECRET' };
+  frame.params.frame.payload.deltas[0].row.futureRow = { value: 'ROW_SECRET' };
+  const result = await describer.observe(frame, observedAt);
+  assert.deepEqual(result, {
+    disposition: 'accepted', phase: 'online',
+    events: [{ phase: 'running', message: 'Running tool: Read.', observedAt }],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /SECRET/);
+});
+
+test('bounds ignored additive fields across the complete upstream notification', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const mutate of [
+    (frame) => { frame.futureNotification = { nested: { value: undefined } }; },
+    (frame) => { let value = {}; frame.params.futureParams = value; for (let depth = 0; depth < 65; depth += 1) { value.next = {}; value = value.next; } },
+    (frame) => { frame.params.frame.futureFrame = { huge: 'X'.repeat(1_048_577) }; },
+  ]) {
+    const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [] }); mutate(frame);
+    assert.deepEqual(await describer.observe(frame, observedAt), { disposition: 'rejected', reason: 'envelope-shape', events: [] });
+  }
+});
+
+test('ignores future shapes for known row fields the progress projection does not consume', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const toolDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const tool = toolRow({ rowId: 1, toolName: 'Read', status: 'running' });
+  Object.assign(tool.row, {
+    createdAt: { future: 'TOOL_CREATED_SECRET' }, createdAtSeq: 'TOOL_SEQ_SECRET',
+    visibility: { future: 'VISIBILITY_SECRET' }, entityId: { future: 'ENTITY_SECRET' },
+    productTurnId: ['PRODUCT_SECRET'], actions: { canFork: false, future: 'ACTIONS_SECRET' },
+    inputText: { future: 'INPUT_TEXT_SECRET' }, approvalInteractionId: { future: 'APPROVAL_SECRET' },
+    backgrounded: 'BACKGROUND_SECRET', workId: { future: 'WORK_SECRET' },
+    output: 'OUTPUT_SECRET', error: ['ERROR_SECRET'], progress: 'PROGRESS_SECRET', display: 'DISPLAY_SECRET',
+  });
+  const toolResult = await toolDescriber.observe(conversationFrame({ deltas: [tool] }), observedAt);
+  assert.deepEqual(toolResult.events.map((event) => event.message), ['Running tool: Read.']);
+  assert.doesNotMatch(JSON.stringify(toolResult), /SECRET/);
+
+  const turnDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const turn = turnRow({ rowId: 2, state: 'running' });
+  Object.assign(turn.row, {
+    createdAt: { future: 'TURN_CREATED_SECRET' }, createdAtSeq: 'TURN_SEQ_SECRET',
+    visibility: 'VISIBILITY_SECRET', entityId: ['ENTITY_SECRET'], productTurnId: { future: 'PRODUCT_SECRET' },
+    actions: { canFork: false, future: 'ACTIONS_SECRET' },
+    startedAt: 'START_SECRET', endedAt: { future: 'END_SECRET' }, executionKind: 'EXECUTION_SECRET',
+    sourceCommandId: { future: 'COMMAND_SECRET' }, historyRoundCount: 'HISTORY_SECRET', activeMs: 'ACTIVE_SECRET',
+    workSegments: 'SEGMENTS_SECRET', originMeta: ['ORIGIN_META_SECRET'], fileChanges: 'FILES_SECRET',
+  });
+  const turnResult = await turnDescriber.observe(conversationFrame({ deltas: [turn] }), observedAt);
+  assert.deepEqual(turnResult.events.map((event) => event.message), ['ZCode turn started.']);
+  assert.doesNotMatch(JSON.stringify(turnResult), /SECRET/);
+});
+
+test('ignores future shapes for known envelope snapshot and delta fields it does not consume', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const initialDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const initial = conversationFrame({ deliveryKind: 'initial', fromSeq: 0, toSeq: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) });
+  initial.params.logicalFrameId = { future: 'FRAME_ID_SECRET' };
+  initial.params.frame.sentAt = { future: 'SENT_AT_SECRET' };
+  Object.assign(initial.params.frame.payload.snapshot, {
+    availability: 'AVAILABILITY_SECRET', rows: 'ROWS_SECRET', revision: 'REVISION_SECRET',
+    logEpoch: { future: 'EPOCH_SECRET' }, usage: ['USAGE_SECRET'],
+  });
+  const initialResult = await initialDescriber.observe(initial, observedAt);
+  assert.deepEqual(initialResult, { disposition: 'accepted', phase: 'initial', events: [] });
+  assert.doesNotMatch(JSON.stringify(initialResult), /SECRET/);
+
+  const deltaDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const deltaResult = await deltaDescriber.observe(conversationFrame({ deltas: [
+    { op: 'row.delta', rowId: 'ROW_SECRET', path: { future: 'PATH_SECRET' }, append: ['APPEND_SECRET'] },
+    { op: 'state.updated', patch: 'PATCH_SECRET' },
+  ] }), observedAt);
+  assert.deepEqual(deltaResult, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.doesNotMatch(JSON.stringify(deltaResult), /SECRET/);
 });
 
 test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps production delta operations contiguous', async () => {
@@ -116,20 +431,16 @@ test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps produ
   });
 });
 
-test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants without leaking their content', async () => {
+test('rejects malformed oversized or identity-conflicting snapshots and unsafe delta envelopes without leaking content', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const cases = [
     (frame) => { frame.params.frame.payload.snapshot = ['NOT_AN_OBJECT']; },
     (frame) => { frame.params.frame.payload.snapshot = { huge: 'S'.repeat(1_048_577) }; },
-    (frame) => { frame.params.frame.payload.hostile = 'EXTRA'; },
     (frame) => { frame.params.frame.payload = { kind: 'snapshot', snapshot: { nested: { value: undefined } } }; },
     (frame) => { frame.params.frame.payload.snapshot.protocolVersion = 2; },
     (frame) => { frame.params.frame.payload.snapshot.sessionId = 'foreign'; },
-    (frame) => { frame.params.frame.payload.snapshot.logEpoch = 'unsafe\u0000epoch'; },
     (frame) => { frame.params.frame.payload.snapshot.seq = 2; },
     (frame) => { frame.params.frame.fromSeq = 1; },
-    (frame) => { frame.params.frame.payload.snapshot.rows.window = Array.from({ length: 61 }, () => ({})); },
-    (frame) => { frame.params.frame.payload.snapshot.hostile = 'EXTRA'; },
   ];
   for (const mutate of cases) {
     const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -140,11 +451,8 @@ test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants
 
   const deltaCases = [
     [{ op: 'row.removed', fromRowId: '1' }, 'row-shape'],
-    [{ op: 'row.removed', fromRowId: 1, extra: 'SECRET_EXTRA' }, 'row-shape'],
-    [{ op: 'row.delta', rowId: 1, path: 'text\u0000SECRET_PATH', append: 'SECRET_APPEND' }, 'row-shape'],
     [{ op: 'row.delta', rowId: 1, path: 'text', append: 'X'.repeat(1_048_577) }, 'envelope-shape'],
-    [{ op: 'state.updated', patch: ['SECRET_PATCH'] }, 'row-shape'],
-    [{ op: 'state.updated', patch: { nested: { value: undefined } } }, 'row-shape'],
+    [{ op: 'state.updated', patch: { nested: { value: undefined } } }, 'envelope-shape'],
   ];
   for (const [delta, reason] of deltaCases) {
     const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -220,15 +528,18 @@ test('observed unknown rows stay private while a sequence gap requires recovery 
   assert.deepEqual(later.events.map((event) => event.message), ['Read completed.']);
   assert.doesNotMatch(JSON.stringify([first, duplicate, gap, fenced, recovery, later]), /PRIVATE_(?:UNKNOWN|STALE|INTERLEAVED)_ROW/);
 
-  for (const [mutate, reason] of [
-    [(row) => { row.turnId = 'unsafe\nturn'; }, 'row-shape'],
-    [(row) => { row.content = 'x'.repeat(1_048_577); }, 'envelope-shape'],
-  ]) {
+  {
     const strict = await createStructuralDescriber({ sessionId: 'session-observed', subscriptionId: 'subscription-observed', workspace });
-    const delta = unknownRow(1, 'PRIVATE_INVALID_UNKNOWN'); mutate(delta.row);
+    const delta = unknownRow(1, 'PRIVATE_INVALID_UNKNOWN'); delta.row.turnId = 'ignored\nfuture-shape';
     const result = await strict.observe(frame({ ordinal: 1, deltas: [delta] }), observedAt);
-    assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
+    assert.deepEqual(result, { disposition: 'accepted', phase: 'online', events: [] });
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE_INVALID_UNKNOWN/);
+  }
+  {
+    const strict = await createStructuralDescriber({ sessionId: 'session-observed', subscriptionId: 'subscription-observed', workspace });
+    const delta = unknownRow(1, 'x'.repeat(1_048_577));
+    const result = await strict.observe(frame({ ordinal: 1, deltas: [delta] }), observedAt);
+    assert.deepEqual(result, { disposition: 'rejected', reason: 'envelope-shape', events: [] });
   }
 });
 
@@ -299,6 +610,7 @@ test('describes only allowlisted online tool and turn lifecycle fields', async (
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   await mkdir(join(workspace, 'src')); await writeFile(join(workspace, 'src', 'a.js'), 'x');
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await describer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
   const cases = [
     ['Bash', { command: 'npm\ttest' }, 'Running command: npm test.'],
     ['Read', { file_path: join(workspace, 'src', 'a.js') }, 'Reading: src/a.js.'],
@@ -309,11 +621,12 @@ test('describes only allowlisted online tool and turn lifecycle fields', async (
     ['WebSearch', { query: 'safe query' }, 'Searching the web: safe query.'],
     ['UnknownTool', { command: 'SECRET_COMMAND' }, 'Running tool: UnknownTool.'],
   ];
-  let ordinal = 1;
+  let ordinal = 2;
   for (const [toolName, input, message] of cases) {
     const events = await describer.observe(conversationFrame({ ordinal, deltas: [toolRow({ rowId: ordinal, toolName, input, status: 'inputStreaming' })] }), observedAt);
     assert.equal(events[0].message, message); ordinal += 1;
   }
+  describer.beginTurnBoundary();
   const turnStart = await describer.observe(conversationFrame({ ordinal, deltas: [turnRow({ state: 'running' })] }), observedAt);
   assert.equal(turnStart[0].message, 'ZCode turn started.'); ordinal += 1;
   const turnEnd = await describer.observe(conversationFrame({ ordinal, deltas: [turnRow({ state: 'completedSuccess' })] }), observedAt);
@@ -345,8 +658,8 @@ test('serializes concurrent frames and latches a turn terminal state', async () 
   ]);
   assert.equal(started[0].message, 'Running command: echo ordered.');
   assert.equal(completed[0].message, 'Command completed: echo ordered (10ms).');
-  assert.equal((await describer.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ state: 'completedSuccess' })] }), observedAt))[0].message, 'ZCode turn completed.');
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, deltas: [turnRow({ state: 'failed' }), toolRow({ rowId: 2 })] }), observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 3, deltas: [turnRow({ state: 'completedSuccess' })] }), observedAt), []);
+  assert.equal((await describer.observe(conversationFrame({ ordinal: 4, deltas: [turnRow({ state: 'failed' }), toolRow({ rowId: 2 })] }), observedAt))[0].message, 'Running tool: Bash.');
 });
 
 test('requires captured wire version 3 and keeps every emitted message within the public byte bound', async () => {
@@ -387,22 +700,11 @@ test('accepts a new file only when its symlink ancestor canonically stays inside
   assert.equal(events[0].message, 'Writing: real/new.txt.');
 });
 
-test('fails closed on every missing extra mistyped controlled or unverified captured field before rendering', async () => {
+test('fails closed on every missing mistyped controlled or unverified consumed field before rendering', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const mutations = [
-    (frame) => { delete frame.params.logicalFrameId; },
-    (frame) => { frame.params.hostile = 'SECRET_EXTRA'; },
     (frame) => { frame.params.logicalFrameOrdinal = '1'; },
-    (frame) => { frame.params.logicalFrameId = 'bad\u0000frame'; },
-    (frame) => { frame.params.frame.sentAt = '2026-08-09T00:00:00.000Z'; },
-    (frame) => { frame.params.frame.hostile = 'SECRET_EXTRA'; },
-    (frame) => { frame.params.frame.payload.hostile = 'SECRET_EXTRA'; },
-    (frame) => { frame.params.frame.payload.deltas[0].hostile = 'SECRET_EXTRA'; },
-    (frame) => { delete frame.params.frame.payload.deltas[0].row.createdAtSeq; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'SECRET_EXTRA'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.toolName = 'Bash\u0085SECRET'; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.createdAt = Number.NaN; },
-    (frame) => { frame.params.frame.payload.deltas[0].row.display = { kind: 'mcp_tool', serverName: 'server', toolName: 'tool', hostile: 'SECRET_EXTRA' }; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'completed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'failed'; },
     (frame) => { frame.params.frame.payload.deltas[0].row.status = 'denied'; },
@@ -413,12 +715,12 @@ test('fails closed on every missing extra mistyped controlled or unverified capt
     const events = await describer.observe(frame, observedAt);
     assert.deepEqual(events, []); assert.doesNotMatch(JSON.stringify(events), /DO_NOT_LEAK|SECRET_EXTRA/);
   }
-  for (const key of ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame']) {
+  for (const key of ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing params.${key}`);
   }
-  for (const key of ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload']) {
+  for (const key of ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'payload']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing frame.${key}`);
@@ -428,14 +730,11 @@ test('fails closed on every missing extra mistyped controlled or unverified capt
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0][key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing delta.${key}`);
   }
-  for (const key of ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind', 'toolCallId', 'toolName', 'status', 'inputText']) {
+  for (const key of ['rowId', 'kind', 'toolCallId', 'toolName', 'status']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
     const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0].row[key];
     assert.deepEqual(await describer.observe(frame, observedAt), [], `missing tool row.${key}`);
   }
-  const hostileTurn = conversationFrame({ deltas: [turnRow()] }); hostileTurn.params.frame.payload.deltas[0].row.originMeta = { backgroundSource: 'bash', workId: 'work', title: 'title', hostile: 'SECRET_EXTRA' };
-  const turnDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
-  assert.deepEqual(await turnDescriber.observe(hostileTurn, observedAt), []);
 });
 
 test('rejects discontinuities without trusting their watermark and accepts an authoritative snapshot reset', async () => {
@@ -458,8 +757,8 @@ test('recognizes only captured tool failure statuses and turn failure terminal s
   assert.equal(failed[0].message, 'Command failed: false (10ms).');
   const turnDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const turnFailed = await turnDescriber.observe(conversationFrame({ deltas: [turnRow({ state: 'failed' })] }), observedAt);
-  assert.equal(turnFailed[0].message, 'ZCode turn ended without success.');
-  assert.deepEqual(await turnDescriber.observe(conversationFrame({ ordinal: 2, deltas: [toolRow()] }), observedAt), []);
+  assert.deepEqual(turnFailed, []);
+  assert.equal((await turnDescriber.observe(conversationFrame({ ordinal: 2, deltas: [toolRow()] }), observedAt)).length, 1);
 });
 
 test('bounds direct concurrent observations, path stalls, frame fanout, and tracked tool cardinality', async () => {
@@ -562,6 +861,80 @@ test('a gap during async projection discards staged lifecycle state and its wate
   assert.doesNotMatch(JSON.stringify(terminal), /STAGED_MARKER/);
 });
 
+test('a gap during a frame with a staged turn terminal cannot resolve event authority', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  let releasePath;
+  let reportPathStarted;
+  const pathStarted = new Promise((resolve) => { reportPathStarted = resolve; });
+  const pathGate = new Promise((resolve) => { releasePath = resolve; });
+  const observer = await createStructuralDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { resolvePath: async () => { reportPathStarted(); await pathGate; return null; } },
+  );
+  const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+  await observer.observe(conversationFrame({
+    ordinal: 1, fromSeq: 0, toSeq: 1,
+    deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })],
+  }), observedAt);
+  const interrupted = observer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 1, toSeq: 2,
+    deltas: [
+      captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }),
+      toolRow({ rowId: 2, toolCallId: 'blocked-tool', toolName: 'Read', input: { file_path: 'blocked' } }),
+    ],
+  }), observedAt);
+  await pathStarted;
+  observer.markGap(); releasePath();
+  assert.deepEqual(await interrupted, { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.equal(observer.terminalAuthorityState(), 'unavailable');
+  assert.deepEqual(await terminal, { kind: 'unavailable' });
+});
+
+test('turn terminal authority uses the final mutation for its row within one atomic frame', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const { trailingDelta, preservesTurn } of [
+    { trailingDelta: captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' }), preservesTurn: true },
+    { trailingDelta: { op: 'row.removed', fromRowId: 1 }, preservesTurn: false },
+    { trailingDelta: toolRow({ rowId: 1, toolCallId: 'replacement-tool' }), preservesTurn: false },
+    { trailingDelta: { op: 'row.upserted', row: { rowId: 1, kind: 'futureRowKind', futurePayload: { added: true } } }, preservesTurn: false },
+  ]) {
+    const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    await observer.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, snapshot: boundedSnapshotFixture({ seq: 1 }) }), observedAt);
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    await observer.observe(conversationFrame({
+      ordinal: 2, fromSeq: 1, toSeq: 2,
+      deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })],
+    }), observedAt);
+    const result = await observer.observe(conversationFrame({
+      ordinal: 3, fromSeq: 2, toSeq: 3,
+      deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' }), trailingDelta],
+    }), observedAt);
+    assert.equal(result.events.some((event) => event.phase === 'finalizing'), false);
+    if (preservesTurn) {
+      assert.equal(observer.terminalAuthorityState(), 'waiting-terminal');
+      await assertPromisePending(terminal); observer.markGap();
+    } else assert.equal(observer.terminalAuthorityState(), 'unavailable');
+    assert.deepEqual(await terminal, { kind: 'unavailable' });
+  }
+});
+
+test('a replaced authoritative row cannot terminalize from an old-turn replay in a later frame', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const replacement of [
+    { op: 'row.removed', fromRowId: 1 },
+    toolRow({ rowId: 1, toolCallId: 'replacement-tool' }),
+    captured0165TurnRow({ rowId: 1, turnId: 'replacement-turn', state: 'running' }),
+  ]) {
+    const observer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const terminal = observer.waitForTurnTerminal(); observer.beginTurnBoundary();
+    await observer.observe(conversationFrame({ ordinal: 1, fromSeq: 0, toSeq: 1, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'running' })] }), observedAt);
+    await observer.observe(conversationFrame({ ordinal: 2, fromSeq: 1, toSeq: 2, deltas: [replacement] }), observedAt);
+    await observer.observe(conversationFrame({ ordinal: 3, fromSeq: 2, toSeq: 3, deltas: [captured0165TurnRow({ rowId: 1, turnId: 'turn-current', state: 'completedSuccess' })] }), observedAt);
+    assert.equal(observer.terminalAuthorityState(), 'unavailable');
+    assert.deepEqual(await terminal, { kind: 'unavailable' });
+  }
+});
+
 test('accepts bounded captured multiline tool output without rendering any raw output', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -574,7 +947,7 @@ test('accepts bounded captured multiline tool output without rendering any raw o
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
 });
 
-test('recovery silently folds terminal turn states and permanently fences later frames', async () => {
+test('recovery silently folds historical terminal turn states without fencing later frames', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   for (const state of ['completedSuccess', 'failed', 'completedInterrupted']) {
     const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -582,7 +955,8 @@ test('recovery silently folds terminal turn states and permanently fences later 
     describer.markGap();
     const recovery = describer.observe(conversationFrame({ ordinal: 2, deliveryKind: 'recovery', deltas: [turnRow({ state })] }), observedAt);
     const pendingLate = describer.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ rowId: 3, input: { command: 'MUST_NOT_LEAK_AFTER_RECOVERY_TERMINAL' } })] }), observedAt);
-    assert.deepEqual(await Promise.all([recovery, pendingLate]), [[], []]);
+    const [recovered, late] = await Promise.all([recovery, pendingLate]);
+    assert.deepEqual(recovered, []); assert.equal(late.length, 1);
     assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
   }
 });
@@ -602,15 +976,15 @@ test('accepts an equal-sequence empty recovery but ignores equal-sequence delta 
   assert.deepEqual(completed.events.map((event) => event.message), ['Bash completed (10ms).']);
 });
 
-test('turn terminal latching is not weakened when bounded row tracking is full', async () => {
+test('unarmed turn terminals do not fence progress when bounded row tracking is full', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   for (let ordinal = 1; ordinal <= 256; ordinal += 1) {
     assert.equal((await describer.observe(conversationFrame({ ordinal, deltas: [turnRow({ rowId: ordinal, state: 'running' })] }), observedAt)).length, 1);
   }
   const terminal = await describer.observe(conversationFrame({ ordinal: 257, deltas: [turnRow({ rowId: 257, state: 'completedSuccess' })] }), observedAt);
-  assert.equal(terminal[0].message, 'ZCode turn completed.');
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 258, deltas: [toolRow()] }), observedAt), []);
+  assert.deepEqual(terminal, []);
+  assert.equal((await describer.observe(conversationFrame({ ordinal: 258, deltas: [toolRow()] }), observedAt)).length, 1);
 });
 
 test('recovery silently folds bounded tool states without path resolution and deduplicates later updates', async () => {
@@ -662,8 +1036,10 @@ test('accepts bounded captured multiline tool errors without rendering raw error
   assert.doesNotMatch(JSON.stringify(events), /ERROR_SECRET|first|second|TOOL_FAILED/);
   const huge = toolRow({ rowId: 2, status: 'error' }); huge.row.error = { code: 'TOOL_FAILED', message: '😀'.repeat(300_000) };
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
-  const badCode = toolRow({ rowId: 3, status: 'error' }); badCode.row.error = { code: 'BAD\nCODE', message: 'allowed opaque message' };
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [badCode] }), observedAt), []);
+  const ignoredErrorShape = toolRow({ rowId: 3, status: 'error' }); ignoredErrorShape.row.error = { code: 'BAD\nCODE', message: 'ERROR_SECRET ignored opaque message' };
+  const ignoredErrorEvents = await describer.observe(conversationFrame({ ordinal: 2, deltas: [ignoredErrorShape] }), observedAt);
+  assert.deepEqual(ignoredErrorEvents.map((event) => event.message), ['Bash failed.']);
+  assert.doesNotMatch(JSON.stringify(ignoredErrorEvents), /ERROR_SECRET|BAD/);
 });
 
 test('bounds the prebind subscribe-response buffer to four notifications and drains it in order', async () => {

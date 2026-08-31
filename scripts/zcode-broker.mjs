@@ -13,7 +13,7 @@ import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
 import { validCreateSnapshot } from './lib/zcode-schema.mjs';
-import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
+import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, CORRELATED_RESPONSE_PROVENANCE, isCorrelatedZCodeResponseError, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
 const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
@@ -403,13 +403,20 @@ export class ZCodeBroker {
           if (frame.method === 'v4/conversation/unsubscribe') { this.conversationSubscriptions.delete(unsubscribeRecord.key); if (!this.retireConversationSubscription(protocol, unsubscribeRecord)) throw brokerInputError(); }
           if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); const stopCommitted = this.settleAcknowledgedStop(frame.params.sessionId, protocol, stoppedGeneration); if (!stopCommitted) throw brokerInputError(); this.consumeTerminalWinner(frame.params.sessionId, protocol, stoppedGeneration); await this.cleanupAcknowledgedStopSubscriptions(protocol, this.detachSessionSubscriptions(frame.params.sessionId), OWNER_RELEASE_REQUEST_MS); if (this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
           if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
+          if (frame.method === 'session/stop' || frame.method === 'v4/conversation/unsubscribe') result = {};
+          if (frame.method === 'v4/conversation/subscribe') result = { ack: { subscriptionId: result.ack.subscriptionId, mode: result.ack.mode, logEpoch: result.ack.logEpoch } };
+          if (frame.method === 'session/updateRuntimeModelConfig') {
+            if (!boundedUpstreamObject(result)) throw brokerInputError();
+            result = { sessionId: result.sessionId, appliedModelRuntimeRevision: result.appliedModelRuntimeRevision, changed: result.changed };
+          }
           if (ownerCommitToken) this.ownerCommitTokens.delete(ownerCommitToken); writeLocal(socket, { id: frame.id, result });
         } catch (error) {
           if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic);
           if (stopToken && this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId);
           if (ownerCommitToken && this.ownerCommitTokens.get(ownerCommitToken) === protocol) this.ownerCommitTokens.delete(ownerCommitToken);
           const pluginError = error instanceof PluginError ? { code: error.code, category: error.category, remedy: error.remedy, details: error.details } : null;
-          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError } } : {}) } });
+          const requestProvenance = frame.method === 'session/send' && isCorrelatedZCodeResponseError(error) ? CORRELATED_RESPONSE_PROVENANCE : undefined;
+          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError, ...(requestProvenance ? { requestProvenance } : {}) } } : {}) } });
         }
       } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.admission.finishSessionRequest(sessionAdmission); }
     } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }
@@ -878,16 +885,33 @@ function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch 
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
 function offeredDeny(request) { return request.options?.find((option) => option.response?.decision === 'deny')?.response ?? { decision: 'deny' }; }
 function validateSendResult(result, sessionId) { if (!result || typeof result !== 'object' || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && (typeof result.modelRuntimeRevision !== 'string' || !result.modelRuntimeRevision)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/send result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
-function validateStopResult(result) { if (!plainObject(result)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/stop result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
+function validateStopResult(result) { if (!boundedUpstreamObject(result)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/stop result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
 function writeSessionOwnerDenied(socket, id) { writeLocal(socket, { id, error: { code: -32041, message: 'Session is not owned by this broker client.' } }); }
 function invalidSessionCreateResult() { return new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/create result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
-function validConversationSubscribeResult(result) { const ack = result?.ack; return plainObject(result) && exactKeys(result, ['ack']) && plainObject(ack) && exactKeys(ack, ['subscriptionId', 'mode', 'logEpoch']) && isBoundedPublicIdentifier(ack.subscriptionId) && ['snapshot', 'resume'].includes(ack.mode) && isBoundedPublicIdentifier(ack.logEpoch); }
+function validConversationSubscribeResult(result) { const ack = result?.ack; return boundedUpstreamObject(result) && plainObject(ack) && isBoundedPublicIdentifier(ack.subscriptionId) && ['snapshot', 'resume'].includes(ack.mode) && isBoundedPublicIdentifier(ack.logEpoch); }
 function validCreateWorkspace(workspace, expectedWorkspace) { return plainObject(workspace) && Object.keys(workspace).every((key) => ['workspacePath', 'workspaceIdentity', 'remoteSessionId', 'workspaceKey'].includes(key)) && workspace.workspacePath === expectedWorkspace && workspace.workspaceKey === expectedWorkspace && optionalPublicText(workspace.workspaceIdentity) && optionalPublicText(workspace.remoteSessionId); }
 function optionalPublicText(value) { return value === undefined || typeof value === 'string' && value.trim().length > 0; }
-function validConversationUnsubscribeResult(result) { return plainObject(result) && exactKeys(result, []); }
+function validConversationUnsubscribeResult(result) { return boundedUpstreamObject(result); }
 function invalidUnsubscribeResult() { return new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid conversation unsubscribe result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null); }
-function exactKeys(value, keys) { const actual = Object.keys(value); return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
+function boundedUpstreamObject(value) {
+  if (!plainObject(value)) return false;
+  try {
+    const encoded = JSON.stringify(value); if (typeof encoded !== 'string' || Buffer.byteLength(encoded) > MAX_LOCAL_FRAME_BYTES) return false;
+    const pending = [{ value, depth: 0 }]; const seen = new Set(); let nodes = 0;
+    while (pending.length > 0) {
+      const current = pending.pop(); if (!current || current.depth > 64 || ++nodes > 65_536) return false;
+      const item = current.value;
+      if (item === null || typeof item === 'string' || typeof item === 'boolean') continue;
+      if (typeof item === 'number') { if (!Number.isFinite(item)) return false; continue; }
+      if (typeof item !== 'object' || seen.has(item)) return false;
+      if (!Array.isArray(item) && !plainObject(item)) return false;
+      seen.add(item);
+      for (const child of Array.isArray(item) ? item : Object.values(item)) pending.push({ value: child, depth: current.depth + 1 });
+    }
+    return true;
+  } catch { return false; }
+}
 function cloneOwnerSessions(sessions) { const cloned = Object.create(null); for (const [sessionId, ownerId] of Object.entries(sessions)) cloned[sessionId] = ownerId; return cloned; }
 function sameOwnerEntry(left, right, sessionId) { return Object.hasOwn(left, sessionId) === Object.hasOwn(right, sessionId) && (!Object.hasOwn(left, sessionId) || left[sessionId] === right[sessionId]); }
 function sameOwnerSessions(left, right) { const leftKeys = Object.keys(left); return leftKeys.length === Object.keys(right).length && leftKeys.every((sessionId) => sameOwnerEntry(left, right, sessionId)); }

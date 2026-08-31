@@ -42,6 +42,79 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('early legacy completion stays nonterminal and later captured-shape v4 progress is rendered', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-legacy-'));
+  const lines = []; const persisted = []; const relays = [];
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-a', subscriptionId: 'sub-1', workspace });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event), relay: (record) => relays.push(record),
+    describeNotification: describer.observe, now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  const legacy = reporter.observe(notification('prompt_completed'));
+  assert.equal(legacy.phase, 'waiting');
+  reporter.observe(conversationFrame({ sessionId: 'session-a', deltas: [toolRow({ input: { command: 'echo after legacy completion' } })] }));
+  await reporter.flush();
+  assert.match(lines.join(''), /legacy completion/);
+  assert.match(lines.join(''), /Running command: echo after legacy completion\./);
+  assert.equal(persisted.some((event) => event.phase === 'finalizing'), false);
+  assert.equal(relays.some((record) => record.phase === 'finalizing'), false);
+  reporter.close();
+});
+
+test('confirmed coordinator terminal emits exactly one fixed finalizing event after a legacy wake', async () => {
+  const lines = []; const persisted = []; const archived = []; const relays = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
+    archive: (event) => archived.push(event), relay: (record) => relays.push(record), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_completed'));
+  assert.deepEqual(reporter.confirmTerminal('succeeded'), {
+    phase: 'finalizing', message: 'ZCode completed the delegated turn.', observedAt,
+  });
+  assert.equal(reporter.confirmTerminal('succeeded'), null);
+  await reporter.flush();
+  assert.equal(lines.filter((line) => line === '[zcode] ZCode completed the delegated turn.\n').length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(archived.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(relays.filter((record) => record.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
+test('confirmed coordinator terminal does not duplicate an already dispatched v4 terminal descriptor', async () => {
+  const lines = []; const persisted = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
+    describeNotification: async () => ({
+      disposition: 'accepted', phase: 'online',
+      events: [{ phase: 'finalizing', message: 'ZCode turn completed.', observedAt }],
+    }), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(conversationFrame({ deltas: [] }));
+  await reporter.flush();
+  assert.equal(reporter.confirmTerminal('succeeded'), null);
+  await reporter.flush();
+  assert.equal(lines.filter((line) => /completed/.test(line)).length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
+test('legacy prompt failure is activity rather than a terminal fence', async () => {
+  const lines = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  assert.equal(reporter.observe(notification('prompt_failed')).phase, 'waiting');
+  assert.equal(reporter.observe(notification('model_streaming')).phase, 'running');
+  await reporter.flush();
+  assert.match(lines.join(''), /reported legacy failure/);
+  assert.match(lines.join(''), /generating a response/);
+  reporter.close();
+});
+
 test('coarse relay is independent from detailed stderr and coalesces duplicate semantic phases', async () => {
   const lines = []; const relays = [];
   const reporter = progressModule.createProgressReporter({
@@ -59,14 +132,15 @@ test('coarse relay is independent from detailed stderr and coalesces duplicate s
     { sequence: 1, phase: 'starting', code: 'started', observedAt },
     { sequence: 2, phase: 'running', code: 'model-active', observedAt },
     { sequence: 3, phase: 'investigating', code: 'tool-active', observedAt },
-    { sequence: 4, phase: 'finalizing', code: 'finalizing', observedAt },
+    { sequence: 4, phase: 'waiting', code: 'waiting', observedAt },
+    { sequence: 5, phase: 'investigating', code: 'tool-active', observedAt },
   ]);
   assert.match(lines.join(''), /started a tool call/);
   assert.doesNotMatch(JSON.stringify(relays), /tool call|delegated turn/);
   reporter.close();
 });
 
-test('every eligible heartbeat emits a fixed waiting relay and terminal progress closes relay production', async () => {
+test('every eligible heartbeat emits a fixed waiting relay and legacy completion keeps relay production open', async () => {
   const relays = []; let heartbeat = () => {}; let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', relay: (record) => relays.push(record), now: () => currentTime,
@@ -82,7 +156,7 @@ test('every eligible heartbeat emits a fixed waiting relay and terminal progress
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'waiting', code: 'waiting' },
     { sequence: 3, phase: 'waiting', code: 'waiting' },
-    { sequence: 4, phase: 'finalizing', code: 'finalizing' },
+    { sequence: 4, phase: 'waiting', code: 'waiting' },
   ]);
   reporter.close();
 });
@@ -738,6 +812,71 @@ test('stopAccepting fences a held structural rejection from every progress mutat
   reporter.close();
 });
 
+test('stopAccepting bounded-drains a held accepted online descriptor while fencing later intake', async () => {
+  const lines = []; const persisted = []; const probes = [];
+  let releaseHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((resolve) => {
+    releaseHeld = () => resolve({
+      disposition: 'accepted', phase: 'online',
+      events: [{ phase: 'running', message: 'ZCode safely completed pre-stop work.', observedAt }],
+    });
+  });
+  let descriptions = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: () => { descriptions += 1; markHeldStarted(); return held; },
+    persistProbe: async (probe) => probes.push(probe),
+    persist: async (event) => persisted.push(event),
+    write: (line) => lines.push(line),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
+
+  reporter.stopAccepting();
+  assert.equal(reporter.observe({ method: 'v4/conversation/frame', secret: 'POST_STOP_SECRET' }), null);
+  assert.equal(descriptions, 1);
+  releaseHeld();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.deepEqual(lines, ['[zcode] ZCode safely completed pre-stop work.\n']);
+  assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode safely completed pre-stop work.', observedAt }]);
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  assert.equal(reporter.probeSnapshot().acceptedOnline, 1);
+  assert.deepEqual(probes.at(-1), reporter.probeSnapshot());
+  assert.doesNotMatch(`${lines.join('')}${JSON.stringify(persisted)}${JSON.stringify(probes)}`, /POST_STOP_SECRET/);
+  reporter.close();
+});
+
+test('stopAccepting drops a held legacy event array without structured phase provenance', async () => {
+  const lines = []; const persisted = []; const probes = [];
+  let releaseHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((resolve) => {
+    releaseHeld = () => resolve([{ phase: 'running', message: 'UNPROVEN_LATE_ARRAY_EVENT', observedAt }]);
+  });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: () => { markHeldStarted(); return held; },
+    persistProbe: async (probe) => probes.push(probe),
+    persist: async (event) => persisted.push(event),
+    write: (line) => lines.push(line),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); releaseHeld();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  reporter.close();
+});
+
 test('stopAccepting silently settles a held descriptor rejection without retrying it', async () => {
   const diagnostics = []; const probes = []; const lines = []; const persisted = []; let fallbackCalls = 0;
   let rejectHeld = () => {}; let markHeldStarted = () => {};
@@ -862,8 +1001,8 @@ test('normalizes known same-session activity to fixed public messages', () => {
     ['tool_call_progress', 'running', 'ZCode tool work is still running.'],
     ['tool_call_result', 'running', 'ZCode completed a tool call.'],
     ['api_retry', 'waiting', 'ZCode is retrying the model request.'],
-    ['prompt_completed', 'finalizing', 'ZCode completed the delegated turn.'],
-    ['prompt_failed', 'finalizing', 'ZCode reported a failed delegated turn.'],
+    ['prompt_completed', 'waiting', 'ZCode reported legacy completion; awaiting confirmed turn state.'],
+    ['prompt_failed', 'waiting', 'ZCode reported legacy failure; awaiting confirmed turn state.'],
   ];
   for (const [reason, phase, message] of cases) {
     assert.deepEqual(normalizeZCodeProgress(notification(reason), 'session-a', observedAt), { phase, message, observedAt });
@@ -982,7 +1121,7 @@ test('archives every safely dispatched semantic event in receive order beyond th
     'ZCode is retrying the model request.',
     'ZCode tool work is still running.',
     'ZCode completed a tool call.',
-    'ZCode completed the delegated turn.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.',
   ]);
   reporter.close();
 });
@@ -1009,14 +1148,14 @@ test('throwing and rejecting archives disable only archive with one fixed safe d
     assert.deepEqual(persisted.map((event) => event.message), [
       'ZCode started the delegated turn.',
       'ZCode progress archive was disabled.',
-      'ZCode completed the delegated turn.',
+      'ZCode reported legacy completion; awaiting confirmed turn state.',
     ]);
     assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_ARCHIVE/);
     reporter.close();
   }
 });
 
-test('bounds a stalled archive queue while retaining terminal progress', async () => {
+test('bounds a stalled archive queue while retaining latest legacy activity', async () => {
   const calls = []; let releaseFirst = () => {};
   const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
   const reporter = progressModule.createProgressReporter({
@@ -1032,7 +1171,7 @@ test('bounds a stalled archive queue while retaining terminal progress', async (
   assert.equal(calls.length, 1);
   releaseFirst(); await reporter.flush();
   assert.ok(calls.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, calls.length);
-  assert.equal(calls.at(-1).phase, 'finalizing');
+  assert.equal(calls.at(-1).phase, 'waiting');
   reporter.close();
 });
 
@@ -1053,8 +1192,8 @@ test('a never-settling archive cannot hold terminal flush or healthy sinks and c
   assert.ok(Date.now() - started < 1_000);
   assert.deepEqual(diagnostics, ['progress-flush-timeout', 'archive-disabled']);
   assert.equal(archived.length, 1);
-  assert.match(lines.join(''), /completed the delegated turn/);
-  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.match(lines.join(''), /legacy completion/);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 0);
   reporter.close(); releaseArchive(); await new Promise((resolve) => setImmediate(resolve));
   assert.equal(archived.length, 1);
 });
@@ -1076,12 +1215,12 @@ test('bounds pending persistence and output while retaining the latest event und
   assert.equal(callsWhileBlocked, 1);
   assert.ok(calls.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, calls.length);
   assert.ok(linesWhileBlocked <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, linesWhileBlocked);
-  assert.equal(calls.at(-1).phase, 'finalizing');
-  assert.equal(calls.at(-1).message, 'ZCode completed the delegated turn.');
-  assert.equal(persisted.at(-1).phase, 'finalizing');
+  assert.equal(calls.at(-1).phase, 'waiting');
+  assert.equal(calls.at(-1).message, 'ZCode reported legacy completion; awaiting confirmed turn state.');
+  assert.equal(persisted.at(-1).phase, 'waiting');
   assert.equal(lines.length, calls.length);
   assert.ok(lines.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, lines.length);
-  assert.equal(lines.at(-1), '[zcode] ZCode completed the delegated turn.\n');
+  assert.equal(lines.at(-1), '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n');
   reporter.close();
 });
 
@@ -1296,7 +1435,7 @@ test('close fences a delayed semantic description after terminal state progress'
   reporter.observe({ method: 'v4/conversation/frame' });
   reporter.observe(notification('prompt_completed'));
   reporter.close(); release([{ phase: 'running', message: 'Reading: a.txt.', observedAt }]); await reporter.flush();
-  assert.deepEqual(lines, ['[zcode] ZCode completed the delegated turn.\n']);
+  assert.deepEqual(lines, ['[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n']);
 });
 
 test('deferred reporter buffers only bounded normalized events and activates starting-first', async () => {
@@ -1319,14 +1458,14 @@ test('deferred reporter buffers only bounded normalized events and activates sta
     '[zcode] ZCode started a tool call.\n',
     '[zcode] ZCode is retrying the model request.\n',
     '[zcode] ZCode completed a tool call.\n',
-    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
   ]);
   assert.deepEqual(persisted.map(({ phase, message, observedAt: at }) => ({ phase, message, observedAt: at })), [
     { phase: 'starting', message: 'ZCode started the delegated turn.', observedAt: currentTime },
     { phase: 'running', message: 'ZCode started a tool call.', observedAt: currentTime },
     { phase: 'waiting', message: 'ZCode is retrying the model request.', observedAt: currentTime },
     { phase: 'running', message: 'ZCode completed a tool call.', observedAt: currentTime },
-    { phase: 'finalizing', message: 'ZCode completed the delegated turn.', observedAt: currentTime },
+    { phase: 'waiting', message: 'ZCode reported legacy completion; awaiting confirmed turn state.', observedAt: currentTime },
   ]);
   assert.doesNotMatch(JSON.stringify(persisted), /raw-|secret/);
   reporter.close();
@@ -1376,7 +1515,7 @@ test('deferred semantic work cannot dispatch timestamps behind activation or lat
     ['Same-frame delayed event.', '2026-08-08T00:00:10.000Z'],
     ['Second delayed event.', '2026-08-08T00:00:10.000Z'],
     ['Late post-activation event.', '2026-08-08T00:00:30.000Z'],
-    ['ZCode completed the delegated turn.', '2026-08-08T00:00:40.000Z'],
+    ['ZCode reported legacy completion; awaiting confirmed turn state.', '2026-08-08T00:00:40.000Z'],
   ]);
   assert.deepEqual(archived.map((event) => event.message), persisted.map((event) => event.message));
   reporter.close();
@@ -1417,7 +1556,7 @@ test('persistence normalizes timestamps only when receive-sequenced entries dequ
   reporter.close();
 });
 
-test('a received terminal survives a full persistence queue and delayed pre-terminal descriptions', async () => {
+test('legacy completion survives a full persistence queue and delayed earlier descriptions', async () => {
   const persisted = []; const descriptions = [];
   let releaseFirst;
   const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
@@ -1444,13 +1583,13 @@ test('a received terminal survives a full persistence queue and delayed pre-term
   releaseFirst(); await reporter.flush();
 
   assert.ok(persisted.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS);
-  assert.equal(persisted.at(-1).message, 'ZCode completed the delegated turn.');
+  assert.equal(persisted.at(-1).message, 'ZCode reported legacy completion; awaiting confirmed turn state.');
   assert.equal(persisted.at(-1).observedAt, '2026-08-08T00:00:05.000Z');
-  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 0);
   reporter.close();
 });
 
-test('descriptor overflow cannot dispatch late frames after a received terminal', async () => {
+test('descriptor overflow can continue after nonterminal legacy completion', async () => {
   const persisted = []; const descriptions = []; const diagnostics = [];
   let releaseFirst;
   const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
@@ -1477,14 +1616,12 @@ test('descriptor overflow cannot dispatch late frames after a received terminal'
   releaseFirst(); await reporter.flush();
 
   assert.deepEqual(diagnostics, ['conversation-frame-overflow']);
-  const terminalIndex = persisted.findIndex((event) => event.phase === 'finalizing');
-  assert.notEqual(terminalIndex, -1);
-  assert.doesNotMatch(persisted.slice(terminalIndex + 1).map((event) => event.message).join(' '), /frame/i);
+  assert.equal(persisted.some((event) => event.phase === 'finalizing'), false);
   assert.ok(persisted.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS);
   reporter.close();
 });
 
-test('flush fences a never-settling descriptor but still delivers its held terminal and timeout diagnostic', async () => {
+test('flush fences a never-settling descriptor but still delivers held legacy activity and timeout diagnostic', async () => {
   const persisted = []; const lines = []; const diagnostics = []; let resolveLate;
   let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
@@ -1499,14 +1636,14 @@ test('flush fences a never-settling descriptor but still delivers its held termi
   const started = Date.now(); await reporter.flush(); const elapsed = Date.now() - started;
   assert.ok(elapsed < 1_000, elapsed);
   assert.deepEqual(diagnostics, ['progress-flush-timeout']);
-  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
-  assert.match(lines.join(''), /ZCode completed the delegated turn\./);
+  assert.equal(persisted.filter((event) => /legacy completion/.test(event.message)).length, 1);
+  assert.match(lines.join(''), /legacy completion/);
   assert.match(lines.join(''), /progress cleanup reached its time limit\./);
 
   resolveLate([{ phase: 'running', message: 'MUST NOT CROSS FLUSH FENCE.', observedAt }]);
   await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
   assert.doesNotMatch(`${lines.join('')} ${JSON.stringify(persisted)}`, /MUST NOT CROSS/);
-  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 0);
   reporter.close();
 });
 
@@ -1587,12 +1724,12 @@ test('slow persistence cannot withhold logical writer progress or its timeout di
   assert.deepEqual(lines, [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] Independent semantic.\n',
-    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
     '[zcode] ZCode progress cleanup reached its time limit.\n',
   ]);
   assert.equal(persisted.length, 1);
   resolvePersist(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
-  assert.equal(persisted.length, 1); assert.equal(lines.filter((line) => /completed the delegated turn/.test(line)).length, 1);
+  assert.equal(persisted.length, 1); assert.equal(lines.filter((line) => /legacy completion/.test(line)).length, 1);
   reporter.close();
 });
 
@@ -1612,11 +1749,11 @@ test('stalled writer timeout disables only writer while persistence drains and r
   assert.deepEqual(diagnostics, ['progress-flush-timeout']);
   assert.deepEqual(persisted.map((event) => event.message), [
     'ZCode started the delegated turn.',
-    'ZCode completed the delegated turn.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.',
     'ZCode progress cleanup reached its time limit.',
   ]);
   resolveWriter(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
-  assert.equal(lines.length, 1); assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.equal(lines.length, 1); assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 0);
   reporter.close();
 });
 

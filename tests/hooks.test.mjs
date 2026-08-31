@@ -19,6 +19,7 @@ import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.
 import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
 import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -152,23 +153,46 @@ async function routedExecutorFixture(t, label) {
   return { origin, data, target, start, caller, originDirectory, targetDirectory, routePath, executorPath };
 }
 
-async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {}, executor }) {
+async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {}, executor, onClient }) {
   const store = createStateStore({ dataRoot: data });
   const reservation = { workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
   let value = executor === undefined ? await store.reserveJob(reservation)
     : (await store.reserveFreshRescueJob({ workspace: cwd, reservation, executor })).job;
   const worker = { childPid: 999_999, workerLeaseId: 'd'.repeat(64) };
   value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
-  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, ...peerEnv } });
-  await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
-  const sent = await client.send(remoteSessionId, 'recover this accepted turn');
-  await client.close();
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...peerEnv } });
+  let sent;
+  try {
+    onClient?.(client);
+    await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
+    sent = await client.send(remoteSessionId, 'recover this accepted turn');
+  } finally { await client.close(); }
   value = await store.transitionJob(cwd, value.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(), zcodeSessionId: remoteSessionId, ...worker,
   });
   value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds: ['message-user-history', 'message-assistant-history'] });
   return { store, job: value };
 }
+
+test('accepted writable fixture closes its managed client when create or send fails', async (t) => {
+  for (const method of ['session/create', 'session/send']) {
+    const { cwd, data } = await workspace(); const ownerSessionId = `fixture-${method.replace('/', '-')}-failure`;
+    let client; const cleanup = await createNaturalBrokerCleanupForTest({ data, cwd, ownerSessionId, closeFallback: () => client?.close() }); t.after(cleanup);
+    try {
+      await assert.rejects(acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: `${ownerSessionId}-remote`, peerEnv: { FAKE_ZCODE_ERROR: method }, onClient: (value) => { client = value; } }), { code: 'ZCODE_REQUEST_FAILED' });
+      const identity = await cleanup.identity();
+      await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerIdForSession(ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs });
+      assert.equal(await waitForProcessExitForTest(identity.pid), true, `failed ${method} fixture setup must not retain its authenticated broker socket`);
+    } finally { await cleanup(); }
+  }
+});
+
+test('hook broker cleanup retries a transient owner release and preserves final failures', async () => {
+  let alive = true; let releases = 0;
+  await releaseOwnerUntilBrokerExitForTest({ pid: 42_426, isAlive: () => alive, waitForExit: async () => !alive, release: async () => { releases += 1; if (releases === 1) throw new Error('transient release'); alive = false; } });
+  assert.equal(releases, 2);
+  await assert.rejects(releaseOwnerUntilBrokerExitForTest({ pid: 42_427, isAlive: () => true, waitForExit: async () => false, release: async () => { throw new Error('persistent release'); } }), /persistent release/);
+});
 
 async function exactBindingRecordBytes(data, cwd, childAgentId) {
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
@@ -185,6 +209,57 @@ async function exactBindingRecordBytes(data, cwd, childAgentId) {
 async function writeGateConfig(data, cwd, value) { const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); await mkdir(join(storage.directory, 'config'), { recursive: true }); await writeFile(join(storage.directory, 'config/review-gate.json'), JSON.stringify(value)); }
 function stopFields(input) { const copy = { ...input }; delete copy.prompt; return copy; }
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+async function waitForProcessExitForTest(pid, timeoutMs = process.platform === 'win32' ? 5_000 : 2_000, isAlive = processAlive) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && isAlive(pid)) await new Promise((resolve) => setTimeout(resolve, 25));
+  return !isAlive(pid);
+}
+
+async function releaseOwnerUntilBrokerExitForTest(input) {
+  const isAlive = input.isAlive ?? processAlive; const waitForExit = input.waitForExit ?? ((pid) => waitForProcessExitForTest(pid, undefined, isAlive)); const errors = [];
+  for (let attempt = 0; attempt < 3 && isAlive(input.pid); attempt += 1) {
+    try { await input.release(); } catch (error) { errors.push(error); }
+    if (!isAlive(input.pid) || await waitForExit(input.pid)) return;
+  }
+  const diagnostics = errors.length ? `; release errors: ${errors.map((error) => error?.message ?? String(error)).join(' | ')}` : '';
+  assert.equal(isAlive(input.pid), false, `fixture broker ${input.pid} did not exit naturally${diagnostics}`);
+}
+
+async function createNaturalBrokerCleanupForTest(input) {
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.data, workspace: input.cwd }); const identityPath = join(storage.directory, 'broker/identity.json');
+  const readIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+  assert.equal(await readIdentity(), null, 'fixture must start without a broker identity');
+  let recordedIdentity; let cleanupComplete = false;
+  const identity = async () => {
+    const deadline = Date.now() + 5_000;
+    while (!recordedIdentity && Date.now() < deadline) { recordedIdentity = await readIdentity(); if (!recordedIdentity) await new Promise((resolve) => setTimeout(resolve, 25)); }
+    return recordedIdentity;
+  };
+  const cleanup = async () => {
+    if (cleanupComplete) return;
+    const errors = [];
+    try { await input.beforeCleanup?.(); } catch (error) { errors.push(error); }
+    try { await input.closeFallback?.(); } catch (error) { errors.push(error); }
+    const brokerIdentity = await identity();
+    if (brokerIdentity) {
+      assert.equal(Number.isSafeInteger(brokerIdentity.pid) && brokerIdentity.pid > 1 && brokerIdentity.pid !== process.pid, true, 'fixture broker pid is unsafe');
+      assert.equal(typeof brokerIdentity.instanceId === 'string' && brokerIdentity.instanceId.length > 0, true, 'fixture broker instance is invalid');
+      assert.equal(typeof brokerIdentity.endpoint === 'string' && brokerIdentity.endpoint.length > 0, true, 'fixture broker endpoint is invalid');
+      assert.equal(typeof brokerIdentity.brokerToken === 'string' && brokerIdentity.brokerToken.length > 0, true, 'fixture broker token is invalid');
+      try {
+        await releaseOwnerUntilBrokerExitForTest({
+          pid: brokerIdentity.pid,
+          release: () => releaseManagedZCodeOwner({ dataRoot: input.data, workspace: input.cwd, ownerId: ownerIdForSession(input.ownerSessionId), requestTimeoutMs: brokerTestRequestTimeoutMs }),
+        });
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, `natural broker cleanup failed: ${errors.map((error) => error?.message ?? String(error)).join(' | ')}`);
+    cleanupComplete = true;
+  };
+  cleanup.identity = identity;
+  return cleanup;
+}
 
 test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
   const hooks = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8'));
@@ -1218,11 +1293,16 @@ test('SessionEnd archives a job when a reachable broker has no existing protocol
   const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); const archived = await store.readJob(cwd, value.id); assert.equal(archived.status, 'failed'); assert.equal(archived.error.message, 'The reachable ZCode broker reported no existing ZCode Protocol; the orphan was archived.'); assert.equal(await readFile(record, 'utf8'), '');
 });
 
-test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async () => {
-  const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
-  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'bounded-owner', remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_METHOD: 'session/stop' } });
-  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'bounded-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
-  assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
+test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async (t) => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); const stopGate = join(data, 'bounded-stop.gate'); const stopReached = join(data, 'bounded-stop.reached'); const ownerSessionId = 'bounded-owner';
+  await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' })); await writeFile(stopGate, 'hold');
+  const cleanupBroker = await createNaturalBrokerCleanupForTest({ data, cwd, ownerSessionId, beforeCleanup: () => writeFile(stopGate, 'release') });
+  t.after(cleanupBroker);
+  try {
+    const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached } });
+    const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+    assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
+  } finally { await cleanupBroker(); }
 });
 
 test('a failed SessionEnd stop is later settled by reservation scavenging before owner B is admitted', async (t) => {
@@ -1235,12 +1315,28 @@ test('a failed SessionEnd stop is later settled by reservation scavenging before
   assert.equal(admitted.type, 'background'); assert.equal(admitted.job.ownerSessionId, 'fallback-owner-b'); assert.ok(['succeeded', 'failed'].includes((await store.readJob(cwd, job.id)).status), 'reservation scavenging must safely terminalize the released orphan before admission');
 });
 
-test('SessionEnd drains deferred owner batches without touching siblings or looping on failures', async () => {
+test('SessionEnd makes bounded owner-release progress and a later retry drains the retained suffix without touching siblings', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const owner = ownerIdForSession('many'); const sibling = ownerIdForSession('sibling');
-  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
+  const ownerSessions = [...Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`), 'new-active-session'];
+  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: ownerSessions.slice(0, -1) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_DELAY_ONCE_MS: '300' } }); await client.createSession({ workspace: cwd, sessionId: 'new-active-session' }); await client.close();
-  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500, 'repeated release must remain inside the native hook budget');
-  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions; assert.deepEqual(owners, { 'sibling-session': sibling });
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const ownershipPath = join(storage.directory, 'broker/session-owners.json');
+  const readOwners = async () => JSON.parse(await readFile(ownershipPath, 'utf8')).sessions;
+  const waitForOwners = async (predicate) => {
+    const deadline = Date.now() + scaleTestTimeout(1_000); let owners;
+    do { owners = await readOwners(); if (predicate(owners)) return owners; await new Promise((resolve) => setTimeout(resolve, 10)); } while (Date.now() < deadline);
+    return owners;
+  };
+  const ownerSuffix = (owners) => Object.keys(owners).filter((sessionId) => owners[sessionId] === owner);
+  const boundedSuffix = (owners) => {
+    const retained = ownerSuffix(owners);
+    return owners['sibling-session'] === sibling && Object.keys(owners).length === retained.length + 1
+      && retained.length < ownerSessions.length && (retained.length === 0 || retained.every((sessionId, index) => sessionId === ownerSessions[ownerSessions.length - retained.length + index]));
+  };
+  const firstStarted = Date.now(); const firstEnded = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(firstEnded.code, 0, firstEnded.stderr); assert.ok(Date.now() - firstStarted < 2_500, 'first release must remain inside the native hook budget');
+  const firstOwners = await waitForOwners(boundedSuffix); assert.equal(boundedSuffix(firstOwners), true, 'first release must either finish or retain only a strict owner suffix');
+  const secondStarted = Date.now(); const secondEnded = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(secondEnded.code, 0, secondEnded.stderr); assert.ok(Date.now() - secondStarted < 2_500, 'retry release must remain inside the native hook budget');
+  const owners = await waitForOwners((value) => Object.keys(value).length === 1 && value['sibling-session'] === sibling); assert.deepEqual(owners, { 'sibling-session': sibling });
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'new-active-session'), 'a newer active session beyond the first 16 mappings must be stopped'); assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'sibling-session'));
 });
 

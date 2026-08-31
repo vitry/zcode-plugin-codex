@@ -111,10 +111,23 @@ async function orphanJob(fixture, options = {}) {
 function recoveryClient(job, options = {}) {
   return {
     listSessions: async () => ({ sessions: options.missing ? [] : [{ sessionId: job.zcodeSessionId }] }),
-    readSession: async () => options.snapshot ?? ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }),
+    readSession: async () => options.snapshot ?? activeCurrentTurn(job.inputId),
     stopSession: async (sessionId) => { assert.equal(sessionId, job.zcodeSessionId); options.onStop?.(); if (options.stopError) throw options.stopError; },
     close: async () => { options.onClose?.(); },
   };
+}
+
+function activeCurrentTurn(inputId = 'accepted-input', status = 'running') {
+  return { projection: { status }, runtime: { stateRevision: 8 }, messages: [
+    { info: { role: 'user', messageId: inputId }, parts: [{ type: 'text', text: 'task' }] },
+  ] };
+}
+
+function coherentCurrentTurn(inputId, text = 'recovered answer', finish = 'stop') {
+  return { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [
+    { info: { role: 'user', messageId: inputId }, parts: [{ type: 'text', text: 'task' }] },
+    { info: { role: 'assistant', messageId: `answer-${inputId}`, parentMessageId: inputId, finish }, parts: [{ type: 'text', text }] },
+  ] };
 }
 
 test('cross-owner scavenging derives maintenance ownership from each durable writable blocker', async () => {
@@ -217,7 +230,7 @@ test('workspace scavenging propagates an abort observed by every successful clie
         abortAfter('create');
         return {
           listSessions: async () => { abortAfter('list'); return { sessions: [{ sessionId: job.zcodeSessionId }] }; },
-          readSession: async () => { reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
+          readSession: async () => { reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return activeCurrentTurn(job.inputId, reads === 1 ? 'running' : 'paused'); },
           stopSession: async () => { abortAfter('stop'); },
           close: async () => { closes += 1; },
         };
@@ -249,6 +262,35 @@ test('workspace scavenging distinguishes unavailable established control channel
     assert.equal(recovered.error.message, expected, code);
     assert.doesNotMatch(recovered.error.message, /secret/, code);
     assert.equal(closes, 1, code);
+  }
+});
+
+test('workspace scavenging retains boundaryless writable guards when control cannot disprove an accepted send', async () => {
+  for (const status of ['running', 'cancelling']) for (const stage of ['create', 'list', 'read', 'missing']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture, { boundary: false, status, turnId: `${status}-${stage}` });
+    const unavailable = new PluginError('ZCODE_DISCONNECTED', `private ${stage} control details`, { category: 'runtime', remedy: 'Restart the operation.' });
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    await scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      reconcileOwnership: async () => {},
+      createClient: async () => {
+        if (stage === 'create') throw unavailable;
+        return {
+          listSessions: async () => {
+            if (stage === 'list') throw unavailable;
+            return { sessions: stage === 'missing' ? [] : [{ sessionId: job.zcodeSessionId }] };
+          },
+          stopSession: async () => {},
+          readSession: async () => { if (stage === 'read') throw unavailable; return activeCurrentTurn(undefined, 'idle'); },
+          close: async () => {},
+        };
+      },
+    });
+    const recovered = await store.readJob(fixture.workspace, job.id);
+    assert.equal(recovered.status, 'running', `${status}/${stage}`);
+    assert.equal(typeof recovered.lastCancelError, 'string', `${status}/${stage}`);
+    assert.ok(Buffer.byteLength(recovered.lastCancelError, 'utf8') <= 2_048, `${status}/${stage}`);
+    assert.doesNotMatch(recovered.lastCancelError, /private/, `${status}/${stage}`);
   }
 });
 
@@ -370,11 +412,11 @@ test('queued recovery and SessionEnd cannot terminalize a worker fence published
 
 test('workspace scavenging stops an active orphan and rereads completion before terminalizing', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); let reads = 0; let stops = 0;
-  const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'completion won the stop race' }] }] };
+  const completed = coherentCurrentTurn('accepted-input', 'completion won the stop race');
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => ({
     listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
-    readSession: async () => { reads += 1; return reads === 1 ? { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] } : completed; },
+    readSession: async () => { reads += 1; return reads === 1 ? activeCurrentTurn(job.inputId) : completed; },
     stopSession: async () => { stops += 1; }, close: async () => {},
   }) });
   const recovered = await store.readJob(fixture.workspace, job.id);
@@ -384,6 +426,51 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   const log = await readFile(recovered.logFile, 'utf8');
   assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\ncompletion won the stop race\n/);
   assert.doesNotMatch(log, /Assistant message/);
+});
+
+test('workspace scavenging retains an unattributable active snapshot without stopping', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let stops = 0;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {},
+    createClient: async () => recoveryClient(job, {
+      snapshot: { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
+      onStop: () => { stops += 1; },
+    }),
+  });
+  const retained = await store.readJob(fixture.workspace, job.id);
+  assert.equal(retained.status, 'running'); assert.equal(stops, 0);
+});
+
+test('owner recovery retains unresolved empty idle and later publishes one coherent current-turn result', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let phase = 0; let stops = 0;
+  const snapshots = [
+    { projection: { status: 'idle' }, runtime: { stateRevision: 7 }, messages: [] },
+    { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'user', messageId: 'accepted-input' }, parts: [{ type: 'text', text: 'task' }] }] },
+    { projection: { status: 'completed' }, runtime: { stateRevision: 9 }, messages: [
+      { info: { role: 'user', messageId: 'accepted-input' }, parts: [{ type: 'text', text: 'task' }] },
+      { info: { role: 'assistant', messageId: 'answer-current', parentMessageId: 'accepted-input', finish: 'stop' }, parts: [{ type: 'text', text: 'recovered current turn' }] },
+    ] },
+  ];
+  const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
+  const recover = () => reconcileOwnedJobs({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: job.ownerSessionId,
+    reconcileOwnership: async () => {},
+    createClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
+      readSession: async () => snapshots[phase],
+      stopSession: async () => { stops += 1; }, close: async () => {},
+    }),
+  });
+
+  await recover(); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+  phase = 1; await recover(); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+  phase = 2; await recover(); const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'succeeded'); assert.equal(stops, 0);
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
+  assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'recovered current turn');
+  await recover(); const log = await readFile(recovered.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
 });
 
 test('recovery log attachment and Final append failures emit one fixed safe diagnostic without changing the winner', async () => {
@@ -400,7 +487,7 @@ test('recovery log attachment and Final append failures emit one fixed safe diag
       ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_RECOVERY_ATTACH_PATH'); } } : {}),
       ...(failure === 'final' ? { finishJob: async (...args) => { const winner = await store.finishJob(...args); if (args[3] === 'succeeded') await replaceLog(); return winner; } } : {}),
     };
-    const snapshot = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovery-log-answer', parentMessageId: job.inputId }, parts: [{ type: 'text', text: `recovered despite ${failure}` }] }] };
+    const snapshot = coherentCurrentTurn(job.inputId, `recovered despite ${failure}`);
     await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot }), progressWriter: (line) => lines.push(line) });
     const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded'); assert.ok(winner.resultArtifact);
     if (failure === 'final') assert.equal(replaced, true);
@@ -412,7 +499,7 @@ test('recovery log attachment and Final append failures emit one fixed safe diag
 test('recovery success finalization failure preserves the result for a later retry', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); const storageError = new PluginError('JSON_WRITE_FAILED', 'recovery success write failed once', { category: 'storage', remedy: 'retry recovery' }); let failedWrites = 0; let successWrites = 0; let failSuccess = true;
   const wrapped = { ...store, finishJob: async (workspace, jobId, expected, next, patch) => { if (next === 'succeeded') { successWrites += 1; if (failSuccess) { failSuccess = false; throw storageError; } } else failedWrites += 1; return store.finishJob(workspace, jobId, expected, next, patch); } };
-  const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer-retry', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'recover this result later' }] }] };
+  const completed = coherentCurrentTurn('accepted-input', 'recover this result later');
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await assert.rejects(scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }), (error) => error === storageError || error?.cause === storageError);
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
@@ -423,16 +510,19 @@ test('recovery success finalization failure preserves the result for a later ret
   assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecover this result later\n/);
 });
 
-test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
+test('acknowledged stop retains a cancelling orphan when post-stop completion has no coherent current-turn result', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture, { status: 'cancelling' }); let reads = 0; let stops = 0;
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => ({
     listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
-    readSession: async () => { reads += 1; return { projection: { status: reads === 1 ? 'running' : 'completed' }, runtime: { stateRevision: 8 }, messages: [] }; },
+    readSession: async () => { reads += 1; return reads === 1
+      ? activeCurrentTurn(job.inputId)
+      : { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [] }; },
     stopSession: async () => { stops += 1; }, close: async () => {},
   }) });
   const recovered = await store.readJob(fixture.workspace, job.id);
-  assert.equal(recovered.status, 'cancelled'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+  assert.equal(recovered.status, 'running'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+  assert.match(recovered.lastCancelError, /unresolved/);
   assert.doesNotMatch(await readFile(recovered.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
@@ -446,11 +536,11 @@ test('workspace scavenging retains the writable guard when active stop is unackn
 });
 
 test('workspace scavenging maps paused running to failed but requires stop acknowledgement for cancelling', async () => {
-  for (const [status, stopAcknowledged, expected] of [['running', true, 'failed'], ['cancelling', true, 'cancelled'], ['cancelling', false, 'running']]) {
+  for (const [status, stopAcknowledged, expected] of [['running', true, 'failed'], ['cancelling', true, 'running'], ['cancelling', false, 'running']]) {
     const fixture = await context(); const { job, store } = await orphanJob(fixture, { status, turnId: `${status}-${stopAcknowledged}` }); let stops = 0;
     const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
     await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, {
-      snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }, onStop: () => { stops += 1; }, ...(stopAcknowledged ? {} : { stopError: new Error('paused stop refused') }),
+      snapshot: activeCurrentTurn(job.inputId, 'paused'), onStop: () => { stops += 1; }, ...(stopAcknowledged ? {} : { stopError: new Error('paused stop refused') }),
     }) });
     const recovered = await store.readJob(fixture.workspace, job.id);
     assert.equal(recovered.status, expected, `${status}/${stopAcknowledged}`); assert.equal(stops, status === 'cancelling' ? 1 : 0);
@@ -474,7 +564,7 @@ test('terminal completion racing orphan settlement is never overwritten', async 
     return store.finishJob(...args);
   } };
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
-  await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] } }) });
+  await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: activeCurrentTurn(job.inputId, 'paused') }) });
   const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded');
   assert.doesNotMatch(await readFile(winner.logFile, 'utf8'), /Assistant message|Final output/);
 });
@@ -556,17 +646,15 @@ test('foreground and background workers persist their exact lease before discove
   }
 });
 
-test('accepted-send crashes without a durable boundary stop remotely or retain the writable guard', async () => {
+test('accepted-send crashes without a durable boundary always retain the writable guard after best-effort stop', async () => {
   for (const stopSucceeds of [true, false]) {
     const fixture = await context(); const { job, store } = await orphanJob(fixture, { boundary: false }); let stops = 0;
     const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
     await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { onStop: () => { stops += 1; }, ...(stopSucceeds ? {} : { stopError: new Error('stop refused') }) }) });
     const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(stops, 1);
-    assert.equal(recovered.status, stopSucceeds ? 'failed' : 'running');
-    if (!stopSucceeds) {
-      assert.match(recovered.lastCancelError, /stop refused/);
-      await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
-    }
+    assert.equal(recovered.status, 'running');
+    if (!stopSucceeds) assert.match(recovered.lastCancelError, /stop refused/);
+    await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
   }
 });
 
@@ -582,12 +670,12 @@ test('cancelling recovery distinguishes completed, stopped, active-acked, and ac
   for (const mode of ['completed', 'paused', 'active-acked', 'active-unacked']) {
     const fixture = await context(); const { job, store } = await orphanJob(fixture, { status: 'cancelling', turnId: mode }); let stops = 0;
     const snapshot = mode === 'completed'
-      ? { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'recovered answer' }] }] }
-      : { projection: { status: mode === 'paused' ? 'paused' : 'running' }, runtime: { stateRevision: 8 }, messages: [] };
+      ? coherentCurrentTurn('accepted-input', 'recovered answer')
+      : activeCurrentTurn(job.inputId, mode === 'paused' ? 'paused' : 'running');
     const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
     await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot, onStop: () => { stops += 1; }, ...(mode === 'active-unacked' ? { stopError: new Error('retry stop') } : {}) }) });
     const recovered = await store.readJob(fixture.workspace, job.id);
-    assert.equal(recovered.status, mode === 'completed' ? 'succeeded' : mode === 'active-unacked' ? 'running' : 'cancelled', mode);
+    assert.equal(recovered.status, mode === 'completed' ? 'succeeded' : 'running', mode);
     assert.equal(stops, mode === 'paused' || mode.startsWith('active') ? 1 : 0, mode);
     if (mode === 'active-unacked') assert.match(recovered.lastCancelError, /retry stop/);
     const log = await readFile(recovered.logFile, 'utf8');
@@ -716,7 +804,7 @@ test('reconciliation retains one ambiguous owned job, continues siblings, and ne
   const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
   await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async (job) => {
     created.push(job.id); if (job.id === bad.id) throw new Error('broken recovery client');
-    return { listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }), readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: `assistant-${job.id}`, parentMessageId: job.inputId }, parts: [{ type: 'text', text: `recovered ${job.id}` }] }] }), close: async () => { closes += 1; } };
+    return { listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }), readSession: async () => ({ ...coherentCurrentTurn(job.inputId, `recovered ${job.id}`), runtime: { stateRevision: 2 } }), close: async () => { closes += 1; } };
   } });
   assert.equal((await store.readJob(fixture.workspace, bad.id)).status, 'running');
   assert.equal((await store.readJob(fixture.workspace, good.id)).status, 'succeeded');
@@ -738,7 +826,7 @@ test('owned recovery ignores a foreign corrupt job through its trusted owner bin
   const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
   const recovered = await reconcileOwnedJobs({
     store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {},
-    createClient: async (job) => { clients += 1; return recoveryClient(job, { snapshot: { projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: 'answer-mine', parentMessageId: mine.inputId }, parts: [{ type: 'text', text: 'owned recovery completed' }] }] } }); },
+    createClient: async (job) => { clients += 1; return recoveryClient(job, { snapshot: { ...coherentCurrentTurn(mine.inputId, 'owned recovery completed'), runtime: { stateRevision: 2 } } }); },
   });
   assert.equal(clients, 1); assert.equal(recovered.length, 1); assert.equal(recovered[0].id, mine.id); assert.equal(recovered[0].status, 'succeeded');
   const succeeded = await store.readJob(fixture.workspace, mine.id);
@@ -775,7 +863,7 @@ test('one job cancellation-lock or storage failure cannot skip a later owned orp
   }
   let failedRead = false; const wrapped = { ...store, readJob: async (workspace, jobId) => { if (jobId === jobs[0].id && !failedRead) { failedRead = true; throw new Error('simulated per-job storage fault'); } return store.readJob(workspace, jobId); } };
   const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
-  await reconcileOwnedJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async (job) => recoveryClient(job, { snapshot: { projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: `answer-${job.id}`, parentMessageId: job.inputId }, parts: [{ type: 'text', text: 'later recovered' }] }] } }) });
+  await reconcileOwnedJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async (job) => recoveryClient(job, { snapshot: { ...coherentCurrentTurn(job.inputId, 'later recovered'), runtime: { stateRevision: 2 } } }) });
   assert.equal((await store.readJob(fixture.workspace, jobs[0].id)).status, 'running');
   assert.equal((await store.readJob(fixture.workspace, jobs[1].id)).status, 'succeeded');
 });

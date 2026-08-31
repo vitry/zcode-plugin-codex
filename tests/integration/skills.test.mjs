@@ -1270,6 +1270,9 @@ test('direct running cancel stops and closes the bound Rescue only in its execut
   };
   const running = (await store.reserveFreshRescueJob({ workspace: canonicalExecution, reservation, executor })).job;
   await startReservedRescueForTest(store, canonicalExecution, running, { startedAt: new Date().toISOString(), zcodeSessionId: 'effective-cancel-session' });
+  await store.transitionJob(canonicalExecution, running.id, ['running'], 'running', {
+    inputId: 'effective-cancel-input', startRevision: 1, beforeMessageIds: [],
+  });
   const clients = [];
   const persisted = await store.readJob(canonicalExecution, running.id);
   const output = await withWorkerLease({ dataRoot: ctx.dataRoot, workspace: canonicalExecution, jobId: running.id, workerLeaseId: persisted.workerLeaseId }, () =>
@@ -1281,6 +1284,16 @@ test('direct running cancel stops and closes the bound Rescue only in its execut
           clients.push(options);
           return {
             stopSession: async (zcodeSessionId) => assert.equal(zcodeSessionId, 'effective-cancel-session'),
+            readSession: async (zcodeSessionId) => {
+              assert.equal(zcodeSessionId, 'effective-cancel-session');
+              return {
+                projection: { status: 'idle' }, runtime: { stateRevision: 2 },
+                messages: [
+                  { info: { role: 'user', messageId: 'effective-cancel-input' }, parts: [{ type: 'text', text: 'cancel me' }] },
+                  { info: { role: 'assistant', messageId: 'effective-cancel-assistant', parentMessageId: 'effective-cancel-input', finish: 'cancelled' }, parts: [] },
+                ],
+              };
+            },
             close: async () => {},
           };
         },

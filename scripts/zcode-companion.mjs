@@ -24,7 +24,7 @@ import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
-import { executeJob, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
+import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
@@ -132,7 +132,15 @@ export async function runCompanion(argv, runtime = {}) {
     }
     runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
     const client = await (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
-    const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
+    const cancelling = createJobController({ store, dataRoot,
+      stopSession: (sessionId) => client.stopSession(sessionId),
+      readSession: (sessionId) => client.readSession(sessionId),
+      publishSucceededSnapshot: async ({ workspace, job, snapshot, turnBoundary }) => {
+        const result = extractFinalResult(snapshot, job.command, turnBoundary);
+        return (await publishSuccessfulResultWithLockHeld({
+          input: { store }, job, workspace, dataRoot, result, expectedStatuses: ['cancelling'], returnTerminalWinner: true,
+        })).job;
+      } });
     try {
       const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
       if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });

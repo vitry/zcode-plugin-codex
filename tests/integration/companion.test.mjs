@@ -54,18 +54,194 @@ const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill ca
 const PROGRESS_CLEANUP_TIMEOUT_LINE = '[zcode] ZCode progress cleanup reached its time limit.\n';
 const PROGRESS_ARCHIVE_DISABLED_LINE = '[zcode] ZCode progress archive was disabled.\n';
 const JOB_LOG_DISABLED_LINE = '[zcode] ZCode job log was disabled.\n';
+const CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE = 'ZCode conversation progress cleanup was incomplete.';
 
-/** The progress archive is degraded only after the shared cleanup deadline;
- * the independently fenced job log may then report its own terminal suffix.
+/** The durable preview is bounded and optional cleanup may win after the
+ * authoritative result. Only the exact semantic/diagnostic partial order is valid.
+ * @param {any} job @param {string[]} semanticMessages */
+function assertExactForegroundProgressState(job, semanticMessages) {
+  const failure = `unexpected bounded foreground progress state:\n${JSON.stringify(job)}`;
+  const preview = job?.progressPreview;
+  assert.equal(job?.status, 'succeeded', failure);
+  assert.ok(Array.isArray(preview) && preview.length > 0 && preview.length <= 4, failure);
+  assert.equal(new Set(semanticMessages).size, semanticMessages.length, failure);
+  const diagnostics = [
+    CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE,
+    PROGRESS_CLEANUP_TIMEOUT_LINE.slice(8, -1),
+    PROGRESS_ARCHIVE_DISABLED_LINE.slice(8, -1),
+  ];
+  const allowed = new Set([...semanticMessages, ...diagnostics]);
+  assert.ok(preview.every((message) => allowed.has(message)), failure);
+  assert.equal(new Set(preview).size, preview.length, failure);
+
+  const semantic = preview.filter((message) => semanticMessages.includes(message));
+  for (let index = 1; index < semantic.length; index += 1) {
+    assert.ok(semanticMessages.indexOf(semantic[index - 1]) < semanticMessages.indexOf(semantic[index]), failure);
+  }
+  const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
+  const terminal = 'ZCode completed the delegated turn.';
+  for (const diagnostic of diagnostics) assert.ok(preview.filter((message) => message === diagnostic).length <= 1, failure);
+
+  /** @type {Map<string,string>} */
+  const phases = new Map();
+  phases.set(/** @type {string} */ (semanticMessages[0]), 'starting');
+  for (const message of semanticMessages.slice(1, 3)) phases.set(message, 'running');
+  phases.set(/** @type {string} */ (semanticMessages[3]), 'waiting');
+  for (const message of semanticMessages.slice(4, 6)) phases.set(message, 'running');
+  phases.set(legacy, 'waiting'); phases.set(terminal, 'finalizing');
+  for (const message of diagnostics) phases.set(message, 'waiting');
+  assert.equal(job.phase, phases.get(preview.at(-1)), failure);
+
+  const handshakeWindow = semanticMessages.slice(0, 6).slice(-4);
+  const suffixCandidates = [terminal, ...diagnostics];
+  const allowedPreviews = new Set([JSON.stringify(handshakeWindow)]);
+  /** @param {string[]} suffix @param {Set<string>} used */
+  const enumerateSuffixes = (suffix, used) => {
+    allowedPreviews.add(JSON.stringify([...handshakeWindow, ...suffix].slice(-4)));
+    for (const message of suffixCandidates) {
+      if (used.has(message)) continue;
+      enumerateSuffixes([...suffix, message], new Set([...used, message]));
+    }
+  };
+  enumerateSuffixes([legacy], new Set([legacy]));
+  assert.ok(allowedPreviews.has(JSON.stringify(preview)), failure);
+}
+
+/** Semantic progress preserves its authoritative partial order while optional
+ * sink diagnostics may race within their explicitly bounded relationships.
  * @param {string} actual @param {string[]} semanticLines */
 function assertExactOptionalSinkDegradation(actual, semanticLines) {
-  const progressSuffixes = [[], [PROGRESS_CLEANUP_TIMEOUT_LINE], [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE]];
-  const candidates = progressSuffixes.flatMap((suffix) => [
-    [...semanticLines, ...suffix],
-    [...semanticLines, ...suffix, JOB_LOG_DISABLED_LINE],
-  ]).map((lines) => lines.join(''));
-  assert.ok(candidates.includes(actual), `unexpected optional sink degradation sequence:\n${actual}`);
+  const failure = `unexpected optional sink degradation sequence:\n${actual}`;
+  const actualLines = /** @type {string[]} */ (actual.match(/[^\n]*\n/gu) ?? []);
+  assert.equal(actualLines.join(''), actual, failure);
+  assert.equal(new Set(semanticLines).size, semanticLines.length, failure);
+  const firstSemantic = /** @type {string} */ (semanticLines[0]);
+  assert.equal(typeof firstSemantic, 'string', failure);
+  const optionalLines = [PROGRESS_CLEANUP_TIMEOUT_LINE, PROGRESS_ARCHIVE_DISABLED_LINE, JOB_LOG_DISABLED_LINE];
+  const allowed = new Set([...semanticLines, ...optionalLines]);
+  assert.ok(actualLines.every((line) => allowed.has(line)), failure);
+  const count = (/** @type {string} */ line) => actualLines.filter((candidate) => candidate === line).length;
+  const unsubscribeLines = semanticLines.filter((line) => line.includes('conversation progress cleanup was incomplete'));
+  const authoritativeLines = semanticLines.filter((line) => !unsubscribeLines.includes(line));
+  for (const line of authoritativeLines) assert.equal(count(line), 1, failure);
+  for (const line of [...unsubscribeLines, ...optionalLines]) assert.ok(count(line) <= 1, failure);
+
+  const indexOf = (/** @type {string} */ line) => actualLines.indexOf(line);
+  for (let index = 1; index < authoritativeLines.length; index += 1) {
+    assert.ok(indexOf(authoritativeLines[index - 1]) < indexOf(authoritativeLines[index]), failure);
+  }
+  for (const line of unsubscribeLines) {
+    if (indexOf(line) !== -1) assert.ok(indexOf(firstSemantic) < indexOf(line), failure);
+  }
+  const timeoutIndex = indexOf(PROGRESS_CLEANUP_TIMEOUT_LINE);
+  const archiveIndex = indexOf(PROGRESS_ARCHIVE_DISABLED_LINE);
+  const jobLogIndex = indexOf(JOB_LOG_DISABLED_LINE);
+  if (timeoutIndex !== -1) assert.ok(indexOf(firstSemantic) < timeoutIndex, failure);
+  if (archiveIndex !== -1) assert.ok(indexOf(firstSemantic) < archiveIndex, failure);
+  if (jobLogIndex !== -1) assert.equal(jobLogIndex, actualLines.length - 1, failure);
 }
+
+test('optional sink degradation accepts only its exact diagnostic partial orders', () => {
+  const semanticLines = [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
+    '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ];
+  assertExactOptionalSinkDegradation([
+    ...semanticLines.slice(0, -1),
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+    semanticLines.at(-1),
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0],
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+    ...semanticLines.slice(1),
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[2], semanticLines[1], semanticLines[3],
+    PROGRESS_CLEANUP_TIMEOUT_LINE,
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[3],
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[3], semanticLines[2],
+  ].join(''), semanticLines);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[1], semanticLines[0], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[3], semanticLines[1], semanticLines[2],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assertExactOptionalSinkDegradation([
+    ...semanticLines.slice(0, -1),
+    PROGRESS_ARCHIVE_DISABLED_LINE,
+    semanticLines.at(-1),
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    semanticLines[0], PROGRESS_ARCHIVE_DISABLED_LINE, PROGRESS_CLEANUP_TIMEOUT_LINE, ...semanticLines.slice(1),
+  ].join(''), semanticLines);
+  assertExactOptionalSinkDegradation([
+    ...semanticLines, PROGRESS_ARCHIVE_DISABLED_LINE,
+  ].join(''), semanticLines);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], JOB_LOG_DISABLED_LINE, ...semanticLines.slice(1),
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[2], semanticLines[0], semanticLines[1], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[2], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], PROGRESS_ARCHIVE_DISABLED_LINE, ...semanticLines.slice(1), PROGRESS_ARCHIVE_DISABLED_LINE,
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    semanticLines[0], semanticLines[1], semanticLines[1], semanticLines[2], semanticLines[3],
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+  assert.throws(() => assertExactOptionalSinkDegradation([
+    ...semanticLines, '[zcode] unexpected diagnostic.\n',
+  ].join(''), semanticLines), /unexpected optional sink degradation sequence/);
+});
+
+test('bounded foreground progress state accepts the captured Windows terminal persistence race and rejects invalid shapes', () => {
+  const semanticMessages = [
+    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
+    'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.', 'ZCode completed the delegated turn.',
+  ];
+  const capturedWindowsState = {
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode is retrying the model request.', 'ZCode tool work is still running.',
+      'ZCode completed a tool call.', 'ZCode reported legacy completion; awaiting confirmed turn state.',
+    ],
+  };
+  assertExactForegroundProgressState(capturedWindowsState, semanticMessages);
+  assertExactForegroundProgressState({
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode completed the delegated turn.', CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE,
+      'ZCode progress cleanup reached its time limit.', 'ZCode progress archive was disabled.',
+    ],
+  }, semanticMessages);
+  assertExactForegroundProgressState({
+    status: 'succeeded', phase: 'waiting', progressPreview: [
+      'ZCode completed a tool call.', 'ZCode reported legacy completion; awaiting confirmed turn state.',
+      'ZCode completed the delegated turn.', 'ZCode progress archive was disabled.',
+    ],
+  }, semanticMessages);
+  for (const invalid of [
+    { ...capturedWindowsState, phase: 'finalizing' },
+    { ...capturedWindowsState, progressPreview: [...capturedWindowsState.progressPreview.slice(1), 'ZCode completed a tool call.'] },
+    { ...capturedWindowsState, progressPreview: ['ZCode completed the delegated turn.'] },
+    { ...capturedWindowsState, progressPreview: ['ZCode progress archive was disabled.', 'ZCode progress archive was disabled.'] },
+    { ...capturedWindowsState, phase: 'running', progressPreview: semanticMessages.slice(1, 5) },
+    { ...capturedWindowsState, progressPreview: [
+      'ZCode tool work is still running.', 'ZCode completed a tool call.',
+      CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE, 'ZCode reported legacy completion; awaiting confirmed turn state.',
+    ] },
+  ]) assert.throws(() => assertExactForegroundProgressState(invalid, semanticMessages), /unexpected bounded foreground progress state/);
+});
 
 /** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
  * @param {any} job @param {any} spec @param {string} capability */
@@ -252,6 +428,49 @@ async function terminateOwnedProcess(pid, killFn = process.kill) {
   assert.equal(await waitForProcessExit(pid, 1_000, killFn), true, `owned process ${pid} was not reaped`);
 }
 
+/** @param {unknown} left @param {unknown} right */
+function sameExactBrokerIdentity(left, right) {
+  if (left === null || right === null) return left === right;
+  return Boolean(left && right && typeof left === 'object' && typeof right === 'object'
+    && !Array.isArray(left) && !Array.isArray(right)
+    && /** @type {any} */ (left).pid === /** @type {any} */ (right).pid
+    && /** @type {any} */ (left).instanceId === /** @type {any} */ (right).instanceId
+    && /** @type {any} */ (left).endpoint === /** @type {any} */ (right).endpoint);
+}
+
+/** @param {unknown} value @param {number} selfPid */
+function validExactBrokerIdentity(value, selfPid) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && validRecordedPid(/** @type {any} */ (value).pid, selfPid)
+    && typeof /** @type {any} */ (value).instanceId === 'string' && /** @type {any} */ (value).instanceId.length > 0
+    && typeof /** @type {any} */ (value).endpoint === 'string' && /** @type {any} */ (value).endpoint.length > 0);
+}
+
+/** @param {{baselineIdentity:unknown,readIdentity:()=>Promise<unknown>,processAlive?:(pid:number)=>boolean,terminate?:(pid:number)=>Promise<void>,selfPid?:number}} input */
+function createExactBrokerCleanupForTest(input) {
+  const alive = input.processAlive ?? processAlive; const terminate = input.terminate ?? terminateOwnedProcess;
+  const selfPid = input.selfPid ?? process.pid; let cleanupComplete = false;
+  /** @type {{pid:number,instanceId:string,endpoint:string}|undefined} */ let recordedIdentity;
+  return {
+    /** @param {unknown} identity */
+    record(identity) { if (!validExactBrokerIdentity(identity, selfPid)) throw new Error('test broker identity is unsafe'); recordedIdentity = /** @type {any} */ (identity); },
+    markComplete() { cleanupComplete = true; },
+    complete() { return cleanupComplete; },
+    async cleanup() {
+      if (cleanupComplete) return;
+      const current = await input.readIdentity();
+      const candidate = recordedIdentity ?? (!sameExactBrokerIdentity(current, input.baselineIdentity) ? current : null);
+      if (candidate === null) { cleanupComplete = true; return; }
+      if (!validExactBrokerIdentity(candidate, selfPid)) return;
+      const exact = /** @type {{pid:number,instanceId:string,endpoint:string}} */ (candidate);
+      if (!alive(exact.pid)) { cleanupComplete = true; return; }
+      if (!sameExactBrokerIdentity(current, exact)) return;
+      await terminate(exact.pid);
+      if (!alive(exact.pid)) cleanupComplete = true;
+    },
+  };
+}
+
 /** @param {unknown} value @param {number} selfPid */
 function validRecordedPid(value, selfPid) { return Number.isSafeInteger(value) && Number(value) > 1 && value !== selfPid; }
 
@@ -417,19 +636,34 @@ async function companionWithArchiveHandshake(context, args) {
     FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_NONCE: nonce, FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_REACHED: reached,
   });
   let result;
+  /** @type {string|undefined} */ let durableJobId;
   try {
     const storage = await resolveWorkspaceStorage(context);
     for (const [index, message] of expected.entries()) {
       await waitFor(async () => {
-        const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
-        for (const name of names.filter((candidate) => candidate.endsWith('.log'))) {
-          if ((await readFile(join(storage.directory, 'jobs', name), 'utf8').catch(() => '')).includes(message)) return true;
+        const jobsDirectory = join(storage.directory, 'jobs');
+        if (durableJobId) {
+          const job = await readFile(join(jobsDirectory, `${durableJobId}.json`), 'utf8').then(JSON.parse).catch(() => null);
+          const log = await readFile(join(jobsDirectory, `${durableJobId}.log`), 'utf8').catch(() => '');
+          return job?.id === durableJobId && job.workspace === storage.workspacePath
+            && job.command === 'rescue' && job.status === 'running'
+            && job.progressPreview?.includes(message) && log.includes(message);
+        }
+        const names = await readdir(jobsDirectory).catch(() => []);
+        for (const name of names.filter((candidate) => /^[a-f0-9]{64}\.json$/u.test(candidate))) {
+          const job = await readFile(join(jobsDirectory, name), 'utf8').then(JSON.parse).catch(() => null);
+          if (job?.workspace !== storage.workspacePath || job.command !== 'rescue' || job.status !== 'running'
+            || !job.progressPreview?.includes(message)) continue;
+          const jobId = name.slice(0, -'.json'.length);
+          const log = await readFile(join(jobsDirectory, `${jobId}.log`), 'utf8').catch(() => '');
+          if (job.id === jobId && log.includes(message)) { durableJobId = jobId; return true; }
         }
         return false;
-      }, `archive did not durably append semantic event ${index + 1}`);
+      }, `exact job did not durably persist semantic event ${index + 1} to both preview and archive`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
       await atomicWriteJson(gate, { version: 1, nonce, acknowledged: index + 1 });
     }
     result = await execution;
+    assert.equal(result.json?.job?.id, durableJobId, 'archive handshake must remain pinned to the completed current job');
     assert.deepEqual(JSON.parse(await readFile(reached, 'utf8')), { version: 1, nonce, sequence: expected.length });
   } finally {
     await atomicWriteJson(gate, { version: 1, nonce, acknowledged: expected.length }).catch(() => {});
@@ -478,7 +712,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
       gateDeadline = setTimeout(() => {
         gateTimedOut = true;
         void releaseGate().then((released) => { if (!released) abortHeldExecution(); }).finally(signalGateDeadline);
-      }, 15_000);
+      }, DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS);
       gateDeadline.unref?.();
     }
     const execution = (options.runExecution ?? runCompanion)(['rescue', '--fresh', `${scenario} conversation compatibility`], {
@@ -568,7 +802,7 @@ async function waitForDurableConversationProbe(context, record, ownerSessionId, 
       return true;
     }
     return false;
-  }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`);
+  }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
 }
 
 /** @param {any} context @param {{sessionId:string,turnId:string,permissionMode:string}} owner */
@@ -2994,7 +3228,10 @@ async function recoverForeignCompletion() {
       assert.equal(options.ownerId, ownerIdForSession(ownerA.sessionId));
       return {
         listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
-        readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovered-answer', parentMessageId: orphan.inputId }, parts: [{ type: 'text', text: 'owner A recovered result' }] }] }),
+        readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [
+          { info: { role: 'user', messageId: orphan.inputId, synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted owner A task' }] },
+          { info: { role: 'assistant', messageId: 'recovered-answer', parentMessageId: orphan.inputId, finish: 'stop', time: { completed: 8 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'owner A recovered result' }] },
+        ] }),
         close: async () => {},
       };
     },
@@ -3084,29 +3321,35 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(result.json.job.status, 'succeeded'); assert.equal(result.json.result, 'done');
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, result.json.job.resultArtifact), 'utf8'), result.json.result);
-  assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
-  assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
-  assert.match(result.stderr, /\[zcode\] ZCode started a tool call\./);
-  assert.match(result.stderr, /\[zcode\] ZCode completed a tool call\./);
-  const status = await companion(context, ['status', result.json.job.id]);
-  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
-  assert.equal(status.json.job.phase, 'finalizing');
-  assert.ok(Date.parse(status.json.job.lastActivityAt));
-  assert.deepEqual(status.json.job.progressPreview, [
-    'ZCode is retrying the model request.',
-    'ZCode tool work is still running.',
-    'ZCode completed a tool call.',
-    'ZCode completed the delegated turn.',
-  ]);
-  const log = await readFile(status.json.job.logFile, 'utf8');
-  const archivedMessages = [
+  const semanticMessages = [
     'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
     'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
-    'ZCode completed the delegated turn.',
+    'ZCode reported legacy completion; awaiting confirmed turn state.', 'ZCode completed the delegated turn.',
   ];
+  assertExactOptionalSinkDegradation(result.stderr, [
+    ...semanticMessages.slice(0, -1).map((message) => `[zcode] ${message}\n`),
+    `[zcode] ${CONVERSATION_UNSUBSCRIBE_FAILED_MESSAGE}\n`,
+    `[zcode] ${semanticMessages.at(-1)}\n`,
+  ]);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
+  assert.equal(status.json.job.status, 'succeeded');
+  assert.ok(Date.parse(status.json.job.lastActivityAt));
+  assertExactForegroundProgressState(status.json.job, semanticMessages);
+  const log = await readFile(status.json.job.logFile, 'utf8');
+  const archivedMessages = semanticMessages.slice(0, 6);
   let previousIndex = -1;
   for (const message of archivedMessages) {
+    assert.equal(log.split(message).length - 1, 1, `${message} must be archived exactly once`);
     const index = log.indexOf(message); assert.ok(index > previousIndex, `${message} must be archived in receive order`); previousIndex = index;
+  }
+  const legacy = 'ZCode reported legacy completion; awaiting confirmed turn state.';
+  const terminal = 'ZCode completed the delegated turn.';
+  const legacyCount = log.split(legacy).length - 1; const terminalCount = log.split(terminal).length - 1;
+  assert.ok([0, 1].includes(legacyCount)); assert.ok([0, 1].includes(terminalCount));
+  if (terminalCount === 1) {
+    assert.equal(legacyCount, 1);
+    assert.ok(log.indexOf(legacy) < log.indexOf(terminal), 'archived terminal completion must follow legacy completion');
   }
   const assistantBlock = 'Assistant message\ndone\n';
   const finalBlock = 'Final output\ndone\n';
@@ -3124,19 +3367,22 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
-  const context = await fixture(); const record = join(context.directory, 'conversation-progress-requests.jsonl');
-  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_RECORD: record });
-  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
-  assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
-  assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
-  assert.doesNotMatch(result.stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
-  const status = await companion(context, ['status', result.json.job.id]);
-  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
-  assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
-  assert.equal(status.json.job.progressProbe.state, 'online');
-  assert.equal(status.json.job.progressProbe.acceptedOnline, 2);
-  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    env: { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' },
+    completionAfterProbe: { state: 'online', acceptedOnline: 2 },
+  });
+  const stderr = scenario.lines.join('');
+  assert.equal(scenario.output.result, 'done');
+  assert.match(stderr, /\[zcode\] Running command: npm test\./);
+  assert.match(stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
+  assert.doesNotMatch(stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
+  assert.match(JSON.stringify(scenario.stored.progressPreview), /Running command: npm test/);
+  assert.doesNotMatch(JSON.stringify(scenario.stored.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 2);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
 test('conversation scenario teardown settles its started execution after probe waiting fails', async () => {
@@ -3349,7 +3595,7 @@ test('snapshot fallback emits a terminal-only safe event when the call first app
 test('snapshot read rejection degrades once to lifecycle-only and preserves authoritative completion', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+    heartbeat: true, completionAfterProbe: { state: 'lifecycle-only' },
     env: { FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL: '1' },
   });
   const fallback = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
@@ -3365,7 +3611,7 @@ test('snapshot read rejection degrades once to lifecycle-only and preserves auth
 test('later accepted online recovery stops snapshot reads and discards a delayed old result', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode turn started.\n',
+    heartbeat: true, completionAfterProbe: { state: 'online', acceptedOnline: 1 },
     env: { FAKE_ZCODE_SESSION_PROGRESS_RECOVERY: '1', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
@@ -3455,6 +3701,7 @@ test('conversation subscribe failure is observational, durable, and preserves th
   assertExactOptionalSinkDegradation(result.stderr, [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] ZCode conversation progress is unavailable.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
     '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
@@ -3470,8 +3717,9 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
   assertExactOptionalSinkDegradation(result.stderr, [
     '[zcode] ZCode started the delegated turn.\n',
-    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode reported legacy completion; awaiting confirmed turn state.\n',
     '[zcode] ZCode conversation progress cleanup was incomplete.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
@@ -3493,10 +3741,10 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
 
   const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/send'), 'foreground send was not accepted');
+  await waitForAcceptedBoundary(context, recorded, 'foreground send boundary was not durably accepted');
   child.kill('SIGINT');
   const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
-  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.deepEqual(exit, { code: 130, signal: null }, `${stderr}${stdout}${internal}`);
   const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
   assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
@@ -4592,7 +4840,9 @@ test('an unacknowledged orphan stop preserves WRITABLE_JOB_EXISTS with an honest
     discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
     createManagedZCodeClient: async () => ({
       listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
-      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }),
+      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [
+        { info: { role: 'user', messageId: orphan.inputId, synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted orphan task' }] },
+      ] }),
       stopSession: async () => { stops += 1; throw new Error('stop not acknowledged'); },
       close: async () => {},
     }),
@@ -4744,23 +4994,77 @@ test('artifact writes reject an existing final symlink without replacing its tar
   assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'failed');
 });
 
-test('real CLI cancellation waits for stop acknowledgement and reports stop failure', async () => {
+test('exact broker cleanup distinguishes its baseline and is idempotent after dynamic discovery', async () => {
+  let baselineReads = 0; let baselineTerminated = false;
+  const baselineCleanup = createExactBrokerCleanupForTest({
+    baselineIdentity: null, readIdentity: async () => { baselineReads += 1; return null; },
+    terminate: async () => { baselineTerminated = true; },
+  });
+  await baselineCleanup.cleanup(); await baselineCleanup.cleanup();
+  assert.equal(baselineCleanup.complete(), true); assert.equal(baselineReads, 1); assert.equal(baselineTerminated, false);
+
+  const identity = { pid: 4242, instanceId: 'fixture-instance', endpoint: 'fixture-endpoint' };
+  /** @type {number[]} */
+  const terminated = []; let alive = true; let dynamicReads = 0;
+  const dynamicCleanup = createExactBrokerCleanupForTest({
+    baselineIdentity: null, readIdentity: async () => { dynamicReads += 1; return identity; },
+    processAlive: () => alive, terminate: async (pid) => { terminated.push(pid); alive = false; },
+  });
+  await dynamicCleanup.cleanup(); await dynamicCleanup.cleanup();
+  assert.deepEqual(terminated, [identity.pid]); assert.equal(dynamicCleanup.complete(), true); assert.equal(dynamicReads, 1);
+});
+
+test('real CLI cancellation waits for stop acknowledgement and reports stop failure', async (t) => {
   for (const stopFails of [false, true]) {
     const context = await fixture();
     const launch = { command: process.execPath, args: [fake], target: fake };
-    const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: { ...context.env, ...(stopFails ? { FAKE_ZCODE_ERROR: 'session/stop' } : {}) } });
-    const created = await client.createSession({ workspace: context.workspace }); await client.close();
-    const store = createStateStore({ dataRoot: context.dataRoot });
-    const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-    await startWritableRescueForTest(store, context.workspace, queued, { zcodeSessionId: created.session.sessionId });
-    const cancelled = await companion(context, ['cancel', queued.id]);
-    if (stopFails) {
-      assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');
-      assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
-    } else {
-      assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
+    const ownerId = ownerIdForSession('codex-session'); const storage = await resolveWorkspaceStorage(context);
+    const identityPath = join(storage.directory, 'broker', 'identity.json');
+    const readBrokerIdentity = () => readFile(identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    const baselineIdentity = await readBrokerIdentity(); assert.equal(baselineIdentity, null);
+    const exactCleanup = createExactBrokerCleanupForTest({ baselineIdentity, readIdentity: readBrokerIdentity });
+    let client; t.after(exactCleanup.cleanup);
+    try {
+      client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId, env: { ...context.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', ...(stopFails ? { FAKE_ZCODE_STOP_ERROR_ONCE: '1' } : {}) } });
+      const recordedBroker = JSON.parse(await readFile(identityPath, 'utf8'));
+      exactCleanup.record(recordedBroker);
+      const created = await client.createSession({ workspace: context.workspace });
+      const accepted = /** @type {{inputId:string,stateRevision:number}} */ (await client.send(created.session.sessionId, 'hold for cancellation')); await client.close(); client = null;
+      const store = createStateStore({ dataRoot: context.dataRoot });
+      const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+      await startWritableRescueForTest(store, context.workspace, queued, {
+        startedAt: new Date().toISOString(), zcodeSessionId: created.session.sessionId,
+      });
+      await store.transitionJob(context.workspace, queued.id, ['running'], 'running', {
+        inputId: accepted.inputId, startRevision: accepted.stateRevision, beforeMessageIds: [],
+      });
+      const cancelled = await companion(context, ['cancel', queued.id]);
+      if (stopFails) {
+        assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');
+        assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
+        const retried = await companion(context, ['cancel', queued.id]);
+        assert.equal(retried.code, 0, `${retried.stderr}${retried.stdout}`); assert.equal(retried.json.job.status, 'cancelled');
+      } else {
+        assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
+      }
+      await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace: context.workspace, ownerId, requestTimeoutMs: 750 });
+      assert.equal(await waitForProcessExit(recordedBroker.pid, scaleTestTimeout(5_000)), true, `broker ${recordedBroker.pid} did not exit after owner release`);
+      exactCleanup.markComplete();
+    } finally {
+      await client?.close().catch(() => {});
+      await exactCleanup.cleanup();
     }
   }
+});
+
+test('real managed upstream send rejection fails the writable job and releases its slot', async () => {
+  const context = await fixture();
+  const rejected = await companion(context, ['rescue', '--fresh', 'reject this send'], { FAKE_ZCODE_ERROR: 'session/send' });
+  assert.notEqual(rejected.code, 0); assert.equal(rejected.json.error.code, 'ZCODE_REQUEST_FAILED');
+  const store = createStateStore({ dataRoot: context.dataRoot }); const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'failed');
+  const next = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'after-rejected-send', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  assert.equal(next.status, 'queued');
 });
 
 test('real CLI cancellation stops sessions owned by the Transfer broker profile', async () => {
@@ -4788,6 +5092,119 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.equal((resumeLog.match(/Assistant message/g) ?? []).length, 1);
   assert.equal((resumeLog.match(/Final output/g) ?? []).length, 1);
   assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
+});
+
+test('captured 0.16.5 true terminal gates fresh and continuation results after false legacy completion', async () => {
+  const context = await fixture();
+  const record = join(context.directory, 'captured-0165-requests.jsonl');
+  const trace = join(context.directory, 'captured-0165-peer-trace.jsonl');
+  const runningGate = join(context.directory, 'captured-0165-running-gate.json');
+  const terminalGate = join(context.directory, 'captured-0165-terminal-gate.json');
+  const runningReached = join(context.directory, 'captured-0165-running.json');
+  await atomicWriteJson(runningGate, { version: 1, releaseThrough: 0 });
+  await atomicWriteJson(terminalGate, { version: 1, releaseThrough: 0 });
+  const env = {
+    FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165',
+    FAKE_ZCODE_RECORD: record, FAKE_ZCODE_CAPTURED_0165_TRACE: trace,
+    FAKE_ZCODE_CAPTURED_0165_RUNNING_GATE: runningGate,
+    FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: terminalGate,
+    FAKE_ZCODE_CAPTURED_0165_RUNNING_REACHED: runningReached,
+  };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+
+  /** @param {number} turn @param {'--fresh'|'--resume'} mode */
+  async function executeHeldTurn(turn, mode) {
+    let settled = false;
+    const execution = companion(context, ['rescue', mode, `captured 0.16.5 turn ${turn}`], env).finally(() => { settled = true; });
+    const readTrace = () => readFile(trace, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    let result;
+    try {
+      await waitFor(async () => (await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'legacy-prompt-completed'),
+        `captured 0.16.5 turn ${turn} did not reach its legacy-only gap`);
+      assert.equal((await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'turn-running'), false,
+        'the captured legacy-only gap must precede every runtime running frame');
+      assert.equal(settled, false, 'false legacy completion without a runtime frame must not settle the companion');
+      await atomicWriteJson(runningGate, { version: 1, releaseThrough: turn });
+      await waitFor(async () => {
+        const marker = await readFile(runningReached, 'utf8').then(JSON.parse).catch(() => null);
+        const traced = await readTrace();
+        const runningIndex = traced.findIndex((entry) => entry.sendCount === turn && entry.phase === 'turn-running');
+        const laterPendingRead = traced.findIndex((entry, index) => index > runningIndex && entry.sendCount === turn && entry.phase === 'session-read-pending');
+        return marker?.version === 1 && marker?.sendCount === turn && marker?.phase === 'running-after-legacy-complete'
+          && runningIndex >= 0 && laterPendingRead > runningIndex;
+      }, `captured 0.16.5 turn ${turn} did not reach its running pre-terminal gate`);
+      assert.equal(settled, false, 'running v4 evidence without a terminal must not settle the companion');
+      const jobs = await store.listOwnedJobs(context.workspace, 'codex-session');
+      assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'running').length, 1);
+      await atomicWriteJson(terminalGate, { version: 1, releaseThrough: turn });
+      result = await execution;
+    } finally {
+      await atomicWriteJson(runningGate, { version: 1, releaseThrough: turn });
+      await atomicWriteJson(terminalGate, { version: 1, releaseThrough: turn });
+      if (!settled) await execution.catch(() => {});
+    }
+    assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+    assert.equal(result.json.job.status, 'succeeded');
+    assert.equal(result.json.result, `captured 0.16.5 result ${turn}`);
+    return result;
+  }
+
+  const fresh = await executeHeldTurn(1, '--fresh');
+  const continuation = await executeHeldTurn(2, '--resume');
+  assert.equal(continuation.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
+  const completedJobs = await store.listOwnedJobs(context.workspace, 'codex-session');
+  assert.equal(completedJobs.length, 2); assert.equal(completedJobs.every((job) => job.status === 'succeeded'), true);
+  assert.equal(new Set(completedJobs.map((job) => job.resultArtifact)).size, 2, 'each turn publishes exactly one distinct result');
+
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 2);
+  const subscribes = requests.filter((request) => request.method === 'v4/conversation/subscribe');
+  const unsubscribes = requests.filter((request) => request.method === 'v4/conversation/unsubscribe');
+  assert.equal(subscribes.length, 2); assert.equal(unsubscribes.length, 2);
+  for (let index = 0; index < subscribes.length; index += 1) {
+    const subscribe = subscribes[index]; const unsubscribe = unsubscribes[index];
+    assert.deepEqual(Object.keys(subscribe.params).sort(), ['clientMode', 'connectionId', 'topic']);
+    assert.equal(subscribe.params.clientMode, 'desktop-continuous');
+    assert.equal(subscribe.params.topic, `conversation/${fresh.json.job.zcodeSessionId}`);
+    assert.deepEqual(unsubscribe.params, {
+      topic: subscribe.params.topic, subscriptionId: `subscription-${fresh.json.job.zcodeSessionId}${index === 0 ? '' : '-2'}`,
+      connectionId: subscribe.params.connectionId,
+    });
+  }
+
+  const peerTrace = (await readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  for (const turn of [1, 2]) {
+    const entries = peerTrace.filter((entry) => entry.sendCount === turn);
+    const protocolEntries = entries.filter((entry) => !entry.phase.startsWith('session-read-'));
+    assert.deepEqual(protocolEntries.map((entry) => entry.phase), ['subscribe-ack', 'initial-frame', 'send-accepted', 'legacy-prompt-completed', 'turn-running', 'turn-terminal']);
+    assert.doesNotMatch(JSON.stringify(protocolEntries), /future/u, 'captured qualification data must not contain synthetic additive fields');
+    const ack = protocolEntries[0].message.result.ack;
+    assert.deepEqual(Object.keys(protocolEntries[0].message.result), ['ack']);
+    assert.deepEqual(Object.keys(ack).sort(), ['logEpoch', 'mode', 'openTiming', 'subscriptionId']);
+    assert.deepEqual(ack.openTiming, { version: 1, initialFrameEncodeMs: 0, sessionRuntimeState: 'warm', snapshotRowCount: 0 });
+    assert.deepEqual(protocolEntries.slice(1).filter((entry) => entry.message.method === 'v4/conversation/frame').map((entry) => entry.message.params.wireVersion), [3, 3, 3]);
+    const running = entries.find((entry) => entry.phase === 'turn-running').message;
+    const terminal = entries.find((entry) => entry.phase === 'turn-terminal').message;
+    assert.equal(running.params.frame.payload.deltas[0].op, 'row.appended');
+    assert.equal(running.params.frame.payload.deltas[0].row.state, 'running');
+    assert.equal(terminal.params.frame.payload.deltas[0].op, 'row.upserted');
+    assert.equal(terminal.params.frame.payload.deltas[0].row.state, 'completedSuccess');
+    assert.equal(terminal.params.frame.payload.deltas[0].row.rowId, running.params.frame.payload.deltas[0].row.rowId);
+    assert.equal(terminal.params.frame.payload.deltas[0].row.turnId, running.params.frame.payload.deltas[0].row.turnId);
+    const pendingRead = entries.find((entry) => entry.phase === 'session-read-pending').message.result;
+    assert.equal(pendingRead.projection.status, 'running');
+    assert.equal(pendingRead.messages.at(-1).info.role, 'user');
+    assert.equal(pendingRead.messages.at(-1).info.semantics.origin, 'real_user');
+    const terminalRead = [...entries].reverse().find((/** @type {any} */ entry) => entry.phase === 'session-read-terminal').message.result;
+    const currentRoot = terminalRead.messages.at(-2); const currentAssistant = terminalRead.messages.at(-1);
+    assert.equal(terminalRead.projection.status, 'idle');
+    assert.equal(currentRoot.info.semantics.origin, 'real_user');
+    assert.equal(currentAssistant.info.semantics.origin, 'agent_runtime');
+    assert.equal(currentAssistant.info.parentMessageId, currentRoot.info.messageId);
+    assert.equal(Number.isSafeInteger(currentAssistant.info.time.completed), true);
+  }
 });
 
 test('trusted bound routing rejects fresh without spawn preparation before job binding or ZCode mutation', async () => {
@@ -4828,13 +5245,42 @@ test('resumed rescue cannot reuse a historical visible result when the current t
   assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
 });
 
-test('resumed rescue rejects an unrelated-only new assistant result', async () => {
-  const context = await fixture(); const fresh = await companion(context, ['rescue', '--fresh', 'historical visible']);
-  assert.equal(fresh.code, 0, `${fresh.stderr}${fresh.stdout}`);
-  const resumed = await companion(context, ['rescue', '--resume', 'current unrelated']);
-  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_RESULT_MISSING');
-  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
-  assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
+test('an unrelated-only assistant remains pending until interruption without reusing historical output', { skip: windowsRealSignalSkip }, async () => {
+  const context = await fixture();
+  const record = join(context.directory, 'unrelated-only.jsonl'); await writeFile(record, '');
+  const completionGate = join(context.directory, 'unrelated-only-completion-gate');
+  const completionReached = join(context.directory, 'unrelated-only-completion-reached'); await writeFile(completionGate, 'held');
+  const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'current unrelated'], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: completionReached },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  try {
+    await waitFor(async () => exited || await readFile(completionReached, 'utf8').then((value) => value === 'blocked').catch(() => false), 'unrelated-only completion gate was not reached');
+    assert.equal(exited, false, `unrelated-only execution exited before completion gate: ${stderr}${stdout}${internal}`);
+    await writeFile(completionGate, 'release');
+    await waitFor(async () => {
+      const calls = await readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+      return calls.some((frame) => frame.method === 'session/read');
+    }, 'unrelated-only turn was not authoritatively inspected');
+    assert.equal(exited, false, `unrelated assistant must not publish a historical result: ${stderr}${stdout}${internal}`);
+    const activeJobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+    assert.equal(activeJobs.length, 1); assert.equal(activeJobs[0].status, 'running');
+  } finally {
+    if (!exited) child.kill('SIGINT');
+  }
+  assert.deepEqual(await exit, { code: 130, signal: null }, `${stderr}${stdout}${internal}`);
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 1);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  await waitFor(async () => (await store.listJobs(context.workspace))[0]?.status === 'cancelled', 'unrelated-only interruption was not durably reconciled');
+  const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].resultArtifact, undefined);
 });
 
 test('foreground rescue accepts a 0.16.3 result linked through a distinct user message id', async () => {
