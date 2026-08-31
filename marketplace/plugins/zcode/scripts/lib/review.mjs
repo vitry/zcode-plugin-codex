@@ -225,7 +225,10 @@ export async function executeJob(input) {
       reporter.activateAcceptedBoundary({ readSnapshot: () => client.readSession(activeSessionId), describer: sessionDescriber });
     } catch { reporter.activateAcceptedBoundary({}); }
     reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
-    const legacyWake = waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
+    const observeLegacyCompletion = typeof client.observeCompletion === 'function'
+      ? client.observeCompletion.bind(client)
+      : client.waitForCompletion.bind(client);
+    const legacyWake = waitForCompletionOrAbort(observeLegacyCompletion(activeSessionId), input.signal);
     const terminal = await awaitCurrentTurnTerminal({
       legacyWake, conversationObserver, readSnapshot: () => client.readSession(activeSessionId), turnBoundary, signal: input.signal,
     });
@@ -336,6 +339,11 @@ export async function executeJob(input) {
   }
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
+  try {
+    if (sessionId && typeof client.releaseTurn === 'function') client.releaseTurn(sessionId);
+  } catch (cleanupError) {
+    if (!primaryError && output?.job?.status !== 'succeeded') primaryError = cleanupError;
+  }
   await client.close().catch(() => {});
   if (!primaryError && appliedFinalization && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
     await jobLog?.appendBlock('Final output', output.result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
