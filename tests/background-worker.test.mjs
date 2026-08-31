@@ -8,20 +8,31 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { startBackgroundWorker } from '../scripts/lib/background-worker.mjs';
+import { terminateProcess } from '../scripts/lib/process.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
-test('background startup timeout terminates and reaps the unacknowledged worker', async (t) => {
+test('background startup timeout terminates and reaps the unacknowledged worker', { timeout: scaleTestTimeout(5_000) }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-background-worker-'));
   const worker = join(directory, 'worker.mjs');
-  t.after(() => rm(directory, { force: true, recursive: true }));
-  await writeFile(worker, 'setInterval(() => {}, 1000);\n');
   /** @type {import('node:child_process').ChildProcess|undefined} */ let child;
+  t.after(async () => {
+    let terminationError;
+    try {
+      if (child && child.exitCode === null && child.signalCode === null) await terminateProcess(child, { graceMs: scaleTestTimeout(250) });
+    } catch (error) { terminationError = error; }
+    try { await rm(directory, { force: true, recursive: true }); }
+    catch (error) { if (terminationError) throw new AggregateError([terminationError, error], 'background worker test cleanup failed'); throw error; }
+    if (terminationError) throw terminationError;
+  });
+  await writeFile(worker, 'setInterval(() => {}, 1000);\n');
   let triggerDeadline = () => {}; let scheduled; let exitObserved = false;
-  let markSpawned = () => {}; let markExited = () => {};
-  const spawned = new Promise((resolve) => { markSpawned = () => resolve(undefined); });
+  let markSpawned = () => {}; let rejectSpawn = () => {}; let markExited = () => {};
+  const spawned = new Promise((resolve, reject) => { markSpawned = () => resolve(undefined); rejectSpawn = reject; });
   const exited = new Promise((resolve) => { markExited = () => resolve(undefined); });
   const spawnWorker = /** @type {any} */ ((/** @type {string} */ command, /** @type {string[]} */ args, /** @type {any} */ options) => {
     const exactChild = spawn(command, args, options); child = exactChild;
     exactChild.once('spawn', markSpawned);
+    exactChild.once('error', rejectSpawn);
     exactChild.once('exit', () => { exitObserved = true; markExited(); });
     return exactChild;
   });
@@ -35,8 +46,13 @@ test('background startup timeout terminates and reaps the unacknowledged worker'
       clearTimeout: () => {},
     },
   });
+  const outcome = pending.then(
+    (value) => ({ kind: 'fulfilled', value }),
+    (error) => ({ kind: 'rejected', error }),
+  );
   await spawned; assert.equal(scheduled, 100); triggerDeadline();
   await assert.rejects(pending, { code: 'BACKGROUND_WORKER_START_TIMEOUT' });
+  assert.equal((await outcome).kind, 'rejected');
   assert.equal(exitObserved, true);
   await exited;
   assert.ok(child && (child.exitCode !== null || child.signalCode !== null));
