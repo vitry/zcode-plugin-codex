@@ -306,8 +306,17 @@ async function sendCaptured0165Turn(message, p, session) {
   session.messages.push(turnMessages[0]); session.projectionStatus = 'running'; session.stateRevision = sendIndex * 2 - 1;
   const accepted = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision: session.stateRevision } };
   await traceCaptured0165(sendIndex, 'send-accepted', accepted); send(accepted);
+  while (!await captured0165GateReleased(process.env.FAKE_ZCODE_CAPTURED_0165_LEGACY_GATE, sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
   const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: session.stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
   await traceCaptured0165(sendIndex, 'legacy-prompt-completed', legacy); send(legacy);
+  if (process.env.FAKE_ZCODE_CAPTURED_0165_PERMISSION === '1') {
+    const id = permissionId++;
+    send({ id, method: 'interaction/requestPermission', params: {
+      requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: `captured-tool-${sendIndex}`, toolName: 'write',
+      reason: 'captured 0.16.5 fixture', riskLevel: 'medium', input: { path: 'README.md' }, requestedAt: 1_786_233_601_742,
+      options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }],
+    } });
+  }
   while (!await captured0165GateReleased(process.env.FAKE_ZCODE_CAPTURED_0165_RUNNING_GATE, sendIndex)) await new Promise((resolve) => setTimeout(resolve, 5));
   const turnRow = {
     rowId: 100 + sendIndex, turnId: `captured-turn-${sendIndex}`, createdAt: 1_786_233_600_000,

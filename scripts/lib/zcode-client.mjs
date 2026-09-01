@@ -31,7 +31,7 @@ export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
   /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] */
-  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); }
+  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound ? null : false; this.exactTurnReleaseProbe = null; this.armedBoundaries = new Map(); }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
@@ -73,6 +73,7 @@ export class ZCodeClient {
   /** @param {string} sessionId @param {string} content @param {Record<string,never>} [options] */
   async send(sessionId, content, options = {}) {
     requireSessionId(sessionId); if (typeof content !== 'string') throw inputError(); requireExactObject(options, [], []);
+    await this.ensureExactTurnReleaseCapability();
     this.initialEmptySessions.delete(sessionId);
     this.protocol.beginTurn(sessionId);
     const inputId = randomUUID();
@@ -80,14 +81,15 @@ export class ZCodeClient {
     try { result = await this.protocol.request('session/send', { sessionId, inputId, queryId: inputId, content }); } catch (error) { this.protocol.abortTurn(sessionId); throw error; }
     if (!plainObject(result) || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && !nonEmpty(result.modelRuntimeRevision)) { this.protocol.abortTurn(sessionId); throw outputError('session/send'); }
     this.protocol.armTurn(sessionId, result.stateRevision, inputId);
+    this.armedBoundaries.set(sessionId, { stateRevision: result.stateRevision, inputId });
     return { ...result, inputId };
   }
 
   /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!boundedUpstreamObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); return {}; }
-  /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await requestBrokerHealth(this, timeoutMs); return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
+  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!boundedUpstreamObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); this.armedBoundaries.delete(sessionId); return {}; }
+  /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await requestBrokerHealth(this, timeoutMs, true); this.exactTurnRelease = result.capabilities?.exactTurnRelease === true; return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
   /** @param {string[]} [excludeSessionIds] @param {number} [timeoutMs] */
   async releaseOwner(excludeSessionIds, timeoutMs) { if (excludeSessionIds !== undefined && (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId)))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', excludeSessionIds === undefined ? {} : { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
 
@@ -128,9 +130,12 @@ export class ZCodeClient {
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
-  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
+  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ async waitForCompletion(sessionId, timeoutMs) { const boundary = this.armedBoundaries.get(sessionId); const completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary); else this.armedBoundaries.delete(sessionId); return completion; }
   /** Observe a validated terminal notification without consuming the active turn. @param {string} sessionId @param {number} [timeoutMs] */ observeCompletion(sessionId, timeoutMs) { return this.protocol.observeCompletion(sessionId, timeoutMs); }
-  /** Locally release an active turn without sending an upstream request. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); this.protocol.releaseTurn(sessionId); }
+  /** Release the exact managed broker turn, then always clear local turn state. Direct clients clear synchronously. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); const boundary = this.armedBoundaries.get(sessionId); if (!this.workspaceBound || this.exactTurnRelease !== true || !boundary) { this.protocol.releaseTurn(sessionId); this.armedBoundaries.delete(sessionId); return Promise.resolve(); } return this.releaseExactTurn(sessionId, boundary); }
+  /** @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */
+  async releaseExactTurn(sessionId, boundary) { try { const result = await this.protocol.request('broker/releaseTurn', { sessionId, inputId: boundary.inputId, stateRevision: boundary.stateRevision }); if (!plainObject(result) || Object.keys(result).length !== 0) throw outputError('broker/releaseTurn'); } finally { this.protocol.releaseTurn(sessionId); if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId); } }
+  async ensureExactTurnReleaseCapability() { if (!this.workspaceBound || this.exactTurnRelease !== null) return; this.exactTurnReleaseProbe ??= requestBrokerHealth(this, undefined, true).then((result) => { this.exactTurnRelease = result.capabilities?.exactTurnRelease === true; }, (error) => { this.exactTurnReleaseProbe = null; throw error; }); await this.exactTurnReleaseProbe; }
   /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
   /** @param {string} sessionId @param {{connectionId:string,clientMode:'desktop-continuous'|'web-remote-replayable'}} options */
   async subscribeConversation(sessionId, options) {
@@ -278,7 +283,7 @@ async function releaseOwnerWithRetry(client, excludeSessionIds, deadline, reques
 async function verifyBrokerIdentity(client, identity, deadline, requestTimeoutMs) { const health = await requestBrokerHealth(client, boundedCleanupTimeout(deadline, requestTimeoutMs)); if (!Number.isSafeInteger(health.pid) || health.pid <= 1 || !isSafeIdentifier(health.instanceId) || health.pid !== identity.pid || health.instanceId !== identity.instanceId) throw outputError('broker/health'); return { releaseOwnerExclusions: health.capabilities?.releaseOwnerExclusions === true }; }
 
 /** @param {ZCodeClient} client @param {number|undefined} timeoutMs */
-async function requestBrokerHealth(client, timeoutMs) { const result = await client.protocol.request('broker/health', {}, timeoutMs); if (!plainObject(result) || result.ok !== true) throw outputError('broker/health'); return result; }
+async function requestBrokerHealth(client, timeoutMs, advertiseExactTurnRelease = true) { const result = await client.protocol.request('broker/health', advertiseExactTurnRelease ? { clientCapabilities: { exactTurnRelease: true } } : {}, timeoutMs); if (!plainObject(result) || result.ok !== true) throw outputError('broker/health'); return result; }
 
 /** @param {unknown[]} errors */
 function boundedCauseCodeCounts(errors) { const counts = /** @type {Record<string,number>} */ ({}); for (const error of errors.slice(0, 32)) { const candidate = (/** @type {{code?:unknown}} */ (error))?.code; const code = typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidate) ? candidate : 'UNKNOWN'; counts[code] = (counts[code] ?? 0) + 1; } return counts; }

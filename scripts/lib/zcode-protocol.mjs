@@ -48,6 +48,7 @@ export class ZCodeProtocolClient {
     this.closeHandler = null;
     this.terminalHandler = null;
     this.consumeTerminal = false;
+    this.terminalObserver = null;
     this.acceptBrokerControl = options.acceptBrokerControl === true;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
@@ -92,6 +93,8 @@ export class ZCodeProtocolClient {
   setSubscriberErrorHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.subscriberErrorHandler = handler; }
   /** Broker-only terminal hook. Validated terminal notifications are consumed before this callback. @param {(params:any,turn:{status:'armed',baseline:number,inputId:string})=>void} handler */
   consumeTerminalsWith(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalHandler = handler; this.consumeTerminal = true; }
+  /** Broker-only non-destructive terminal hook. The terminal is not queued or expired. @param {(params:any,turn:{status:'armed',baseline:number,inputId:string})=>void} handler */
+  observeTerminalsWith(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalObserver = handler; }
   /** @param {(error:PluginError)=>void} handler */ setCloseHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.closeHandler = handler; }
 
   /** @param {string} sessionId */
@@ -320,7 +323,7 @@ export class ZCodeProtocolClient {
   rejectCompletionWaiters(error) { for (const waiter of this.completionWaiters) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.waiterSessions.delete(waiter.sessionId); waiter.reject(error); } this.completionWaiters.clear(); }
 
   /** @param {string} sessionId @param {any} params */
-  queueCompletion(sessionId, params) { if (this.consumeTerminal) { const turn = this.turns.get(sessionId); this.abortTurn(sessionId); if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalHandler?.(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.cancelTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
+  queueCompletion(sessionId, params) { const turn = this.turns.get(sessionId); if (this.consumeTerminal) { this.abortTurn(sessionId); if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalHandler?.(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (this.terminalObserver) { if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalObserver(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.cancelTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
 }
 
 export class BoundedWriter {
@@ -466,12 +469,13 @@ function redactSecrets(value) {
 /** @param {Record<string,any>} value */
 function validatePermissionRequest(value) {
   const required = ['requestId', 'sessionId', 'toolCallId', 'toolName', 'reason', 'riskLevel', 'input', 'options'];
-  const allowed = [...required, 'turnId', 'origin'];
+  const allowed = [...required, 'turnId', 'origin', 'requestedAt'];
   if (required.some((key) => !Object.hasOwn(value, key)) || Object.keys(value).some((key) => !allowed.includes(key))
     || !required.slice(0, 5).every((key) => nonEmpty(value[key]))
     || !['low', 'medium', 'high', 'critical'].includes(value.riskLevel)
     || !Array.isArray(value.options) || value.options.length === 0 || !value.options.every(validPermissionOption)
     || value.turnId !== undefined && !nonEmpty(value.turnId)
+    || value.requestedAt !== undefined && (!Number.isSafeInteger(value.requestedAt) || value.requestedAt < 0)
     || value.origin !== undefined && !validPermissionOrigin(value.origin)) throw malformedFrame();
 }
 /** @param {unknown} value */

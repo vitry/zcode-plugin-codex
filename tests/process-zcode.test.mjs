@@ -256,6 +256,47 @@ test('observed completion leaves the turn armed and a later permission request c
   protocol.releaseTurn('session-1');
 });
 
+test('broker terminal observer leaves no completion queue or expiry and observes early arm completion', () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child); const observed = [];
+  protocol.observeTerminalsWith((params, turn) => observed.push({ params, turn }));
+  protocol.beginTurn('session-1');
+  protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } }));
+  protocol.armTurn('session-1', 1, 'input-1');
+  assert.equal(observed.length, 1); assert.equal(observed[0].turn.inputId, 'input-1');
+  assert.equal(protocol.turnState('session-1'), 'armed'); assert.equal(protocol.completed.size, 0); assert.equal(protocol.completionExpiry.size, 0); assert.equal(protocol.earlyCompletions.size, 0);
+  protocol.releaseTurn('session-1');
+});
+
+test('permission request accepts the captured 0.16.5 requestedAt timestamp', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child); let handled = 0;
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  protocol.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+  protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'permission-99', sessionId: 'session-1', toolCallId: 'tool-1', toolName: 'write', reason: 'captured 0.16.5 fixture', riskLevel: 'medium', input: { path: 'README.md' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1_786_233_601_742 } }));
+  await new Promise((resolve) => setImmediate(resolve));
+  const response = JSON.parse(child.stdin.read().toString());
+  assert.deepEqual({ handled, response }, { handled: 1, response: { id: 99, result: { decision: 'allow' } } });
+  protocol.releaseTurn('session-1');
+});
+
+test('permission request rejects malformed requestedAt without invoking the handler', async () => {
+  for (const requestedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1786233601742']) {
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+    const protocol = new ZCodeProtocolClient(child); let handled = 0;
+    protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+    protocol.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+    protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'permission-99', sessionId: 'session-1', toolCallId: 'tool-1', toolName: 'write', reason: 'captured 0.16.5 fixture', riskLevel: 'medium', input: {}, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    const response = JSON.parse(child.stdin.read().toString());
+    assert.equal(handled, 0, String(requestedAt));
+    assert.equal(response.id, 99);
+    assert.equal(response.result, undefined);
+    assert.equal(response.error?.code, -32000);
+    protocol.releaseTurn('session-1');
+  }
+});
+
 test('completion observer timeout unregisters without ending the active turn', async () => {
   const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
   const protocol = new ZCodeProtocolClient(child);

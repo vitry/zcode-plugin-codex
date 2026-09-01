@@ -1447,6 +1447,63 @@ test('typed client uses a local broker whose single CLI owner handles permission
   }
 });
 
+test('captured 0.16.5 broker turn keeps its exact route for permission until explicit release', { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-captured-permission-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const record = join(directory, 'calls.jsonl'); const legacyGate = join(directory, 'legacy-gate.json'); const terminalGate = join(directory, 'terminal-gate.json'); await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 0 })); await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 0 }));
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165', FAKE_ZCODE_CAPTURED_0165_PERMISSION: '1', FAKE_ZCODE_CAPTURED_0165_LEGACY_GATE: legacyGate, FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: terminalGate, FAKE_ZCODE_RECORD: record } }).start();
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'captured-permission-owner', completionTimeoutMs: 2_000 }); let sessionId; let released = false;
+  try {
+    sessionId = (await client.createSession({ workspace: directory })).session.sessionId;
+    const terminalFrames = []; client.subscribe((message) => { if (message.method === 'v4/conversation/frame' && message.params?.frame?.payload?.deltas?.some((delta) => delta.row?.state === 'completedSuccess')) terminalFrames.push(message); });
+    await client.subscribeConversation(sessionId, { connectionId: 'captured-permission-connection', clientMode: 'desktop-continuous' });
+    let handled = 0; client.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+    const sending = client.send(sessionId, 'captured permission after false legacy completion');
+    for (let index = 0; index < 200 && !Number.isSafeInteger(broker.activeSessionSockets.get(sessionId)?.baseline); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    const exactRoute = broker.activeSessionSockets.get(sessionId); assert.ok(exactRoute); await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 1 })); await sending;
+    const legacy = await client.observeCompletion(sessionId); assert.equal(legacy.reason, 'prompt_completed');
+    const calls = await waitForRecordedCalls(record, (entries) => entries.some((entry) => entry.id === 9000 && (entry.result || entry.error)), 1_000);
+    await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 1 }));
+    for (let index = 0; index < 200 && terminalFrames.length === 0; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    const response = calls.find((entry) => entry.id === 9000 && (entry.result || entry.error));
+    assert.deepEqual({ routeRetained: broker.activeSessionSockets.get(sessionId) === exactRoute, handled, result: response?.result, error: response?.error, authoritativeTerminalObserved: terminalFrames.length === 1 }, { routeRetained: true, handled: 1, result: { decision: 'allow' }, error: undefined, authoritativeTerminalObserved: true });
+    await client.releaseTurn(sessionId); released = true;
+    assert.equal(client.turnState(sessionId), null);
+    assert.equal(broker.activeSessionSockets.has(sessionId), false);
+    assert.equal(broker.activeSessions.has(sessionId), false);
+    assert.equal(broker.protocol.turnState(sessionId), null);
+  } finally {
+    await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 1 })).catch(() => {});
+    await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 1 })).catch(() => {});
+    if (sessionId && !released) await Promise.resolve(client.releaseTurn(sessionId)).catch(() => {});
+    await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('exact turn release rejects foreign and stale tuples while duplicate acknowledgement is idempotent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-exact-release-')); const ownerId = 'exact-release-owner'; const sessionId = 'exact-release-session'; const writes = []; const foreignWrites = [];
+  const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const foreign = { writable: true, destroyed: false, zcodeWriter: { write: (line) => foreignWrites.push(JSON.parse(line)) }, destroy() {} };
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'a'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  for (const [peer, peerOwner] of [[socket, ownerId], [foreign, 'exact-release-foreign-owner']]) { broker.authenticated.add(peer); broker.socketOwnerIds.set(peer, peerOwner); }
+  broker.exactTurnReleaseSockets.add(socket); broker.exactTurnReleaseSockets.add(foreign);
+  broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  const released = []; const protocol = { releaseTurn: (releasedSessionId) => released.push(releasedSessionId) }; broker.protocol = protocol;
+  const old = { socket, token: 'exact-release-old-token', baseline: 7, inputId: 'exact-release-old-input' }; broker.activeSessionSockets.set(sessionId, old); broker.activeSessions.add(sessionId);
+  const request = (peer, id, params) => broker.handleLocal(peer, JSON.stringify({ id, method: 'broker/releaseTurn', params })); const tuple = { sessionId, stateRevision: 7, inputId: 'exact-release-old-input' };
+  try {
+    await request(foreign, 1, tuple); assert.equal(foreignWrites.at(-1)?.error?.code, -32041); assert.equal(broker.activeSessionSockets.get(sessionId), old);
+    await request(socket, 2, { ...tuple, inputId: 'wrong-input' }); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), old);
+    await request(socket, 3, tuple); assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]); assert.equal(broker.activeSessionSockets.has(sessionId), false);
+    await request(socket, 4, tuple); assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]);
+    const newer = { socket, token: 'exact-release-new-token', baseline: 8, inputId: 'exact-release-new-input' }; broker.activeSessionSockets.set(sessionId, newer); broker.activeSessions.add(sessionId);
+    await request(socket, 5, tuple); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), newer); assert.equal(broker.activeSessions.has(sessionId), true); assert.deepEqual(released, [sessionId]);
+  } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('managed client falls back to local release when broker health lacks exact release capability', async () => {
+  const calls = []; const turns = new Map(); const protocol = { acceptBrokerControl: true, request: async (method, params) => { calls.push({ method, params }); if (method === 'broker/health') return { ok: true, capabilities: {} }; if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 3 }; throw new Error(method); }, beginTurn: (sessionId) => turns.set(sessionId, 'sending'), armTurn: (sessionId) => turns.set(sessionId, 'armed'), abortTurn: (sessionId) => turns.delete(sessionId), releaseTurn: (sessionId) => turns.delete(sessionId), turnState: (sessionId) => turns.get(sessionId) ?? null };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send('legacy-broker-session', 'hello'); await client.releaseTurn('legacy-broker-session');
+  assert.deepEqual(calls.map((call) => call.method), ['broker/health', 'session/send']); assert.deepEqual(calls[0].params, { clientCapabilities: { exactTurnRelease: true } }); assert.equal(turns.size, 0);
+});
+
 test('natural terminal denies its exact pending permission and tombstones a late local approval', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-permission-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const record = join(directory, 'calls.jsonl'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'terminal-permission-owner', completionTimeoutMs: 1_000 }); let approve;
   try {
