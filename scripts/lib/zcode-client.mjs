@@ -143,7 +143,7 @@ export class ZCodeClient {
     let completion;
     try { completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); }
     catch (error) {
-      if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary).catch(() => {});
+      if (this.exactTurnRelease === true && boundary) void this.releaseExactTurn(sessionId, boundary).catch(() => {});
       else this.armedBoundaries.delete(sessionId);
       throw error;
     }

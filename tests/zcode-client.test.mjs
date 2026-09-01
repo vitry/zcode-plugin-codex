@@ -1649,6 +1649,28 @@ test('managed completion timeout preserves its error while releasing the exact b
   assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
 });
 
+test('managed completion timeout is not delayed by a stuck exact release request', async () => {
+  const sessionId = 'completion-timeout-stuck-release-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out');
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 22 };
+      if (method === 'broker/releaseTurn') return new Promise(() => {});
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn');
+  const observed = await Promise.race([client.waitForCompletion(sessionId).catch((error) => error), new Promise((resolve) => setTimeout(() => resolve('release-delayed-timeout'), 25))]);
+  assert.equal(observed, timeoutError);
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 1);
+  await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+});
+
 test('managed client falls back to local release when broker health lacks exact release capability', async () => {
   const calls = []; const turns = new Map(); const protocol = { acceptBrokerControl: true, request: async (method, params) => { calls.push({ method, params }); if (method === 'broker/health') return { ok: true, capabilities: {} }; if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 3 }; throw new Error(method); }, beginTurn: (sessionId) => turns.set(sessionId, 'sending'), armTurn: (sessionId) => turns.set(sessionId, 'armed'), abortTurn: (sessionId) => turns.delete(sessionId), releaseTurn: (sessionId) => turns.delete(sessionId), turnState: (sessionId) => turns.get(sessionId) ?? null };
   const client = new ZCodeClient(protocol, process.cwd(), true); await client.send('legacy-broker-session', 'hello'); await client.releaseTurn('legacy-broker-session');
