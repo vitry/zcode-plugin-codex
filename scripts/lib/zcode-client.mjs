@@ -30,10 +30,10 @@ const OWNER_CLEANUP_LEGACY_BATCH_SIZE = 8;
 export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
-  /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] */
-  constructor(protocol, workspace, workspaceBound = false) {
+  /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] @param {boolean} [advertiseExactTurnRelease] */
+  constructor(protocol, workspace, workspaceBound = false, advertiseExactTurnRelease = true) {
     this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound;
-    this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound ? null : false;
+    this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound && advertiseExactTurnRelease ? null : false;
     /** @type {Promise<void>|null} */
     this.exactTurnReleaseProbe = null;
     this.armedBoundaries = new Map();
@@ -80,6 +80,7 @@ export class ZCodeClient {
   async send(sessionId, content, options = {}) {
     requireSessionId(sessionId); if (typeof content !== 'string') throw inputError(); requireExactObject(options, [], []);
     await this.ensureExactTurnReleaseCapability();
+    if (this.exactTurnRelease === true && this.armedBoundaries.has(sessionId)) throw new PluginError('ZCODE_TURN_ACTIVE', 'A turn is already active for this session.', { category: 'state', remedy: 'Wait for the active turn to finish.' });
     this.initialEmptySessions.delete(sessionId);
     this.protocol.beginTurn(sessionId);
     const inputId = randomUUID();
@@ -136,7 +137,7 @@ export class ZCodeClient {
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
-  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ async waitForCompletion(sessionId, timeoutMs) { const boundary = this.armedBoundaries.get(sessionId); const completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary); else this.armedBoundaries.delete(sessionId); return completion; }
+  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ async waitForCompletion(sessionId, timeoutMs) { const boundary = this.armedBoundaries.get(sessionId); const completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary).catch(() => {}); else this.armedBoundaries.delete(sessionId); return completion; }
   /** Observe a validated terminal notification without consuming the active turn. @param {string} sessionId @param {number} [timeoutMs] */ observeCompletion(sessionId, timeoutMs) { return this.protocol.observeCompletion(sessionId, timeoutMs); }
   /** Release the exact managed broker turn, then clear local turn state after acknowledgement. Direct clients clear synchronously. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); const boundary = this.armedBoundaries.get(sessionId); if (!this.workspaceBound || this.exactTurnRelease !== true || !boundary) { this.protocol.releaseTurn(sessionId); this.armedBoundaries.delete(sessionId); return Promise.resolve(); } return this.releaseExactTurn(sessionId, boundary); }
   /** @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */

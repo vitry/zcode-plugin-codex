@@ -1611,7 +1611,7 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
 test('durable success remains authoritative when local turn release fails', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const dataRoot = join(root, 'data'); const sessionId = 'zs-release-after-success';
-  const releaseError = new Error('local release failed after durable success');
+  const releaseError = new Error('PRIVATE_RELEASE_FAILURE_AFTER_DURABLE_SUCCESS');
   /** @type {string[]} */ const cleanupCalls = [];
   const client = {
     createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
@@ -1625,15 +1625,38 @@ test('durable success remains authoritative when local turn release fails', asyn
     ] }),
     stopSession: async () => {},
     releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); await Promise.resolve(); throw releaseError; },
-    close: async () => { cleanupCalls.push('close'); },
+    close: async () => { cleanupCalls.push('close'); throw new Error('PRIVATE_CLOSE_FAILURE_AFTER_DURABLE_SUCCESS'); },
   };
   const output = await executeJob({ job, workspace, dataRoot, store, client, task: 'task' });
   assert.equal(output.job.status, 'succeeded');
   assert.equal(output.result, 'durable release result');
-  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
   const persisted = await store.readJob(workspace, job.id);
   assert.equal(persisted.status, 'succeeded');
-  assert.match(await readFile(persisted.logFile, 'utf8'), /Final output\ndurable release result\n/);
+  const log = await readFile(persisted.logFile, 'utf8');
+  assert.match(log, /Final output\ndurable release result\n/);
+  assert.equal((log.match(/ZCode turn release cleanup was incomplete\./g) ?? []).length, 1);
+  assert.equal((log.match(/ZCode client close cleanup was incomplete\./g) ?? []).length, 1);
+  assert.doesNotMatch(log, /PRIVATE_RELEASE_FAILURE|PRIVATE_CLOSE_FAILURE/u);
+});
+
+test('executor retries exact turn release once before close after a lost acknowledgement', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const dataRoot = join(root, 'data'); const sessionId = 'zs-release-retry-after-success'; let releaseAttempts = 0;
+  /** @type {string[]} */ const cleanupCalls = [];
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-release-retry-after-success', stateRevision: 1 }), observeCompletion: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-release-retry-after-success'), { info: { role: 'assistant', messageId: 'assistant-release-retry-after-success', parentMessageId: 'input-release-retry-after-success', finish: 'stop' }, parts: [{ type: 'text', text: 'retry result' }] }] }),
+    releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); releaseAttempts += 1; if (releaseAttempts === 1) throw new Error('simulated lost acknowledgement'); },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const output = await executeJob({ job, workspace, dataRoot, store, client, task: 'task' });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'retry result');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
+  const log = await readFile((await store.readJob(workspace, job.id)).logFile, 'utf8');
+  assert.doesNotMatch(log, /turn release cleanup was incomplete/u);
 });
 
 test('executor releases the local turn before close on failure and preserves the primary error', async () => {
@@ -1654,7 +1677,7 @@ test('executor releases the local turn before close on failure and preserves the
   };
   const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
   assert.equal(caught, primary);
-  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
 });
 
 test('execution does not wait indefinitely for a late initial baseline and uses coherent snapshot fallback', { timeout: 10_000 }, async () => {

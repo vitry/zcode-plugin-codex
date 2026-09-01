@@ -342,12 +342,21 @@ export async function executeJob(input) {
   }
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
-  try {
-    if (sessionId && typeof client.releaseTurn === 'function') await client.releaseTurn(sessionId);
-  } catch (cleanupError) {
-    if (!primaryError && output?.job?.status !== 'succeeded') primaryError = cleanupError;
+  let releaseError;
+  if (sessionId && typeof client.releaseTurn === 'function') {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { await client.releaseTurn(sessionId); releaseError = undefined; break; }
+      catch (cleanupError) { releaseError = cleanupError; }
+    }
   }
-  await client.close().catch(() => {});
+  if (releaseError) {
+    await jobLog?.appendBlock('Cleanup diagnostic', 'ZCode turn release cleanup was incomplete.', Date.now() + OPTIONAL_PROGRESS_FENCE_MS).catch(() => {});
+    if (!primaryError && output?.job?.status !== 'succeeded') primaryError = releaseError;
+  }
+  try { await client.close(); }
+  catch {
+    await jobLog?.appendBlock('Cleanup diagnostic', 'ZCode client close cleanup was incomplete.', Date.now() + OPTIONAL_PROGRESS_FENCE_MS).catch(() => {});
+  }
   if (!primaryError && appliedFinalization && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
     await jobLog?.appendBlock('Final output', output.result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
   }

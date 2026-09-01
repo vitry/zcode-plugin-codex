@@ -14,7 +14,7 @@ import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCode
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { isCorrelatedZCodeResponseError } from '../scripts/lib/zcode-protocol.mjs';
+import { connectZCodeBroker, isCorrelatedZCodeResponseError } from '../scripts/lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
 import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts.mjs';
@@ -23,11 +23,14 @@ const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.me
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
 const MACOS_UNIX_SOCKET_PATH_MAX_BYTES = 104;
 async function createPreExactReleaseClient(options) {
-  const client = await createZCodeClient(options);
-  // Pre-capability clients were still workspace-bound managed clients; they
-  // simply never advertised broker/releaseTurn support in broker/health.
-  client.exactTurnRelease = false;
-  return client;
+  const workspace = realpathSync(options.workspace);
+  const protocol = await connectZCodeBroker(options.brokerEndpoint, {
+    cwd: workspace, brokerToken: options.brokerToken, ownerId: options.ownerId,
+    requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs,
+  });
+  // A pre-capability client authenticates to the broker but never advertises
+  // exactTurnRelease through broker/health.
+  return new ZCodeClient(protocol, workspace, true, false);
 }
 
 test('CI timeout multiplier is bounded and defaults to one', () => {
@@ -1549,7 +1552,7 @@ test('managed client retains exact release authority until broker acknowledgemen
     await assert.rejects(client.releaseTurn(sessionId), new RegExp(failureMode, 'u'));
     assert.equal(client.turnState(sessionId), 'armed');
     if (failureMode === 'pre-commit rejection') assert.equal(brokerRoute, true);
-    await assert.rejects(client.send(sessionId, 'must remain fenced'), /turn already active/u);
+    await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
     assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
     await client.releaseTurn(sessionId);
     assert.equal(client.turnState(sessionId), null);
@@ -1557,6 +1560,34 @@ test('managed client retains exact release authority until broker acknowledgemen
     const releases = calls.filter((call) => call.method === 'broker/releaseTurn');
     assert.deepEqual(releases.map((call) => call.params), Array(2).fill({ sessionId, inputId: sent.inputId, stateRevision: 11 }));
   });
+});
+
+test('managed completion remains observable when exact release fails and fences the next send until retry', async () => {
+  const sessionId = 'completion-release-retry-session'; const turns = new Map(); const calls = []; let releaseAttempts = 0;
+  const completion = { reason: 'prompt_completed', stateRevision: 12 };
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: releaseAttempts === 2 ? 13 : 12 };
+      if (method === 'broker/releaseTurn') { releaseAttempts += 1; if (releaseAttempts === 1) throw new Error('simulated lost release acknowledgement'); return {}; }
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); return completion; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true);
+  const first = await client.send(sessionId, 'first turn');
+  assert.equal(await client.waitForCompletion(sessionId), completion, 'validated completion must not be replaced by cleanup failure');
+  assert.equal(client.turnState(sessionId), null, 'the destructive protocol waiter already consumed local turn state');
+  await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
+  await client.releaseTurn(sessionId);
+  assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), Array(2).fill({ sessionId, inputId: first.inputId, stateRevision: 12 }));
+  await client.send(sessionId, 'after exact retry');
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
 });
 
 test('managed client falls back to local release when broker health lacks exact release capability', async () => {
