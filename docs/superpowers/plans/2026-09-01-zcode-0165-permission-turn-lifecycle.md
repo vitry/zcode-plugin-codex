@@ -6,6 +6,8 @@
 
 **Architecture:** Add a non-destructive completion observer alongside the existing destructive waiter in the protocol/client layer. Migrate only `executeJob` to that observer and explicitly release its local turn during unconditional teardown; retain compatibility fallbacks for injected test clients that expose only the historical interface.
 
+**Follow-up architecture:** Carry that lifecycle boundary through the managed broker. The broker forwards legacy completion without consuming its upstream turn, and the managed client acknowledges the executor's authoritative cleanup through an exact-owner broker control request. Also accept the observed bounded `requestedAt` field on 0.16.5 permission requests.
+
 **Tech Stack:** Node.js 22.13, ECMAScript modules, `node:test`, the existing JSON-RPC protocol client and job executor.
 
 ---
@@ -17,6 +19,10 @@
 - Modify `scripts/lib/review.mjs`: use non-destructive observation for `legacyWake` and release the local turn during teardown.
 - Modify `tests/process-zcode.test.mjs`: cover low-level observer, permission, timeout, release, and destructive-wait invariants.
 - Modify `tests/job-control.test.mjs`: cover captured 0.16.5 executor ordering and success/error cleanup.
+- Modify `scripts/zcode-broker.mjs`: retain the upstream route through legacy wake and release it only on exact managed-client acknowledgement or existing authoritative cleanup.
+- Modify `tests/zcode-client.test.mjs`: cover broker ordering, acknowledgement ownership, cleanup, and permission forwarding.
+- Modify `tests/fixtures/fake-zcode-cli.mjs`: emit the captured 0.16.5 permission shape after the false legacy completion.
+- Modify `tests/integration/companion.test.mjs`: cover fresh and resumed production managed paths.
 
 ### Task 1: Add non-destructive completion observation
 
@@ -216,3 +222,40 @@ git commit -m "build: refresh marketplace snapshot"
 ```
 
 If there are no generated tracked changes, skip this commit.
+
+### Task 4: Reproduce the managed-broker and 0.16.5 schema failures
+
+**Files:**
+- Test: `tests/zcode-client.test.mjs`
+- Test fixture: `tests/fixtures/fake-zcode-cli.mjs`
+- Test: `tests/process-zcode.test.mjs`
+
+- [ ] Add an opt-in captured fixture permission request after the false legacy completion and before the authoritative v4 terminal. Include the real numeric `requestedAt` field.
+- [ ] Add a direct protocol test proving the current validator rejects that captured field.
+- [ ] Add a managed broker test proving the early completion currently removes the route and the later permission is not allowed.
+- [ ] Run only these tests and record deterministic RED output before changing production code.
+
+### Task 5: Retain and explicitly acknowledge managed broker turns
+
+**Files:**
+- Modify: `scripts/lib/zcode-protocol.mjs`
+- Modify: `scripts/lib/zcode-client.mjs`
+- Modify: `scripts/zcode-broker.mjs`
+- Test: `tests/zcode-client.test.mjs`
+- Test: `tests/process-zcode.test.mjs`
+
+- [ ] Accept only bounded optional `requestedAt` permission timestamps.
+- [ ] Replace broker-side destructive terminal consumption with forwarding/non-destructive observation that retains the exact upstream turn.
+- [ ] Add an authenticated exact-session broker acknowledgement used by managed `releaseTurn()`. It locally releases the upstream turn, settles exact pending permissions, removes the route, and is idempotent for the same completed downstream cleanup without stopping the ZCode session or changing durable ownership.
+- [ ] Reject foreign, stale, malformed, and conflicting acknowledgements without touching a newer turn.
+- [ ] Run focused tests to GREEN, self-review, and commit.
+
+### Task 6: Lock the production fresh/resumed path and re-verify release readiness
+
+**Files:**
+- Modify: `tests/integration/companion.test.mjs`
+- Modify if required by generated parity checks: marketplace snapshot through the existing builder only
+
+- [ ] Extend the captured 0.16.5 managed integration to require an allowed permission response after the false legacy completion for both fresh and resumed sends.
+- [ ] Run focused protocol, broker, executor, and companion tests.
+- [ ] Run `npm run check`, review the complete follow-up diff, refresh the marketplace snapshot if required, and complete spec then quality review before pushing PR #52.
