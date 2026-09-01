@@ -5135,7 +5135,7 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
       assert.equal(permission.params.toolCallId, `captured-tool-${turn}`);
       assert.equal(permission.params.riskLevel, 'medium');
       assert.equal(permission.params.requestedAt, 1_786_233_601_742);
-      const offeredAllow = permission.params.options.find((option) => option.kind === 'allow').response;
+      const offeredAllow = permission.params.options.find((/** @type {any} */ option) => option.kind === 'allow').response;
       assert.deepEqual(offeredAllow, { decision: 'allow' });
       const permissionResponses = (await readRequests()).filter((request) => request.id === permission.id);
       assert.deepEqual(permissionResponses, [{ id: permission.id, result: offeredAllow }]);
