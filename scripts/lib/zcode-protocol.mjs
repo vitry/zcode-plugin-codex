@@ -113,6 +113,18 @@ export class ZCodeProtocolClient {
   /** Locally release a turn without sending an upstream request. @param {string} sessionId */
   releaseTurn(sessionId) { if (!nonEmpty(sessionId)) throw protocolInputError(); this.cancelTurn(sessionId); }
 
+  /** Wait for the server requests currently tracked for one session. @param {string} sessionId */
+  async drainServerTasksForSession(sessionId) {
+    if (!nonEmpty(sessionId)) throw protocolInputError();
+    const tasks = [];
+    for (const [controller, taskSessionId] of this.serverTaskSessions) {
+      if (taskSessionId !== sessionId) continue;
+      const task = this.serverTasksByController.get(controller);
+      if (task) tasks.push(task);
+    }
+    if (tasks.length) await Promise.allSettled(tasks);
+  }
+
   /** @param {(message:any)=>void} handler */
   subscribe(handler) { if (typeof handler !== 'function' || this.subscribers.size >= 256) throw protocolInputError(); this.subscribers.add(handler); return () => this.subscribers.delete(handler); }
 

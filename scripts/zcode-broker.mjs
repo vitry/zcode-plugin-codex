@@ -281,6 +281,7 @@ export class ZCodeBroker {
       clearTimeout(authTimer); this.socketWriters.get(socket)?.close(); this.sockets.delete(socket); this.existingProtocolOnlySockets.delete(socket);
       for (const [id, pending] of this.permissionPending) if (pending.socket === socket) { clearTimeout(pending.timer); this.permissionPending.delete(id); pending.resolve(offeredDeny(pending.request)); }
       for (const [id, retired] of this.retiredPermissionResponses) if (retired.socket === socket) this.retiredPermissionResponses.delete(id);
+      for (const [key, tombstone] of this.releasedTurnTombstones) if (tombstone.socket === socket) this.releasedTurnTombstones.delete(key);
       for (const owner of this.sessionOwners.values()) if (owner.socket === socket) owner.socket = null;
       for (const active of this.activeSessionSockets.values()) if (active.socket === socket) active.socket = null;
       const cleanup = this.cleanupSocketSubscriptions(socket); this.localTasks.add(cleanup); void cleanup.finally(() => { this.localTasks.delete(cleanup); this.scheduleIdleShutdown(); });
@@ -671,9 +672,7 @@ export class ZCodeBroker {
     if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || active?.socket !== socket || active.baseline !== params.stateRevision || active.inputId !== params.inputId || typeof active.token !== 'string') throw turnReleaseMismatch();
     const activeToken = active.token;
     this.settleTurnPermissions(params.sessionId, activeToken);
-    // Let the upstream server-request task write its deny before releaseTurn
-    // aborts session-scoped tasks. Two promise turns cover both await edges.
-    await Promise.resolve(); await Promise.resolve();
+    await protocol.drainServerTasksForSession(params.sessionId);
     if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId)?.token !== activeToken) throw turnReleaseMismatch();
     protocol.releaseTurn(params.sessionId);
     if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId)?.token !== activeToken) throw turnReleaseMismatch();

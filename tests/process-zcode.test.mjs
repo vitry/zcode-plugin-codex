@@ -256,6 +256,25 @@ test('observed completion leaves the turn armed and a later permission request c
   protocol.releaseTurn('session-1');
 });
 
+test('session server-task drain waits through permission handler barriers until the response is written', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child);
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  let releaseBarrier; const barrier = new Promise((resolve) => { releaseBarrier = resolve; });
+  let enteredHandler; const handlerEntered = new Promise((resolve) => { enteredHandler = resolve; });
+  protocol.setPermissionHandler(async () => { enteredHandler(); await Promise.resolve(); await barrier; await Promise.resolve(); return { decision: 'deny' }; });
+  protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+  await handlerEntered;
+  let drained = false; const draining = protocol.drainServerTasksForSession('session-1').then(() => { drained = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(drained, false);
+  assert.equal(child.stdin.readableLength, 0);
+  releaseBarrier(); await draining;
+  assert.equal(drained, true);
+  assert.deepEqual(JSON.parse(child.stdin.read().toString()), { id: 99, result: { decision: 'deny' } });
+  protocol.releaseTurn('session-1');
+});
+
 test('broker terminal observer leaves no completion queue or expiry and observes early arm completion', () => {
   const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
   const protocol = new ZCodeProtocolClient(child); const observed = [];

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import test from 'node:test';
 
@@ -1492,17 +1493,30 @@ test('exact turn release rejects foreign and stale tuples while duplicate acknow
   for (const [peer, peerOwner] of [[socket, ownerId], [foreign, 'exact-release-foreign-owner']]) { broker.authenticated.add(peer); broker.socketOwnerIds.set(peer, peerOwner); }
   broker.exactTurnReleaseSockets.add(socket); broker.exactTurnReleaseSockets.add(foreign);
   broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
-  const released = []; const protocol = { releaseTurn: (releasedSessionId) => released.push(releasedSessionId) }; broker.protocol = protocol;
+  const released = []; let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let denyRecorded = false;
+  const protocol = { drainServerTasksForSession: async () => { await drainBarrier; denyRecorded = true; }, releaseTurn: (releasedSessionId) => { assert.equal(denyRecorded, true, 'permission deny must be written before releasing the protocol turn'); released.push(releasedSessionId); } }; broker.protocol = protocol;
   const old = { socket, token: 'exact-release-old-token', baseline: 7, inputId: 'exact-release-old-input' }; broker.activeSessionSockets.set(sessionId, old); broker.activeSessions.add(sessionId);
   const request = (peer, id, params) => broker.handleLocal(peer, JSON.stringify({ id, method: 'broker/releaseTurn', params })); const tuple = { sessionId, stateRevision: 7, inputId: 'exact-release-old-input' };
   try {
     await request(foreign, 1, tuple); assert.equal(foreignWrites.at(-1)?.error?.code, -32041); assert.equal(broker.activeSessionSockets.get(sessionId), old);
     await request(socket, 2, { ...tuple, inputId: 'wrong-input' }); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), old);
-    await request(socket, 3, tuple); assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]); assert.equal(broker.activeSessionSockets.has(sessionId), false);
+    const releasing = request(socket, 3, tuple); await new Promise((resolvePromise) => setImmediate(resolvePromise)); assert.deepEqual(released, []); assert.equal(broker.activeSessionSockets.get(sessionId), old); releaseDrain(); await releasing; assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]); assert.equal(broker.activeSessionSockets.has(sessionId), false);
     await request(socket, 4, tuple); assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]);
     const newer = { socket, token: 'exact-release-new-token', baseline: 8, inputId: 'exact-release-new-input' }; broker.activeSessionSockets.set(sessionId, newer); broker.activeSessions.add(sessionId);
     await request(socket, 5, tuple); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), newer); assert.equal(broker.activeSessions.has(sessionId), true); assert.deepEqual(released, [sessionId]);
   } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('socket close removes only its exact turn-release tombstones', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-tombstone-close-'));
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'b'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  class FakeSocket extends EventEmitter { constructor() { super(); this.writable = true; this.destroyed = false; } setEncoding() {} write() { return true; } destroy() { this.destroyed = true; this.emit('close'); } }
+  const closedSocket = new FakeSocket(); const liveSocket = new FakeSocket(); broker.accept(closedSocket); broker.accept(liveSocket);
+  broker.releasedTurnTombstones.set('closed-a', { socket: closedSocket }); broker.releasedTurnTombstones.set('live', { socket: liveSocket }); broker.releasedTurnTombstones.set('closed-b', { socket: closedSocket });
+  closedSocket.destroy(); await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.deepEqual([...broker.releasedTurnTombstones.keys()], ['live']);
+  assert.equal(broker.releasedTurnTombstones.get('live')?.socket, liveSocket);
+  liveSocket.destroy(); broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
 });
 
 test('managed client retains exact release authority until broker acknowledgement', async (t) => {
