@@ -1643,6 +1643,7 @@ test('managed completion timeout preserves its error while releasing the exact b
   const client = new ZCodeClient(protocol, process.cwd(), true);
   const first = await client.send(sessionId, 'timed turn');
   assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), [{ sessionId, inputId: first.inputId, stateRevision: 21 }]);
   assert.equal(client.turnState(sessionId), null);
   await client.send(sessionId, 'after timeout cleanup');
@@ -1667,8 +1668,73 @@ test('managed completion timeout is not delayed by a stuck exact release request
   const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn');
   const observed = await Promise.race([client.waitForCompletion(sessionId).catch((error) => error), new Promise((resolve) => setTimeout(() => resolve('release-delayed-timeout'), 25))]);
   assert.equal(observed, timeoutError);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 1);
   await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+});
+
+test('managed completion timeout lets an immediate stop supersede deferred exact release', async () => {
+  const sessionId = 'completion-timeout-stop-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); let acknowledgeStop; const stopAck = new Promise((resolve) => { acknowledgeStop = resolve; });
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 23 };
+      if (method === 'session/stop') return stopAck;
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), cancelTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  const stopping = client.stopSession(sessionId); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.filter((call) => ['session/stop', 'broker/releaseTurn'].includes(call.method)).map((call) => call.method), ['session/stop']);
+  acknowledgeStop({}); await stopping; await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.filter((call) => ['session/stop', 'broker/releaseTurn'].includes(call.method)).map((call) => call.method), ['session/stop']);
+});
+
+test('managed completion timeout resumes deferred exact release when immediate stop fails', async () => {
+  const sessionId = 'completion-timeout-stop-failure-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); const stopError = new Error('stop failed'); let rejectStop; const stopAck = new Promise((resolve, reject) => { rejectStop = reject; });
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 24 };
+      if (method === 'session/stop') return stopAck;
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), cancelTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn'); assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  const stopping = client.stopSession(sessionId); await new Promise((resolve) => setImmediate(resolve)); assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 0);
+  rejectStop(stopError); assert.equal(await stopping.catch((error) => error), stopError); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 1);
+});
+
+test('managed broker stop rejection destructively clears its exact boundary without release', async () => {
+  const sessionId = 'completion-broker-stopped-session'; const turns = new Map(); const calls = []; const stoppedError = new PluginError('ZCODE_SESSION_STOPPED', 'session stopped'); let revision = 25;
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: revision++ };
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw stoppedError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'stopped turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), stoppedError); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 0);
+  await client.send(sessionId, 'after broker stop'); assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
 });
 
 test('managed client falls back to local release when broker health lacks exact release capability', async () => {
