@@ -31,7 +31,13 @@ export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
   /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] */
-  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound ? null : false; this.exactTurnReleaseProbe = null; this.armedBoundaries = new Map(); }
+  constructor(protocol, workspace, workspaceBound = false) {
+    this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound;
+    this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound ? null : false;
+    /** @type {Promise<void>|null} */
+    this.exactTurnReleaseProbe = null;
+    this.armedBoundaries = new Map();
+  }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
