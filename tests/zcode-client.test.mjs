@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
@@ -23,7 +23,7 @@ const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.me
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
 const MACOS_UNIX_SOCKET_PATH_MAX_BYTES = 104;
 async function createPreExactReleaseClient(options) {
-  const workspace = realpathSync(options.workspace);
+  const workspace = await realpath(resolve(options.workspace));
   const protocol = await connectZCodeBroker(options.brokerEndpoint, {
     cwd: workspace, brokerToken: options.brokerToken, ownerId: options.ownerId,
     requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs,
