@@ -2035,7 +2035,7 @@ test('owner release cleans sixteen subscriptions concurrently within one shared 
   for (let index = 0; index < 16; index += 1) { const sessionId = `budget-session-${index}`; sessions[sessionId] = ownerId; broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.conversationSubscriptions.set(`budget-${index}`, { socket, topic: `conversation/${sessionId}`, subscriptionId: `budget-sub-${index}`, connectionId: `budget-connection-${index}`, sessionId, ownerId }); }
   await writeFile(`${endpoint}.owners.json`, JSON.stringify({ version: 1, sessions })); broker.ownershipStoreEstablished = true; let unsubscribeCalls = 0; let releaseFirstBatch; let releaseSecondBatch; let markFirstBatchEntered; let markSecondBatchEntered; const firstBatchEntered = new Promise((resolvePromise) => { markFirstBatchEntered = resolvePromise; }); const secondBatchEntered = new Promise((resolvePromise) => { markSecondBatchEntered = resolvePromise; }); const firstBatchGate = new Promise((resolvePromise) => { releaseFirstBatch = resolvePromise; }); const secondBatchGate = new Promise((resolvePromise) => { releaseSecondBatch = resolvePromise; });
   broker.protocol = { request: async (method) => { if (method === 'session/stop') return {}; unsubscribeCalls += 1; const batchGate = unsubscribeCalls <= 8 ? firstBatchGate : secondBatchGate; if (unsubscribeCalls === 8) markFirstBatchEntered(); if (unsubscribeCalls === 16) markSecondBatchEntered(); await batchGate; throw new Error('slow unsubscribe failure'); }, cancelTurn() {} };
-  const releasing = broker.releaseOwner(socket, ownerId, []); await firstBatchEntered; assert.equal(unsubscribeCalls, 8, 'the first bounded cleanup batch must enter concurrently'); releaseFirstBatch(); await secondBatchEntered; assert.equal(unsubscribeCalls, 16, 'the second bounded cleanup batch must enter after the first settles'); releaseSecondBatch(); const released = await releasing;
+  const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(600)); await firstBatchEntered; assert.equal(unsubscribeCalls, 8, 'the first bounded cleanup batch must enter concurrently'); releaseFirstBatch(); await secondBatchEntered; assert.equal(unsubscribeCalls, 16, 'the second bounded cleanup batch must enter after the first settles'); releaseSecondBatch(); const released = await releasing;
   assert.equal(released.releasedSessionIds.length, 16); assert.equal(released.failedSessionIds.length, 0); assert.equal(unsubscribeCalls, 16); assert.equal(broker.orphanedConversationSubscriptions.size, 16);
   await rm(directory, { recursive: true, force: true });
 });
@@ -2062,7 +2062,7 @@ test('an idle owner release keeps its valid stop acknowledgement through malform
     });
 
     let releaseSettled = false;
-    releasing = broker.releaseOwner(socket, ownerId, []);
+    releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(600));
     void releasing.then(() => { releaseSettled = true; }, () => { releaseSettled = true; });
     await withTestDeadlineKeepalive(() => closeEntered, scaleTestTimeout(2_000));
     assert.equal(releaseSettled, false); assert.equal(closeSettled, false);
