@@ -343,7 +343,7 @@ export async function executeJob(input) {
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
   try {
-    if (sessionId && typeof client.releaseTurn === 'function') client.releaseTurn(sessionId);
+    if (sessionId && typeof client.releaseTurn === 'function') await client.releaseTurn(sessionId);
   } catch (cleanupError) {
     if (!primaryError && output?.job?.status !== 'succeeded') primaryError = cleanupError;
   }
