@@ -1382,6 +1382,33 @@ test('session creation completion observes abort before configuration and stops 
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
 
+test('queued interruption releases the local turn when stop revalidation reconciliation fails', async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'reconciliation-failure-child', agentType: 'zcode-rescue', agentPath: '/root/reconciliation-failure-child', workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation }, executor });
+  const workerLeaseId = 'f'.repeat(64); const job = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'model interrupted');
+  const reconciliationError = new Error('queued stop revalidation failed');
+  const sessionId = 'zs-queued-reconciliation-failure'; let revalidations = 0;
+  /** @type {string[]} */ const cleanupCalls = [];
+  const wrapped = { ...store, revalidateBoundRescueStop: async (/** @type {any} */ input) => {
+    revalidations += 1;
+    if (revalidations === 2) throw reconciliationError;
+    return store.revalidateBoundRescueStop(input);
+  } };
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'old' }, available: [] } }, messages: [] }),
+    setModel: async () => { controller.abort(interruption); throw new Error('model transport closed'); },
+    stopSession: async () => { throw new Error('stop must not run after failed revalidation'); },
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const caught = await executeJobProduction({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', model: { providerId: 'p', modelId: 'new' }, childPid: 999_999, workerLeaseId, signal: controller.signal }).catch((error) => error);
+  assert.equal(caught, reconciliationError);
+  assert.equal(revalidations, 2);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+});
+
 test('resume transport rejection after abort preserves the interruption and stops the known session once', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const controller = new AbortController(); let stops = 0;
@@ -1512,20 +1539,35 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const sessionId = 'zs-0165-true-terminal'; const subscriptionId = 'subscription-0165';
   /** @type {null|((message:any)=>void)} */ let handler = null;
+  /** @type {null|((request:any)=>any)} */ let permissionHandler = null;
   const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('0.16.5 progress handler missing'); handler(message); };
   let trueTerminal = false; let reads = 0; let boundaryDurable = false; let signalBoundary = () => {};
+  /** @type {any} */ let permissionDecision; let signalPermission = () => {};
+  const permissionDecided = new Promise((resolve) => { signalPermission = () => resolve(undefined); });
+  /** @type {string[]} */ const cleanupCalls = [];
   const boundaryReached = new Promise((resolve) => { signalBoundary = () => resolve(undefined); });
   const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision: 1, reason: 'prompt_completed', patch: {}, futureNotificationField: true } };
   const client = {
     createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
-    setPermissionHandler: () => {},
+    setPermissionHandler: (/** @type {(request:any)=>any} */ nextHandler) => { permissionHandler = nextHandler; },
     subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { handler = null; }; },
     subscribeConversation: async () => {
       emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484, snapshot: boundedSnapshotFixture({ sessionId, seq: 484 }) })));
       return { subscriptionId, unsubscribe: async () => {} };
     },
     send: async () => ({ inputId: 'input-0165', stateRevision: 7 }),
-    waitForCompletion: async () => { emit(legacy); },
+    waitForCompletion: async () => { throw new Error('executor must use non-destructive completion observation'); },
+    observeCompletion: async () => {
+      emit(legacy);
+      setImmediate(() => {
+        if (!permissionHandler) throw new Error('0.16.5 permission handler missing');
+        permissionDecision = permissionHandler({
+          sessionId, toolName: 'Write', riskLevel: 'medium',
+          options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }],
+        });
+        signalPermission();
+      });
+    },
     readSession: async () => {
       assert.equal(boundaryDurable, true, 'legacy admission must not permit a read before the accepted boundary is durable');
       reads += 1;
@@ -1535,15 +1577,19 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
         { info: { role: 'assistant', messageId: 'assistant-0165', parentMessageId: 'input-0165', time: { created: 2, completed: 3 }, finish: 'stop', semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'real 0.16.5 result' }] },
       ] };
     },
-    stopSession: async () => {}, close: async () => {},
+    stopSession: async () => {},
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); },
+    close: async () => { cleanupCalls.push('close'); },
   };
   const execution = executeJob({
     job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task',
     onBoundaryPersisted: async () => { boundaryDurable = true; signalBoundary(); },
   });
   execution.catch(() => {});
-  await boundaryReached; await new Promise((resolve) => setTimeout(resolve, 40));
+  await boundaryReached; await Promise.race([permissionDecided, execution]); await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+  assert.deepEqual(permissionDecision, { decision: 'allow' });
+  assert.deepEqual(cleanupCalls, [], 'the active turn must remain retained until authoritative terminal reconciliation');
   assert.ok(reads >= 1, 'legacy admission should wake transitional snapshot reconciliation');
   emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 484, toSeq: 485, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'running' })] })));
   trueTerminal = true;
@@ -1551,6 +1597,56 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   const output = await execution;
   assert.equal(output.result, 'real 0.16.5 result');
   assert.equal(output.job.status, 'succeeded');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+});
+
+test('durable success remains authoritative when local turn release fails', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const dataRoot = join(root, 'data'); const sessionId = 'zs-release-after-success';
+  const releaseError = new Error('local release failed after durable success');
+  /** @type {string[]} */ const cleanupCalls = [];
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-release-after-success', stateRevision: 1 }),
+    observeCompletion: async () => {},
+    waitForCompletion: async () => { throw new Error('legacy waiter must not be used'); },
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [
+      completedUser('input-release-after-success'),
+      { info: { role: 'assistant', messageId: 'assistant-release-after-success', parentMessageId: 'input-release-after-success', finish: 'stop' }, parts: [{ type: 'text', text: 'durable release result' }] },
+    ] }),
+    stopSession: async () => {},
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); throw releaseError; },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const output = await executeJob({ job, workspace, dataRoot, store, client, task: 'task' });
+  assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.result, 'durable release result');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'succeeded');
+  assert.match(await readFile(persisted.logFile, 'utf8'), /Final output\ndurable release result\n/);
+});
+
+test('executor releases the local turn before close on failure and preserves the primary error', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const sessionId = 'zs-release-failure-cleanup';
+  const primary = new PluginError('PRIMARY_RELEASE_TEST', 'primary execution failure', { category: 'protocol', remedy: 'retain primary' });
+  const releaseError = new Error('local release failed');
+  /** @type {string[]} */ const cleanupCalls = [];
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-release-failure-cleanup', stateRevision: 1 }),
+    observeCompletion: async () => { throw primary; },
+    waitForCompletion: async () => { throw new Error('legacy waiter must not be used'); },
+    stopSession: async () => {},
+    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); throw releaseError; },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+  assert.equal(caught, primary);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
 });
 
 test('execution does not wait indefinitely for a late initial baseline and uses coherent snapshot fallback', { timeout: 10_000 }, async () => {

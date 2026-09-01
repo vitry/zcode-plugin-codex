@@ -10,6 +10,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { drainExitedProcessStreams, runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
+import { ZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { BoundedWriter, RedactedTail, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
 const fakeFixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -233,6 +234,126 @@ test('subscriber failures are isolated and permission work cannot write after cl
   const beforeClose = child.stdin.readableLength;
   const closing = protocol.close(); release({ decision: 'deny' }); await closing;
   assert.equal(child.stdin.readableLength, beforeClose);
+});
+
+test('observed completion leaves the turn armed and a later permission request can be allowed', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child);
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  const waiting = protocol.observeCompletion('session-1', 1_000);
+  protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } }));
+  assert.equal((await waiting).reason, 'prompt_completed');
+  assert.equal(protocol.turnState('session-1'), 'armed');
+  assert.equal(protocol.completed.get('session-1')?.length, 1, 'observation must not consume the queued completion');
+
+  let handled = 0;
+  protocol.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+  protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+  await new Promise((resolve) => setImmediate(resolve));
+  const response = JSON.parse(child.stdin.read().toString());
+  assert.equal(handled, 1);
+  assert.deepEqual(response, { id: 99, result: { decision: 'allow' } });
+  protocol.releaseTurn('session-1');
+});
+
+test('completion observer timeout unregisters without ending the active turn', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child);
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  await assert.rejects(protocol.observeCompletion('session-1', 10), { code: 'ZCODE_COMPLETION_TIMEOUT' });
+  assert.equal(protocol.turnState('session-1'), 'armed');
+  assert.equal(protocol.completionWaiters.size, 0);
+  assert.equal(protocol.waiterSessions.size, 0);
+  assert.equal(protocol.subscribers.size, 0);
+  protocol.releaseTurn('session-1');
+});
+
+test('releaseTurn is local and idempotent and rejects a pending observer', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child); const client = new ZCodeClient(protocol, '/repo');
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  const waiting = client.observeCompletion('session-1');
+  assert.equal(child.stdin.readableLength, 0);
+  client.releaseTurn('session-1'); client.releaseTurn('session-1');
+  await assert.rejects(waiting, { code: 'ZCODE_SESSION_STOPPED' });
+  assert.equal(client.turnState('session-1'), null);
+  assert.equal(protocol.completionWaiters.size, 0);
+  assert.equal(protocol.waiterSessions.size, 0);
+  assert.equal(protocol.subscribers.size, 0);
+  assert.equal(child.stdin.readableLength, 0, 'local release must not send an upstream RPC');
+  for (const invalid of ['', 'bad\nsession', null]) {
+    await assert.rejects(client.observeCompletion(invalid), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+    assert.throws(() => client.releaseTurn(invalid), { code: 'ZCODE_INPUT_INVALID' });
+  }
+});
+
+test('releaseTurn aborts and clears permission task state without writing a stale response', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child);
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  let handlerSignal;
+  protocol.setPermissionHandler((_request, signal) => {
+    handlerSignal = signal;
+    return new Promise(() => {});
+  });
+  protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(protocol.permissionRequestIds.size, 1);
+  assert.equal(protocol.serverTaskSessions.size, 1);
+  protocol.releaseTurn('session-1');
+  assert.equal(handlerSignal.aborted, true);
+  assert.equal(protocol.permissionRequestIds.size, 0);
+  assert.equal(protocol.serverTaskSessions.size, 0);
+  assert.equal(protocol.serverTaskControllers.size, 0);
+  assert.equal(protocol.serverTasks.size, 0);
+  assert.equal(child.stdin.readableLength, 0);
+});
+
+test('completion expiry cancels pending permission tasks before late resolution or rejection', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+    const protocol = new ZCodeProtocolClient(child); const failures = [];
+    protocol.setCloseHandler((error) => failures.push(error));
+    protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+    const observed = protocol.observeCompletion('session-1');
+    const originalSetTimeout = globalThis.setTimeout; let expire;
+    globalThis.setTimeout = (callback, timeoutMs, ...args) => {
+      if (timeoutMs === 10 * 60_000) { expire = () => callback(...args); return { unref() {} }; }
+      return originalSetTimeout(callback, timeoutMs, ...args);
+    };
+    try { protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } })); }
+    finally { globalThis.setTimeout = originalSetTimeout; }
+    await observed;
+    assert.equal(typeof expire, 'function');
+
+    let handlerSignal; let settle;
+    protocol.setPermissionHandler((_request, signal) => {
+      handlerSignal = signal;
+      return new Promise((resolve, reject) => { settle = outcome === 'resolve' ? () => resolve({ decision: 'deny' }) : () => reject(new Error('late rejection')); });
+    });
+    protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expire();
+    assert.equal(handlerSignal.aborted, true, outcome);
+    assert.equal(protocol.turnState('session-1'), null, outcome);
+    for (const collection of [protocol.serverTasks, protocol.serverTaskControllers, protocol.serverTaskSessions, protocol.serverTasksByController, protocol.permissionRequestIds]) assert.equal(collection.size, 0, outcome);
+    settle();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(child.stdin.readableLength, 0, outcome);
+    assert.equal(protocol.closed, false, outcome);
+    assert.deepEqual(failures, [], outcome);
+  }
+});
+
+test('ordinary completion waiting remains destructive', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child);
+  protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  const waiting = protocol.waitForCompletion('session-1', 1_000);
+  protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } }));
+  assert.equal((await waiting).reason, 'prompt_completed');
+  assert.equal(protocol.turnState('session-1'), null);
+  assert.equal(protocol.completed.has('session-1'), false);
 });
 
 test('close aborts and detaches a never-settling permission task under strict rejections', async () => {

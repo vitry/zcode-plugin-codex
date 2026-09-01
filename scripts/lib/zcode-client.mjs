@@ -129,6 +129,8 @@ export class ZCodeClient {
   }
 
   /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
+  /** Observe a validated terminal notification without consuming the active turn. @param {string} sessionId @param {number} [timeoutMs] */ observeCompletion(sessionId, timeoutMs) { return this.protocol.observeCompletion(sessionId, timeoutMs); }
+  /** Locally release an active turn without sending an upstream request. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); this.protocol.releaseTurn(sessionId); }
   /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
   /** @param {string} sessionId @param {{connectionId:string,clientMode:'desktop-continuous'|'web-remote-replayable'}} options */
   async subscribeConversation(sessionId, options) {

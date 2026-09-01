@@ -37,6 +37,7 @@ export class ZCodeProtocolClient {
     /** @type {Set<Promise<void>>} */ this.serverTasks = new Set();
     /** @type {Set<AbortController>} */ this.serverTaskControllers = new Set();
     /** @type {Map<AbortController,string>} */ this.serverTaskSessions = new Map();
+    /** @type {Map<AbortController,Promise<void>>} */ this.serverTasksByController = new Map();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
@@ -102,9 +103,12 @@ export class ZCodeProtocolClient {
   /** @param {string} sessionId @param {PluginError} [error] */
   cancelTurn(sessionId, error = new PluginError('ZCODE_SESSION_STOPPED', `ZCode session ${sessionId} was stopped.`, { category: 'state', remedy: 'Start a new turn before waiting for completion.', details: { sessionId } })) {
     for (const waiter of this.completionWaiters) if (waiter.sessionId === sessionId) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); waiter.reject(error); }
-    for (const [controller, taskSessionId] of this.serverTaskSessions) if (taskSessionId === sessionId) controller.abort();
+    for (const [controller, taskSessionId] of this.serverTaskSessions) if (taskSessionId === sessionId) { controller.abort(); const task = this.serverTasksByController.get(controller); if (task) this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.serverTaskSessions.delete(controller); this.serverTasksByController.delete(controller); }
+    for (const key of this.permissionRequestIds.keys()) { try { if (JSON.parse(key)?.[0] === sessionId) this.permissionRequestIds.delete(key); } catch { /* internal replay keys are always JSON */ } }
     this.abortTurn(sessionId);
   }
+  /** Locally release a turn without sending an upstream request. @param {string} sessionId */
+  releaseTurn(sessionId) { if (!nonEmpty(sessionId)) throw protocolInputError(); this.cancelTurn(sessionId); }
 
   /** @param {(message:any)=>void} handler */
   subscribe(handler) { if (typeof handler !== 'function' || this.subscribers.size >= 256) throw protocolInputError(); this.subscribers.add(handler); return () => this.subscribers.delete(handler); }
@@ -141,6 +145,37 @@ export class ZCodeProtocolClient {
     });
   }
 
+  /** Observe a validated terminal notification without consuming it or ending the turn. @param {string} sessionId @param {number} [timeoutMs] */
+  observeCompletion(sessionId, timeoutMs) {
+    const effectiveTimeoutMs = timeoutMs === undefined ? this.completionTimeoutMs : timeoutMs;
+    if (!nonEmpty(sessionId) || effectiveTimeoutMs !== undefined && (!Number.isSafeInteger(effectiveTimeoutMs) || effectiveTimeoutMs < 1 || effectiveTimeoutMs > 86_400_000) || this.turns.get(sessionId)?.status !== 'armed' || this.waiterSessions.has(sessionId)) return Promise.reject(protocolInputError());
+    const queued = this.completed.get(sessionId)?.[0];
+    if (queued) return Promise.resolve(queued);
+    return new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      this.waiterSessions.add(sessionId); const waiter = { reject, timer: /** @type {NodeJS.Timeout|null} */ (null), unsubscribe, sessionId };
+      const timer = effectiveTimeoutMs === undefined ? null : setTimeout(() => {
+        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId);
+        unsubscribe();
+        reject(new PluginError('ZCODE_COMPLETION_TIMEOUT', `ZCode session ${sessionId} did not complete in time.`, { category: 'timeout', remedy: 'Read or resume the session before retrying.', details: { sessionId, timeoutMs: effectiveTimeoutMs } }));
+      }, effectiveTimeoutMs);
+      waiter.timer = timer;
+      timer?.unref?.();
+      try {
+        unsubscribe = this.subscribe((message) => {
+          if (!isCompletionFor(message, sessionId, this.turns.get(sessionId))) return;
+          this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); if (timer) clearTimeout(timer); unsubscribe(); resolve(message.params);
+        });
+      } catch (error) {
+        if (timer) clearTimeout(timer);
+        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); waiter.unsubscribe();
+        reject(error); return;
+      }
+      waiter.unsubscribe = unsubscribe;
+      this.completionWaiters.add(waiter);
+    });
+  }
+
   close() {
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
@@ -159,7 +194,7 @@ export class ZCodeProtocolClient {
     }
     const tasks = [...this.serverTasks];
     if (tasks.length) await Promise.race([Promise.allSettled(tasks), boundedDelay(25)]);
-    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear();
+    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear(); this.serverTasksByController.clear();
     this.terminationPromise ??= terminateProcess(this.child); await this.terminationPromise;
   }
 
@@ -241,6 +276,7 @@ export class ZCodeProtocolClient {
       if (this.permissionRequestIds.size >= 1024) throw new PluginError('ZCODE_PERMISSION_OVERFLOW', 'Too many permission requests were rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
       this.permissionRequestIds.set(replayKey, Date.now());
       const result = this.permissionHandler ? await this.permissionHandler(message.params, signal) : message.params.options.find((/** @type {any} */ option) => option.response.decision === 'deny')?.response;
+      if (signal.aborted) return;
       validatePermissionResult(result);
       if (!message.params.options.some((/** @type {any} */ option) => JSON.stringify(option.response) === JSON.stringify(result))) throw new PluginError('ZCODE_PERMISSION_OPTION_INVALID', 'Permission response was not one of the offered options.', { category: 'authorization', remedy: 'Return an exact response offered by ZCode.' });
       if (!this.closed) this.sendFrame({ id: message.id, result });
@@ -254,7 +290,7 @@ export class ZCodeProtocolClient {
   }
 
   /** @param {Promise<void>} task @param {AbortController} controller @param {unknown} sessionId */
-  trackServerTask(task, controller, sessionId) { this.serverTasks.add(task); this.serverTaskControllers.add(controller); if (nonEmpty(sessionId)) this.serverTaskSessions.set(controller, /** @type {string} */ (sessionId)); const cleanup = () => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.serverTaskSessions.delete(controller); }; void task.then(cleanup, (error) => { cleanup(); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
+  trackServerTask(task, controller, sessionId) { this.serverTasks.add(task); this.serverTaskControllers.add(controller); this.serverTasksByController.set(controller, task); if (nonEmpty(sessionId)) this.serverTaskSessions.set(controller, /** @type {string} */ (sessionId)); const cleanup = () => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.serverTaskSessions.delete(controller); this.serverTasksByController.delete(controller); }; void task.then(cleanup, (error) => { cleanup(); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
 
   /** @param {Record<string,unknown>} frame */
   sendFrame(frame) {
@@ -268,7 +304,7 @@ export class ZCodeProtocolClient {
     if (this.closed) return;
     this.closed = true;
     for (const controller of this.serverTaskControllers) controller.abort();
-    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear(); this.permissionRequestIds.clear();
+    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear(); this.serverTasksByController.clear(); this.permissionRequestIds.clear();
     this.stderrTail.close();
     const diagnosticError = withStderr(error, this.stderrTail.value());
     this.writer.close(); this.rejectPending(diagnosticError); this.rejectCompletionWaiters(diagnosticError); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
@@ -284,7 +320,7 @@ export class ZCodeProtocolClient {
   rejectCompletionWaiters(error) { for (const waiter of this.completionWaiters) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.waiterSessions.delete(waiter.sessionId); waiter.reject(error); } this.completionWaiters.clear(); }
 
   /** @param {string} sessionId @param {any} params */
-  queueCompletion(sessionId, params) { if (this.consumeTerminal) { const turn = this.turns.get(sessionId); this.abortTurn(sessionId); if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalHandler?.(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
+  queueCompletion(sessionId, params) { if (this.consumeTerminal) { const turn = this.turns.get(sessionId); this.abortTurn(sessionId); if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalHandler?.(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.cancelTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
 }
 
 export class BoundedWriter {
