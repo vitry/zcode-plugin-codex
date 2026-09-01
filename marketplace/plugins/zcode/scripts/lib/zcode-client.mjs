@@ -37,6 +37,7 @@ export class ZCodeClient {
     /** @type {Promise<void>|null} */
     this.exactTurnReleaseProbe = null;
     this.armedBoundaries = new Map();
+    this.deferredReleaseBoundaries = new Map(); this.stopIntents = new Map();
   }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
@@ -95,7 +96,22 @@ export class ZCodeClient {
   /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!boundedUpstreamObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); this.armedBoundaries.delete(sessionId); return {}; }
+  /** @param {string} sessionId @param {number} [timeoutMs] */
+  async stopSession(sessionId, timeoutMs) {
+    requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId);
+    const boundary = this.armedBoundaries.get(sessionId); if (boundary) this.stopIntents.set(sessionId, boundary);
+    try {
+      const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!boundedUpstreamObject(result)) throw outputError('session/stop');
+      if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId);
+      if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId);
+      if (this.deferredReleaseBoundaries.get(sessionId) === boundary) this.deferredReleaseBoundaries.delete(sessionId);
+      return {};
+    } catch (error) {
+      if (this.stopIntents.get(sessionId) === boundary) this.stopIntents.delete(sessionId);
+      if (boundary && this.deferredReleaseBoundaries.get(sessionId) === boundary && this.armedBoundaries.get(sessionId) === boundary) this.scheduleDeferredExactTurnRelease(sessionId, boundary);
+      throw error;
+    } finally { if (this.stopIntents.get(sessionId) === boundary) this.stopIntents.delete(sessionId); }
+  }
   /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await requestBrokerHealth(this, timeoutMs, true); this.exactTurnRelease = result.capabilities?.exactTurnRelease === true; return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
   /** @param {string[]} [excludeSessionIds] @param {number} [timeoutMs] */
   async releaseOwner(excludeSessionIds, timeoutMs) { if (excludeSessionIds !== undefined && (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId)))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', excludeSessionIds === undefined ? {} : { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
@@ -143,7 +159,8 @@ export class ZCodeClient {
     let completion;
     try { completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); }
     catch (error) {
-      if (this.exactTurnRelease === true && boundary) void this.releaseExactTurn(sessionId, boundary).catch(() => {});
+      if (error instanceof PluginError && error.code === 'ZCODE_SESSION_STOPPED') { this.protocol.releaseTurn(sessionId); if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId); }
+      else if (this.exactTurnRelease === true && boundary) this.deferExactTurnRelease(sessionId, boundary);
       else this.armedBoundaries.delete(sessionId);
       throw error;
     }
@@ -152,9 +169,13 @@ export class ZCodeClient {
     return completion;
   }
   /** Observe a validated terminal notification without consuming the active turn. @param {string} sessionId @param {number} [timeoutMs] */ observeCompletion(sessionId, timeoutMs) { return this.protocol.observeCompletion(sessionId, timeoutMs); }
-  /** Release the exact managed broker turn, then clear local turn state after acknowledgement. Direct clients clear synchronously. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); const boundary = this.armedBoundaries.get(sessionId); if (!this.workspaceBound || this.exactTurnRelease !== true || !boundary) { this.protocol.releaseTurn(sessionId); this.armedBoundaries.delete(sessionId); return Promise.resolve(); } return this.releaseExactTurn(sessionId, boundary); }
+  /** Release the exact managed broker turn, then clear local turn state after acknowledgement. Direct clients clear synchronously. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); const boundary = this.armedBoundaries.get(sessionId); if (!this.workspaceBound || this.exactTurnRelease !== true || !boundary) { this.protocol.releaseTurn(sessionId); this.armedBoundaries.delete(sessionId); this.deferredReleaseBoundaries.delete(sessionId); return Promise.resolve(); } return this.releaseExactTurn(sessionId, boundary); }
   /** @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */
-  async releaseExactTurn(sessionId, boundary) { const result = await this.protocol.request('broker/releaseTurn', { sessionId, inputId: boundary.inputId, stateRevision: boundary.stateRevision }); if (!plainObject(result) || Object.keys(result).length !== 0) throw outputError('broker/releaseTurn'); this.protocol.releaseTurn(sessionId); if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId); }
+  async releaseExactTurn(sessionId, boundary) { const result = await this.protocol.request('broker/releaseTurn', { sessionId, inputId: boundary.inputId, stateRevision: boundary.stateRevision }); if (!plainObject(result) || Object.keys(result).length !== 0) throw outputError('broker/releaseTurn'); this.protocol.releaseTurn(sessionId); if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId); if (this.deferredReleaseBoundaries.get(sessionId) === boundary) this.deferredReleaseBoundaries.delete(sessionId); }
+  /** Let an immediate caller stop supersede timeout cleanup; otherwise release on the next event-loop turn. @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */
+  deferExactTurnRelease(sessionId, boundary) { this.deferredReleaseBoundaries.set(sessionId, boundary); this.scheduleDeferredExactTurnRelease(sessionId, boundary); }
+  /** @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */
+  scheduleDeferredExactTurnRelease(sessionId, boundary) { setImmediate(() => { if (this.deferredReleaseBoundaries.get(sessionId) !== boundary || this.stopIntents.get(sessionId) === boundary || this.armedBoundaries.get(sessionId) !== boundary) return; this.deferredReleaseBoundaries.delete(sessionId); void this.releaseExactTurn(sessionId, boundary).catch(() => {}); }); }
   async ensureExactTurnReleaseCapability() { if (!this.workspaceBound || this.exactTurnRelease !== null) return; this.exactTurnReleaseProbe ??= requestBrokerHealth(this, undefined, true).then((result) => { this.exactTurnRelease = result.capabilities?.exactTurnRelease === true; }, (error) => { this.exactTurnReleaseProbe = null; throw error; }); await this.exactTurnReleaseProbe; }
   /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
   /** @param {string} sessionId @param {{connectionId:string,clientMode:'desktop-continuous'|'web-remote-replayable'}} options */
