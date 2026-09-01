@@ -1540,6 +1540,23 @@ test('socket close during exact release drain cannot commit or create a dead tom
   broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
 });
 
+test('exact release fence immediately denies a permission arriving during drain', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-permission-fence-')); const ownerId = 'release-permission-fence-owner'; const sessionId = 'release-permission-fence-session'; const writes = [];
+  const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'e'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.exactTurnReleaseSockets.add(socket); broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let enteredDrain; const drainEntered = new Promise((resolve) => { enteredDrain = resolve; });
+  broker.protocol = { drainServerTasksForSession: async () => { enteredDrain(); await drainBarrier; }, releaseTurn: () => {} };
+  const active = { socket, token: 'release-permission-fence-token', baseline: 10, inputId: 'release-permission-fence-input' }; broker.activeSessionSockets.set(sessionId, active); broker.activeSessions.add(sessionId);
+  const releasing = broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'broker/releaseTurn', params: { sessionId, stateRevision: 10, inputId: active.inputId } })); await drainEntered;
+  const lateRequest = { requestId: 'late-release-request', sessionId, options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }] };
+  const latePermission = broker.requestPermission(lateRequest); await Promise.resolve();
+  assert.equal(broker.permissionPending.size, 0);
+  assert.deepEqual(await latePermission, { decision: 'deny' });
+  assert.equal(writes.some((frame) => frame.method === 'interaction/requestPermission'), false);
+  releaseDrain(); await releasing; broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
+});
+
 test('managed client retains exact release authority until broker acknowledgement', async (t) => {
   for (const failureMode of ['pre-commit rejection', 'lost acknowledgement']) await t.test(failureMode, async () => {
     const sessionId = `release-retry-${failureMode.replaceAll(' ', '-')}`; const turns = new Map(); const calls = []; let releaseAttempts = 0; let brokerRoute = true; let tombstoned = false;
@@ -1605,6 +1622,30 @@ test('managed completion remains observable when exact release fails and fences 
   await client.releaseTurn(sessionId);
   assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), Array(2).fill({ sessionId, inputId: first.inputId, stateRevision: 12 }));
   await client.send(sessionId, 'after exact retry');
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
+});
+
+test('managed completion timeout preserves its error while releasing the exact broker turn', async () => {
+  const sessionId = 'completion-timeout-release-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); let sendRevision = 21;
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: sendRevision++ };
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true);
+  const first = await client.send(sessionId, 'timed turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), [{ sessionId, inputId: first.inputId, stateRevision: 21 }]);
+  assert.equal(client.turnState(sessionId), null);
+  await client.send(sessionId, 'after timeout cleanup');
   assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
 });
 

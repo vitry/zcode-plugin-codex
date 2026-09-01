@@ -137,7 +137,20 @@ export class ZCodeClient {
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
-  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */ async waitForCompletion(sessionId, timeoutMs) { const boundary = this.armedBoundaries.get(sessionId); const completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary).catch(() => {}); else this.armedBoundaries.delete(sessionId); return completion; }
+  /** Wait for a validated terminal notification; no deadline applies unless configured on the client or supplied here. @param {string} sessionId @param {number} [timeoutMs] */
+  async waitForCompletion(sessionId, timeoutMs) {
+    const boundary = this.armedBoundaries.get(sessionId);
+    let completion;
+    try { completion = await this.protocol.waitForCompletion(sessionId, timeoutMs); }
+    catch (error) {
+      if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary).catch(() => {});
+      else this.armedBoundaries.delete(sessionId);
+      throw error;
+    }
+    if (this.exactTurnRelease === true && boundary) await this.releaseExactTurn(sessionId, boundary).catch(() => {});
+    else this.armedBoundaries.delete(sessionId);
+    return completion;
+  }
   /** Observe a validated terminal notification without consuming the active turn. @param {string} sessionId @param {number} [timeoutMs] */ observeCompletion(sessionId, timeoutMs) { return this.protocol.observeCompletion(sessionId, timeoutMs); }
   /** Release the exact managed broker turn, then clear local turn state after acknowledgement. Direct clients clear synchronously. @param {string} sessionId */ releaseTurn(sessionId) { requireSessionId(sessionId); const boundary = this.armedBoundaries.get(sessionId); if (!this.workspaceBound || this.exactTurnRelease !== true || !boundary) { this.protocol.releaseTurn(sessionId); this.armedBoundaries.delete(sessionId); return Promise.resolve(); } return this.releaseExactTurn(sessionId, boundary); }
   /** @param {string} sessionId @param {{stateRevision:number,inputId:string}} boundary */

@@ -275,6 +275,20 @@ test('session server-task drain waits through permission handler barriers until 
   protocol.releaseTurn('session-1');
 });
 
+test('session server-task drain reaches a fixed point when a second request arrives mid-drain', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child); protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
+  const barriers = []; const entered = []; let handlerCount = 0;
+  protocol.setPermissionHandler(async () => { const index = handlerCount++; let release; const barrier = new Promise((resolve) => { release = resolve; }); barriers[index] = release; entered[index]?.(); await barrier; return { decision: 'deny' }; });
+  const waitForEntry = (index) => new Promise((resolve) => { entered[index] = resolve; });
+  const firstEntered = waitForEntry(0); protocol.handleLine(JSON.stringify({ id: 101, method: 'interaction/requestPermission', params: { requestId: 'r1', sessionId: 'session-1', toolCallId: 't1', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } })); await firstEntered;
+  let drained = false; const draining = protocol.drainServerTasksForSession('session-1').then(() => { drained = true; });
+  const secondEntered = waitForEntry(1); protocol.handleLine(JSON.stringify({ id: 102, method: 'interaction/requestPermission', params: { requestId: 'r2', sessionId: 'session-1', toolCallId: 't2', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } })); await secondEntered;
+  barriers[0](); await new Promise((resolve) => setImmediate(resolve)); assert.equal(drained, false, 'a request entering during drain must join the same fixed point');
+  barriers[1](); await draining; assert.equal(drained, true);
+  protocol.releaseTurn('session-1');
+});
+
 test('broker terminal observer leaves no completion queue or expiry and observes early arm completion', () => {
   const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
   const protocol = new ZCodeProtocolClient(child); const observed = [];

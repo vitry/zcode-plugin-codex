@@ -613,6 +613,7 @@ export class ZCodeBroker {
   async requestPermission(request) {
     const activeSession = this.activeSessionSockets.get(request.sessionId);
     const socket = activeSession?.socket;
+    if (typeof activeSession?.token === 'string' && activeSession.releasingToken === activeSession.token) return offeredDeny(request);
     if (!socket?.writable) return offeredDeny(request);
     const id = this.nextPermissionId++;
     if (this.permissionPending.size >= 256) return offeredDeny(request);
@@ -671,15 +672,22 @@ export class ZCodeBroker {
     const active = this.activeSessionSockets.get(params.sessionId);
     if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || active?.socket !== socket || active.baseline !== params.stateRevision || active.inputId !== params.inputId || typeof active.token !== 'string') throw turnReleaseMismatch();
     const activeToken = active.token;
-    this.settleTurnPermissions(params.sessionId, activeToken);
-    await protocol.drainServerTasksForSession(params.sessionId);
-    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
-    protocol.releaseTurn(params.sessionId);
-    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
-    this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId);
-    const key = turnReleaseKey(ownerId, params); this.releasedTurnTombstones.delete(key); this.releasedTurnTombstones.set(key, { socket });
-    while (this.releasedTurnTombstones.size > MAX_RELEASED_TURN_TOMBSTONES) this.releasedTurnTombstones.delete(this.releasedTurnTombstones.keys().next().value);
-    this.scheduleIdleShutdown();
+    active.releasingToken = activeToken;
+    let protocolReleased = false;
+    try {
+      this.settleTurnPermissions(params.sessionId, activeToken);
+      await protocol.drainServerTasksForSession(params.sessionId);
+      if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
+      protocol.releaseTurn(params.sessionId); protocolReleased = true;
+      if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
+      this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId);
+      const key = turnReleaseKey(ownerId, params); this.releasedTurnTombstones.delete(key); this.releasedTurnTombstones.set(key, { socket });
+      while (this.releasedTurnTombstones.size > MAX_RELEASED_TURN_TOMBSTONES) this.releasedTurnTombstones.delete(this.releasedTurnTombstones.keys().next().value);
+      this.scheduleIdleShutdown();
+    } catch (error) {
+      if (!protocolReleased && this.activeSessionSockets.get(params.sessionId) === active && active.releasingToken === activeToken) delete active.releasingToken;
+      throw error;
+    }
   }
 
   retirePermissionResponse(id, socket) {

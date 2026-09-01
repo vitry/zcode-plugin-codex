@@ -116,13 +116,16 @@ export class ZCodeProtocolClient {
   /** Wait for the server requests currently tracked for one session. @param {string} sessionId */
   async drainServerTasksForSession(sessionId) {
     if (!nonEmpty(sessionId)) throw protocolInputError();
-    const tasks = [];
-    for (const [controller, taskSessionId] of this.serverTaskSessions) {
-      if (taskSessionId !== sessionId) continue;
-      const task = this.serverTasksByController.get(controller);
-      if (task) tasks.push(task);
+    for (;;) {
+      const tasks = [];
+      for (const [controller, taskSessionId] of this.serverTaskSessions) {
+        if (taskSessionId !== sessionId) continue;
+        const task = this.serverTasksByController.get(controller);
+        if (task) tasks.push(task);
+      }
+      if (!tasks.length) return;
+      await Promise.allSettled(tasks);
     }
-    if (tasks.length) await Promise.allSettled(tasks);
   }
 
   /** @param {(message:any)=>void} handler */
