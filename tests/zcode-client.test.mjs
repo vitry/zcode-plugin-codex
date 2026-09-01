@@ -1522,6 +1522,24 @@ test('socket close removes only its exact turn-release tombstones', async () => 
   liveSocket.destroy(); broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
 });
 
+test('socket close during exact release drain cannot commit or create a dead tombstone', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-drain-close-')); const ownerId = 'release-drain-close-owner'; const sessionId = 'release-drain-close-session';
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'd'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  class FakeSocket extends EventEmitter { constructor() { super(); this.writable = true; this.destroyed = false; } setEncoding() {} write() { return true; } destroy() { if (this.destroyed) return; this.destroyed = true; this.writable = false; this.emit('close'); } }
+  const socket = new FakeSocket(); broker.accept(socket); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.exactTurnReleaseSockets.add(socket);
+  broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let enteredDrain; const drainEntered = new Promise((resolve) => { enteredDrain = resolve; }); const released = [];
+  broker.protocol = { drainServerTasksForSession: async () => { enteredDrain(); await drainBarrier; }, releaseTurn: (releasedSessionId) => released.push(releasedSessionId) };
+  broker.activeSessionSockets.set(sessionId, { socket, token: 'release-drain-close-token', baseline: 9, inputId: 'release-drain-close-input' }); broker.activeSessions.add(sessionId);
+  const releasing = broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'broker/releaseTurn', params: { sessionId, stateRevision: 9, inputId: 'release-drain-close-input' } }));
+  await drainEntered; socket.destroy(); releaseDrain(); await releasing;
+  assert.deepEqual(released, []);
+  assert.equal(broker.activeSessionSockets.get(sessionId)?.socket, null);
+  assert.equal(broker.activeSessions.has(sessionId), true);
+  assert.equal(broker.releasedTurnTombstones.size, 0);
+  broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
+});
+
 test('managed client retains exact release authority until broker acknowledgement', async (t) => {
   for (const failureMode of ['pre-commit rejection', 'lost acknowledgement']) await t.test(failureMode, async () => {
     const sessionId = `release-retry-${failureMode.replaceAll(' ', '-')}`; const turns = new Map(); const calls = []; let releaseAttempts = 0; let brokerRoute = true; let tombstoned = false;

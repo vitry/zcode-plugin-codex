@@ -673,9 +673,9 @@ export class ZCodeBroker {
     const activeToken = active.token;
     this.settleTurnPermissions(params.sessionId, activeToken);
     await protocol.drainServerTasksForSession(params.sessionId);
-    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId)?.token !== activeToken) throw turnReleaseMismatch();
+    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
     protocol.releaseTurn(params.sessionId);
-    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId)?.token !== activeToken) throw turnReleaseMismatch();
+    if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(admission, protocol) || this.activeSessionSockets.get(params.sessionId) !== active || active.socket !== socket || active.token !== activeToken || active.baseline !== params.stateRevision || active.inputId !== params.inputId) throw turnReleaseMismatch();
     this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId);
     const key = turnReleaseKey(ownerId, params); this.releasedTurnTombstones.delete(key); this.releasedTurnTombstones.set(key, { socket });
     while (this.releasedTurnTombstones.size > MAX_RELEASED_TURN_TOMBSTONES) this.releasedTurnTombstones.delete(this.releasedTurnTombstones.keys().next().value);
