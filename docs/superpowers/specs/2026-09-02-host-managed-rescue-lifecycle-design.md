@@ -1,6 +1,6 @@
 # Host-Managed Rescue Lifecycle and Reconciliation Design
 
-Status: proposed for written review on 2026-09-02
+Status: approved for implementation planning on 2026-09-02
 
 ## Executive decision
 
