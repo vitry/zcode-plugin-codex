@@ -223,7 +223,7 @@ test('ambient spawn child identity preserves bounded timeout abort overflow and 
   });
   /** @type {Array<[string, Record<string,string>, Record<string,number>, string]>} */
   const cases = [
-    ['timeout', { FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 100 }, 'CODEX_APP_SERVER_TIMEOUT'],
+    ['timeout', { FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 1_000 }, 'CODEX_APP_SERVER_TIMEOUT'],
     ['overflow', { FAKE_CODEX_NOTIFICATION: '1', FAKE_CODEX_OTHER_ID: '1' }, { maxOutputBytes: 100 }, 'CODEX_APP_SERVER_OUTPUT_TOO_LARGE'],
   ];
   for (const [name, env, bounds, code] of cases) await t.test(name, async () => {

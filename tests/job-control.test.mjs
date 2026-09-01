@@ -1535,7 +1535,7 @@ test('ordinary execution keeps a pending accepted completion alive without stopp
   assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'completed after pending'); assert.equal(stops, 0);
 });
 
-test('0.16.5 foreground execution treats legacy completion as admission and waits for the true turn terminal', async () => {
+test('0.16.5 foreground execution treats legacy completion as admission and waits for the true turn terminal', async (t) => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const sessionId = 'zs-0165-true-terminal'; const subscriptionId = 'subscription-0165';
   /** @type {null|((message:any)=>void)} */ let handler = null;
@@ -1545,6 +1545,9 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   /** @type {any} */ let permissionDecision; let signalPermission = () => {};
   const permissionDecided = new Promise((resolve) => { signalPermission = () => resolve(undefined); });
   /** @type {string[]} */ const cleanupCalls = [];
+  let signalReleaseStarted = () => {}; const releaseStarted = new Promise((resolve) => { signalReleaseStarted = () => resolve(undefined); });
+  let settleRelease = () => {}; const releaseSettlement = new Promise((resolve) => { settleRelease = () => resolve(undefined); });
+  t.after(() => settleRelease());
   const boundaryReached = new Promise((resolve) => { signalBoundary = () => resolve(undefined); });
   const legacy = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision: 1, reason: 'prompt_completed', patch: {}, futureNotificationField: true } };
   const client = {
@@ -1578,7 +1581,7 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
       ] };
     },
     stopSession: async () => {},
-    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); },
+    releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); signalReleaseStarted(); await releaseSettlement; },
     close: async () => { cleanupCalls.push('close'); },
   };
   const execution = executeJob({
@@ -1594,6 +1597,11 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
   emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, fromSeq: 484, toSeq: 485, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'running' })] })));
   trueTerminal = true;
   emit(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 3, fromSeq: 485, toSeq: 486, deltas: [captured0165TurnRow({ rowId: 101, turnId: 'turn-0165', state: 'completedSuccess' })] })));
+  let executionSettled = false; void execution.then(() => { executionSettled = true; }, () => { executionSettled = true; });
+  await releaseStarted; await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(executionSettled, false, 'execution must remain pending until managed turn release settles');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`], 'client close must wait for managed turn release settlement');
+  settleRelease();
   const output = await execution;
   assert.equal(output.result, 'real 0.16.5 result');
   assert.equal(output.job.status, 'succeeded');
@@ -1603,7 +1611,7 @@ test('0.16.5 foreground execution treats legacy completion as admission and wait
 test('durable success remains authoritative when local turn release fails', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const dataRoot = join(root, 'data'); const sessionId = 'zs-release-after-success';
-  const releaseError = new Error('local release failed after durable success');
+  const releaseError = new Error('PRIVATE_RELEASE_FAILURE_AFTER_DURABLE_SUCCESS');
   /** @type {string[]} */ const cleanupCalls = [];
   const client = {
     createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
@@ -1616,16 +1624,39 @@ test('durable success remains authoritative when local turn release fails', asyn
       { info: { role: 'assistant', messageId: 'assistant-release-after-success', parentMessageId: 'input-release-after-success', finish: 'stop' }, parts: [{ type: 'text', text: 'durable release result' }] },
     ] }),
     stopSession: async () => {},
-    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); throw releaseError; },
-    close: async () => { cleanupCalls.push('close'); },
+    releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); await Promise.resolve(); throw releaseError; },
+    close: async () => { cleanupCalls.push('close'); throw new Error('PRIVATE_CLOSE_FAILURE_AFTER_DURABLE_SUCCESS'); },
   };
   const output = await executeJob({ job, workspace, dataRoot, store, client, task: 'task' });
   assert.equal(output.job.status, 'succeeded');
   assert.equal(output.result, 'durable release result');
-  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
   const persisted = await store.readJob(workspace, job.id);
   assert.equal(persisted.status, 'succeeded');
-  assert.match(await readFile(persisted.logFile, 'utf8'), /Final output\ndurable release result\n/);
+  const log = await readFile(persisted.logFile, 'utf8');
+  assert.match(log, /Final output\ndurable release result\n/);
+  assert.equal((log.match(/ZCode turn release cleanup was incomplete\./g) ?? []).length, 1);
+  assert.equal((log.match(/ZCode client close cleanup was incomplete\./g) ?? []).length, 1);
+  assert.doesNotMatch(log, /PRIVATE_RELEASE_FAILURE|PRIVATE_CLOSE_FAILURE/u);
+});
+
+test('executor retries exact turn release once before close after a lost acknowledgement', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const dataRoot = join(root, 'data'); const sessionId = 'zs-release-retry-after-success'; let releaseAttempts = 0;
+  /** @type {string[]} */ const cleanupCalls = [];
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-release-retry-after-success', stateRevision: 1 }), observeCompletion: async () => {},
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-release-retry-after-success'), { info: { role: 'assistant', messageId: 'assistant-release-retry-after-success', parentMessageId: 'input-release-retry-after-success', finish: 'stop' }, parts: [{ type: 'text', text: 'retry result' }] }] }),
+    releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); releaseAttempts += 1; if (releaseAttempts === 1) throw new Error('simulated lost acknowledgement'); },
+    close: async () => { cleanupCalls.push('close'); },
+  };
+  const output = await executeJob({ job, workspace, dataRoot, store, client, task: 'task' });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'retry result');
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
+  const log = await readFile((await store.readJob(workspace, job.id)).logFile, 'utf8');
+  assert.doesNotMatch(log, /turn release cleanup was incomplete/u);
 });
 
 test('executor releases the local turn before close on failure and preserves the primary error', async () => {
@@ -1641,12 +1672,12 @@ test('executor releases the local turn before close on failure and preserves the
     observeCompletion: async () => { throw primary; },
     waitForCompletion: async () => { throw new Error('legacy waiter must not be used'); },
     stopSession: async () => {},
-    releaseTurn: (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); throw releaseError; },
+    releaseTurn: async (/** @type {string} */ releasedSessionId) => { cleanupCalls.push(`release:${releasedSessionId}`); await Promise.resolve(); throw releaseError; },
     close: async () => { cleanupCalls.push('close'); },
   };
   const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
   assert.equal(caught, primary);
-  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, 'close']);
+  assert.deepEqual(cleanupCalls, [`release:${sessionId}`, `release:${sessionId}`, 'close']);
 });
 
 test('execution does not wait indefinitely for a late initial baseline and uses coherent snapshot fallback', { timeout: 10_000 }, async () => {

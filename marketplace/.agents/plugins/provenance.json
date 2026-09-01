@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "ee1fa5c9778cf6dd02e094cf2bfe7f2835c02dab",
-  "sourceSha": "ee1fa5c9778cf6dd02e094cf2bfe7f2835c02dab",
+  "sourceRef": "9b1b65af0703dfeb885759ec174049a2f3d1f343",
+  "sourceSha": "9b1b65af0703dfeb885759ec174049a2f3d1f343",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "40d1a65be6976f5f070b2784a35635f5aba4597c4846ec798b86d3f30dd77af7",
+    "sha256": "04443494d3f15c34e2d2f92acebea3a133d97cd9cab41f9034140e33e85d3020",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -658,8 +658,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/review.mjs",
-        "size": 43572,
-        "sha256": "0d945d223ce618ee28e2e81831ce855df1b18cc975f45dcc5538b8cc6e934d11"
+        "size": 44075,
+        "sha256": "8575a666fadd8022373e6c54ea4aabe7e3af708d1d64d002d9da85dc454378c1"
       },
       {
         "path": "plugins/zcode/scripts/lib/session-progress.mjs",
@@ -703,8 +703,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-client.mjs",
-        "size": 52495,
-        "sha256": "0d4c854d4045260cc86d14d30e647db22efb08bd4f9ad30a2f795c3b5e37f901"
+        "size": 57159,
+        "sha256": "0f6542ca1d80f44745b1f1ff7d3f065db24b0e9f14060a99a174728b2cb7e604"
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-discovery.mjs",
@@ -713,8 +713,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-protocol.mjs",
-        "size": 42018,
-        "sha256": "68e98ef8be8b670648e3add7966fb1619b3836be0ce6b2a29e678899f68f9426"
+        "size": 43295,
+        "sha256": "d01d37715518b956ed6ff6b2d0f1fafadc51c9c4998ce3617f14ef64230ba409"
       },
       {
         "path": "plugins/zcode/scripts/lib/zcode-runtime-config.mjs",
@@ -728,8 +728,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-broker.mjs",
-        "size": 103199,
-        "sha256": "3861c818720c569ac483c1b6488d0165e039f392d1ab9a5186e2175a71008a08"
+        "size": 107670,
+        "sha256": "c85c04fb48bacae4ca41d937ec9de0905d25fdb7f99bd76e4c122a876bd673ba"
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",

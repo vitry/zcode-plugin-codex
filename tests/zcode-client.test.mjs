@@ -1,11 +1,12 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import test from 'node:test';
 
@@ -13,7 +14,7 @@ import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCode
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { isCorrelatedZCodeResponseError } from '../scripts/lib/zcode-protocol.mjs';
+import { connectZCodeBroker, isCorrelatedZCodeResponseError } from '../scripts/lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
 import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts.mjs';
@@ -21,6 +22,16 @@ import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
 const MACOS_UNIX_SOCKET_PATH_MAX_BYTES = 104;
+async function createPreExactReleaseClient(options) {
+  const workspace = await realpath(resolve(options.workspace));
+  const protocol = await connectZCodeBroker(options.brokerEndpoint, {
+    cwd: workspace, brokerToken: options.brokerToken, ownerId: options.ownerId,
+    requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs,
+  });
+  // A pre-capability client authenticates to the broker but never advertises
+  // exactTurnRelease through broker/health.
+  return new ZCodeClient(protocol, workspace, true, false);
+}
 
 test('CI timeout multiplier is bounded and defaults to one', () => {
   assert.equal(testTimeoutMultiplier({}), 1);
@@ -1447,12 +1458,299 @@ test('typed client uses a local broker whose single CLI owner handles permission
   }
 });
 
+test('captured 0.16.5 broker turn keeps its exact route for permission until explicit release', { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-captured-permission-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const record = join(directory, 'calls.jsonl'); const legacyGate = join(directory, 'legacy-gate.json'); const terminalGate = join(directory, 'terminal-gate.json'); await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 0 })); await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 0 }));
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165', FAKE_ZCODE_CAPTURED_0165_PERMISSION: '1', FAKE_ZCODE_CAPTURED_0165_LEGACY_GATE: legacyGate, FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: terminalGate, FAKE_ZCODE_RECORD: record } }).start();
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'captured-permission-owner', completionTimeoutMs: 2_000 }); let sessionId; let released = false;
+  try {
+    sessionId = (await client.createSession({ workspace: directory })).session.sessionId;
+    const terminalFrames = []; client.subscribe((message) => { if (message.method === 'v4/conversation/frame' && message.params?.frame?.payload?.deltas?.some((delta) => delta.row?.state === 'completedSuccess')) terminalFrames.push(message); });
+    await client.subscribeConversation(sessionId, { connectionId: 'captured-permission-connection', clientMode: 'desktop-continuous' });
+    let handled = 0; client.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+    const sending = client.send(sessionId, 'captured permission after false legacy completion');
+    for (let index = 0; index < 200 && !Number.isSafeInteger(broker.activeSessionSockets.get(sessionId)?.baseline); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    const exactRoute = broker.activeSessionSockets.get(sessionId); assert.ok(exactRoute); await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 1 })); await sending;
+    const legacy = await client.observeCompletion(sessionId); assert.equal(legacy.reason, 'prompt_completed');
+    const calls = await waitForRecordedCalls(record, (entries) => entries.some((entry) => entry.id === 9000 && (entry.result || entry.error)), 1_000);
+    await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 1 }));
+    for (let index = 0; index < 200 && terminalFrames.length === 0; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    const response = calls.find((entry) => entry.id === 9000 && (entry.result || entry.error));
+    assert.deepEqual({ routeRetained: broker.activeSessionSockets.get(sessionId) === exactRoute, handled, result: response?.result, error: response?.error, authoritativeTerminalObserved: terminalFrames.length === 1 }, { routeRetained: true, handled: 1, result: { decision: 'allow' }, error: undefined, authoritativeTerminalObserved: true });
+    await client.releaseTurn(sessionId); released = true;
+    assert.equal(client.turnState(sessionId), null);
+    assert.equal(broker.activeSessionSockets.has(sessionId), false);
+    assert.equal(broker.activeSessions.has(sessionId), false);
+    assert.equal(broker.protocol.turnState(sessionId), null);
+  } finally {
+    await writeFile(legacyGate, JSON.stringify({ version: 1, releaseThrough: 1 })).catch(() => {});
+    await writeFile(terminalGate, JSON.stringify({ version: 1, releaseThrough: 1 })).catch(() => {});
+    if (sessionId && !released) await Promise.resolve(client.releaseTurn(sessionId)).catch(() => {});
+    await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('exact turn release rejects foreign and stale tuples while duplicate acknowledgement is idempotent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-exact-release-')); const ownerId = 'exact-release-owner'; const sessionId = 'exact-release-session'; const writes = []; const foreignWrites = [];
+  const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const foreign = { writable: true, destroyed: false, zcodeWriter: { write: (line) => foreignWrites.push(JSON.parse(line)) }, destroy() {} };
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'a'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  for (const [peer, peerOwner] of [[socket, ownerId], [foreign, 'exact-release-foreign-owner']]) { broker.authenticated.add(peer); broker.socketOwnerIds.set(peer, peerOwner); }
+  broker.exactTurnReleaseSockets.add(socket); broker.exactTurnReleaseSockets.add(foreign);
+  broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  const released = []; let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let denyRecorded = false;
+  const protocol = { drainServerTasksForSession: async () => { await drainBarrier; denyRecorded = true; }, releaseTurn: (releasedSessionId) => { assert.equal(denyRecorded, true, 'permission deny must be written before releasing the protocol turn'); released.push(releasedSessionId); } }; broker.protocol = protocol;
+  const old = { socket, token: 'exact-release-old-token', baseline: 7, inputId: 'exact-release-old-input' }; broker.activeSessionSockets.set(sessionId, old); broker.activeSessions.add(sessionId);
+  const request = (peer, id, params) => broker.handleLocal(peer, JSON.stringify({ id, method: 'broker/releaseTurn', params })); const tuple = { sessionId, stateRevision: 7, inputId: 'exact-release-old-input' };
+  try {
+    await request(foreign, 1, tuple); assert.equal(foreignWrites.at(-1)?.error?.code, -32041); assert.equal(broker.activeSessionSockets.get(sessionId), old);
+    await request(socket, 2, { ...tuple, inputId: 'wrong-input' }); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), old);
+    const releasing = request(socket, 3, tuple); await new Promise((resolvePromise) => setImmediate(resolvePromise)); assert.deepEqual(released, []); assert.equal(broker.activeSessionSockets.get(sessionId), old); releaseDrain(); await releasing; assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]); assert.equal(broker.activeSessionSockets.has(sessionId), false);
+    await request(socket, 4, tuple); assert.deepEqual(writes.at(-1)?.result, {}); assert.deepEqual(released, [sessionId]);
+    const newer = { socket, token: 'exact-release-new-token', baseline: 8, inputId: 'exact-release-new-input' }; broker.activeSessionSockets.set(sessionId, newer); broker.activeSessions.add(sessionId);
+    await request(socket, 5, tuple); assert.equal(writes.at(-1)?.error?.data?.pluginError?.code, 'ZCODE_TURN_RELEASE_MISMATCH'); assert.equal(broker.activeSessionSockets.get(sessionId), newer); assert.equal(broker.activeSessions.has(sessionId), true); assert.deepEqual(released, [sessionId]);
+  } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('socket close removes only its exact turn-release tombstones', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-tombstone-close-'));
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'b'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  class FakeSocket extends EventEmitter { constructor() { super(); this.writable = true; this.destroyed = false; } setEncoding() {} write() { return true; } destroy() { this.destroyed = true; this.emit('close'); } }
+  const closedSocket = new FakeSocket(); const liveSocket = new FakeSocket(); broker.accept(closedSocket); broker.accept(liveSocket);
+  broker.releasedTurnTombstones.set('closed-a', { socket: closedSocket }); broker.releasedTurnTombstones.set('live', { socket: liveSocket }); broker.releasedTurnTombstones.set('closed-b', { socket: closedSocket });
+  closedSocket.destroy(); await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.deepEqual([...broker.releasedTurnTombstones.keys()], ['live']);
+  assert.equal(broker.releasedTurnTombstones.get('live')?.socket, liveSocket);
+  liveSocket.destroy(); broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
+});
+
+test('socket close during exact release drain cannot commit or create a dead tombstone', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-drain-close-')); const ownerId = 'release-drain-close-owner'; const sessionId = 'release-drain-close-session';
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'd'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  class FakeSocket extends EventEmitter { constructor() { super(); this.writable = true; this.destroyed = false; } setEncoding() {} write() { return true; } destroy() { if (this.destroyed) return; this.destroyed = true; this.writable = false; this.emit('close'); } }
+  const socket = new FakeSocket(); broker.accept(socket); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.exactTurnReleaseSockets.add(socket);
+  broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let enteredDrain; const drainEntered = new Promise((resolve) => { enteredDrain = resolve; }); const released = [];
+  broker.protocol = { drainServerTasksForSession: async () => { enteredDrain(); await drainBarrier; }, releaseTurn: (releasedSessionId) => released.push(releasedSessionId) };
+  broker.activeSessionSockets.set(sessionId, { socket, token: 'release-drain-close-token', baseline: 9, inputId: 'release-drain-close-input' }); broker.activeSessions.add(sessionId);
+  const releasing = broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'broker/releaseTurn', params: { sessionId, stateRevision: 9, inputId: 'release-drain-close-input' } }));
+  await drainEntered; socket.destroy(); releaseDrain(); await releasing;
+  assert.deepEqual(released, []);
+  assert.equal(broker.activeSessionSockets.get(sessionId)?.socket, null);
+  assert.equal(broker.activeSessions.has(sessionId), true);
+  assert.equal(broker.releasedTurnTombstones.size, 0);
+  broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
+});
+
+test('exact release fence immediately denies a permission arriving during drain', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-permission-fence-')); const ownerId = 'release-permission-fence-owner'; const sessionId = 'release-permission-fence-session'; const writes = [];
+  const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'e'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.exactTurnReleaseSockets.add(socket); broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.reloadOwnership = async () => {};
+  let releaseDrain; const drainBarrier = new Promise((resolve) => { releaseDrain = resolve; }); let enteredDrain; const drainEntered = new Promise((resolve) => { enteredDrain = resolve; });
+  broker.protocol = { drainServerTasksForSession: async () => { enteredDrain(); await drainBarrier; }, releaseTurn: () => {} };
+  const active = { socket, token: 'release-permission-fence-token', baseline: 10, inputId: 'release-permission-fence-input' }; broker.activeSessionSockets.set(sessionId, active); broker.activeSessions.add(sessionId);
+  const releasing = broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'broker/releaseTurn', params: { sessionId, stateRevision: 10, inputId: active.inputId } })); await drainEntered;
+  const lateRequest = { requestId: 'late-release-request', sessionId, options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }] };
+  const latePermission = broker.requestPermission(lateRequest); await Promise.resolve();
+  assert.equal(broker.permissionPending.size, 0);
+  assert.deepEqual(await latePermission, { decision: 'deny' });
+  assert.equal(writes.some((frame) => frame.method === 'interaction/requestPermission'), false);
+  releaseDrain(); await releasing; broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true });
+});
+
+test('managed client retains exact release authority until broker acknowledgement', async (t) => {
+  for (const failureMode of ['pre-commit rejection', 'lost acknowledgement']) await t.test(failureMode, async () => {
+    const sessionId = `release-retry-${failureMode.replaceAll(' ', '-')}`; const turns = new Map(); const calls = []; let releaseAttempts = 0; let brokerRoute = true; let tombstoned = false;
+    const protocol = {
+      acceptBrokerControl: true,
+      request: async (method, params) => {
+        calls.push({ method, params });
+        if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+        if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 11 };
+        if (method !== 'broker/releaseTurn') throw new Error(`unexpected ${method}`);
+        releaseAttempts += 1;
+        if (releaseAttempts === 1) {
+          if (failureMode === 'lost acknowledgement') { brokerRoute = false; tombstoned = true; }
+          throw new Error(`simulated ${failureMode}`);
+        }
+        if (brokerRoute) brokerRoute = false;
+        else if (!tombstoned) throw new Error('exact broker route was lost without a tombstone');
+        return {};
+      },
+      beginTurn: (id) => { if (turns.has(id)) throw new Error('turn already active'); turns.set(id, 'sending'); },
+      armTurn: (id) => turns.set(id, 'armed'),
+      abortTurn: (id) => turns.delete(id),
+      releaseTurn: (id) => turns.delete(id),
+      turnState: (id) => turns.get(id) ?? null,
+    };
+    const client = new ZCodeClient(protocol, process.cwd(), true);
+    const sent = await client.send(sessionId, 'first turn');
+    await assert.rejects(client.releaseTurn(sessionId), new RegExp(failureMode, 'u'));
+    assert.equal(client.turnState(sessionId), 'armed');
+    if (failureMode === 'pre-commit rejection') assert.equal(brokerRoute, true);
+    await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+    assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
+    await client.releaseTurn(sessionId);
+    assert.equal(client.turnState(sessionId), null);
+    assert.equal(brokerRoute, false);
+    const releases = calls.filter((call) => call.method === 'broker/releaseTurn');
+    assert.deepEqual(releases.map((call) => call.params), Array(2).fill({ sessionId, inputId: sent.inputId, stateRevision: 11 }));
+  });
+});
+
+test('managed completion remains observable when exact release fails and fences the next send until retry', async () => {
+  const sessionId = 'completion-release-retry-session'; const turns = new Map(); const calls = []; let releaseAttempts = 0;
+  const completion = { reason: 'prompt_completed', stateRevision: 12 };
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: releaseAttempts === 2 ? 13 : 12 };
+      if (method === 'broker/releaseTurn') { releaseAttempts += 1; if (releaseAttempts === 1) throw new Error('simulated lost release acknowledgement'); return {}; }
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); return completion; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true);
+  const first = await client.send(sessionId, 'first turn');
+  assert.equal(await client.waitForCompletion(sessionId), completion, 'validated completion must not be replaced by cleanup failure');
+  assert.equal(client.turnState(sessionId), null, 'the destructive protocol waiter already consumed local turn state');
+  await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
+  await client.releaseTurn(sessionId);
+  assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), Array(2).fill({ sessionId, inputId: first.inputId, stateRevision: 12 }));
+  await client.send(sessionId, 'after exact retry');
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
+});
+
+test('managed completion timeout preserves its error while releasing the exact broker turn', async () => {
+  const sessionId = 'completion-timeout-release-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); let sendRevision = 21;
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: sendRevision++ };
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true);
+  const first = await client.send(sessionId, 'timed turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.filter((call) => call.method === 'broker/releaseTurn').map((call) => call.params), [{ sessionId, inputId: first.inputId, stateRevision: 21 }]);
+  assert.equal(client.turnState(sessionId), null);
+  await client.send(sessionId, 'after timeout cleanup');
+  assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
+});
+
+test('managed completion timeout is not delayed by a stuck exact release request', async () => {
+  const sessionId = 'completion-timeout-stuck-release-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out');
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 22 };
+      if (method === 'broker/releaseTurn') return new Promise(() => {});
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => { if (turns.has(id)) throw new PluginError('ZCODE_TURN_ACTIVE', 'already active'); turns.set(id, 'sending'); },
+    armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn');
+  const observed = await Promise.race([client.waitForCompletion(sessionId).catch((error) => error), new Promise((resolve) => setTimeout(() => resolve('release-delayed-timeout'), 25))]);
+  assert.equal(observed, timeoutError);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 1);
+  await assert.rejects(client.send(sessionId, 'must remain fenced'), { code: 'ZCODE_TURN_ACTIVE' });
+});
+
+test('managed completion timeout lets an immediate stop supersede deferred exact release', async () => {
+  const sessionId = 'completion-timeout-stop-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); let acknowledgeStop; const stopAck = new Promise((resolve) => { acknowledgeStop = resolve; });
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 23 };
+      if (method === 'session/stop') return stopAck;
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), cancelTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  const stopping = client.stopSession(sessionId); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.filter((call) => ['session/stop', 'broker/releaseTurn'].includes(call.method)).map((call) => call.method), ['session/stop']);
+  acknowledgeStop({}); await stopping; await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.filter((call) => ['session/stop', 'broker/releaseTurn'].includes(call.method)).map((call) => call.method), ['session/stop']);
+});
+
+test('managed completion timeout resumes deferred exact release when immediate stop fails', async () => {
+  const sessionId = 'completion-timeout-stop-failure-session'; const turns = new Map(); const calls = []; const timeoutError = new PluginError('ZCODE_COMPLETION_TIMEOUT', 'completion timed out'); const stopError = new Error('stop failed'); let rejectStop; const stopAck = new Promise((resolve, reject) => { rejectStop = reject; });
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 24 };
+      if (method === 'session/stop') return stopAck;
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), cancelTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw timeoutError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'timed turn'); assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), timeoutError);
+  const stopping = client.stopSession(sessionId); await new Promise((resolve) => setImmediate(resolve)); assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 0);
+  rejectStop(stopError); assert.equal(await stopping.catch((error) => error), stopError); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 1);
+});
+
+test('managed broker stop rejection destructively clears its exact boundary without release', async () => {
+  const sessionId = 'completion-broker-stopped-session'; const turns = new Map(); const calls = []; const stoppedError = new PluginError('ZCODE_SESSION_STOPPED', 'session stopped'); let revision = 25;
+  const protocol = {
+    acceptBrokerControl: true,
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+      if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: revision++ };
+      if (method === 'broker/releaseTurn') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+    beginTurn: (id) => turns.set(id, 'sending'), armTurn: (id) => turns.set(id, 'armed'), abortTurn: (id) => turns.delete(id), releaseTurn: (id) => turns.delete(id),
+    waitForCompletion: async (id) => { turns.delete(id); throw stoppedError; }, turnState: (id) => turns.get(id) ?? null,
+  };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send(sessionId, 'stopped turn');
+  assert.equal(await client.waitForCompletion(sessionId).catch((error) => error), stoppedError); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.method === 'broker/releaseTurn').length, 0);
+  await client.send(sessionId, 'after broker stop'); assert.equal(calls.filter((call) => call.method === 'session/send').length, 2);
+});
+
+test('managed client falls back to local release when broker health lacks exact release capability', async () => {
+  const calls = []; const turns = new Map(); const protocol = { acceptBrokerControl: true, request: async (method, params) => { calls.push({ method, params }); if (method === 'broker/health') return { ok: true, capabilities: {} }; if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 3 }; throw new Error(method); }, beginTurn: (sessionId) => turns.set(sessionId, 'sending'), armTurn: (sessionId) => turns.set(sessionId, 'armed'), abortTurn: (sessionId) => turns.delete(sessionId), releaseTurn: (sessionId) => turns.delete(sessionId), turnState: (sessionId) => turns.get(sessionId) ?? null };
+  const client = new ZCodeClient(protocol, process.cwd(), true); await client.send('legacy-broker-session', 'hello'); await client.releaseTurn('legacy-broker-session');
+  assert.deepEqual(calls.map((call) => call.method), ['broker/health', 'session/send']); assert.deepEqual(calls[0].params, { clientCapabilities: { exactTurnRelease: true } }); assert.equal(turns.size, 0);
+});
+
 test('natural terminal denies its exact pending permission and tombstones a late local approval', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-permission-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const record = join(directory, 'calls.jsonl'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'terminal-permission-owner', completionTimeoutMs: 1_000 }); let approve;
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-permission-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const record = join(directory, 'calls.jsonl'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'terminal-permission-owner', completionTimeoutMs: 1_000 }); let approve; let clientClosed = false;
   try {
     const { session: { sessionId } } = await client.createSession({ workspace: directory }); let permissionEntered; const entered = new Promise((resolvePromise) => { permissionEntered = resolvePromise; }); const approval = new Promise((resolvePromise) => { approve = () => resolvePromise({ decision: 'allow' }); }); client.setPermissionHandler(async () => { permissionEntered(); return approval; }); await client.send(sessionId, 'complete while permission is pending'); await entered; const completion = await client.waitForCompletion(sessionId); assert.equal(completion.reason, 'prompt_completed'); assert.equal(broker.activeSessionSockets.has(sessionId), false); assert.equal(broker.activeSessions.has(sessionId), false); assert.equal(broker.permissionPending.size, 0); assert.equal(broker.retiredPermissionResponses.size, 1);
-    approve(); await waitForRecordedCalls(record, (calls) => calls.some((call) => call.id === 9000 && call.result)); const permissionResponses = (await readRecordedCalls(record)).filter((call) => call.id === 9000 && call.result); assert.deepEqual(permissionResponses.map((call) => call.result), [{ decision: 'deny' }]); assert.deepEqual(await client.brokerCapabilities(), { releaseOwnerExclusions: true }); assert.equal(broker.retiredPermissionResponses.size, 0);
-  } finally { approve?.(); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+    approve(); await waitForRecordedCalls(record, (calls) => calls.some((call) => call.id === 9000 && call.result)); const permissionResponses = (await readRecordedCalls(record)).filter((call) => call.id === 9000 && call.result); assert.deepEqual(permissionResponses.map((call) => call.result), [{ decision: 'deny' }]); assert.equal(broker.retiredPermissionResponses.size, 1);
+    client.setPermissionHandler(() => ({ decision: 'allow' })); await client.send(sessionId, 'a later turn is not affected by the tombstone'); assert.equal((await client.waitForCompletion(sessionId)).reason, 'prompt_completed'); await waitForRecordedCalls(record, (calls) => calls.some((call) => call.id === 9001 && call.result?.decision === 'allow')); assert.equal(broker.retiredPermissionResponses.size, 1);
+    await client.close(); clientClosed = true; for (let index = 0; index < 100 && broker.retiredPermissionResponses.size; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.retiredPermissionResponses.size, 0);
+  } finally { approve?.(); if (!clientClosed) await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('failed send denies its exact pending permission and tombstones a late local approval', async () => {
@@ -1737,7 +2035,7 @@ test('owner release cleans sixteen subscriptions concurrently within one shared 
   for (let index = 0; index < 16; index += 1) { const sessionId = `budget-session-${index}`; sessions[sessionId] = ownerId; broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.conversationSubscriptions.set(`budget-${index}`, { socket, topic: `conversation/${sessionId}`, subscriptionId: `budget-sub-${index}`, connectionId: `budget-connection-${index}`, sessionId, ownerId }); }
   await writeFile(`${endpoint}.owners.json`, JSON.stringify({ version: 1, sessions })); broker.ownershipStoreEstablished = true; let unsubscribeCalls = 0; let releaseFirstBatch; let releaseSecondBatch; let markFirstBatchEntered; let markSecondBatchEntered; const firstBatchEntered = new Promise((resolvePromise) => { markFirstBatchEntered = resolvePromise; }); const secondBatchEntered = new Promise((resolvePromise) => { markSecondBatchEntered = resolvePromise; }); const firstBatchGate = new Promise((resolvePromise) => { releaseFirstBatch = resolvePromise; }); const secondBatchGate = new Promise((resolvePromise) => { releaseSecondBatch = resolvePromise; });
   broker.protocol = { request: async (method) => { if (method === 'session/stop') return {}; unsubscribeCalls += 1; const batchGate = unsubscribeCalls <= 8 ? firstBatchGate : secondBatchGate; if (unsubscribeCalls === 8) markFirstBatchEntered(); if (unsubscribeCalls === 16) markSecondBatchEntered(); await batchGate; throw new Error('slow unsubscribe failure'); }, cancelTurn() {} };
-  const releasing = broker.releaseOwner(socket, ownerId, []); await firstBatchEntered; assert.equal(unsubscribeCalls, 8, 'the first bounded cleanup batch must enter concurrently'); releaseFirstBatch(); await secondBatchEntered; assert.equal(unsubscribeCalls, 16, 'the second bounded cleanup batch must enter after the first settles'); releaseSecondBatch(); const released = await releasing;
+  const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(600)); await firstBatchEntered; assert.equal(unsubscribeCalls, 8, 'the first bounded cleanup batch must enter concurrently'); releaseFirstBatch(); await secondBatchEntered; assert.equal(unsubscribeCalls, 16, 'the second bounded cleanup batch must enter after the first settles'); releaseSecondBatch(); const released = await releasing;
   assert.equal(released.releasedSessionIds.length, 16); assert.equal(released.failedSessionIds.length, 0); assert.equal(unsubscribeCalls, 16); assert.equal(broker.orphanedConversationSubscriptions.size, 16);
   await rm(directory, { recursive: true, force: true });
 });
@@ -1764,7 +2062,7 @@ test('an idle owner release keeps its valid stop acknowledgement through malform
     });
 
     let releaseSettled = false;
-    releasing = broker.releaseOwner(socket, ownerId, []);
+    releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + scaleTestTimeout(600));
     void releasing.then(() => { releaseSettled = true; }, () => { releaseSettled = true; });
     await withTestDeadlineKeepalive(() => closeEntered, scaleTestTimeout(2_000));
     assert.equal(releaseSettled, false); assert.equal(closeSettled, false);
@@ -2413,35 +2711,35 @@ test('a pending stop fences new sends until its exact acknowledgement', { timeou
 });
 
 test('a natural terminal remains waitable when direct-stop cleanup receives additive fields', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-wins-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const ownerId = 'terminal-wins-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-wins-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const ownerId = 'terminal-wins-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1' } }).start(); const client = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
   try {
     const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-wins-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal wins direct stop'); const stopping = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); for (let index = 0; index < 200 && !client.protocol.completed.get(sessionId)?.length; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(client.protocol.completed.get(sessionId)?.length, 1); await writeFile(stopGate, 'release'); assert.deepEqual(await stopping, {}); const completion = await client.waitForCompletion(sessionId); assert.equal(completion.reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal(broker.conversationSubscriptions.size, 0);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a natural terminal remains waitable when owner-release cleanup receives additive fields', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-wins-release-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '9'.repeat(64); const ownerId = 'terminal-wins-release-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-wins-release-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '9'.repeat(64); const ownerId = 'terminal-wins-release-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
   try {
     const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.subscribeConversation(sessionId, { connectionId: 'terminal-wins-release-connection', clientMode: 'desktop-continuous' }); await worker.send(sessionId, 'terminal wins owner release'); const releasing = controller.releaseOwner([]); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); for (let index = 0; index < 200 && !worker.protocol.completed.get(sessionId)?.length; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(worker.protocol.completed.get(sessionId)?.length, 1); await writeFile(stopGate, 'release'); const released = await releasing; assert.deepEqual(released.releasedSessionIds, [sessionId]); const completion = await worker.waitForCompletion(sessionId); assert.equal(completion.reason, 'prompt_completed'); assert.equal(broker.sessionOwners.has(sessionId), false); assert.ok(broker.protocol); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 1);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a direct stop retry consumes its exact natural terminal winner with additive cleanup fields', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-retry-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'a'.repeat(64); const ownerId = 'terminal-retry-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_STOP_ERROR_ONCE: '1', FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-retry-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'a'.repeat(64); const ownerId = 'terminal-retry-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_STOP_ERROR_ONCE: '1', FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
   try {
     const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-retry-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal survives direct retry'); const firstStop = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); await writeFile(stopGate, 'release'); await assert.rejects(firstStop, { code: 'ZCODE_REQUEST_FAILED' }); assert.equal(broker.terminalWinnerEvidence.size, 1); assert.deepEqual(await client.stopSession(sessionId), {}); assert.equal(broker.terminalWinnerEvidence.size, 0); assert.equal((await client.waitForCompletion(sessionId)).reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 2);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('an owner release retry consumes its exact natural terminal winner with additive cleanup fields', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-retry-release-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'b'.repeat(64); const ownerId = 'terminal-retry-release-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_STOP_ERROR_ONCE: '1', FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-retry-release-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'b'.repeat(64); const ownerId = 'terminal-retry-release-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_STOP_ERROR_ONCE: '1', FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
   try {
     const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.subscribeConversation(sessionId, { connectionId: 'terminal-retry-release-connection', clientMode: 'desktop-continuous' }); await worker.send(sessionId, 'terminal survives release retry'); const firstRelease = controller.releaseOwner([]); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); await writeFile(stopGate, 'release'); const failed = await firstRelease; assert.deepEqual(failed.releasedSessionIds, []); assert.deepEqual(failed.failedSessionIds, [sessionId]); assert.equal(broker.terminalWinnerEvidence.size, 1); const released = await controller.releaseOwner([]); assert.deepEqual(released.releasedSessionIds, [sessionId]); assert.deepEqual(released.failedSessionIds, []); assert.equal(broker.terminalWinnerEvidence.size, 0); assert.equal((await worker.waitForCompletion(sessionId)).reason, 'prompt_completed'); assert.equal(broker.sessionOwners.has(sessionId), false); assert.ok(broker.protocol); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 2);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('an owner release retains natural terminal evidence until durable ownership commits', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-durable-retry-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const ownerId = 'terminal-durable-retry-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED_AFTER: '2', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-durable-retry-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const ownerId = 'terminal-durable-retry-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED_AFTER: '2', FAKE_ZCODE_RECORD: record } }).start(); const worker = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
   try {
     const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.subscribeConversation(sessionId, { connectionId: 'terminal-durable-retry-first', clientMode: 'desktop-continuous' }); await worker.send(sessionId, 'terminal survives durable retry'); const writeOwnerStore = broker.writeOwnerStore.bind(broker); const durableError = new Error('durable release failed before apply'); let failWrite = true; broker.writeOwnerStore = async (...args) => { if (failWrite) { failWrite = false; throw durableError; } return writeOwnerStore(...args); }; const releaseSocket = { destroyed: false }; const releaseDeadline = () => Date.now() + scaleTestTimeout(600); const firstRelease = broker.releaseOwner(releaseSocket, ownerId, [], releaseDeadline()); const deadline = Date.now() + scaleTestTimeout(1_000); while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(stopGate, 'release'); await assert.rejects(firstRelease); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(broker.terminalWinnerEvidence.size, 1); for (let index = 0; index < 256; index += 1) broker.recordTerminalWinner(`durable-eviction-${index}`, broker.protocol, { token: `durable-eviction-token-${index}`, baseline: index, inputId: `durable-eviction-input-${index}` }); assert.equal(broker.terminalWinnerEvidence.has(sessionId), false); await worker.subscribeConversation(sessionId, { connectionId: 'terminal-durable-retry-second', clientMode: 'desktop-continuous' }); const released = await broker.releaseOwner(releaseSocket, ownerId, [], releaseDeadline()); assert.deepEqual(released.releasedSessionIds, [sessionId]); assert.deepEqual(released.failedSessionIds, []); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(broker.terminalWinnerEvidence.size, 256); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 2);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
