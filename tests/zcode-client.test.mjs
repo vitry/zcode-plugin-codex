@@ -1505,6 +1505,46 @@ test('exact turn release rejects foreign and stale tuples while duplicate acknow
   } finally { broker.cancelIdleShutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('managed client retains exact release authority until broker acknowledgement', async (t) => {
+  for (const failureMode of ['pre-commit rejection', 'lost acknowledgement']) await t.test(failureMode, async () => {
+    const sessionId = `release-retry-${failureMode.replaceAll(' ', '-')}`; const turns = new Map(); const calls = []; let releaseAttempts = 0; let brokerRoute = true; let tombstoned = false;
+    const protocol = {
+      acceptBrokerControl: true,
+      request: async (method, params) => {
+        calls.push({ method, params });
+        if (method === 'broker/health') return { ok: true, capabilities: { exactTurnRelease: true } };
+        if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 11 };
+        if (method !== 'broker/releaseTurn') throw new Error(`unexpected ${method}`);
+        releaseAttempts += 1;
+        if (releaseAttempts === 1) {
+          if (failureMode === 'lost acknowledgement') { brokerRoute = false; tombstoned = true; }
+          throw new Error(`simulated ${failureMode}`);
+        }
+        if (brokerRoute) brokerRoute = false;
+        else if (!tombstoned) throw new Error('exact broker route was lost without a tombstone');
+        return {};
+      },
+      beginTurn: (id) => { if (turns.has(id)) throw new Error('turn already active'); turns.set(id, 'sending'); },
+      armTurn: (id) => turns.set(id, 'armed'),
+      abortTurn: (id) => turns.delete(id),
+      releaseTurn: (id) => turns.delete(id),
+      turnState: (id) => turns.get(id) ?? null,
+    };
+    const client = new ZCodeClient(protocol, process.cwd(), true);
+    const sent = await client.send(sessionId, 'first turn');
+    await assert.rejects(client.releaseTurn(sessionId), new RegExp(failureMode, 'u'));
+    assert.equal(client.turnState(sessionId), 'armed');
+    if (failureMode === 'pre-commit rejection') assert.equal(brokerRoute, true);
+    await assert.rejects(client.send(sessionId, 'must remain fenced'), /turn already active/u);
+    assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
+    await client.releaseTurn(sessionId);
+    assert.equal(client.turnState(sessionId), null);
+    assert.equal(brokerRoute, false);
+    const releases = calls.filter((call) => call.method === 'broker/releaseTurn');
+    assert.deepEqual(releases.map((call) => call.params), Array(2).fill({ sessionId, inputId: sent.inputId, stateRevision: 11 }));
+  });
+});
+
 test('managed client falls back to local release when broker health lacks exact release capability', async () => {
   const calls = []; const turns = new Map(); const protocol = { acceptBrokerControl: true, request: async (method, params) => { calls.push({ method, params }); if (method === 'broker/health') return { ok: true, capabilities: {} }; if (method === 'session/send') return { accepted: true, sessionId: params.sessionId, stateRevision: 3 }; throw new Error(method); }, beginTurn: (sessionId) => turns.set(sessionId, 'sending'), armTurn: (sessionId) => turns.set(sessionId, 'armed'), abortTurn: (sessionId) => turns.delete(sessionId), releaseTurn: (sessionId) => turns.delete(sessionId), turnState: (sessionId) => turns.get(sessionId) ?? null };
   const client = new ZCodeClient(protocol, process.cwd(), true); await client.send('legacy-broker-session', 'hello'); await client.releaseTurn('legacy-broker-session');
