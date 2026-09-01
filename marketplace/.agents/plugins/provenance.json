@@ -9,7 +9,7 @@
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "04443494d3f15c34e2d2f92acebea3a133d97cd9cab41f9034140e33e85d3020",
+    "sha256": "2b631d908d8eac7dd373f0ec416210e7fa2cc87b354275dd10c2d74b456cf88c",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -58,8 +58,8 @@
       },
       {
         "path": "plugins/zcode/docs/adr/0013-bind-rescue-child-to-zcode-session.md",
-        "size": 8915,
-        "sha256": "394f9fad667fef14d38a9af60763db823e94eddf7f7f2d890262a2a5e8b2e6d6"
+        "size": 9254,
+        "sha256": "62628c17e1d842adfec486a4009a57fc056ff1a14e7c47965fe3f32381bcc205"
       },
       {
         "path": "plugins/zcode/docs/manual-uninstall.md",
