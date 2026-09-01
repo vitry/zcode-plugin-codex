@@ -5105,6 +5105,7 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
   await atomicWriteJson(terminalGate, { version: 1, releaseThrough: 0 });
   const env = {
     FAKE_ZCODE_VERSION: '0.16.5', FAKE_ZCODE_CONVERSATION_SCENARIO: 'captured-0165',
+    FAKE_ZCODE_CAPTURED_0165_PERMISSION: '1',
     FAKE_ZCODE_RECORD: record, FAKE_ZCODE_CAPTURED_0165_TRACE: trace,
     FAKE_ZCODE_CAPTURED_0165_RUNNING_GATE: runningGate,
     FAKE_ZCODE_CAPTURED_0165_TERMINAL_GATE: terminalGate,
@@ -5117,6 +5118,7 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
     let settled = false;
     const execution = companion(context, ['rescue', mode, `captured 0.16.5 turn ${turn}`], env).finally(() => { settled = true; });
     const readTrace = () => readFile(trace, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    const readRequests = () => readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
     let result;
     try {
       await waitFor(async () => (await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'legacy-prompt-completed'),
@@ -5124,6 +5126,19 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
       assert.equal((await readTrace()).some((entry) => entry.sendCount === turn && entry.phase === 'turn-running'), false,
         'the captured legacy-only gap must precede every runtime running frame');
       assert.equal(settled, false, 'false legacy completion without a runtime frame must not settle the companion');
+      await waitFor(async () => {
+        const permission = (await readTrace()).find((entry) => entry.sendCount === turn && entry.phase === 'permission-request')?.message;
+        return permission && (await readRequests()).some((request) => request.id === permission.id && request.result?.decision === 'allow');
+      }, `captured 0.16.5 turn ${turn} permission was not allowed during its legacy-only gap`);
+      const permission = (await readTrace()).find((entry) => entry.sendCount === turn && entry.phase === 'permission-request').message;
+      assert.equal(permission.params.requestId, `permission-${permission.id}`);
+      assert.equal(permission.params.toolCallId, `captured-tool-${turn}`);
+      assert.equal(permission.params.riskLevel, 'medium');
+      assert.equal(permission.params.requestedAt, 1_786_233_601_742);
+      const offeredAllow = permission.params.options.find((option) => option.kind === 'allow').response;
+      assert.deepEqual(offeredAllow, { decision: 'allow' });
+      const permissionResponses = (await readRequests()).filter((request) => request.id === permission.id);
+      assert.deepEqual(permissionResponses, [{ id: permission.id, result: offeredAllow }]);
       await atomicWriteJson(runningGate, { version: 1, releaseThrough: turn });
       await waitFor(async () => {
         const marker = await readFile(runningReached, 'utf8').then(JSON.parse).catch(() => null);
@@ -5178,7 +5193,7 @@ test('captured 0.16.5 true terminal gates fresh and continuation results after f
   for (const turn of [1, 2]) {
     const entries = peerTrace.filter((entry) => entry.sendCount === turn);
     const protocolEntries = entries.filter((entry) => !entry.phase.startsWith('session-read-'));
-    assert.deepEqual(protocolEntries.map((entry) => entry.phase), ['subscribe-ack', 'initial-frame', 'send-accepted', 'legacy-prompt-completed', 'turn-running', 'turn-terminal']);
+    assert.deepEqual(protocolEntries.map((entry) => entry.phase), ['subscribe-ack', 'initial-frame', 'send-accepted', 'legacy-prompt-completed', 'permission-request', 'turn-running', 'turn-terminal']);
     assert.doesNotMatch(JSON.stringify(protocolEntries), /future/u, 'captured qualification data must not contain synthetic additive fields');
     const ack = protocolEntries[0].message.result.ack;
     assert.deepEqual(Object.keys(protocolEntries[0].message.result), ['ack']);
