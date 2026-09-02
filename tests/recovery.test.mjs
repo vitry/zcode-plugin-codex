@@ -1130,3 +1130,93 @@ test('SessionEnd settlement persists the durable session-end stop intent for a H
     executorAgentId: 'host-owned-session-end-child' })).binding.state, 'active');
   await cleanupRecoveryFixture(fixture);
 });
+
+test('SessionEnd settlement closes its control client when the abort fires after client creation', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture);
+  const controller = new AbortController();
+  const reason = Object.freeze({ phase: 'post-create' });
+  let closes = 0;
+  const { settleEndedOwnerWritableJob } = await import('../scripts/lib/recovery.mjs');
+  await assert.rejects(settleEndedOwnerWritableJob({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner',
+    lockTimeoutMs: 0, signal: controller.signal,
+    createClient: async () => {
+      const client = {
+        readSession: async () => { throw new Error('must not read after the abort'); },
+        stopSession: async () => {},
+        close: async () => { closes += 1; },
+      };
+      controller.abort(reason);
+      return client;
+    },
+  }), (error) => error === reason);
+  assert.equal(closes, 1, 'the created control client must be closed on the post-creation abort path');
+  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+  await cleanupRecoveryFixture(fixture);
+});
+
+async function hostOwnedRunningRescue(fixture, { session, input, agent, epoch }) {
+  const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const workspace = await realpath(fixture.workspace);
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
+    ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'owner', parentTurnId: 'turn', agentId: agent, agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(),
+    zcodeSessionId: session, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { inputId: input, startRevision: 1, beforeMessageIds: [] });
+  return { store, workspace };
+}
+
+test('SessionEnd settlement racing natural success publishes succeeded with its result artifact', async () => {
+  const fixture = await context();
+  const { store, workspace } = await hostOwnedRunningRescue(fixture, { session: 'zs-natural-success', input: 'input-natural-success',
+    agent: 'host-owned-natural-success-child', epoch: '2'.repeat(64) });
+  let stops = 0;
+  const { settleEndedOwnerWritableJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: async () => ({
+      readSession: async () => coherentCurrentTurn('input-natural-success', 'natural success won the stop race'),
+      stopSession: async () => { stops += 1; }, close: async () => {},
+    }) });
+  assert.equal(outcome.kind, 'durable-completion');
+  assert.equal(outcome.job.status, 'succeeded');
+  assert.ok(outcome.job.resultArtifact, 'the natural-success winner must publish its authoritative result artifact');
+  assert.equal(stops, 0, 'a terminal remote winner must settle without another stop');
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  assert.equal(await readFile(join(storage.directory, outcome.job.resultArtifact), 'utf8'), 'natural success won the stop race');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd settlement with an unacknowledged stop retains the durable cancelling status', async () => {
+  const fixture = await context();
+  const { store, workspace } = await hostOwnedRunningRescue(fixture, { session: 'zs-unacked-stop', input: 'input-unacked-stop',
+    agent: 'host-owned-unacked-stop-child', epoch: '3'.repeat(64) });
+  const { settleEndedOwnerWritableJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: async () => ({
+      readSession: async () => activeCurrentTurn('input-unacked-stop'),
+      stopSession: async () => { throw new Error('session stop refused'); }, close: async () => {},
+    }) });
+  assert.equal(outcome.kind, 'retained-writable-guard');
+  assert.equal(outcome.job.status, 'cancelling', 'uncertainty must retain cancelling, never roll back to running');
+  assert.equal(outcome.job.stopIntent.cause, 'session-end');
+  assert.equal(outcome.job.lastCancelError, undefined);
+  await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'next',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd settlement retains cancelling when the control channel is unavailable', async () => {
+  const fixture = await context(); const { store } = await orphanJob(fixture, { boundary: false, turnId: 'unavailable-settle' });
+  const { settleEndedOwnerWritableJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true,
+    createClient: async () => { throw new PluginError('ZCODE_DISCONNECTED', 'endpoint=/secret.sock token=secret', { category: 'runtime', remedy: 'Restart.' }); } });
+  assert.equal(outcome.kind, 'retained-writable-guard');
+  assert.equal(outcome.job.status, 'cancelling', 'an unresolved stop keeps its durable cancelling status even without a control channel');
+  assert.doesNotMatch(outcome.job.lastCancelError ?? '', /secret/);
+  await cleanupRecoveryFixture(fixture);
+});
