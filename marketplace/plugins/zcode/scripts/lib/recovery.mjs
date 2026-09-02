@@ -5,12 +5,18 @@ import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtif
 import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
+import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const REMOTE_ACTIVE = new Set(['running', 'waiting']);
+// Evidence projection (endedRemoteEvidence) treats paused as attributable
+// activity so a persisted stop can be retried against a paused turn; the
+// orphan-scavenge path keeps its stricter paused semantics above.
+const EVIDENCE_ACTIVE = new Set(['running', 'waiting', 'paused']);
 const CONTROL_CHANNEL_UNAVAILABLE = new Set(['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']);
 export const LEGACY_QUEUED_STALE_MS = 5 * 60_000;
 const OPTIONAL_JOB_LOG_FENCE_MS = 250;
@@ -75,6 +81,7 @@ async function cleanupTerminalReservation(input, job) {
  * Best-effort settlement for the ending owner's one active writable Rescue.
  * Unlike orphan scavenging, SessionEnd is an explicit owner lifecycle signal, so
  * an accepted remote turn may be stopped even while its worker lease is held.
+ * The stop ordering itself is owned by the Rescue Lifecycle Reconciler.
  * @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean}} input
  */
 export async function settleEndedOwnerWritableJob(input) {
@@ -99,9 +106,9 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
-      if (current.status === 'queued') return classifyEndedSettlement(await cancelQueuedJob(input, current));
-      if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return { kind: 'retained-writable-guard', job: current };
-      return settleEndedRemoteJob(input, current);
+      const remotelySettleable = current.status === 'queued'
+        || (['running', 'cancelling'].includes(current.status) && typeof current.zcodeSessionId === 'string');
+      return remotelySettleable ? settleEndedRescueThroughReconciler(input, current) : { kind: 'retained-writable-guard', job: current };
     });
   } catch (error) {
     if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') settlement = { kind: 'retained-writable-guard', job: await input.store.readJob(input.workspace, selected.id) };
@@ -250,7 +257,7 @@ async function queuedMigrationRollback(input, job) {
     invalid: () => recoveryError('Queued migration specification is invalid.') });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
-async function failJob(input, job, error) {
+export async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   const patch = { error: { message: recoveryMessage(error) }, exitCode: 1 };
@@ -258,20 +265,23 @@ async function failJob(input, job, error) {
   try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
-/** @param {any} input @param {any} job */
-async function cancelJob(input, job) {
+/** @param {any} input @param {any} job @param {string} [stopCause] */
+export async function cancelJob(input, job, stopCause = 'host-coordination-loss') {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   try {
-    if (current.status === 'running') await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling');
-    return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+    const cancelling = current.status === 'running'
+      ? await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(current, stopCause))
+      : current;
+    return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled',
+      { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) });
   } catch (error) { return cancelledConflictWinner(input, job, error); }
 }
-/** @param {any} input @param {any} job */
-async function cancelQueuedJob(input, job) {
+/** @param {any} input @param {any} job @param {string} [stopCause] */
+async function cancelQueuedJob(input, job, stopCause = 'host-coordination-loss') {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null }); }
+  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(current, stopCause) }); }
   catch (error) { return cancelledConflictWinner(input, job, error); }
 }
 
@@ -307,58 +317,233 @@ async function cancelledConflictWinner(input, job, error) {
   } catch (winnerError) { return conflictWinner(input, job, winnerError); }
 }
 
-/** @param {any} input @param {any} job */
-async function settleEndedRemoteJob(input, job) {
-  let client;
-  const observedStop = await revalidateBoundRescueStop(input, job);
+/**
+ * Settle the ending owner's exact writable Rescue through the Rescue Lifecycle
+ * Reconciler. The Reconciler owns the complete mutation order — persist the
+ * durable stop intent first, revalidate the exact binding/job/generation, stop
+ * and reread the exact remote turn, elect the winner, retain uncertainty —
+ * while these adapters bind that order to the durable store, the existing
+ * cancellation machinery, and one existing ZCode control client.
+ * @param {any} input @param {any} current
+ */
+async function settleEndedRescueThroughReconciler(input, current) {
+  /** @type {{job:any,client?:any,jobLog?:any,guard?:any,racedWinner?:any}} */
+  const context = { job: current };
+  const observedStop = await revalidateBoundRescueStop(input, current);
   if (observedStop?.kind === 'stale') return classifyEndedSettlement(observedStop.job);
-  const jobLog = await openRecoveryJobLog(input, job);
+  context.guard = observedStop?.guard;
   try {
-    try { client = await input.createClient(job, ownerIdForSession(job.ownerSessionId)); throwIfRecoveryInterrupted(input); }
-    catch (error) {
-      throwIfRecoveryInterrupted(input, error);
-      const winner = controlChannelUnavailable(error)
-        ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error))
-        : await retainAfterStopFailure(input, job, error);
-      return classifyEndedSettlement(winner);
-    }
-    if (!client) return classifyEndedSettlement(await failEndedUnavailableJob(input, job, unavailableOrphanError('existing-broker-missing')));
-    let snapshot;
-    try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(controlChannelUnavailable(error) ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error)) : await retainAfterStopFailure(input, job, error)); }
-    throwIfRecoveryInterrupted(input);
-    const boundary = persistedTurnBoundary(job);
-    const initialClassification = boundary ? classifyCurrentTurnSnapshot(snapshot, boundary) : { kind: 'pending' };
-    const completed = initialClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
-    if (completed) return classifyEndedSettlement(completed);
-    if (['interrupted', 'failed'].includes(initialClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
-    if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
-    if (!boundary || !hasCurrentTurnActivity(snapshot, boundary)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
-    const revalidated = await revalidateBoundRescueStop(input, job, observedStop?.guard);
-    if (revalidated?.kind === 'stale') return classifyEndedSettlement(revalidated.job);
-    try { await client.stopSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
-    try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
-    throwIfRecoveryInterrupted(input);
-    const settledClassification = boundary ? classifyCurrentTurnSnapshot(snapshot, boundary) : { kind: 'pending' };
-    const racedCompletion = settledClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
-    if (racedCompletion) return classifyEndedSettlement(racedCompletion);
-    if (['interrupted', 'failed'].includes(settledClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
-    return classifyEndedSettlement(await retainAfterStopFailure(input, job,
-      recoveryError('SessionEnd cancellation settlement remains unresolved after stop acknowledgement.')));
+    const outcome = await createRescueLifecycleReconciler({
+      loadJoinedState: (/** @type {any} */ request) => loadEndedRescueJoinedState(input, context, request),
+      persistStopIntent: (/** @type {any} */ joined, /** @type {any} */ cause, /** @type {any} */ options) => persistEndedStopIntent(input, context, joined, cause, options),
+      revalidateGeneration: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+        options?.signal?.throwIfAborted();
+        const revalidated = await revalidateBoundRescueStop(input, joined.job, context.guard);
+        if (revalidated?.kind === 'stale') {
+          if (!TERMINAL.has(revalidated.job.status)) context.racedWinner = revalidated.job;
+          return { kind: 'stale', winner: revalidated.job, resumableEvidence: racedResumableEvidence(revalidated.job) };
+        }
+        context.guard = revalidated?.guard ?? context.guard ?? null;
+        context.job = revalidated?.job ?? joined.job;
+        return { kind: 'current', job: context.job, guard: context.guard };
+      },
+      stopExactTurn: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+        // Pre-stop read: a turn that already reached a terminal outcome BEFORE
+        // this stop keeps its own semantics (natural success publishes its
+        // result; an engine terminal failure publishes failed) instead of being
+        // misclassified as caused by the stop. The read reuses the open client.
+        try {
+          const preStop = endedRemoteEvidence(await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
+          if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
+            return { acknowledged: true, preExistingTerminal: preStop };
+          }
+        } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+        options?.signal?.throwIfAborted();
+        try {
+          await raceRecoveryControl(context.client.stopSession(joined.job.zcodeSessionId), options?.signal);
+          options?.signal?.throwIfAborted();
+          return { acknowledged: true };
+        } catch (error) {
+          options?.signal?.throwIfAborted();
+          return { acknowledged: false, error };
+        }
+      },
+      rereadRemote: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+        options?.signal?.throwIfAborted();
+        let snapshot;
+        try { snapshot = await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal); }
+        catch (error) { options?.signal?.throwIfAborted(); return { kind: 'unreadable', error }; }
+        options?.signal?.throwIfAborted();
+        return endedRemoteEvidence(snapshot, joined.job);
+      },
+      publishWinner: (/** @type {any} */ joined, /** @type {any} */ specification, /** @type {any} */ options) => publishEndedWinner(input, context, joined, specification, options),
+      retainUnresolved: async (/** @type {any} */ joined, /** @type {any} */ evidence) => {
+        const retained = await retainUnresolvedEndedStop(input, joined.job, evidence?.error);
+        context.job = retained;
+        return retained;
+      },
+      settleUnavailableExecutor: (/** @type {any} */ joined, /** @type {any} */ evidence) => failEndedUnavailableJob(input, joined.job, evidence.error),
+    }).reconcile({
+      intent: { kind: 'stop', cause: 'session-end' },
+      authority: { ownerSessionId: input.ownerSessionId },
+      workspace: input.workspace,
+      selector: { jobId: current.id },
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    const winner = context.racedWinner ?? await input.store.readJob(input.workspace, current.id);
+    return outcome.kind === 'settled-terminal' ? classifyEndedSettlement(winner) : { kind: 'retained-writable-guard', job: winner };
+  } finally {
+    await context.client?.close().catch(() => {});
+    await context.jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS);
+  }
+}
+
+/** Race one recovery control operation against its abort signal so a stuck stop or read can never outlive the settlement budget; the abandoned operation's late rejection is absorbed. @param {Promise<any>} operation @param {AbortSignal|undefined} signal */
+function raceRecoveryControl(operation, signal) {
+  operation.catch(() => {});
+  if (signal === undefined) return operation;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then((value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); });
+  });
+}
+
+/** Join the ending owner's exact job with existing ZCode control evidence. @param {any} input @param {{job:any,client?:any,jobLog?:any}} context @param {any} request */
+async function loadEndedRescueJoinedState(input, context, request) {
+  if (request.selector?.jobId !== context.job.id) throw recoveryError('The ended Rescue settlement selector no longer matches.');
+  const job = context.job;
+  if (job.status === 'queued') return endedJoined(job, { kind: 'none' });
+  context.jobLog = await openRecoveryJobLog(input, job);
+  try {
+    context.client = await input.createClient(job, ownerIdForSession(job.ownerSessionId));
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
-    if (error instanceof SuccessfulResultFinalizationError) throw error;
-    const winner = controlChannelUnavailable(error)
-      ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error))
-      : await retainAfterStopFailure(input, job, error);
-    return classifyEndedSettlement(winner);
-  } finally { await client?.close().catch(() => {}); await jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS); }
+    return endedJoined(job, unavailableOrReadableEvidence(error));
+  }
+  throwIfRecoveryInterrupted(input);
+  if (!context.client) {
+    throwIfRecoveryInterrupted(input);
+    return endedJoined(job, { kind: 'unavailable', error: unavailableOrphanError('existing-broker-missing') });
+  }
+  let snapshot;
+  try { snapshot = await context.client.readSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
+  catch (error) {
+    throwIfRecoveryInterrupted(input, error);
+    return endedJoined(job, unavailableOrReadableEvidence(error));
+  }
+  return endedJoined(job, endedRemoteEvidence(snapshot, job));
+}
+
+/** Map one control-channel failure onto bounded existing-executor evidence. @param {unknown} error */
+export function unavailableOrReadableEvidence(error) {
+  return controlChannelUnavailable(error)
+    ? { kind: 'unavailable', error: establishedUnavailableOrphanError(error) }
+    : { kind: 'unreadable', error };
+}
+
+/**
+ * Project one ended-owner job into the private joined Reconciler view.
+ * SessionEnd-caller-specific: bindingCurrent/permissionMatch/hostState/receipt
+ * are asserted by this caller's own session-boundary authority, never derived —
+ * do not reuse as generic joined-state evidence. A persisted stop intent is
+ * durable authorization, NOT evidence that a stop occurred, so it never marks
+ * the joined state as post-stop; within-pass stop semantics are owned by the
+ * reconciler's stopExactTurn/reread sequence.
+ * @param {any} job @param {any} remote
+ */
+function endedJoined(job, remote) {
+  return {
+    job,
+    winner: null,
+    hostState: 'absent',
+    hostPlacement: job.hostPlacement ?? null,
+    hostOwned: validHostLifecycleRecord(job),
+    sessionEndReceipt: 'matching',
+    stopIntent: job.stopIntent ?? null,
+    resumableEvidence: {
+      acceptedSession: typeof job.zcodeSessionId === 'string',
+      bindingCurrent: true,
+      permissionMatch: true,
+    },
+    remote,
+    guard: null,
+  };
+}
+
+/** Classify the exact current-turn evidence of one ended-owner remote read; terminal evidence carries its snapshot so the natural-success winner can publish the authoritative result. @param {any} snapshot @param {any} job */
+export function endedRemoteEvidence(snapshot, job) {
+  const boundary = persistedTurnBoundary(job);
+  const active = EVIDENCE_ACTIVE.has(snapshot?.projection?.status);
+  if (!boundary) return { kind: 'evidence', classification: 'pending', active, attributable: false };
+  const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
+  if (classification.kind !== 'pending') return { kind: 'evidence', classification: classification.kind, active: false, attributable: true, snapshot };
+  return { kind: 'evidence', classification: 'pending', active, attributable: hasCurrentTurnActivity(snapshot, boundary) };
+}
+
+/**
+ * Retain one unresolved SessionEnd stop without ever rolling the durable
+ * status back to running: a cancelling job keeps its status, its persisted
+ * stop intent, and its writable guard. The StateStore schema admits
+ * lastCancelError only on running or terminal records, so the persisted
+ * intent is the bounded retry evidence; a non-cancelling job (not expected
+ * after intent persistence) keeps the legacy running-retention diagnostic.
+ * @param {any} input @param {any} job @param {unknown} [error]
+ */
+async function retainUnresolvedEndedStop(input, job, error) {
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status) || current.status === 'cancelling' || error === undefined) return current;
+  return retainAfterStopFailure(input, current, error);
+}
+
+/** Persist the durable stop intent before any remote control; a queued job embeds it in its terminal patch. @param {any} input @param {{job:any,racedWinner?:any}} context @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
+async function persistEndedStopIntent(input, context, joined, cause, options) {
+  options?.signal?.throwIfAborted();
+  if (joined.job.status === 'queued') return { kind: 'persisted', job: joined.job };
+  const current = await input.store.readJob(input.workspace, joined.job.id);
+  if (TERMINAL.has(current.status)) return { kind: 'conflict', winner: current };
+  if (current.status === 'cancelling') { context.job = current; return { kind: 'persisted', job: current }; }
+  try {
+    const cancelling = await input.store.transitionJob(input.workspace, current.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(current, cause));
+    context.job = cancelling;
+    return { kind: 'persisted', job: cancelling };
+  } catch (error) {
+    const winner = await cancelledConflictWinner(input, current, error);
+    if (!TERMINAL.has(winner.status)) context.racedWinner = winner;
+    return { kind: 'conflict', winner, resumableEvidence: racedResumableEvidence(winner) };
+  }
+}
+
+/** Refreshed post-race evidence for a raced winner: staleness was proven by an exact binding/job/generation mismatch, so the binding is not current for the stale caller's job. @param {any} winner */
+function racedResumableEvidence(winner) {
+  return { acceptedSession: typeof winner.zcodeSessionId === 'string', bindingCurrent: false, permissionMatch: true };
+}
+
+/** Publish one durable settlement winner through the existing cancellation and result machinery. @param {any} input @param {{job:any,jobLog?:any}} context @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] */
+async function publishEndedWinner(input, context, joined, specification, options) {
+  options?.signal?.throwIfAborted();
+  if (specification.status === 'cancelled') {
+    const cancelled = joined.job.status === 'queued'
+      ? await cancelQueuedJob(input, joined.job, specification.stopCause)
+      : await cancelJob(input, joined.job, specification.stopCause);
+    context.job = cancelled;
+    return cancelled;
+  }
+  if (specification.status === 'succeeded') {
+    const completed = await completeEndedJob(input, joined.job, specification.snapshot, context.jobLog);
+    if (!completed) return joined.job; /* completion unproven: uncertainty never publishes a terminal claim */
+    context.job = completed;
+    return completed;
+  }
+  const failed = await failJob(input, joined.job, recoveryError(specification.message ?? 'ZCode settlement failed during recovery.'));
+  context.job = failed;
+  return failed;
 }
 
 /** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot @param {any} jobLog */
-async function completeEndedJob(input, job, snapshot, jobLog) {
+export async function completeEndedJob(input, job, snapshot, jobLog) {
   const boundary = persistedTurnBoundary(job);
   if (!boundary || classifyCurrentTurnSnapshot(snapshot, boundary).kind !== 'succeeded') return null;
   let resultArtifact;
@@ -454,6 +639,24 @@ async function revalidateBoundRescueStop(input, job, expected) {
 async function retainAfterStopFailure(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
+  // A cancelling record carrying a persisted stop intent keeps its status AND
+  // persists the bounded failure diagnostic — public status strips the private
+  // stop intent, so lastCancelError is the only visible retry evidence. Legacy
+  // records without an intent keep the running-retention diagnostic.
+  if (current.status === 'cancelling' && validStopIntent(current.stopIntent)) {
+    const message = recoveryMessage(error);
+    try {
+      return await input.store.transitionJob(input.workspace, current.id, ['cancelling'], 'cancelling', { lastCancelError: message });
+    } catch (transitionError) {
+      // A concurrent settlement wins: reread the durable record — the stale
+      // pre-race `cancelling` snapshot must never mask a terminal winner.
+      // Genuine storage failures propagate instead of being masked.
+      if (transitionError instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION'].includes(transitionError.code)) {
+        return await input.store.readJob(input.workspace, current.id);
+      }
+      throw transitionError;
+    }
+  }
   const message = recoveryMessage(error);
   try { return await input.store.transitionJob(input.workspace, job.id, [current.status], 'running', { lastCancelError: message }); }
   catch (transitionError) {
@@ -481,11 +684,11 @@ function settleUnavailableOrMissingOrphan(input, job, diagnostic) {
     ? retainAfterStopFailure(input, job, diagnostic)
     : failJob(input, job, diagnostic);
 }
-/** Archive SessionEnd control loss only after proving the exact worker lease is free. @param {any} input @param {any} job @param {PluginError} diagnostic */
+/** Archive SessionEnd control loss only after proving the exact worker lease is free; an unproven loss retains the durable cancelling status instead of rolling back to running. @param {any} input @param {any} job @param {PluginError} diagnostic */
 async function failEndedUnavailableJob(input, job, diagnostic) {
   throwIfRecoveryInterrupted(input);
-  if (!persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false) return retainAfterStopFailure(input, job, diagnostic);
-  if (!isDigest(job.workerLeaseId)) return retainAfterStopFailure(input, job, diagnostic);
+  if (!persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false) return retainUnresolvedEndedStop(input, job, diagnostic);
+  if (!isDigest(job.workerLeaseId)) return retainUnresolvedEndedStop(input, job, diagnostic);
   try {
     return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, () => failJob(input, job, diagnostic));
   } catch (error) {

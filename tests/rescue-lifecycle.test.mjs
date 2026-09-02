@@ -76,7 +76,7 @@ function fixtureAdapters(overrides = {}) {
           permissionMatch: options.permissionMatch ?? true,
         },
         remote: loadEvidence(),
-        guard: { generation: 1 },
+        guard: options.postStopEvidence ? 'post-stop-evidence' : null,
       };
     },
     persistStopIntent: async (joined, cause) => {
@@ -231,6 +231,19 @@ test('explicit coordination-loss stop authority is foreground-only', async () =>
   assert.deepEqual(outcome, { kind: 'wait-current', status: 'running' });
   assert.equal(fixture.stopCalls, 0);
   assert.equal(fixture.events.includes('persist-stop-intent'), false);
+});
+
+test('a failed observation on a merely-authorized cancelling record publishes failed', async () => {
+  // A persisted stop intent is authorization, not evidence that a stop
+  // occurred: with no durable stop-attempt marker, a failed remote snapshot
+  // keeps its engine-failure semantics instead of being claimed as cancelled.
+  const events = [];
+  const fixture = fixtureAdapters({ events, host: 'active', placement: 'foreground', loadRemote: 'failed', jobStatus: 'cancelling', persistedStopCause: 'user', postStopEvidence: true });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'failed', resumable: true },
+    'failed observed without proof of an acknowledged stop publishes the engine failure');
+  assert.equal(fixture.events.includes('publish-failed'), true);
+  assert.equal(fixture.events.some((event) => event.startsWith('stop-')), false, 'no stop is issued for an already-terminal turn');
 });
 
 test('a queued Host-owned run cancels durably without any remote stop', async () => {

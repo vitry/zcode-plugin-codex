@@ -17,10 +17,10 @@ import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
-import { createJobController, ownerIdForSession } from '../../scripts/lib/job-control.mjs';
+import { createJobController, ownerIdForSession, resumableJobIndicator } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
-import { createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { createRescueBindingPartition, hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord } from '../../scripts/lib/rescue-binding.mjs';
 import { planRescueActivation } from '../../scripts/lib/rescue-route-planner.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
@@ -3918,8 +3918,12 @@ test('unacknowledged parent SessionEnd retains the durable guard without a secon
     assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
     assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 1, 'owner release must not retry an unacknowledged SessionEnd stop behind durable state');
     const [job] = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
-    assert.equal(job.ownerSessionId, parentSessionId); assert.equal(job.status, 'running'); assert.equal(job.finishedAt, undefined);
-    assert.match(job.lastCancelError, /fixture first stop failed/);
+    // Task 3 retention: an unacknowledged stop keeps the durable cancelling
+    // status and its writable guard instead of rolling back to running. This
+    // fixture reserves without the Host-owned lifecycle trio, so its legacy
+    // record carries no persisted stop intent and no retry diagnostic.
+    assert.equal(job.ownerSessionId, parentSessionId); assert.equal(job.status, 'cancelling'); assert.equal(job.finishedAt, undefined);
+    assert.equal(job.stopIntent, undefined); assert.equal(job.lastCancelError, undefined);
     await assert.rejects(createStateStore({ dataRoot: context.dataRoot }).reserveJob({
       workspace: context.workspace, ownerSessionId: 'later-owner', ownerTurnId: 'later-turn', command: 'rescue', readOnly: false,
       permissionSnapshot: { permissionMode: 'workspace-write' },
@@ -4611,6 +4615,375 @@ test('status/list/result and queued cancellation enforce owned job semantics', a
   assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
   const status = await companion(context, ['status', id, '--wait', '--timeout-ms', '10']);
   assert.equal(status.code, 0); assert.equal(status.json.job.status, 'cancelled');
+});
+
+test('status, result, and cancel reconcile the resumable rescue lifecycle through observe and stop intents', async () => {
+  const context = await fixture();
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  /** @type {any[]} */ const requests = [];
+  const dependencies = {
+    createRescueLifecycleReconciler: (/** @type {any} */ adapters) => {
+      for (const adapter of ['loadJoinedState', 'persistStopIntent', 'revalidateGeneration', 'stopExactTurn', 'rereadRemote', 'publishWinner', 'retainUnresolved', 'settleUnavailableExecutor']) {
+        assert.equal(typeof adapters[adapter], 'function', `the companion must build its production ${adapter} adapter`);
+      }
+      return { reconcile: async (/** @type {any} */ request) => { requests.push(request); return { kind: 'wait-current', status: 'queued' }; } };
+    },
+  };
+  const caller = (/** @type {string} */ turnId) => ({ sessionId: 'codex-session', turnId, permissionMode: 'workspace-write' });
+  // The Reconciler seam owns Host-managed writable Rescue only, so the
+  // fixture reserves lifecycle-carrying records.
+  const reserve = (/** @type {string} */ ownerTurnId) => store.reserveFreshRescueJob({
+    workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: ownerTurnId, agentId: `manage-reconcile-${ownerTurnId}`, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'e'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' },
+  });
+
+  const finished = (await reserve('turn-manage-reconcile-result')).job;
+  await store.finishJob(context.workspace, finished.id, ['queued'], 'failed', { error: { message: 'terminal failure before an accepted session' }, exitCode: 1 });
+  const result = await runCompanion(['result', finished.id], { cwd: context.workspace, env: context.env, caller: caller('result-turn'), dependencies });
+  assert.equal(result.job.status, 'failed');
+  const { signal: resultSignal, ...resultRequest } = requests.at(-1);
+  assert.ok(resultSignal === undefined || resultSignal instanceof AbortSignal, 'selection reconciliation carries only the caller-scoped signal (per-operation budgets live inside the reconciler)');
+  assert.deepEqual(resultRequest, { intent: { kind: 'observe' }, authority: { ownerSessionId: 'codex-session' }, workspace: context.workspace, selector: { jobId: finished.id } });
+
+  const reserved = (await reserve('turn-manage-reconcile')).job;
+  const status = await runCompanion(['status', reserved.id], { cwd: context.workspace, env: context.env, caller: caller('status-turn'), dependencies });
+  assert.equal(status.job.id, reserved.id);
+  const { signal: statusSignal, ...statusRequest } = requests.at(-1);
+  assert.ok(statusSignal === undefined || statusSignal instanceof AbortSignal);
+  assert.deepEqual(statusRequest, { intent: { kind: 'observe' }, authority: { ownerSessionId: 'codex-session' }, workspace: context.workspace, selector: { jobId: reserved.id } });
+
+  const cancel = await runCompanion(['cancel', reserved.id], { cwd: context.workspace, env: context.env, caller: caller('cancel-turn'), dependencies });
+  assert.equal(cancel.job.status, 'cancelled');
+  const { signal: cancelSignal, ...cancelRequest } = requests.at(-1);
+  assert.ok(cancelSignal === undefined || cancelSignal instanceof AbortSignal);
+  assert.deepEqual(cancelRequest, { intent: { kind: 'stop', cause: 'user' }, authority: { ownerSessionId: 'codex-session' }, workspace: context.workspace, selector: { jobId: reserved.id } });
+  assert.equal((await store.readJob(context.workspace, reserved.id)).status, 'cancelled');
+});
+
+test('management reconciliation is Rescue-specific and never routes read-only jobs through the Reconciler', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  /** @type {any[]} */ const requests = [];
+  const dependencies = { createRescueLifecycleReconciler: () => ({ reconcile: async (/** @type {any} */ request) => { requests.push(request); return { kind: 'wait-current' }; } }) };
+  const review = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-review-gate', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const owner = (/** @type {string} */ turnId) => ({ sessionId: 'codex-session', turnId, permissionMode: 'workspace-write' });
+  const status = await runCompanion(['status', review.id], { cwd: context.workspace, env: context.env, caller: owner('status-review-gate'), dependencies });
+  assert.equal(status.job.id, review.id);
+  const cancelled = await runCompanion(['cancel', review.id], { cwd: context.workspace, env: context.env, caller: owner('cancel-review-gate'), dependencies });
+  assert.equal(cancelled.job.status, 'cancelled');
+  assert.equal(requests.length, 0, 'read-only Review jobs keep the existing cancellation election and never enter the Rescue Lifecycle Reconciler');
+});
+
+test('terminal status and result views derive resumable from the exact current permission mode', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-permission-indicator', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-permission-indicator', agentId: 'permission-indicator-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_242, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-permission-indicator', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-permission-indicator', startRevision: 1, beforeMessageIds: [] });
+  const cancelling = await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'user'));
+  await store.finishJob(context.workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, 'user') });
+  const view = (/** @type {string} */ permissionMode, /** @type {string[]} */ argv) => runCompanion(argv, { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: `turn-view-${permissionMode}`, permissionMode } });
+  assert.equal((await view('read-only', ['status', reserved.job.id])).job.resumable, false, 'a permission change requires fresh, not resume');
+  assert.equal((await view('workspace-write', ['status', reserved.job.id])).job.resumable, true);
+  assert.equal((await view('read-only', ['result', reserved.job.id])).job.resumable, false);
+});
+
+test('status and result JSON views never expose internal Host lifecycle execution-ownership proof', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-lifecycle-privacy', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-lifecycle-privacy', agentId: 'lifecycle-privacy-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'e'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_243, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-lifecycle-privacy', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  const cancelling = await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'session-end'));
+  await store.finishJob(context.workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, 'session-end') });
+  const internalOwnershipProof = /ownerLifecycleEpoch|executionOwner|hostPlacement|stopIntent/u;
+  const privateProjectionFields = ['zcodeSessionId', 'ownerLifecycleEpoch', 'executionOwner', 'hostPlacement', 'stopIntent'];
+  const statusView = await companion(context, ['status', reserved.job.id]);
+  assert.equal(statusView.code, 0, `${statusView.stderr}${statusView.stdout}`);
+  assert.doesNotMatch(JSON.stringify(statusView.json), internalOwnershipProof);
+  assert.doesNotMatch(statusView.stdout, internalOwnershipProof);
+  for (const field of privateProjectionFields) assert.equal(Object.hasOwn(statusView.json.job, field), false, `status job object must not carry ${field}`);
+  assert.equal(statusView.json.job.resumable, true);
+  const resultView = await companion(context, ['result', reserved.job.id]);
+  assert.equal(resultView.code, 0, `${resultView.stderr}${resultView.stdout}`);
+  assert.doesNotMatch(JSON.stringify(resultView.json), internalOwnershipProof);
+  for (const field of privateProjectionFields) assert.equal(Object.hasOwn(resultView.json.job, field), false, `result job object must not carry ${field}`);
+  assert.equal(resultView.json.job.stopCause, 'session-end', 'the public Stop Cause survives while the internal stop intent is stripped');
+});
+
+test('successful Result views are allowlisted and lose resumability once the exact binding advances', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-succeeded-projection', agentId: 'succeeded-projection-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };
+  const lifecycle = { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const reservation = (/** @type {string} */ turnId) => ({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: turnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace, reservation: reservation('turn-succeeded-projection'), executor, lifecycle });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_244, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-succeeded-projection', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  const resultArtifact = await writeResultArtifact({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: reserved.job.id, contents: 'succeeded projection result\n' });
+  await store.finishJob(context.workspace, reserved.job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+  const privateProjectionFields = ['zcodeSessionId', 'ownerLifecycleEpoch', 'executionOwner', 'hostPlacement', 'stopIntent'];
+  const current = await companion(context, ['result', reserved.job.id]);
+  assert.equal(current.code, 0, `${current.stderr}${current.stdout}`);
+  assert.equal(current.json.result, 'succeeded projection result\n');
+  for (const field of privateProjectionFields) assert.equal(Object.hasOwn(current.json.job, field), false, `successful Result job object must not carry ${field}`);
+  assert.equal(current.json.job.resumable, true, 'a still-current exact binding keeps the successful accepted turn resumable');
+
+  const continuation = await store.reserveBoundRescueContinuation({ workspace: context.workspace,
+    reservation: reservation('turn-succeeded-continuation'), executor, operationId: reserved.binding.operationId, expectedCurrentJobId: reserved.job.id, lifecycle });
+  assert.notEqual(continuation.job.id, reserved.job.id);
+  const advanced = await companion(context, ['result', reserved.job.id]);
+  assert.equal(advanced.code, 0, `${advanced.stderr}${advanced.stdout}`);
+  assert.equal(advanced.json.job.resumable, false, 'once the exact binding advances to a later continuation the older job is no longer resumable');
+  const advancedStatus = await companion(context, ['status', reserved.job.id]);
+  assert.equal(advancedStatus.code, 0, `${advancedStatus.stderr}${advancedStatus.stdout}`);
+  assert.equal(advancedStatus.json.job.resumable, false, 'the status detail view reports the same binding-currency loss');
+});
+
+test('explicit cancellation of a running Host-owned Rescue preserves the exact binding for a later resume', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-preserve-binding', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-preserve-binding', agentId: 'preserve-binding-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_244, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-preserve-binding', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-preserve-binding', startRevision: 3, beforeMessageIds: [] });
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async () => {
+      let stopped = false;
+      return {
+        listSessions: async () => ({ sessions: [{ sessionId: 'zs-preserve-binding' }] }),
+        readSession: async () => stopped
+          ? { projection: { status: 'idle' }, runtime: { stateRevision: 4 }, messages: [
+            { info: { role: 'user', messageId: 'input-preserve-binding', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+            { info: { role: 'assistant', messageId: 'assistant-preserve-binding', parentMessageId: 'input-preserve-binding', finish: 'aborted', time: { completed: 4 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'interrupted' }] },
+          ] }
+          : { projection: { status: 'running' }, runtime: { stateRevision: 3 }, messages: [
+            { info: { role: 'user', messageId: 'input-preserve-binding', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+          ] },
+        stopSession: async () => { stopped = true; },
+        close: async () => {},
+      };
+    },
+  };
+  const cancelled = await runCompanion(['cancel', reserved.job.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'cancel-preserve-binding', permissionMode: 'workspace-write' }, dependencies });
+  assert.equal(cancelled.job.status, 'cancelled');
+  assert.equal(cancelled.job.stopCause, 'user');
+  const binding = await store.resolveRescueBinding({ workspace: context.workspace, parentSessionId: 'codex-session', executorAgentId: 'preserve-binding-child' });
+  assert.equal(binding.kind, 'bound', 'a Host-owned cancelled winner with an accepted session keeps its exact binding');
+  assert.equal(binding.binding.currentJobId, reserved.job.id);
+  const status = await runCompanion(['status', reserved.job.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'status-preserve-binding', permissionMode: 'workspace-write' } });
+  assert.equal(status.job.resumable, true);
+  const continuation = await store.reserveBoundRescueContinuation({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-resume-preserved', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-preserve-binding', agentId: 'preserve-binding-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' },
+    operationId: binding.binding.operationId, expectedCurrentJobId: reserved.job.id });
+  assert.equal(continuation.job.status, 'queued');
+  assert.equal(/** @type {any} */ (continuation.job).rescueContinuationOrigin.kind, 'active-continuation');
+  const advancedStatus = await runCompanion(['status', reserved.job.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'status-after-advance', permissionMode: 'workspace-write' } });
+  assert.equal(advancedStatus.job.resumable, false, 'once the binding advances to the continuation, the older cancelled job stops advertising resumability');
+});
+
+test('resume selects a cancelled Host-owned winner only through the full durable predicate', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-resume-cancelled', agentId: 'resume-cancelled-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };
+  const lifecycle = { ownerLifecycleEpoch: '7'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' };
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-resume-cancelled', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor, lifecycle });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_245, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-resume-cancelled', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-resume-cancelled', startRevision: 1, beforeMessageIds: [] });
+  const cancelling = await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'user'));
+  await store.finishJob(context.workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, 'user') });
+  const preserved = await store.closeRescueBindingForCancelledJob({ workspace: context.workspace, parentSessionId: 'codex-session', jobId: reserved.job.id });
+  assert.equal(preserved.kind, 'preserved', 'a Host-owned cancelled winner with an accepted session preserves its exact binding');
+  await recordSession(context.dataRoot, { cwd: context.workspace, session_id: 'codex-session', source: 'resume' });
+
+  const resumed = await companion(context, ['rescue', '--resume', 'continue the cancelled operation']);
+  assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
+  assert.equal(resumed.json.job.status, 'succeeded');
+  assert.equal(resumed.json.job.zcodeSessionId, 'zs-resume-cancelled');
+  const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 2);
+  assert.deepEqual(jobs.map((/** @type {any} */ job) => job.status).sort(), ['cancelled', 'succeeded']);
+  // The standalone resume advanced the exact binding to the continuation through the
+  // continuation CAS, so the superseded cancellation stops advertising resumability.
+  const advanced = await store.resolveRescueBinding({ workspace: context.workspace, parentSessionId: 'codex-session', executorAgentId: 'resume-cancelled-child' });
+  if (advanced.kind !== 'bound') assert.fail('expected the preserved binding to survive the standalone resume');
+  assert.equal(advanced.binding.currentJobId, resumed.json.job.id, 'resume advances the exact binding currentJobId to the new turn');
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace: context.workspace, ownerSessionId: 'codex-session', jobId: reserved.job.id }), false, 'the superseded cancellation no longer anchors the binding');
+  const continuation = await store.readJob(context.workspace, resumed.json.job.id);
+  // A standalone resume continues a HOST-OWNED operation: the ZCode parent
+  // session is the Host (ADR 0018), so the continuation inherits the host-
+  // managed lifecycle with a fresh epoch from its own session start.
+  assert.equal(validHostLifecycleRecord(continuation), true, 'the standalone continuation stays host-owned');
+  assert.equal(continuation.executionOwner, 'host-child');
+  assert.equal(continuation.hostPlacement, 'foreground');
+  assert.notEqual(continuation.ownerLifecycleEpoch, reserved.job.ownerLifecycleEpoch, 'the resumed lifetime derives a fresh epoch from its own session start');
+  assert.match(continuation.ownerLifecycleEpoch, /^[a-f0-9]{64}$/);
+});
+
+test('a detached background resume of a cancelled winner keeps legacy ownership semantics', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-detached-resume', agentId: 'detached-resume-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-detached-resume', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor, lifecycle: { ownerLifecycleEpoch: '5'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_251, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-detached-resume', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-detached-resume', startRevision: 1, beforeMessageIds: [] });
+  const cancelling = await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'user'));
+  await store.finishJob(context.workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, 'user') });
+  await store.closeRescueBindingForCancelledJob({ workspace: context.workspace, parentSessionId: 'codex-session', jobId: reserved.job.id });
+  await recordSession(context.dataRoot, { cwd: context.workspace, session_id: 'codex-session', source: 'resume' });
+
+  const background = await companion(context, ['rescue', '--resume', '--background', 'continue detached']);
+  assert.equal(background.code, 0, `${background.stderr}${background.stdout}`);
+  const continuation = await store.readJob(context.workspace, background.json.job.id);
+  // The continuation stays under Host ownership regardless of the execution
+  // mechanism: the binding is host-owned, so SessionEnd and cancellation keep
+  // preserving it (ADR 0018).
+  assert.equal(continuation.executionOwner, 'host-child');
+  assert.equal(continuation.hostPlacement, 'background');
+  assert.equal(validHostLifecycleRecord(continuation), true);
+});
+
+test('historical cancelled records stay closed and never become resume candidates', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-legacy-cancelled', agentId: 'legacy-cancelled-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-legacy-cancelled', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_246, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-legacy-cancelled', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'cancelling');
+  await store.finishJob(context.workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null });
+  const closed = await store.closeRescueBindingForCancelledJob({ workspace: context.workspace, parentSessionId: 'codex-session', jobId: reserved.job.id });
+  assert.equal(closed.kind, 'closed', 'a historical cancelled record revokes its binding exactly as before');
+  await assert.rejects(store.resolveRescueBindingForResume({ workspace: context.workspace, parentSessionId: 'codex-session', executorAgentId: 'legacy-cancelled-child', permissionMode: 'workspace-write' }), { code: 'RESCUE_BINDING_CLOSED' });
+  const rejected = await companion(context, ['rescue', '--resume', 'retry the historical cancel']);
+  assert.notEqual(rejected.code, 0);
+  assert.equal(rejected.json.error.code, 'RESUME_CANDIDATE_NOT_FOUND');
+  assert.equal(resumableJobIndicator(await store.readJob(context.workspace, reserved.job.id), 'workspace-write', true), false, 'a historical cancelled record fails the indicator even with every evidence dimension supplied');
+});
+
+test('an unresolved Host-owned stop stays cancelling so status wait retries the stop and settles', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-unresolved-stop', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-unresolved-stop', agentId: 'unresolved-stop-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: '8'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_247, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-unresolved-stop', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-unresolved-stop', startRevision: 2, beforeMessageIds: [] });
+  let stops = 0; let remoteStopped = false;
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: 'zs-unresolved-stop' }] }),
+      readSession: async () => remoteStopped
+        ? { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [
+          { info: { role: 'user', messageId: 'input-unresolved-stop', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+          { info: { role: 'assistant', messageId: 'assistant-unresolved-stop', parentMessageId: 'input-unresolved-stop', finish: 'aborted', time: { completed: 3 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'interrupted' }] },
+        ] }
+        : { projection: { status: 'running' }, runtime: { stateRevision: 2 }, messages: [
+          { info: { role: 'user', messageId: 'input-unresolved-stop', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+        ] },
+      stopSession: async () => { stops += 1; if (stops < 2) throw new Error('stop not acknowledged'); /* an unacknowledged stop leaves the remote turn running */ remoteStopped = true; },
+      close: async () => {},
+    }),
+  };
+  const owner = (/** @type {string} */ turnId) => ({ sessionId: 'codex-session', turnId, permissionMode: 'workspace-write' });
+  await assert.rejects(runCompanion(['cancel', reserved.job.id], { cwd: context.workspace, env: context.env, caller: owner('cancel-unresolved-stop'), dependencies }), (/** @type {any} */ error) => error.code === 'JOB_CANCEL_FAILED');
+  const retained = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(retained.status, 'cancelling', 'an unresolved Host-owned stop keeps its cancelling status instead of rolling back to running');
+  assert.equal(retained.stopIntent.cause, 'user', 'the persisted stop intent remains the bounded retry evidence');
+  assert.equal(stops, 1, 'the failed cancel persists the intent then performs one election stop');
+  const settled = await runCompanion(['status', reserved.job.id, '--wait', '--timeout-ms', '3000'], { cwd: context.workspace, env: context.env, caller: owner('wait-unresolved-stop'), dependencies });
+  assert.equal(settled.job.status, 'cancelled', 'status wait retries the persisted stop through reconciliation and settles the durable winner');
+  assert.equal(stops, 2, 'the wait retry performs one further exact remote stop through the Reconciler');
+  assert.equal((await store.readJob(context.workspace, reserved.job.id)).stopCause, 'user');
+});
+
+test('cancel persists its durable stop intent even when launcher discovery fails', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-cancel-discovery-fails', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-cancel-discovery-fails', agentId: 'discovery-fails-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: '6'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_250, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-discovery-fails', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-discovery-fails', startRevision: 1, beforeMessageIds: [] });
+  const owner = { sessionId: 'codex-session', turnId: 'cancel-discovery-fails', permissionMode: 'workspace-write' };
+  // The startup orphan sweep still discovers a launcher; only the cancel
+  // command's own control-client acquisition fails afterwards.
+  let launches = 0;
+  const dependencies = {
+    discoverLaunch: async () => { launches += 1; if (launches > 1) throw new Error('launcher unavailable'); return { command: process.execPath, args: [fake], target: fake }; },
+    createManagedZCodeClient: async () => ({ listSessions: async () => ({ sessions: [{ sessionId: 'zs-discovery-fails' }] }),
+      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 2 }, messages: [
+        { info: { role: 'user', messageId: 'input-discovery-fails', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+      ] }), stopSession: async () => {}, close: async () => {} }),
+  };
+  await assert.rejects(runCompanion(['cancel', reserved.job.id], { cwd: context.workspace, env: context.env, caller: owner, dependencies }), (/** @type {any} */ error) => error.code === 'JOB_CANCEL_FAILED');
+  const retained = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(retained.status, 'cancelling', 'the durable stop intent persists even when control-client discovery fails');
+  assert.equal(retained.stopIntent.cause, 'user');
+});
+
+test('status wait retries a persisted stop through the Reconciler while the live child holds its worker lease', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace: context.workspace,
+    reservation: { workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-held-lease-stop', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'codex-session', parentTurnId: 'turn-held-lease-stop', agentId: 'held-lease-stop-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: '7'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, reserved.job.id, { childPid: 424_249, workerLeaseId: reserved.job.id });
+  await store.transitionJob(context.workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-held-lease-stop', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-held-lease-stop', startRevision: 2, beforeMessageIds: [] });
+  let stops = 0; let remoteStopped = false;
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: 'zs-held-lease-stop' }] }),
+      readSession: async () => remoteStopped
+        ? { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [
+          { info: { role: 'user', messageId: 'input-held-lease-stop', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+          { info: { role: 'assistant', messageId: 'assistant-held-lease-stop', parentMessageId: 'input-held-lease-stop', finish: 'aborted', time: { completed: 3 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'interrupted' }] },
+        ] }
+        : { projection: { status: 'running' }, runtime: { stateRevision: 2 }, messages: [
+          { info: { role: 'user', messageId: 'input-held-lease-stop', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+        ] },
+      stopSession: async () => { stops += 1; if (stops < 2) throw new Error('stop not acknowledged'); /* an unacknowledged stop leaves the remote turn running */ remoteStopped = true; },
+      close: async () => {},
+    }),
+  };
+  const owner = (/** @type {string} */ turnId) => ({ sessionId: 'codex-session', turnId, permissionMode: 'workspace-write' });
+  await assert.rejects(runCompanion(['cancel', reserved.job.id], { cwd: context.workspace, env: context.env, caller: owner('cancel-held-lease'), dependencies }), (/** @type {any} */ error) => error.code === 'JOB_CANCEL_FAILED');
+  assert.equal(stops, 1, 'the initial cancel persisted the intent and issued one unacknowledged election stop');
+  const retained = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(retained.status, 'cancelling');
+  // Hold the live child's worker lease so the orphan/election paths cannot acquire it:
+  // settlement must come from the management Reconciler's own remote-control adapters.
+  /** @type {(value?:unknown)=>void} */
+  let releaseLease = () => {}; const leaseHeld = new Promise((resolve) => { releaseLease = resolve; });
+  const leaseGate = withWorkerLease({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: reserved.job.id, workerLeaseId: claimed.workerLeaseId }, () => leaseHeld);
+  try {
+    const settled = await runCompanion(['status', reserved.job.id, '--wait', '--timeout-ms', '3000'], { cwd: context.workspace, env: context.env, caller: owner('wait-held-lease'), dependencies });
+    assert.equal(settled.job.status, 'cancelled', 'the Reconciler retries the persisted stop and settles while the lease is held');
+    assert.equal(stops, 2, 'the retry performs one further exact remote stop through the Reconciler');
+    assert.equal((await store.readJob(context.workspace, reserved.job.id)).stopCause, 'user');
+  } finally {
+    releaseLease(); await leaseGate;
+  }
 });
 
 test('result exposes owned terminal outcomes, skips active jobs, and preserves successful artifacts', async () => {

@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator } from '../scripts/lib/job-control.mjs';
 import { JOB_LOG_DISABLED_LINE } from '../scripts/lib/job-log-runtime.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -331,6 +331,29 @@ test('implicit cancel and result use command-specific eligibility while explicit
   await assert.rejects(controller.selectOwned(workspace, 'session-a', other.id, 'result'), { code: 'OWNED_JOB_NOT_FOUND' });
 });
 
+test('implicit status selection reconciles its exact latest owned job and rereads it', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'implicit-status-reconcile' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-implicit-status-reconcile' });
+  await store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+  /** @type {any[]} */ const requests = [];
+  let settled = false;
+  const controller = createJobController({
+    store,
+    reconcile: async (/** @type {any} */ request) => {
+      requests.push(request);
+      if (!settled) {
+        settled = true;
+        await store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+      }
+      return { kind: 'settled-terminal', status: 'cancelled' };
+    },
+  });
+  const selected = await controller.selectOwned(workspace, 'session-a', undefined, 'status');
+  assert.equal(selected.status, 'cancelled', 'the implicit view must project the reconciled reread, not the stale listing');
+  assert.deepEqual(requests, [{ intent: { kind: 'observe' }, authority: { ownerSessionId: 'session-a' }, workspace, selector: { jobId: job.id } }]);
+});
+
 test('wait reaches terminal state or returns a stable timeout error', async () => {
   const { workspace, store, controller } = await setup();
   const job = await store.reserveJob({ workspace, ...reservation });
@@ -369,6 +392,130 @@ test('wait interrupts a pending poll and handles its later rejection', async () 
   assert.equal(outcome, interruption);
   rejectPoll(new Error('late reconciliation failure'));
   await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('status wait retries unresolved stop through the Reconciler', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'wait-reconciler' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-wait-reconciler' });
+  await store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+  /** @type {any[]} */ const reconciles = [];
+  let polls = 0;
+  const controller = createJobController({
+    store, pollIntervalMs: 1,
+    beforeWaitPoll: async () => {
+      polls += 1;
+      if (polls > 25) throw new Error('wait never retried the unresolved stop through the Reconciler');
+    },
+  });
+  const reconciler = {
+    reconcile: async (/** @type {any} */ request) => {
+      const { signal, ...shape } = request;
+      assert.deepEqual(shape, { intent: { kind: 'wait' }, authority: { ownerSessionId: 'session-a' }, workspace, selector: { jobId: job.id } });
+      assert.ok(signal instanceof AbortSignal, 'each wait poll carries its deadline-scoped abort signal');
+      reconciles.push(request);
+      if (reconciles.length < 3) return { kind: 'unresolved-stop', status: 'cancelling' };
+      const settled = await store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+      return { kind: 'settled-terminal', status: settled.status, resumable: false };
+    },
+  };
+  const settled = await controller.wait(workspace, job.id, 'session-a', { reconciler, timeoutMs: 5_000 });
+  assert.equal(settled.status, 'cancelled');
+  assert.equal(reconciles.length, 3, 'wait must keep polling the Reconciler until the stop settles');
+});
+
+test('a zero-length wait still returns an already-terminal durable winner', async () => {
+  const { workspace, store, controller } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'wait-zero-terminal' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-zero-terminal' });
+  await store.finishJob(workspace, job.id, ['running'], 'failed', { error: 'already failed' });
+  const winner = await controller.wait(workspace, job.id, 'session-a', { timeoutMs: 0 });
+  assert.equal(winner.status, 'failed');
+});
+
+test('aborting the wait rejects a hung reconciliation poll promptly', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'wait-abort-hung' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-abort-hung' });
+  const controller = createJobController({ store, pollIntervalMs: 1 });
+  const reconciler = { reconcile: () => new Promise(() => {}) };
+  const abortController = new AbortController();
+  setTimeout(() => abortController.abort(new Error('wait interrupted')), 50);
+  await assert.rejects(controller.wait(workspace, job.id, 'session-a', { reconciler, timeoutMs: 5_000, signal: abortController.signal }), /wait interrupted/);
+});
+
+test('a hung reconciliation poll is bounded by the wait deadline', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'wait-hung-reconcile' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-wait-hung' });
+  const controller = createJobController({ store, pollIntervalMs: 1 });
+  const reconciler = { reconcile: () => new Promise(() => {}) };
+  const started = Date.now();
+  const guarded = Promise.race([
+    controller.wait(workspace, job.id, 'session-a', { reconciler, timeoutMs: 100 }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('wait outlived its deadline')), 2_000)),
+  ]);
+  await assert.rejects(guarded, { code: 'JOB_WAIT_TIMEOUT' });
+  assert.ok(Date.now() - started < 2_000, 'the deadline must fire during the hung poll, not after it returns');
+});
+
+test('concurrent cancels serialize reconciliation inside the deduplicated attempt', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-concurrent-reconcile' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-concurrent-cancel' });
+  let reconciles = 0; let stops = 0;
+  const controller = createJobController({ store, stopSession: async () => { stops += 1; throw new Error('stop not acknowledged'); },
+    reconcile: async () => { reconciles += 1; return null; } });
+  const outcomes = await Promise.allSettled([
+    controller.cancel(workspace, job.id, 'session-a'),
+    controller.cancel(workspace, job.id, 'session-a'),
+  ]);
+  assert.equal(outcomes.every((outcome) => outcome.status === 'rejected' && outcome.reason?.code === 'JOB_CANCEL_FAILED'), true);
+  assert.equal(reconciles, 1, 'both concurrent cancels share one serialized reconciliation attempt');
+  assert.equal(stops, 1, 'remote stops stay deduplicated');
+});
+
+test('a wait deadline aborts the still-running reconciliation poll', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'wait-abort-deadline' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-abort-deadline' });
+  let pollSignal; let pollSettled = false;
+  const controller = createJobController({ store, pollIntervalMs: 1 });
+  const reconciler = { reconcile: (/** @type {any} */ request) => new Promise((resolve) => { pollSignal = request.signal; request.signal?.addEventListener('abort', () => { pollSettled = true; resolve(null); }); }) };
+  await assert.rejects(controller.wait(workspace, job.id, 'session-a', { reconciler, timeoutMs: 50 }), { code: 'JOB_WAIT_TIMEOUT' });
+  assert.equal(/** @type {any} */ (pollSignal)?.aborted, true, 'the deadline aborts the poll signal so it cannot keep holding a control client');
+  assert.equal(pollSettled, true);
+});
+
+test('cancel retries unresolved stop intent through the Reconciler before its election', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'cancel-reconciler' });
+  /** @type {any[]} */ const requests = [];
+  const controller = createJobController({ store, reconcile: async (/** @type {any} */ request) => { requests.push(request); return null; } });
+  const winner = await controller.cancel(workspace, job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled');
+  assert.deepEqual(requests, [{ intent: { kind: 'stop', cause: 'user' }, authority: { ownerSessionId: 'session-a' }, workspace, selector: { jobId: job.id } }]);
+});
+
+test('resumableJobIndicator truth table derives resumability from the exact durable record', () => {
+  const cancelledWinner = {
+    command: 'rescue', readOnly: false, status: 'cancelled',
+    permissionSnapshot: { permissionMode: 'workspace-write' },
+    ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground',
+    zcodeSessionId: 'zs-truth-table', stopCause: 'user',
+  };
+  assert.equal(resumableJobIndicator({ command: 'rescue', readOnly: false, status: 'cancelled', permissionSnapshot: { permissionMode: 'workspace-write' }, zcodeSessionId: 'zs-legacy-cancelled' }, 'workspace-write', true), false, 'a legacy cancelled binding stays closed');
+  assert.equal(resumableJobIndicator(cancelledWinner, 'workspace-write', true), true, 'the Host-owned trio with an accepted session, a confirmed stop cause, a matching viewing permission, and a still-current binding stays resumable');
+  assert.equal(resumableJobIndicator(cancelledWinner, 'workspace-write'), false, 'without binding-currency evidence the cancelled branch fails closed too');
+  assert.equal(resumableJobIndicator(cancelledWinner, 'workspace-write', false), false, 'a binding that advanced past this cancelled job ends its resumability');
+  assert.equal(resumableJobIndicator(cancelledWinner), false, 'an absent viewing permission mode is unproven, so the indicator fails closed');
+  assert.equal(resumableJobIndicator({ ...cancelledWinner, zcodeSessionId: undefined }, 'workspace-write', true), false, 'a cancelled winner without an accepted session has nothing to resume');
+  assert.equal(resumableJobIndicator({ command: 'rescue', readOnly: false, status: 'failed', permissionSnapshot: { permissionMode: 'workspace-write' }, zcodeSessionId: 'zs-truth-table-failed' }, 'workspace-write', true), true, 'a failed accepted turn keeps its preserved session resumable while its exact binding is still current');
+  assert.equal(resumableJobIndicator({ command: 'rescue', readOnly: false, status: 'failed', permissionSnapshot: { permissionMode: 'workspace-write' }, zcodeSessionId: 'zs-truth-table-failed' }, 'workspace-write', false), false, 'a binding that advanced past this job ends its resumability');
+  assert.equal(resumableJobIndicator({ command: 'rescue', readOnly: false, status: 'failed', permissionSnapshot: { permissionMode: 'workspace-write' }, zcodeSessionId: 'zs-truth-table-failed' }, 'workspace-write'), false, 'without binding-currency evidence the succeeded and failed branches fail closed');
+  assert.equal(resumableJobIndicator({ command: 'rescue', readOnly: false, status: 'failed', zcodeSessionId: 'zs-truth-table-failed' }), false, 'without a permission snapshot or viewing mode the permission dimension stays unproven');
+  assert.equal(resumableJobIndicator(cancelledWinner, 'read-only'), false, 'a read-only viewing permission requires fresh, not resume');
+  assert.equal(resumableJobIndicator({ ...cancelledWinner, status: 'cancelling' }, 'workspace-write'), null, 'an unresolved stop is not a view the indicator applies to');
 });
 
 test('wait clears its polling timer and abort listener when interrupted', { timeout: 5_000 }, async () => {
@@ -1066,13 +1213,196 @@ test('cancel finalization timestamps after progress persisted concurrently with 
 });
 
 test('resume candidates are only latest owned rescue sessions', async () => {
-  const { workspace, store, controller } = await setup();
+  const { root, workspace, store } = await setup();
   const review = await store.reserveJob({ workspace, ...reservation, command: 'review', readOnly: true });
   await transitionAcceptedRunning(store, workspace, review.id, { zcodeSessionId: 'review-session' });
-  const rescue = await store.reserveJob({ workspace, ...reservation, readOnly: true });
-  await transitionAcceptedRunning(store, workspace, rescue.id, { zcodeSessionId: 'rescue-session' });
-  await store.transitionJob(workspace, rescue.id, ['running'], 'failed', { error: 'turn failed' });
-  assert.equal((await controller.resumeCandidate(workspace, 'session-a')).id, rescue.id);
+  // Resume selection is rescue-only and requires an anchoring binding plus the
+  // matching permission mode, so the fixture reserves a bound rescue.
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'latest-owned-child');
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 424_252, workerLeaseId: reserved.job.id });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'rescue-session', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'failed', { error: 'turn failed' });
+  const controller = createJobController({ store, dataRoot: join(root, 'data') });
+  assert.equal((await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'))?.id, reserved.job.id);
+});
+
+test('every resume candidate requires the current permission mode and an anchoring binding', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'all-candidates-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-all-candidates' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-all-candidates', startRevision: 1, beforeMessageIds: [] });
+  await store.finishJob(workspace, reserved.job.id, ['running'], 'succeeded', { resultArtifact: 'artifacts/x.md' });
+  const controller = createJobController({ store, dataRoot: join(root, 'data') });
+  assert.equal((await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'))?.id, reserved.job.id,
+    'a succeeded winner whose binding still anchors it stays resumable under its snapshot mode');
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a', 'read-only'), null,
+    'a permission change requires a fresh session even for succeeded candidates');
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a'), null, 'an absent mode is unproven');
+  await store.reserveBoundRescueContinuation({ workspace, reservation: { workspace, ...reservation, ownerTurnId: 'turn-advanced' },
+    executor: hostOwnedExecutor(workspace, 'all-candidates-child'), operationId: reserved.binding.operationId, expectedCurrentJobId: reserved.job.id });
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'), null,
+    'a binding that advanced past the newest candidate ends its resumability');
+});
+
+test('a retained Host-owned stop keeps its cancelling status with a bounded retry diagnostic', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'diagnostic-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-diagnostic' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-diagnostic', startRevision: 1, beforeMessageIds: [] });
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => { throw new Error('stop channel rejected'); }, readSession: async () => { throw new Error('unreadable'); } });
+  await assert.rejects(controller.cancel(workspace, reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+  const retained = await store.readJob(workspace, reserved.job.id);
+  assert.equal(retained.status, 'cancelling');
+  assert.equal(retained.stopIntent.cause, 'user');
+  assert.ok(retained.lastCancelError, 'the retained cancelling record carries a bounded retry diagnostic');
+});
+
+test('election cancellation publishes a pre-existing engine failure instead of cancelling it', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'prestop-failure-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-prestop-failure' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-prestop-failure', startRevision: 1, beforeMessageIds: [] });
+  // Retry-pass shape: an earlier reconciliation pass already persisted the
+  // durable stop intent and transitioned the record to cancelling.
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+  const failedSnapshot = { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-prestop-failure'), {
+    info: { role: 'assistant', messageId: 'assistant-prestop-failure', parentMessageId: 'input-prestop-failure', finish: 'stop', time: { completed: 2 }, error: { message: 'usage limit reached' } }, parts: [{ type: 'text', text: 'failed turn' }],
+  }] };
+  let stops = 0;
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => { stops += 1; }, readSession: async () => failedSnapshot });
+  const winner = await controller.cancel(workspace, reserved.job.id, 'session-a');
+  assert.equal(winner.status, 'failed', 'a turn that failed before the stop keeps its engine failure semantics');
+  assert.equal(stops, 0, 'no stop is issued for an already-terminal turn');
+  assert.equal(winner.stopIntent?.cause, 'user', 'the durable stop intent still authorizes the attempt');
+});
+
+test('an uncertain Host-owned settlement reports the retained cancelling state, not a running job', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'uncertain-settlement-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-uncertain-settlement' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-uncertain-settlement', startRevision: 1, beforeMessageIds: [] });
+  // Stop acknowledged (fake stops silently), but the reread stays unreadable so
+  // settlement is uncertain: the durable record is cancelling with its intent.
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => {}, readSession: async () => { throw new Error('reread unavailable'); } });
+  const rejection = await controller.cancel(workspace, reserved.job.id, 'session-a').then(() => null, (/** @type {any} */ error) => error);
+  assert.ok(rejection, 'an uncertain settlement must reject');
+  assert.equal(rejection.code, 'JOB_CANCEL_FAILED');
+  assert.match(rejection.remedy, /cancelling/u);
+  assert.doesNotMatch(rejection.remedy, /remains running/u);
+  const retained = await store.readJob(workspace, reserved.job.id);
+  assert.equal(retained.status, 'cancelling');
+  assert.equal(retained.stopIntent?.cause, 'user');
+});
+
+test('a closed binding partition never authorizes resume', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'closed-binding-child');
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 424_253, workerLeaseId: reserved.job.id });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-closed-binding', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'failed', { error: 'turn failed' });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: 'session-a', executorAgentId: 'closed-binding-child', operationId: reserved.binding.operationId, reason: 'cancel' });
+  const controller = createJobController({ store, dataRoot: join(root, 'data') });
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'), null,
+    'a candidate whose binding partition holds closed bindings stays closed to resume');
+});
+
+test('two eligible retained operations require disambiguation instead of latest-job fallback', async () => {
+  const { root, workspace, store } = await setup();
+  const newest = await reserveHostOwnedRescue(workspace, store, 'ambiguous-newest-child');
+  const newestClaimed = await store.claimJobWorkerForExecution(workspace, newest.job.id, { childPid: 424_255, workerLeaseId: newest.job.id });
+  await store.transitionJob(workspace, newest.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-ambiguous-newest', childPid: newestClaimed.childPid, workerLeaseId: newestClaimed.workerLeaseId });
+  await store.transitionJob(workspace, newest.job.id, ['running'], 'succeeded', { resultArtifact: 'artifacts/ambiguous-newest.md' });
+  const older = await reserveHostOwnedRescue(workspace, store, 'ambiguous-older-child');
+  const olderClaimed = await store.claimJobWorkerForExecution(workspace, older.job.id, { childPid: 424_256, workerLeaseId: older.job.id });
+  await store.transitionJob(workspace, older.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-ambiguous-older', childPid: olderClaimed.childPid, workerLeaseId: olderClaimed.workerLeaseId });
+  await store.transitionJob(workspace, older.job.id, ['running'], 'failed', { error: 'older failed' });
+  const controller = createJobController({ store, dataRoot: join(root, 'data') });
+  await assert.rejects(controller.resumeCandidate(workspace, 'session-a', 'workspace-write'), { code: 'RESUME_AMBIGUOUS' },
+    'two sibling retained operations must be disambiguated by the Host, never selected by recency');
+});
+
+test('an unbound newest candidate keeps legacy resume despite unrelated sibling bindings', async () => {
+  const { root, workspace, store } = await setup();
+  // A bound sibling on another child creates active + closed partition records,
+  // but the newest UNBOUND failed candidate cannot be superseded by them.
+  const sibling = await reserveHostOwnedRescue(workspace, store, 'sibling-binding-child');
+  const siblingClaimed = await store.claimJobWorkerForExecution(workspace, sibling.job.id, { childPid: 424_254, workerLeaseId: sibling.job.id });
+  await store.transitionJob(workspace, sibling.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-sibling-binding', childPid: siblingClaimed.childPid, workerLeaseId: siblingClaimed.workerLeaseId });
+  await store.transitionJob(workspace, sibling.job.id, ['running'], 'failed', { error: 'sibling failed' });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: 'session-a', executorAgentId: 'sibling-binding-child', operationId: sibling.binding.operationId, reason: 'cancel' });
+  const unbound = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'unbound-newest' });
+  await transitionAcceptedRunning(store, workspace, unbound.id, { zcodeSessionId: 'zs-unbound-newest' });
+  await store.transitionJob(workspace, unbound.id, ['running'], 'failed', { error: 'unbound failed' });
+  const controller = createJobController({ store, dataRoot: join(root, 'data') });
+  assert.equal((await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'))?.id, unbound.id,
+    'unbound legacy resume stays eligible even when other children hold active or closed bindings');
+});
+
+test('a corrupt cancellation journal fails closed before any mutating reconciliation', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'corrupt-journal' });
+  await transitionAcceptedRunning(store, workspace, job.id, { zcodeSessionId: 'zs-corrupt-journal' });
+  let reconciles = 0;
+  const controller = createJobController({ store, stopSession: async () => {}, readSession: async () => { throw new Error('unreadable'); },
+    reconcile: async () => { reconciles += 1; return { kind: 'settled-terminal', status: 'cancelled' }; },
+    afterObservationBeforeLock: async () => { throw new PluginError('JOURNAL_CORRUPT', 'the cancellation journal is corrupt', { category: 'state', remedy: 'inspect the journal' }); } });
+  await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOURNAL_CORRUPT' });
+  assert.equal(reconciles, 0, 'no mutating reconciliation runs when the journal fails closed');
+  assert.equal((await store.readJob(workspace, job.id)).status, 'running', 'the job stays untouched');
+});
+
+test('an ineligible newest Host-owned cancellation terminates resume selection instead of falling back', async () => {
+  const { root, workspace, store } = await setup();
+  // An older superseded rescue must never be selected once the newest cancelled
+  // Host-owned winner owns the active binding but is ineligible to resume.
+  const older = await store.reserveJob({ workspace, ...reservation });
+  await transitionAcceptedRunning(store, workspace, older.id, { zcodeSessionId: 'zs-older' });
+  await store.transitionJob(workspace, older.id, ['running'], 'failed', { error: 'older turn failed' });
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'no-fallback-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-no-fallback' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-no-fallback', startRevision: 1, beforeMessageIds: [] });
+  const interrupted = { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-no-fallback'), {
+    info: { role: 'assistant', messageId: 'assistant-no-fallback', parentMessageId: 'input-no-fallback', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }],
+  }] };
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => {}, readSession: async () => interrupted });
+  await controller.cancel(workspace, reserved.job.id, 'session-a');
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a', 'read-only'), null,
+    'a permission change on the newest Host-owned cancellation requires a fresh start, never an older session');
+  assert.equal((await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'))?.id, reserved.job.id);
+});
+
+test('a cancelled resume candidate requires the exact current permission mode', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'permission-resume-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-permission-resume' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-permission-resume', startRevision: 1, beforeMessageIds: [] });
+  const interrupted = { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-permission-resume'), {
+    info: { role: 'assistant', messageId: 'assistant-permission-resume', parentMessageId: 'input-permission-resume', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }],
+  }] };
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => {}, readSession: async () => interrupted });
+  await controller.cancel(workspace, reserved.job.id, 'session-a');
+  // The binding snapshot was reserved under workspace-write; only an equal viewing mode may resume it.
+  assert.equal((await controller.resumeCandidate(workspace, 'session-a', 'workspace-write'))?.id, reserved.job.id);
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a', 'read-only'), null);
+  assert.equal(await controller.resumeCandidate(workspace, 'session-a'), null, 'an absent mode is unproven and fails closed');
 });
 
 test('cold resume resolves explicit catalog model, materializes its full runtime, verifies it, then applies effort before one send', async () => {

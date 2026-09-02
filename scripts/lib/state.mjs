@@ -72,7 +72,7 @@ const JOB_PATCH_FIELDS = new Set([
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
   ['running', new Set(['running', 'cancelling', 'succeeded', 'failed'])],
-  ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
+  ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed', 'cancelling'])],
 ]);
 
 /** @typedef {{parentSessionId:string,childAgentId:string,childAgentType:string,operationId:string,originWorkspace:string,executionWorkspace:string,bindingDigest:string,agentPathDigest?:string,agentPath?:string}} RescueMigrationProof */
@@ -215,6 +215,75 @@ export function createStateStore(options) {
         const current = await readExactBindingJob(storage, binding.currentJobId);
         validateCurrentJob(current, binding.parentSessionId, storage.workspacePath);
         return structuredClone(current);
+      });
+    },
+
+    /** Prove one terminal owned Rescue job still anchors the exact active binding — the public Resumability Indicator's binding-currency evidence. The answer is a plain boolean; no binding record crosses this seam.
+     * @param {{workspace:string,ownerSessionId:string,jobId:string}} input */
+    async rescueBindingPointsAtJob(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId) || !isDigest(input.jobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === input.jobId);
+        return matches.length === 1 && matches[0].state === 'active';
+      });
+    },
+
+    /**
+     * Resolve the exact active binding anchoring one owned Rescue job — the
+     * standalone cancelled-resume lookup that has no executor identity to key
+     * on. Returns the private binding record for the same-process reservation
+     * CAS, or null when no active binding anchors the job.
+     * @param {{workspace:string,ownerSessionId:string,jobId:string}} input
+     */
+    async rescueBindingForJob(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId) || !isDigest(input.jobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === input.jobId && record.state === 'active');
+        return matches.length === 1 ? structuredClone(matches[0]) : null;
+      });
+    },
+
+    /**
+     * Resolve the owner's single active Rescue binding — the staleness oracle
+     * for resume selection: a candidate that this active binding does not
+     * anchor is superseded, while a partition with no active binding at all
+     * marks legacy unbound history whose resume semantics stay unchanged.
+     * Returns the private binding record, or null when no active binding exists.
+     * @param {{workspace:string,ownerSessionId:string}} input
+     */
+    async rescueActiveBindingForOwner(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.state === 'active');
+        // Multiple sibling active bindings are legitimate (a fresh start on
+        // another child does not close its siblings), but they are ambiguous
+        // as a staleness oracle: surface them explicitly so callers fail
+        // closed instead of mistaking the partition for legacy history.
+        if (matches.length > 1) return { ambiguous: true, count: matches.length };
+        return matches.length === 1 ? structuredClone(matches[0]) : null;
+      });
+    },
+
+    /**
+     * Prove whether the owner's binding partition holds any closed binding
+     * records at all — the closed-history oracle for resume selection: a
+     * partition containing closed bindings must never authorize a resume even
+     * when no active binding exists, because closed history stays closed.
+     * @param {{workspace:string,ownerSessionId:string}} input
+     */
+    async rescueOwnerPartitionHasClosedBindings(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        for (const record of snapshot.records.values()) if (record.state === 'closed') return true;
+        return false;
       });
     },
 
@@ -1854,7 +1923,7 @@ function hasHostOwnedLifecycle(job) {
 }
 
 /** A confirmed cancelled Host-owned winner preserves its exact binding only where its ZCode session was accepted; a queued pre-session cancellation is not resumable and revokes exactly like the historical path. @param {any} job */
-function resumableHostOwnedCancellation(job) {
+export function resumableHostOwnedCancellation(job) {
   return hasHostOwnedLifecycle(job) && typeof job.zcodeSessionId === 'string';
 }
 
@@ -2711,7 +2780,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('finishedAt' in job) || terminal)
     && (!('resultArtifact' in job) || job.status === 'succeeded')
     && (!('error' in job) || job.status === 'failed' || job.status === 'cancelled')
-    && (!('lastCancelError' in job) || job.status === 'running' || terminal);
+    && (!('lastCancelError' in job) || job.status === 'running' || terminal
+      || (job.status === 'cancelling' && job.command === 'rescue' && job.readOnly === false && validStopIntent(job.stopIntent)));
   const createdAt = validShape ? Date.parse(job.createdAt) : Number.NaN;
   const startedAt = validShape && 'startedAt' in job ? Date.parse(job.startedAt) : undefined;
   const finishedAt = validShape && 'finishedAt' in job ? Date.parse(job.finishedAt) : undefined;
@@ -2788,12 +2858,16 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     || (nextStatus !== 'failed' && nextStatus !== 'cancelled'))) invalidFields.push('error');
   if ('exitCode' in patch && (patch.exitCode !== null && !Number.isSafeInteger(patch.exitCode)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('exitCode');
+  const writableRescueJob = job.command === 'rescue' && job.readOnly === false;
+  const stopIntent = /** @type {any} */ ('stopIntent' in patch ? patch.stopIntent : job.stopIntent);
   if ('lastCancelError' in patch
     && !(currentStatus === 'cancelling' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
     && !(currentStatus === 'running' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
-    && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)) invalidFields.push('lastCancelError');
-  const writableRescueJob = job.command === 'rescue' && job.readOnly === false;
-  const stopIntent = /** @type {any} */ ('stopIntent' in patch ? patch.stopIntent : job.stopIntent);
+    && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)
+    // A retained Host-owned stop keeps its cancelling status while persisting
+    // its bounded retry diagnostic on the same record.
+    && !(currentStatus === 'cancelling' && nextStatus === 'cancelling' && isCancellationError(patch.lastCancelError)
+      && writableRescueJob && validStopIntent(stopIntent))) invalidFields.push('lastCancelError');
   if ('stopIntent' in patch && (!writableRescueJob || !validStopIntent(patch.stopIntent) || !ACTIVE_STATUSES.has(currentStatus)
     // A persisted intent is the durable authorization of this stop: only its exact
     // idempotent replay is accepted, never a later replacement.

@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "9b1b65af0703dfeb885759ec174049a2f3d1f343",
-  "sourceSha": "9b1b65af0703dfeb885759ec174049a2f3d1f343",
+  "sourceRef": "d8e1eb6f9d9e0cf2c9e7c1a5152f2166f0d69557",
+  "sourceSha": "d8e1eb6f9d9e0cf2c9e7c1a5152f2166f0d69557",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "2b631d908d8eac7dd373f0ec416210e7fa2cc87b354275dd10c2d74b456cf88c",
+    "sha256": "f8e024016f7976fcd4eb89deb264c29f5a48227f56f944b302007a5f3aa48baf",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -552,6 +552,11 @@
         "sha256": "5495d7e58814ff8c59a2c85afe17df04c87b8565f4fe8e742ed14d3c8bd88521"
       },
       {
+        "path": "plugins/zcode/scripts/lib/host-lifecycle.mjs",
+        "size": 44693,
+        "sha256": "1df61de219d34d12aabeb7c3e71f112bf998124c5c4a9bcce3459949ed6d53d5"
+      },
+      {
         "path": "plugins/zcode/scripts/lib/identifier.mjs",
         "size": 969,
         "sha256": "46e47172faaac10603b295cdee56a07edefb1221516a9e3a5d904fdeacd5628d"
@@ -568,8 +573,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/job-control.mjs",
-        "size": 26302,
-        "sha256": "217ec8b8ff228b7fd409f37b9f53d33e87eb2229038a18472295f7fc990f9ea2"
+        "size": 49264,
+        "sha256": "3bfb2ea802542752db4ba0e382e9aaa2d517037104903117085310f4939404a3"
       },
       {
         "path": "plugins/zcode/scripts/lib/job-log-runtime.mjs",
@@ -613,23 +618,28 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/recovery.mjs",
-        "size": 34688,
-        "sha256": "b6b203ba2e9c117441b4d3d26913d7f9274017547fce7153fe3cb2f3192056a8"
+        "size": 45661,
+        "sha256": "7378b004384f489757a395c769b5d23b1169d9b54d6bcc64fadf2bf5ab6bb759"
       },
       {
         "path": "plugins/zcode/scripts/lib/render.mjs",
-        "size": 8218,
-        "sha256": "3f2ea057d7a576b93eb484b36293a28b4bcbfca287a2aea2a18384ffd2170c1d"
+        "size": 9505,
+        "sha256": "ad84200e78b169f5ca6fa1dfec0d264e7a256c056f8bc3d26fac4b8469461330"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-binding.mjs",
-        "size": 24166,
-        "sha256": "7e09047dff9429abfea1e3d14f9b3fc57ffa610ea32a922ce3e4c8464eb1f4a2"
+        "size": 27013,
+        "sha256": "33c4969134b82a1e1932d41dfd6785153452e58e77ed287c6899269db28cea82"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-launcher-command.mjs",
         "size": 5605,
         "sha256": "01a842fef76e7adf25ee6d2ff058ff334923a6b118575831f0cb3365d6ed5156"
+      },
+      {
+        "path": "plugins/zcode/scripts/lib/rescue-lifecycle.mjs",
+        "size": 19303,
+        "sha256": "fbd4f9276fa5539ad6cd828ec31954c0e8fb356461700483a0ae993c7f46fcfe"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-migration.mjs",
@@ -658,8 +668,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/review.mjs",
-        "size": 44075,
-        "sha256": "8575a666fadd8022373e6c54ea4aabe7e3af708d1d64d002d9da85dc454378c1"
+        "size": 47477,
+        "sha256": "cb574dfcc021d7172c1f1043b30e005e22901482611e6ea2ec508b5b44922cb6"
       },
       {
         "path": "plugins/zcode/scripts/lib/session-progress.mjs",
@@ -673,8 +683,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/state.mjs",
-        "size": 183576,
-        "sha256": "e294bf9bb308fddc2c17a403262d9b518d32401a4dafde8d88e2d98d63979bfe"
+        "size": 193444,
+        "sha256": "2bdd9365df57a495d4b6b4ff3ec6ef93e1e297ca7ad46bbed098369b73d87913"
       },
       {
         "path": "plugins/zcode/scripts/lib/tool-launch.mjs",
@@ -733,8 +743,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 106577,
-        "sha256": "e169ca8b785b441775591d7d61b418c47ac463c6a1796e389c6ef1cf0d16992f"
+        "size": 142066,
+        "sha256": "c2260923103ed0aa2c4913b98ff7682c10f21be124d57ab05da6ffecedd0624d"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",

@@ -16,7 +16,17 @@ export function renderOutput(value, options = {}) {
   if (value?.type === 'transfer' && typeof value.result === 'string') return value.result.endsWith('\n') ? value.result : `${value.result}\n`;
   if (value?.type === 'background') return `Reserved background job ${value.job.id}.\n`;
   if (value?.jobs) return `${value.jobs.map(renderCompactJob).join('\n')}\n${renderModelPolicy(value.modelPolicy)}`;
-  if (value?.result !== undefined) return `${value.result}\n`;
+  if (value?.result !== undefined) {
+    // A succeeded terminal view renders the stored result AND the derived
+    // Resumability Indicator (both polarities, per ADR 0018); only the
+    // user-level resume hint is conditional on a true value.
+    const job = value?.job;
+    const indicator = job?.resumable === true || job?.resumable === false
+      ? `Resumable: ${job.resumable ? 'yes' : 'no'}\n` : '';
+    const hint = job?.resumable === true
+      ? 'Rescue hint: run $zcode:rescue --resume to continue this session\n' : '';
+    return `${value.result}\n${indicator}${hint}`;
+  }
   if (value?.job) return `${renderJob(value.job)}${renderModelPolicy(value.modelPolicy)}`;
   return `${JSON.stringify(redact(value))}\n`;
 }
@@ -56,6 +66,11 @@ function renderJob(job) {
     : [];
   const storedError = ['failed', 'cancelled'].includes(job.status) ? renderStoredError(job.error) : null;
   const lastCancellationError = renderStoredError(job.lastCancelError);
+  // Terminal Rescue views carry their derived Stop Cause and Resumability
+  // Indicator; the projection decides presence, rendering never derives them,
+  // and the internal ZCode session ID never crosses this seam.
+  const stopCause = typeof job.stopCause === 'string' && job.stopCause.length > 0 ? safeInline(job.stopCause) : null;
+  const resumable = typeof job.resumable === 'boolean' ? job.resumable : null;
   const logFile = safePath(job.owned === true && job.owner === 'same-owner' ? job.logFile : undefined);
   const lines = [
     `Job: ${safeInline(job.id)}`,
@@ -69,8 +84,11 @@ function renderJob(job) {
     `Last activity: ${safeInline(job.lastActivityAt)}`,
     ...(logFile === null ? [] : [`Log: ${logFile}`]),
     ...(storedError === null ? [] : [`Error: ${storedError}`]),
+    ...(stopCause === null ? [] : [`Stop cause: ${stopCause}`]),
     ...(lastCancellationError === null
       ? [] : [`Last cancellation error: ${lastCancellationError}`]),
+    ...(resumable === null ? [] : [`Resumable: ${resumable ? 'yes' : 'no'}`]),
+    ...(resumable === true ? ['Rescue hint: run $zcode:rescue --resume to continue this session'] : []),
     'Progress:',
     ...(previews.length > 0
       ? previews.map((/** @type {string} */ message) => `  - ${safeProgress(message)}`)
@@ -164,7 +182,7 @@ function redact(value, progressProbeOwner = null) {
   if (!value || typeof value !== 'object') return value;
   /** @type {Record<string,any>} */ const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|capability|executionCommitted|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueExecutionClaim|rescueExecutionReservation|rescueReservationKind|rescueJobSpecCommitment|rescueLegacyJobSpecProof/i.test(key)) continue;
+    if (/token|capability|executionCommitted|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueExecutionClaim|rescueExecutionReservation|rescueReservationKind|rescueJobSpecCommitment|rescueLegacyJobSpecProof|ownerLifecycleEpoch|executionOwner|hostPlacement|stopIntent|childPid|workerLeaseId|zcodeSessionId/i.test(key)) continue;
     if (/progressProbe/i.test(key) && (value !== progressProbeOwner || key !== 'progressProbe' || !validProgressProbe(entry))) continue;
     if (key === 'logFile' && value !== progressProbeOwner) continue;
     result[key] = redact(entry, progressProbeOwner);

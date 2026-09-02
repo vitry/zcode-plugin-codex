@@ -13,24 +13,26 @@ import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
-import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
-import { createManagedZCodeClient } from './lib/zcode-client.mjs';
+import { hostLifecycleEpoch } from './lib/host-lifecycle.mjs';
+import { createExistingManagedZCodeClient, createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { readZCodeCliRuntimeModel } from './lib/zcode-runtime-config.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
-import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, rescueBindingAuthorityView, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './lib/rescue-binding.mjs';
+import { createRescueLifecycleReconciler } from './lib/rescue-lifecycle.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
-import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
+import { cancelJob as cancelRecoveryJob, completeEndedJob, endedRemoteEvidence, failJob as failRecoveryJob, reconcileOwnedJobs, scavengeWritableJobs, unavailableOrReadableEvidence, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
-import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
-import { createStateStore, validProgressProbe } from './lib/state.mjs';
+import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
+import { createStateStore, resumableHostOwnedCancellation, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
@@ -105,36 +107,72 @@ export async function runCompanion(argv, runtime = {}) {
     const launch = await discoverLaunch(env);
     return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
   } });
-  const controller = createJobController({ store, dataRoot, beforeWaitPoll: reconcile });
+  const reconcileRescueLifecycle = createManagementRescueReconcile({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId,
+    // Observe intents are existing-broker-only (design lines 147/341): a
+    // read-only Status/Result must never launch ZCode — when the original
+    // broker is unavailable the reconciler retains the current guard instead.
+    // Stop and wait intents own mutation authority and may use the launch-
+    // capable client so a persisted stop can actually be retried.
+    createClient: async (/** @type {any} */ job, /** @type {string} */ ownerId, /** @type {any} */ intent) => {
+      runtime.signal?.throwIfAborted();
+      if (intent?.kind === 'observe') {
+        const existing = await (runtime.dependencies?.createExistingManagedZCodeClient ?? createExistingManagedZCodeClient)({ dataRoot, workspace: cwd, ownerId, requestTimeoutMs: existingBrokerRequestTimeoutMs });
+        if (existing === null) throw new PluginError('ZCODE_DISCONNECTED', 'The existing ZCode broker is unavailable.', { category: 'runtime', remedy: 'Retry when the original broker is reachable.' });
+        return existing;
+      }
+      const launch = await discoverLaunch(env);
+      return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
+    },
+    createRescueLifecycleReconciler: runtime.dependencies?.createRescueLifecycleReconciler ?? createRescueLifecycleReconciler });
+  // Selection reconciliations without their own signal (e.g. the cancel
+  // election inside the lock) run under the bounded observation budget; wait
+  // passes its own deadline-scoped signal through unchanged.
+  const controller = createJobController({ store, dataRoot, reconcile: (/** @type {any} */ request) => reconcileRescueLifecycle(request.signal ? request : { ...request, signal: boundedObservationSignal(runtime) }), beforeWaitPoll: reconcile });
   await reconcile();
   if (parsed.command === 'status') {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((/** @type {any} */ job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
-    let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
-    if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
-    return { job: publicJob(job, caller.sessionId, 'detail'), modelPolicy };
+    let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'status', { signal: boundedObservationSignal(runtime) });
+    if (parsed.options.wait) job = await controller.wait(cwd, job.id, caller.sessionId, { timeoutMs: parsed.options.timeoutMs, ...(runtime.signal ? { signal: runtime.signal } : {}) });
+    return { job: publicJob(job, caller.sessionId, 'detail', caller.permissionMode, await bindingCurrencyEvidence(store, cwd, caller.sessionId, job)), modelPolicy };
   }
   if (parsed.command === 'result') {
-    const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
-    if (job.status === 'succeeded') {
-      if (!job.resultArtifact) throw new PluginError('ZCODE_RESULT_MISSING', `Job ${job.id} succeeded without a stored result artifact.`, { category: 'state', remedy: `Run $zcode:status ${job.id} to inspect the completed job.`, details: { jobId: job.id, status: job.status } });
-      return { job, result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
+    const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result', { signal: boundedObservationSignal(runtime) });
+    if (MANAGEMENT_TERMINAL_STATUSES.has(job.status)) {
+      if (job.status === 'succeeded') {
+        if (!job.resultArtifact) throw new PluginError('ZCODE_RESULT_MISSING', `Job ${job.id} succeeded without a stored result artifact.`, { category: 'state', remedy: `Run $zcode:status ${job.id} to inspect the completed job.`, details: { jobId: job.id, status: job.status } });
+        return { job: terminalResultJob(job, caller.permissionMode, await bindingCurrencyEvidence(store, cwd, caller.sessionId, job)), result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
+      }
+      return { job: terminalResultJob(job, caller.permissionMode, await bindingCurrencyEvidence(store, cwd, caller.sessionId, job)) };
     }
-    if (job.status === 'failed' || job.status === 'cancelled') return { job: terminalResultJob(job) };
     throw new PluginError('JOB_RESULT_UNFINISHED', `Job ${job.id} is ${job.status}.`, { category: 'state', remedy: `Run $zcode:status ${job.id} --wait.`, details: { jobId: job.id, status: job.status } });
   }
   if (parsed.command === 'cancel') {
-    const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
+    const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel', { signal: boundedObservationSignal(runtime) });
     if (!['running', 'cancelling'].includes(selected.status)) {
       const job = await controller.cancel(cwd, selected.id, caller.sessionId);
       if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
       return { job };
     }
-    runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
-    const client = await (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
+    // The control client is created lazily on first remote use, so the
+    // durable stop intent is always persisted by reconciliation before any
+    // launcher discovery or client acquisition can fail (persist-before-control).
+    /** @type {any} */
+    let client;
+    const ensureClient = async () => {
+      if (!client) {
+        runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
+        client = await (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
+      }
+      return client;
+    };
     const cancelling = createJobController({ store, dataRoot,
-      stopSession: (sessionId) => client.stopSession(sessionId),
-      readSession: (sessionId) => client.readSession(sessionId),
+      // The cancel-side reconciliation runs under the bounded observation
+      // signal like every other selection, so a stalled control channel can
+      // neither outlive the command nor block SIGINT.
+      reconcile: (/** @type {any} */ request) => reconcileRescueLifecycle({ ...request, signal: boundedObservationSignal(runtime) }),
+      stopSession: async (sessionId) => (await ensureClient()).stopSession(sessionId),
+      readSession: async (sessionId) => (await ensureClient()).readSession(sessionId),
       publishSucceededSnapshot: async ({ workspace, job, snapshot, turnBoundary }) => {
         const result = extractFinalResult(snapshot, job.command, turnBoundary);
         return (await publishSuccessfulResultWithLockHeld({
@@ -146,9 +184,357 @@ export async function runCompanion(argv, runtime = {}) {
       if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
       return { job };
     }
-    finally { await client.close().catch(() => {}); }
+    finally { await client?.close().catch(() => {}); }
   }
   return startPublic({ parsed, caller, creatorAuthority: runtime.creatorAuthority, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, rescueActivationKind: runtime.rescueActivationKind, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+}
+
+const MANAGEMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+
+/**
+ * Derive the exact binding-currency evidence one terminal management view
+ * needs: only a succeeded, failed, or cancelled writable Rescue consults the
+ * owner's binding partition, proving the active binding still anchors this
+ * exact job — once a continuation advances the binding, the older job is no
+ * longer the resume target. Every other view skips the lookup; an unreadable
+ * partition fails closed instead of failing the whole view.
+ * @param {any} store @param {string} workspace @param {string} ownerSessionId @param {any} job
+ * @returns {Promise<boolean|undefined>}
+ */
+async function bindingCurrencyEvidence(store, workspace, ownerSessionId, job) {
+  if (!job || job.command !== 'rescue' || job.readOnly !== false || !['succeeded', 'failed', 'cancelled'].includes(job.status)) return undefined;
+  try {
+    if (await store.rescueBindingPointsAtJob({ workspace, ownerSessionId, jobId: job.id })) return true;
+    // Binding history belongs to BOUND candidates: an unbound (legacy) job is
+    // never superseded by other children's active or closed bindings —
+    // resumeCandidate deliberately retains legacy resume eligibility for it,
+    // so the indicator must agree and report resumable for the same job.
+    // Missing binding evidence is non-resumable even for legacy/unbound
+    // records: fabricated currency could advertise a session without the
+    // exact current binding the design requires.
+    if (job.rescueReservationKind !== 'bound') return false;
+    // A bound candidate's whole truth is the anchor: an active binding still
+    // pointing at this exact job proves resumability; anything else — active
+    // elsewhere, ambiguous, closed history, or records removed by binding GC —
+    // leaves the binding evidence unproven and fails closed.
+    return await store.rescueBindingPointsAtJob({ workspace, ownerSessionId, jobId: job.id }).catch(() => false);
+  } catch { return false; }
+}
+
+/**
+ * Bind one exact management caller to the Rescue Lifecycle Reconciler. Status,
+ * Result, and status --wait observe through this seam; Cancel persists its
+ * durable stop intent here before the cancellation election takes remote
+ * control. The seam is writable-Rescue-specific (ADR 0020): read-only Review
+ * and Adversarial jobs never enter the Reconciler and keep the existing
+ * cancellation election, journal, and owner-recovery semantics. Wired adapters:
+ * the exact owned joined state, durable stop-intent persistence, rollback-aware
+ * queued settlement, and guard-preserving retention. Deferred adapters
+ * (fail-closed defaults): remote stop/reread, generation revalidation, and
+ * unavailable-executor settlement stay owned by the existing cancellation
+ * election and owner recovery until the lifecycle hooks (Tasks 5-7) publish
+ * Host child observation and SessionEnd receipts; the joined Host state
+ * therefore stays 'idle' with no receipt evidence, so management observation
+ * never authorizes a stop on its own.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>,createRescueLifecycleReconciler:(adapters:any)=>{reconcile:(request:any)=>Promise<any>}}} input
+ */
+function createManagementRescueReconcile(input) {
+  /** One management reconciliation context: the exact joined job, the on-demand control client, and the revalidation guard. @type {{job:any,client?:any,guard?:any}} */
+  const context = { job: undefined };
+  const reconciler = input.createRescueLifecycleReconciler({
+    loadJoinedState: (/** @type {any} */ request) => loadManagementJoinedState(input, context, request),
+    persistStopIntent: (/** @type {any} */ joined, /** @type {string} */ cause, /** @type {any} */ options) => persistManagementStopIntent(input, joined, cause, options),
+    revalidateGeneration: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+      options?.signal?.throwIfAborted();
+      // Mirror the SessionEnd adapter's exact revalidation through the shared
+      // StateStore seam; a missing store method can only fail closed as stale.
+      const job = joined.job;
+      if (job.rescueReservationKind !== 'bound' || typeof input.store.revalidateBoundRescueStop !== 'function') {
+        return { kind: 'stale', winner: await input.store.readJob(input.workspace, job.id) };
+      }
+      const revalidated = await input.store.revalidateBoundRescueStop({ workspace: input.workspace, jobId: job.id,
+        ownerSessionId: job.ownerSessionId, status: job.status, zcodeSessionId: job.zcodeSessionId,
+        ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+        ...(context.guard === undefined || context.guard === null ? {} : { expected: context.guard }) });
+      if (revalidated?.kind === 'stale') return { kind: 'stale', winner: revalidated.job };
+      context.guard = revalidated?.guard ?? context.guard ?? null;
+      context.job = revalidated?.job ?? job;
+      return { kind: 'current', job: context.job, guard: context.guard };
+    },
+    stopExactTurn: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+      // Pre-stop read: a turn that already reached a terminal outcome BEFORE
+      // this stop keeps its own semantics instead of being misclassified as
+      // caused by the stop. The read reuses the already-open control client.
+      try {
+        const preStop = endedRemoteEvidence(await raceControlOperation(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
+        if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
+          return { acknowledged: true, preExistingTerminal: preStop };
+        }
+      } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+      options?.signal?.throwIfAborted();
+      try {
+        await raceControlOperation(context.client.stopSession(joined.job.zcodeSessionId), options?.signal);
+        options?.signal?.throwIfAborted();
+        return { acknowledged: true };
+      } catch (error) {
+        options?.signal?.throwIfAborted();
+        return { acknowledged: false, error };
+      }
+    },
+    rereadRemote: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+      options?.signal?.throwIfAborted();
+      let snapshot;
+      try { snapshot = await raceControlOperation(context.client.readSession(joined.job.zcodeSessionId), options?.signal); }
+      catch (error) { options?.signal?.throwIfAborted(); return { kind: 'unreadable', error }; }
+      options?.signal?.throwIfAborted();
+      return endedRemoteEvidence(snapshot, joined.job);
+    },
+    publishWinner: (/** @type {any} */ joined, /** @type {any} */ specification, /** @type {any} */ options) => publishManagementWinner(input, joined, specification, options),
+    retainUnresolved: async (/** @type {any} */ joined, /** @type {any} */ evidence) => {
+      // Persist a bounded retry diagnostic only when an actual remote failure
+      // was observed — the first pass of a cancel reaches this adapter before
+      // any remote operation (remote none), and writing a failure there would
+      // mislabel a later successful cancellation. The durable intent plus this
+      // diagnostic are the recovery evidence status/wait convergence reads.
+      if (evidence?.error !== undefined) {
+        const message = evidence.error instanceof Error ? evidence.error.message.slice(0, 2048)
+          : 'The remote stop remains unresolved; reconciliation will retry the persisted stop intent.';
+        try {
+          await input.store.transitionJob(input.workspace, joined.job.id, ['cancelling'], 'cancelling', { lastCancelError: message });
+        } catch { /* the record may have settled concurrently; the reread below is authoritative */ }
+      }
+      return input.store.readJob(input.workspace, joined.job.id);
+    },
+    // Executor absence is never provable from the management caller: a live
+    // host child may still hold its worker lease, so an unavailable control
+    // channel retains the durable guard — while persisting the bounded
+    // diagnostic, the same retainUnresolved discipline.
+    settleUnavailableExecutor: async (/** @type {any} */ joined, /** @type {any} */ evidence) => {
+      const message = 'The ZCode control channel is unavailable; reconciliation will retry the persisted stop intent.';
+      try {
+        await input.store.transitionJob(input.workspace, joined.job.id, ['cancelling'], 'cancelling', { lastCancelError: evidence?.error instanceof Error ? evidence.error.message.slice(0, 2048) : message });
+      } catch { /* the record may have settled concurrently; the reread is authoritative */ }
+      return input.store.readJob(input.workspace, joined.job.id);
+    },
+  });
+  return async (/** @type {any} */ request) => {
+    // The owned selection itself reports an unreadable or foreign job exactly;
+    // reconciliation never widens that miss into a different diagnostic.
+    if (request?.workspace !== input.workspace || typeof request.selector?.jobId !== 'string') return null;
+    const selected = await input.store.readJob(input.workspace, request.selector.jobId).catch(() => null);
+    if (selected === null || selected.ownerSessionId !== input.ownerSessionId) return null;
+    // The Rescue Lifecycle Reconciler owns Host-managed writable Rescue only:
+    // read-only jobs stay on the legacy election and journal paths, and a
+    // pre-upgrade (legacy) record lacks the stop-intent schema the Reconciler
+    // reasons over — routing one through it would misclassify an interrupted
+    // historical cancellation as an engine failure. Legacy records keep the
+    // exact historical status/result/cancel behavior (ADR 0018 lines 11-13).
+    if (selected.command !== 'rescue' || selected.readOnly !== false
+      || selected.ownerLifecycleEpoch === undefined && selected.stopIntent === undefined) return null;
+    context.job = selected; context.guard = undefined;
+    const run = async () => {
+      try {
+        return await reconciler.reconcile(request);
+      } finally {
+        await context.client?.close().catch(() => {});
+        context.client = undefined;
+      }
+    };
+    // Natural-success publication (and any remote observation) is serialized
+    // under the job cancellation lock so it cannot race a concurrent
+    // terminalization and strand an artifact — EXCEPT the stop intent, whose
+    // only caller (the cancel election) already holds that non-reentrant lock.
+    if (request.intent?.kind === 'stop') return run();
+    return withJobCancellationLock({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: selected.id }, run);
+  };
+}
+
+const managementObservationBudgetMs = 2_500;
+const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
+
+/** The caller-scoped signal that distinguishes a genuine command abort (SIGINT)
+ * from a stalled local observation: only the caller's own abort reaches the
+ * reconciler's request.signal (so its post-load throwIfAborted reflects user
+ * cancellation), while each control operation applies its own bounded
+ * observation budget inside the reconciler adapters. @param {{signal?:AbortSignal}} runtime */
+function boundedObservationSignal(runtime) {
+  return runtime.signal;
+}
+
+/** Race one remote control operation against its abort signal so a stuck read or stop can never outlive the reconciliation budget; the abandoned operation's late rejection is absorbed. @param {Promise<any>} operation @param {AbortSignal|undefined} signal */
+function raceControlOperation(operation, signal) {
+  operation.catch(() => {});
+  if (signal === undefined) return operation;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then((value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); });
+  });
+}
+
+/**
+ * Join the exact owned durable record into the bounded lifecycle view. Stop
+ * and wait intents on a live accepted Host-owned session additionally create
+ * one on-demand control client and join its exact remote-turn evidence — the
+ * same read the SessionEnd settlement performs — so a persisted stop intent
+ * can be retried even while the live host child holds its worker lease.
+ * Observe intents stay client-free: read-only views never spin a broker.
+ * @param {{store:any,dataRoot:string,workspace:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>}} input @param {{job?:any,client?:any}} context @param {any} request
+ */
+async function loadManagementJoinedState(input, context, request) {
+  const job = await input.store.readJob(input.workspace, request.selector.jobId);
+  const acceptedSession = typeof job.zcodeSessionId === 'string';
+  const remote = await loadManagementRemoteEvidence(input, context, request, job);
+  return {
+    job,
+    winner: MANAGEMENT_TERMINAL_STATUSES.has(job.status) ? job : null,
+    hostState: 'idle',
+    hostPlacement: job.hostPlacement ?? null,
+    hostOwned: job.command === 'rescue' && job.readOnly === false ? validHostLifecycleRecord(job) : false,
+    sessionEndReceipt: null,
+    stopIntent: job.stopIntent ?? null,
+    resumableEvidence: {
+      acceptedSession,
+      // The exact binding stays current by the Task 2 settlement invariant: a
+      // Host-owned cancelled winner with an accepted session preserved its
+      // binding, while a historical cancel closed it.
+      bindingCurrent: acceptedSession && (job.status !== 'cancelled' || validHostLifecycleRecord(job)),
+      // The binding snapshot equals this job's reservation snapshot by construction; the exact current permission mode is proven again at the authorized resume.
+      permissionMatch: true,
+    },
+    remote,
+    // A persisted stop intent is durable authorization, NOT evidence that a
+    // stop occurred — the joined state never claims post-stop semantics; the
+    // reconciler's stopExactTurn pre-stop read owns pre-existing-failure
+    // classification within a pass.
+    guard: null,
+  };
+}
+
+/**
+ * Create one bounded control client and join the exact remote-turn evidence.
+ * Stop and wait intents always join remote evidence — persist-before-control
+ * is preserved because the Reconciler persists the durable stop intent before
+ * its first remote-control adapter runs; control acquisition only happens
+ * here for jobs already carrying that durable authorization or receiving it
+ * in this reconciliation. Observe intents stay read-only except for one case:
+ * a cancelling job with a PERSISTED stop intent is an unresolved stop, and the
+ * documented Status/Result recovery entry points must retry its exact
+ * stop/reread rather than retaining it forever. Terminal, queued, and
+ * sessionless jobs keep the inert no-remote view.
+ * @param {{dataRoot:string,workspace:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>}} input @param {{client?:any}} context @param {any} request @param {any} job
+ */
+async function loadManagementRemoteEvidence(input, context, request, job) {
+  // Observe intents join exact remote evidence for every live Host-owned
+  // session: ordinary Status/Result must read and publish a durable winner
+  // that finished while the record stayed nonterminal (e.g. a stalled child
+  // still holding its lease), not report the stale nonterminal job forever.
+  if (MANAGEMENT_TERMINAL_STATUSES.has(job.status) || job.status === 'queued') return { kind: 'none' };
+  if (request.intent?.kind !== 'observe' && request.intent?.kind !== 'stop' && request.intent?.kind !== 'wait') return { kind: 'none' };
+  if (request.intent?.kind === 'stop' && job.status === 'running' && !validStopIntent(job.stopIntent)) {
+    // Persist-before-control: a stop intent on a not-yet-cancelling job is
+    // persisted by persistStopIntent BEFORE any control client is opened, so
+    // a hanging discovery/read can never leave the durable authorization
+    // unrecorded. Return no remote evidence on this load; the persisted
+    // intent drives the stop adapters on the next pass.
+    return { kind: 'none' };
+  }
+  if (typeof job.zcodeSessionId !== 'string' || typeof input.createClient !== 'function') return { kind: 'none' };
+  /** @type {any} */ let client;
+  try {
+    // Bounded acquisition: a stalled broker startup or client creation must
+    // observe the reconciliation signal like any other control operation. A
+    // client that resolves after abandonment is closed immediately, so
+    // repeated timed-out operations never leak broker connections.
+    // A per-operation budget composes the caller's signal with a fixed local
+    // timeout: a caller abort promptly ends the acquisition, while a local
+    // timeout leaving the (unmutated) shared request signal live still lets
+    // the reconciler process the unavailable evidence and render the durable
+    // job instead of failing the whole command.
+    const operationBudget = request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs);
+    const acquisition = Promise.resolve().then(() => input.createClient?.(job, ownerIdForSession(job.ownerSessionId), request.intent));
+    const acquired = raceControlOperation(acquisition, operationBudget);
+    // Cleanup keys on RACE abandonment, not the outer signal state: the
+    // operation budget can abandon the race while a longer caller budget
+    // (e.g. status --wait) keeps the request signal live — the late client
+    // must still be closed so repeated polls never leak broker connections.
+    let raceAbandoned = false;
+    acquired.catch(() => { raceAbandoned = true; });
+    acquisition.then((lateClient) => {
+      if (raceAbandoned && lateClient) lateClient.close?.().catch(() => {});
+    }).catch(() => {});
+    client = await acquired;
+  } catch (error) {
+    return unavailableOrReadableEvidence(error);
+  }
+  if (!client) return { kind: 'unavailable', error: managementReconcileError('The management control client is unavailable.') };
+  context.client = client;
+  let snapshot;
+  try { snapshot = await raceControlOperation(client.readSession(job.zcodeSessionId), request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs)); }
+  catch (error) { return unavailableOrReadableEvidence(error); }
+  return endedRemoteEvidence(snapshot, job);
+}
+
+/** Persist the durable stop intent before any remote control, mirroring the election's own transition order. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
+async function persistManagementStopIntent(input, joined, cause, options) {
+  options?.signal?.throwIfAborted();
+  if (joined.job.status === 'queued') return { kind: 'persisted', job: joined.job };
+  const current = await input.store.readJob(input.workspace, joined.job.id);
+  if (MANAGEMENT_TERMINAL_STATUSES.has(current.status)) return { kind: 'conflict', winner: current };
+  if (current.status === 'cancelling') return { kind: 'persisted', job: current };
+  try {
+    const cancelling = await input.store.transitionJob(input.workspace, current.id, ['running'], 'cancelling', {
+      ...(current.lastCancelError ? { lastCancelError: null } : {}),
+      ...hostOwnedStopIntentPatch(current, cause),
+    });
+    return { kind: 'persisted', job: cancelling };
+  } catch (error) {
+    const winner = await managementConflictWinner(input, current, error);
+    return { kind: 'conflict', winner, resumableEvidence: { acceptedSession: typeof winner.zcodeSessionId === 'string', bindingCurrent: false, permissionMatch: true } };
+  }
+}
+
+/** Publish only the rollback-aware unclaimed queued stop, exactly as the election's own queued branch; a claimed queued reservation defers to the election's worker-start guard; reconciler-settled queued cancels bypass the cancel-attempt journal/cancellation lock here because durable terminality is authoritative. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] */
+async function publishManagementWinner(input, joined, specification, options) {
+  options?.signal?.throwIfAborted();
+  // Remote-settled winners publish through the same recovery publication
+  // helpers the SessionEnd settlement uses, so a retried stop settles the
+  // durable winner even while the live host child holds its worker lease.
+  if (joined.job.status !== 'queued') {
+    if (specification.status === 'cancelled') return cancelRecoveryJob(input, joined.job, specification.stopCause);
+    if (specification.status === 'succeeded') {
+      const completed = await completeEndedJob(input, joined.job, specification.snapshot, undefined);
+      return completed ?? joined.job; /* completion unproven: uncertainty never publishes a terminal claim */
+    }
+    return failRecoveryJob(input, joined.job, managementReconcileError(specification.message ?? 'The remote ZCode turn failed during management reconciliation.'));
+  }
+  if (specification.status !== 'cancelled' || joined.job.workerLeaseId !== undefined) return joined.job;
+  const job = joined.job;
+  const rollback = await readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job, store: input.store,
+    invalid: () => managementReconcileError('Queued migration specification is invalid.') });
+  try {
+    return rollback
+      ? await input.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, specification.stopCause) })
+      : await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, specification.stopCause) });
+  } catch (error) {
+    const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
+    if (winner?.status === 'cancelled') return winner;
+    throw error;
+  }
+}
+
+/** Resolve the exact durable terminal winner a stop raced with, preserving the initiating error. @param {{store:any,workspace:string}} input @param {any} job @param {unknown} error */
+async function managementConflictWinner(input, job, error) {
+  try { return await durableCancelledWinner({ store: input.store, workspace: input.workspace, jobId: job.id, ownerSessionId: job.ownerSessionId }, error); }
+  catch { if (error instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT'].includes(error.code)) return input.store.readJob(input.workspace, job.id); throw error; }
+}
+
+/** Remote-control adapters stay unwired fail-closed defaults for management reconciliation. @param {string} adapter */
+/** @param {string} message */
+function managementReconcileError(message) {
+  return new PluginError('RESCUE_MANAGEMENT_RECONCILE_FAILED', message, { category: 'state', remedy: 'Remote stop and reread stay owned by the cancellation election and owner recovery.' });
 }
 
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
@@ -677,7 +1063,7 @@ async function startPublic(context) {
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
       }
       if (!parsed.options.resume && binding) return boundNeedsChoice(binding);
-    } else candidate = await controller.resumeCandidate(cwd, caller.sessionId);
+    } else candidate = await controller.resumeCandidate(cwd, caller.sessionId, caller.permissionMode);
     if (!childAuthorized && !parsed.options.resume && candidate) return { type: 'needs-choice', candidate, choices: ['--resume', '--fresh'] };
     if (parsed.options.resume === 'resume' && !binding && !candidate) throw new PluginError('RESUME_CANDIDATE_NOT_FOUND', 'No eligible rescue session can be resumed.', { category: 'state', remedy: 'Use --fresh to start a new ZCode session.' });
   }
@@ -706,6 +1092,67 @@ async function startPublic(context) {
       candidate = reserved.anchorJob;
     } else throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
     job = reserved.job;
+  } else if (parsed.command === 'rescue' && parsed.options.resume === 'resume' && candidate) {
+    // A standalone --resume of any bound selected candidate (cancelled,
+    // succeeded, or failed) advances the exact binding through the
+    // continuation CAS (reserveBoundRescueContinuation): the CAS makes the new
+    // job the binding's currentJobId, so the superseded candidate stops
+    // advertising resumability (exactly one continuation) and the next resume
+    // selection can find the new job. The caller has no executor identity, so
+    // the binding is resolved by the exact job it anchors and its recorded
+    // child authority is replayed for the reservation.
+    const prior = await store.rescueBindingForJob({ workspace: cwd, ownerSessionId: caller.sessionId, jobId: candidate.id });
+    if (prior === null && candidate.rescueReservationKind === 'bound') {
+      // A bound candidate whose anchor disappeared between selection and this
+      // lookup (a competing continuation advanced or closed it) fails closed:
+      // resuming the superseded session would bypass the exactly-one
+      // continuation CAS.
+      throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
+    }
+    if (prior !== null) {
+      const authority = rescueBindingAuthorityView(prior);
+      // The executor fields follow the durable authority kind: a subagent-start
+      // view carries parentTurnId/parentPermissionMode, while a codex-legacy-
+      // adoption record carries authorizingParentTurnId/authorizingPermissionMode.
+      // The executor replays the durable authority, EXCEPT the authorizing
+      // turn: reserveBoundRescueContinuation validates the adoption authority
+      // against the CURRENT reservation's ownerTurnId and permission snapshot,
+      // so a legacy-adoption continuation is authorized by this turn — the
+      // historical authorizingParentTurnId stays durable provenance only.
+      const executor = authority.kind === 'codex-legacy-adoption'
+        ? { parentSessionId: prior.parentSessionId, parentTurnId: caller.turnId, agentId: authority.childAgentId, agentType: authority.childAgentType,
+            workspace: prior.workspace, parentPermissionMode: caller.permissionMode }
+        : { parentSessionId: prior.parentSessionId, parentTurnId: authority.parentTurnId, agentId: authority.childAgentId, agentType: authority.childAgentType,
+            ...(authority.agentPath !== undefined ? { agentPath: authority.agentPath } : {}), workspace: prior.workspace, parentPermissionMode: authority.parentPermissionMode };
+      // A standalone resume continues a HOST-OWNED operation: ADR 0018 makes
+      // the ZCode parent session the Host, and this caller turn IS that
+      // session's authorized turn, so the continuation inherits the Host-
+      // managed lifecycle — otherwise the next cancellation would close the
+      // binding instead of preserving it, breaking resumability. The epoch
+      // derives from the CURRENT recorded session start (fail closed when the
+      // record is missing — reusing the superseded record's epoch would let a
+      // prior ended epoch's receipt stop the new work), and the placement
+      // honors this turn's execution choice.
+      const sessionRecord = await resolveRecordedSessionStart(dataRoot, cwd, caller.sessionId).catch((/** @type {any} */ error) => {
+        if (error?.cause?.cause?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
+          throw new PluginError('RESUME_EPOCH_UNPROVEN', 'The current Host session record is missing, so the resumed lifecycle epoch cannot be derived.', { category: 'authorization', remedy: 'Restart the Codex session or resume from a session with a recorded start.', cause: error });
+        }
+        throw error;
+      });
+      const lifecycle = {
+        ownerLifecycleEpoch: hostLifecycleEpoch(caller.sessionId, sessionRecord.startedAt),
+        executionOwner: 'host-child',
+        hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
+      };
+      const reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor,
+        operationId: prior.operationId, expectedCurrentJobId: candidate.id, expectedAnchorJobId: prior.anchorJobId, lifecycle }));
+      job = reserved.job;
+      candidate = reserved.anchorJob;
+    } else {
+      // An unbound (legacy) candidate has no binding to advance: it keeps the
+      // generic reservation path and its legacy resume semantics unchanged.
+      job = await reservePublicJob(context, reservation);
+    }
   } else job = await reservePublicJob(context, reservation);
   if (parsed.command === 'transfer') {
     return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), signal: context.signal, progressWriter: context.progressWriter, resolveLaunch: () => discoverLaunch(context.env),
@@ -714,6 +1161,15 @@ async function startPublic(context) {
     });
   }
   const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
+  if (parsed.options.execution === 'background' && validHostLifecycleRecord(job)) {
+    // A Host-owned background continuation executes ATTACHED in this process
+    // (ADR 0018: new Host-owned Rescue never launches a detached worker). The
+    // reservation keeps the caller's session-bound execution alive until the
+    // turn settles; the reserved background contract surfaces only after the
+    // durable terminal winner exists.
+    const terminal = await executeWithWorkerLease({ ...context, job, spec });
+    return { type: 'background-terminal', job: publicReservedJob(terminal?.job ?? terminal) };
+  }
   if (parsed.options.execution === 'background') {
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
     let capability;
@@ -1102,7 +1558,19 @@ async function cancelClaimedQueuedInterruption(context) {
   return withJobCancellationLock({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id }, async () => {
     const current = await context.store.readJob(context.cwd, context.job.id);
     if (current.status !== 'queued' || current.workerLeaseId !== context.workerLeaseId) return current;
-    return context.store.finishJob(context.cwd, current.id, ['queued'], 'cancelled', { exitCode: null });
+    // A queued pre-session interruption on a Host-owned Rescue publishes its
+    // stop-intent fields atomically with the cancellation — the strict schema
+    // requires them on every cancelled Host-owned winner, and the pre-session
+    // cause is host-coordination-loss (this attached companion was
+    // interrupted; no explicit user cancel occurred). Non-Rescue and legacy
+    // records keep their bare cancellation shape.
+    const hostOwned = validHostLifecycleRecord(current);
+    const stopCause = current.stopIntent?.cause ?? 'host-coordination-loss';
+    return context.store.finishJob(context.cwd, current.id, ['queued'], 'cancelled', hostOwned ? {
+      exitCode: null,
+      stopIntent: current.stopIntent ?? { version: 1, cause: stopCause, requestedAt: new Date().toISOString() },
+      stopCause,
+    } : { exitCode: null });
   });
 }
 
@@ -1114,8 +1582,8 @@ function requireAuthorization(value, keys) {
   return value;
 }
 function authorizationInputError() { return new PluginError('INTERNAL_AUTHORIZATION_INVALID', 'The internal authorization envelope is invalid.', { category: 'authorization', remedy: 'Invoke this command through its installed skill using the protected internal channel.' }); }
-/** @param {any} job @param {string} ownerSessionId @param {'list'|'detail'} projection */
-function publicJob(job, ownerSessionId, projection) {
+/** @param {any} job @param {string} ownerSessionId @param {'list'|'detail'} projection @param {string} [viewingPermissionMode] @param {boolean} [bindingCurrent] */
+function publicJob(job, ownerSessionId, projection, viewingPermissionMode, bindingCurrent) {
   if (job.ownerSessionId !== ownerSessionId) {
     return {
       id: job.id,
@@ -1125,7 +1593,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; delete visible.ownerLifecycleEpoch; delete visible.executionOwner; delete visible.hostPlacement; delete visible.stopIntent; delete visible.zcodeSessionId; delete visible.childPid; delete visible.workerLeaseId;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -1137,12 +1605,17 @@ function publicJob(job, ownerSessionId, projection) {
     else visible.lastCancelError = typeof visible.lastCancelError === 'string' ? message : { message };
   }
   if (projection === 'detail' && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
+  // The Resumability Indicator is derived at projection time from the exact
+  // durable record, the viewing turn's permission mode, and binding-currency
+  // evidence — never persisted — and never carries the session ID.
+  const resumable = resumableJobIndicator(job, viewingPermissionMode, bindingCurrent);
+  if (projection === 'detail' && resumable !== null) visible.resumable = resumable;
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
 function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
-/** @param {any} job */
-function terminalResultJob(job) {
+/** @param {any} job @param {string} [viewingPermissionMode] @param {boolean} [bindingCurrent] */
+function terminalResultJob(job, viewingPermissionMode, bindingCurrent) {
   const visible = {
     id: job.id,
     command: job.command,
@@ -1152,7 +1625,13 @@ function terminalResultJob(job) {
     owner: 'same-owner',
   };
   const message = publicErrorMessage(job.error);
-  return message ? { ...visible, error: { message } } : visible;
+  const resumable = resumableJobIndicator(job, viewingPermissionMode, bindingCurrent);
+  const terminal = {
+    ...visible,
+    ...(resumable === null ? {} : { resumable }),
+    ...(typeof job.stopCause === 'string' ? { stopCause: job.stopCause } : {}),
+  };
+  return message ? { ...terminal, error: { message } } : terminal;
 }
 /** @param {Record<string,any>} source @param {string[]} fields */
 function copyOptionalStringFields(source, fields) {
@@ -1199,10 +1678,23 @@ function legacyClasslessProof(spec) {
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }
 /** @param {any} store @param {string} workspace @param {string} ownerSessionId @param {Record<string,string>} spec */
-async function validateResumeCandidate(store, workspace, ownerSessionId, spec) {
+/**
+ * Revalidate the exact resume candidate immediately before the session/resume
+ * RPC. A cancelled candidate passes only through the full durable predicate —
+ * state.mjs's resumableHostOwnedCancellation (Host-owned trio plus accepted
+ * session), its confirmed durable stop cause, the caller turn's permission
+ * mode equaling the binding snapshot, and the active binding partition still
+ * anchoring that exact job — so historical closed/cancel records, superseded
+ * winners, and permission changes stay rejected exactly as before.
+ * @param {any} store @param {string} workspace @param {string} ownerSessionId @param {{resumeSessionId?:string,candidateJobId?:string}} spec @param {string} [permissionMode] The reserving caller turn's permission mode; required for a cancelled candidate, whose binding snapshot it must equal. Absent on the worker-side revalidation, where the parent's selection already enforced it.
+ */
+async function validateResumeCandidate(store, workspace, ownerSessionId, spec, permissionMode = undefined) {
   if (!spec.resumeSessionId) return;
   const candidate = await store.readJob(workspace, spec.candidateJobId);
-  if (candidate.ownerSessionId !== ownerSessionId || candidate.command !== 'rescue' || candidate.zcodeSessionId !== spec.resumeSessionId || !['running', 'succeeded', 'failed'].includes(candidate.status)) throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
+  const permissionEligible = permissionMode === undefined || candidate.permissionSnapshot?.permissionMode === permissionMode;
+  const eligible = permissionEligible && (['running', 'succeeded', 'failed'].includes(candidate.status)
+    || (candidate.status === 'cancelled' && resumableHostOwnedCancellation(candidate) && STOP_CAUSES.has(candidate.stopCause)));
+  if (candidate.ownerSessionId !== ownerSessionId || candidate.command !== 'rescue' || candidate.zcodeSessionId !== spec.resumeSessionId || !eligible) throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
 }
 
 /** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,signal?:AbortSignal,createStream?:(fd:number)=>any}} [options] */

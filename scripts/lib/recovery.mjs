@@ -6,13 +6,17 @@ import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
-import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord } from './rescue-binding.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const REMOTE_ACTIVE = new Set(['running', 'waiting']);
+// Evidence projection (endedRemoteEvidence) treats paused as attributable
+// activity so a persisted stop can be retried against a paused turn; the
+// orphan-scavenge path keeps its stricter paused semantics above.
+const EVIDENCE_ACTIVE = new Set(['running', 'waiting', 'paused']);
 const CONTROL_CHANNEL_UNAVAILABLE = new Set(['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']);
 export const LEGACY_QUEUED_STALE_MS = 5 * 60_000;
 const OPTIONAL_JOB_LOG_FENCE_MS = 250;
@@ -253,7 +257,7 @@ async function queuedMigrationRollback(input, job) {
     invalid: () => recoveryError('Queued migration specification is invalid.') });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
-async function failJob(input, job, error) {
+export async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   const patch = { error: { message: recoveryMessage(error) }, exitCode: 1 };
@@ -262,7 +266,7 @@ async function failJob(input, job, error) {
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
 /** @param {any} input @param {any} job @param {string} [stopCause] */
-async function cancelJob(input, job, stopCause = 'host-coordination-loss') {
+export async function cancelJob(input, job, stopCause = 'host-coordination-loss') {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   try {
@@ -344,8 +348,19 @@ async function settleEndedRescueThroughReconciler(input, current) {
         return { kind: 'current', job: context.job, guard: context.guard };
       },
       stopExactTurn: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+        // Pre-stop read: a turn that already reached a terminal outcome BEFORE
+        // this stop keeps its own semantics (natural success publishes its
+        // result; an engine terminal failure publishes failed) instead of being
+        // misclassified as caused by the stop. The read reuses the open client.
         try {
-          await context.client.stopSession(joined.job.zcodeSessionId);
+          const preStop = endedRemoteEvidence(await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
+          if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
+            return { acknowledged: true, preExistingTerminal: preStop };
+          }
+        } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+        options?.signal?.throwIfAborted();
+        try {
+          await raceRecoveryControl(context.client.stopSession(joined.job.zcodeSessionId), options?.signal);
           options?.signal?.throwIfAborted();
           return { acknowledged: true };
         } catch (error) {
@@ -356,7 +371,7 @@ async function settleEndedRescueThroughReconciler(input, current) {
       rereadRemote: async (/** @type {any} */ joined, /** @type {any} */ options) => {
         options?.signal?.throwIfAborted();
         let snapshot;
-        try { snapshot = await context.client.readSession(joined.job.zcodeSessionId); }
+        try { snapshot = await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal); }
         catch (error) { options?.signal?.throwIfAborted(); return { kind: 'unreadable', error }; }
         options?.signal?.throwIfAborted();
         return endedRemoteEvidence(snapshot, joined.job);
@@ -381,6 +396,19 @@ async function settleEndedRescueThroughReconciler(input, current) {
     await context.client?.close().catch(() => {});
     await context.jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS);
   }
+}
+
+/** Race one recovery control operation against its abort signal so a stuck stop or read can never outlive the settlement budget; the abandoned operation's late rejection is absorbed. @param {Promise<any>} operation @param {AbortSignal|undefined} signal */
+function raceRecoveryControl(operation, signal) {
+  operation.catch(() => {});
+  if (signal === undefined) return operation;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then((value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); });
+  });
 }
 
 /** Join the ending owner's exact job with existing ZCode control evidence. @param {any} input @param {{job:any,client?:any,jobLog?:any}} context @param {any} request */
@@ -410,15 +438,23 @@ async function loadEndedRescueJoinedState(input, context, request) {
 }
 
 /** Map one control-channel failure onto bounded existing-executor evidence. @param {unknown} error */
-function unavailableOrReadableEvidence(error) {
+export function unavailableOrReadableEvidence(error) {
   return controlChannelUnavailable(error)
     ? { kind: 'unavailable', error: establishedUnavailableOrphanError(error) }
     : { kind: 'unreadable', error };
 }
 
-/** Project one ended-owner job into the private joined Reconciler view. @param {any} job @param {any} remote */
+/**
+ * Project one ended-owner job into the private joined Reconciler view.
+ * SessionEnd-caller-specific: bindingCurrent/permissionMatch/hostState/receipt
+ * are asserted by this caller's own session-boundary authority, never derived —
+ * do not reuse as generic joined-state evidence. A persisted stop intent is
+ * durable authorization, NOT evidence that a stop occurred, so it never marks
+ * the joined state as post-stop; within-pass stop semantics are owned by the
+ * reconciler's stopExactTurn/reread sequence.
+ * @param {any} job @param {any} remote
+ */
 function endedJoined(job, remote) {
-  // SessionEnd-caller-specific: bindingCurrent/permissionMatch/hostState/receipt are asserted by this caller's own session-boundary authority, never derived — do not reuse as generic joined-state evidence.
   return {
     job,
     winner: null,
@@ -438,9 +474,9 @@ function endedJoined(job, remote) {
 }
 
 /** Classify the exact current-turn evidence of one ended-owner remote read; terminal evidence carries its snapshot so the natural-success winner can publish the authoritative result. @param {any} snapshot @param {any} job */
-function endedRemoteEvidence(snapshot, job) {
+export function endedRemoteEvidence(snapshot, job) {
   const boundary = persistedTurnBoundary(job);
-  const active = REMOTE_ACTIVE.has(snapshot?.projection?.status);
+  const active = EVIDENCE_ACTIVE.has(snapshot?.projection?.status);
   if (!boundary) return { kind: 'evidence', classification: 'pending', active, attributable: false };
   const classification = classifyCurrentTurnSnapshot(snapshot, boundary);
   if (classification.kind !== 'pending') return { kind: 'evidence', classification: classification.kind, active: false, attributable: true, snapshot };
@@ -507,7 +543,7 @@ async function publishEndedWinner(input, context, joined, specification, options
 }
 
 /** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot @param {any} jobLog */
-async function completeEndedJob(input, job, snapshot, jobLog) {
+export async function completeEndedJob(input, job, snapshot, jobLog) {
   const boundary = persistedTurnBoundary(job);
   if (!boundary || classifyCurrentTurnSnapshot(snapshot, boundary).kind !== 'succeeded') return null;
   let resultArtifact;
@@ -603,6 +639,24 @@ async function revalidateBoundRescueStop(input, job, expected) {
 async function retainAfterStopFailure(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
+  // A cancelling record carrying a persisted stop intent keeps its status AND
+  // persists the bounded failure diagnostic — public status strips the private
+  // stop intent, so lastCancelError is the only visible retry evidence. Legacy
+  // records without an intent keep the running-retention diagnostic.
+  if (current.status === 'cancelling' && validStopIntent(current.stopIntent)) {
+    const message = recoveryMessage(error);
+    try {
+      return await input.store.transitionJob(input.workspace, current.id, ['cancelling'], 'cancelling', { lastCancelError: message });
+    } catch (transitionError) {
+      // A concurrent settlement wins: reread the durable record — the stale
+      // pre-race `cancelling` snapshot must never mask a terminal winner.
+      // Genuine storage failures propagate instead of being masked.
+      if (transitionError instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION'].includes(transitionError.code)) {
+        return await input.store.readJob(input.workspace, current.id);
+      }
+      throw transitionError;
+    }
+  }
   const message = recoveryMessage(error);
   try { return await input.store.transitionJob(input.workspace, job.id, [current.status], 'running', { lastCancelError: message }); }
   catch (transitionError) {

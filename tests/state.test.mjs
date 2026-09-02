@@ -309,6 +309,23 @@ test('new Host-owned Rescue persists placement epoch and execution owner', async
   assert.equal(reread.hostPlacement, 'background');
 });
 
+test('rescueBindingPointsAtJob proves exact binding currency for terminal views', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-binding-currency' });
+  await store.finishJob(workspace, reserved.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: reserved.job.id }), true, 'the active binding still anchors its succeeded current job');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+    executor: legacyExecutor(workspace), operationId: reserved.binding.operationId, expectedCurrentJobId: reserved.job.id, lifecycle });
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: reserved.job.id }), false, 'an advanced binding no longer anchors the older job');
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: continuation.job.id }), true, 'the continuation is the binding current job');
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'another-session', jobId: continuation.job.id }), false, 'a foreign owner partition has no matching binding');
+  await assert.rejects(store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: 'not-a-digest' }), { code: 'RESCUE_BINDING_INVALID' });
+});
+
 test('Host-owned Rescue lifecycle requires the indivisible execution trio', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
