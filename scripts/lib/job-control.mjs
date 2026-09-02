@@ -7,6 +7,7 @@ import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -105,15 +106,21 @@ export function createJobController(options) {
         else await pollDelay(waitMs, signal, scheduleTimeout, cancelTimeout);
       }
     },
-    /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId */
-    cancel(workspace, jobId, ownerSessionId) {
+    /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId @param {string} [stopCause] The bounded durable stop cause; explicit user cancellation is the default and lifecycle callers supply their own. */
+    cancel(workspace, jobId, ownerSessionId, stopCause = 'user') {
+      if (!STOP_CAUSES.has(stopCause)) {
+        throw new PluginError('JOB_CANCEL_INPUT_INVALID', 'The cancellation stop cause is invalid.', {
+          category: 'validation', remedy: `Pass one of the bounded stop causes: ${[...STOP_CAUSES].sort().join(', ')}.`,
+          details: { stopCause },
+        });
+      }
       const dataRoot = options.dataRoot ?? options.store.dataRoot;
       if (!dataRoot) return Promise.reject(cancelError(jobId, 'Cancellation lock storage is unavailable.'));
       let canonicalWorkspace;
       try { canonicalWorkspace = realpathSync(resolve(workspace)); }
-      catch { return resolveWorkspaceStorage({ dataRoot, workspace }).then((storage) => cancelWithElection({ options, storage, workspace: storage.workspacePath, jobId, ownerSessionId })); }
+      catch { return resolveWorkspaceStorage({ dataRoot, workspace }).then((storage) => cancelWithElection({ options, storage, workspace: storage.workspacePath, jobId, ownerSessionId, stopCause })); }
       const key = `${canonicalWorkspace}:${jobId}`; const existing = inFlight.get(key); if (existing) return existing;
-      const attempt = resolveWorkspaceStorage({ dataRoot, workspace: canonicalWorkspace }).then((storage) => cancelWithElection({ options, storage, workspace: canonicalWorkspace, jobId, ownerSessionId }));
+      const attempt = resolveWorkspaceStorage({ dataRoot, workspace: canonicalWorkspace }).then((storage) => cancelWithElection({ options, storage, workspace: canonicalWorkspace, jobId, ownerSessionId, stopCause }));
       inFlight.set(key, attempt); const cleanup = () => { if (inFlight.get(key) === attempt) inFlight.delete(key); }; attempt.then(cleanup, cleanup); return attempt;
     },
     /** @param {string} workspace @param {string} ownerSessionId */
@@ -125,7 +132,7 @@ export function createJobController(options) {
   };
 }
 
-/** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string}} input */
+/** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string,stopCause?:string}} input */
 async function cancelWithElection(input) {
   if (!/^[a-f0-9]{64}$/.test(input.jobId)) throw new PluginError('JOB_ID_INVALID', 'Job identifier has an invalid format.', { category: 'validation', remedy: 'Use a job ID returned by the state store.', details: { jobId: input.jobId } });
   const attempts = createCancelAttemptStore(input.storage); let operationStarted = false;
@@ -144,8 +151,9 @@ async function cancelWithElection(input) {
   }
 }
 
-/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
+/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string,stopCause?:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
 async function performCancellation(input, attempts, election) {
+  const stopCause = input.stopCause ?? 'user';
   const job = await input.options.store.readJob(input.workspace, input.jobId);
   if (job.ownerSessionId !== input.ownerSessionId) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
   if (TERMINAL.has(job.status)) return job;
@@ -162,8 +170,8 @@ async function performCancellation(input, attempts, election) {
       invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
     let cancelled;
     try { cancelled = rollback
-      ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })
-      : await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+      ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) })
+      : await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) }); }
     catch (error) { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
@@ -171,14 +179,14 @@ async function performCancellation(input, attempts, election) {
   if (job.status === 'cancelling' && attempt.status === 'finalize-pending' && persistedTurnBoundary(job)) {
     let cancelled;
     try {
-      cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+      cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) });
     } catch (error) {
       try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
       catch (finalizeFailure) { throw finalizeError(job.id, finalizeFailure); }
     }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
-  const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
+  const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', { ...(job.lastCancelError ? { lastCancelError: null } : {}), ...hostOwnedStopIntentPatch(job, stopCause) }) : job;
   const observedStop = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling);
   if (observedStop?.kind === 'stale') return observedStop.job;
   try {
@@ -212,7 +220,7 @@ async function performCancellation(input, attempts, election) {
     }
   }
   let cancelled;
-  try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
+  try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) }); }
   catch (error) {
     try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     catch (finalizeFailure) {

@@ -103,8 +103,8 @@ function runtimeModel(model) {
   return { revision: 'runtime-test-revision', generatedAt: 1_788_000_000_000, model, provider: { providerId: model.providerId, kind: 'openai-compatible', source: 'user', baseURL: 'https://example.invalid/v1', apiKey: { source: 'inline', value: 'PRIVATE_RUNTIME_KEY' }, models: [{ modelId: model.modelId }] } };
 }
 
-/** @param {string} root @param {string} workspace @param {any} store */
-async function legacyMigrationExecutionFixture(root, workspace, store) {
+/** @param {string} root @param {string} workspace @param {any} store @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [continuationLifecycle] */
+async function legacyMigrationExecutionFixture(root, workspace, store, continuationLifecycle) {
   const executor = { parentSessionId: 'legacy-parent', parentTurnId: 'legacy-origin-turn', agentId: 'legacy-child',
     agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace,
     parentPermissionMode: 'workspace-write' };
@@ -139,7 +139,8 @@ async function legacyMigrationExecutionFixture(root, workspace, store) {
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: { workspace,
     ownerSessionId: executor.parentSessionId, ownerTurnId: 'legacy-continuation-turn', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' } }, executor, operationId: first.binding.operationId,
-    migrationProof: proof.migrationProof, expectedCurrentJobId: first.job.id, expectedAnchorJobId: first.job.id });
+    migrationProof: proof.migrationProof, expectedCurrentJobId: first.job.id, expectedAnchorJobId: first.job.id,
+    ...(continuationLifecycle === undefined ? {} : { lifecycle: continuationLifecycle }) });
   return { closed, continuation, executor, partitionPath };
 }
 
@@ -496,6 +497,70 @@ test('running cancellation retains a boundaryless guard after a bare acknowledge
   await assert.rejects(bad.cancel(second.workspace, failed.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
   const restored = await second.store.readJob(second.workspace, failed.id);
   assert.equal(restored.status, 'running'); assert.match(String(restored.lastCancelError), /refused/);
+});
+
+/** @param {string} workspace @param {string} agentId */
+function hostOwnedExecutor(workspace, agentId) {
+  return { parentSessionId: 'session-a', parentTurnId: 'turn-a', agentId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+}
+
+/** @param {string} workspace @param {any} store @param {string} agentId */
+async function reserveHostOwnedRescue(workspace, store, agentId) {
+  return store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation },
+    executor: hostOwnedExecutor(workspace, agentId),
+    lifecycle: { ownerLifecycleEpoch: 'b'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+}
+
+test('controller cancel persists the durable user stop intent for a Host-owned running Rescue', async () => {
+  const { root, workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'host-owned-cancel-child');
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-host-owned-cancel' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+    { inputId: 'input-host-owned-cancel', startRevision: 1, beforeMessageIds: [] });
+  const interrupted = { projection: { status: 'idle' }, runtime: { stateRevision: 2 }, messages: [completedUser('input-host-owned-cancel'), {
+    info: { role: 'assistant', messageId: 'assistant-host-owned-cancel', parentMessageId: 'input-host-owned-cancel', finish: 'cancelled' }, parts: [{ type: 'text', text: 'partial' }],
+  }] };
+  const controller = createJobController({ store, dataRoot: join(root, 'data'),
+    stopSession: async () => {}, readSession: async () => interrupted });
+  const winner = await controller.cancel(workspace, reserved.job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled');
+  assert.equal(winner.stopCause, 'user');
+  assert.equal(winner.stopIntent.version, 1);
+  assert.equal(winner.stopIntent.cause, 'user');
+  const resolved = await store.resolveRescueBinding({ workspace, parentSessionId: 'session-a',
+    executorAgentId: 'host-owned-cancel-child' });
+  if (resolved.kind !== 'bound') assert.fail('expected the preserved Host-owned binding');
+  assert.equal(resolved.binding.state, 'active');
+});
+
+test('controller cancel of a queued Host-owned Rescue records its stop cause and revokes the binding', async () => {
+  const { workspace, store } = await setup();
+  const reserved = await reserveHostOwnedRescue(workspace, store, 'host-owned-queued-child');
+  const controller = createJobController({ store });
+  const winner = await controller.cancel(workspace, reserved.job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled');
+  assert.equal(winner.stopCause, 'user');
+  assert.equal(winner.stopIntent.cause, 'user');
+  await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId: 'session-a',
+    executorAgentId: 'host-owned-queued-child' }), { code: 'RESCUE_BINDING_CLOSED' });
+});
+
+test('controller cancel settles a queued Host-owned migrated continuation with its durable stop cause', async () => {
+  const { root, workspace, store } = await setup();
+  const lifecycle = { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const { continuation, executor } = await legacyMigrationExecutionFixture(root, workspace, store, lifecycle);
+  assert.equal(continuation.job.ownerLifecycleEpoch, lifecycle.ownerLifecycleEpoch);
+  assert.ok(continuation.job.rescueMigrationRollback, 'expected the migrated queued rollback evidence');
+  const controller = createJobController({ store });
+  const winner = await controller.cancel(workspace, continuation.job.id, executor.parentSessionId);
+  assert.equal(winner.status, 'cancelled');
+  assert.equal(winner.stopCause, 'user');
+  assert.equal(winner.stopIntent.cause, 'user');
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'cancelled', 'the queued reservation must not stay held');
+  await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId: executor.parentSessionId,
+    executorAgentId: executor.agentId }), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
 test('send admission holds the cancellation fence until the accepted boundary is durable', async () => {

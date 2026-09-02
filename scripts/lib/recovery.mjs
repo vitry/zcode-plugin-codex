@@ -5,6 +5,7 @@ import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtif
 import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch } from './rescue-binding.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
@@ -99,7 +100,7 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
-      if (current.status === 'queued') return classifyEndedSettlement(await cancelQueuedJob(input, current));
+      if (current.status === 'queued') return classifyEndedSettlement(await cancelQueuedJob(input, current, 'session-end'));
       if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return { kind: 'retained-writable-guard', job: current };
       return settleEndedRemoteJob(input, current);
     });
@@ -258,20 +259,23 @@ async function failJob(input, job, error) {
   try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
-/** @param {any} input @param {any} job */
-async function cancelJob(input, job) {
+/** @param {any} input @param {any} job @param {string} [stopCause] */
+async function cancelJob(input, job, stopCause = 'host-coordination-loss') {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   try {
-    if (current.status === 'running') await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling');
-    return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+    const cancelling = current.status === 'running'
+      ? await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(current, stopCause))
+      : current;
+    return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled',
+      { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) });
   } catch (error) { return cancelledConflictWinner(input, job, error); }
 }
-/** @param {any} input @param {any} job */
-async function cancelQueuedJob(input, job) {
+/** @param {any} input @param {any} job @param {string} [stopCause] */
+async function cancelQueuedJob(input, job, stopCause = 'host-coordination-loss') {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null }); }
+  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(current, stopCause) }); }
   catch (error) { return cancelledConflictWinner(input, job, error); }
 }
 
@@ -331,7 +335,7 @@ async function settleEndedRemoteJob(input, job) {
     const initialClassification = boundary ? classifyCurrentTurnSnapshot(snapshot, boundary) : { kind: 'pending' };
     const completed = initialClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
     if (completed) return classifyEndedSettlement(completed);
-    if (['interrupted', 'failed'].includes(initialClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
+    if (['interrupted', 'failed'].includes(initialClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job, 'session-end'));
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
     if (!boundary || !hasCurrentTurnActivity(snapshot, boundary)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
     const revalidated = await revalidateBoundRescueStop(input, job, observedStop?.guard);
@@ -344,7 +348,7 @@ async function settleEndedRemoteJob(input, job) {
     const settledClassification = boundary ? classifyCurrentTurnSnapshot(snapshot, boundary) : { kind: 'pending' };
     const racedCompletion = settledClassification.kind === 'succeeded' ? await completeEndedJob(input, job, snapshot, jobLog) : null;
     if (racedCompletion) return classifyEndedSettlement(racedCompletion);
-    if (['interrupted', 'failed'].includes(settledClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job));
+    if (['interrupted', 'failed'].includes(settledClassification.kind)) return classifyEndedSettlement(await cancelJob(input, job, 'session-end'));
     return classifyEndedSettlement(await retainAfterStopFailure(input, job,
       recoveryError('SessionEnd cancellation settlement remains unresolved after stop acknowledgement.')));
   } catch (error) {

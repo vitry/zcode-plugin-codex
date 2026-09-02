@@ -26,6 +26,7 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
@@ -291,6 +292,172 @@ test('StateStore adoption producer is disabled before binding or job publication
     candidateJobId: candidate.id }), { code: 'RESCUE_BINDING_INVALID' });
   assert.deepEqual(await store.listJobs(workspace), before);
   assert.deepEqual(await store.resolveRescueBinding({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child' }), { kind: 'missing' });
+});
+
+test('new Host-owned Rescue persists placement epoch and execution owner', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const { job } = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace),
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+  assert.equal(job.ownerLifecycleEpoch, epoch);
+  assert.equal(job.executionOwner, 'host-child');
+  assert.equal(job.hostPlacement, 'background');
+  const reread = await store.readJob(workspace, job.id);
+  assert.equal(reread.ownerLifecycleEpoch, epoch);
+  assert.equal(reread.executionOwner, 'host-child');
+  assert.equal(reread.hostPlacement, 'background');
+});
+
+test('Host-owned Rescue lifecycle requires the indivisible execution trio', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const executor = legacyExecutor(workspace);
+  for (const lifecycle of /** @type {any[]} */ ([
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child' },
+    { ownerLifecycleEpoch: epoch, hostPlacement: 'background' },
+    { executionOwner: 'host-child', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: 'not-a-digest', executionOwner: 'host-child', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'detached-worker', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'detached' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background', extra: true },
+  ])) {
+    await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+      executor, lifecycle }), { code: 'RESCUE_BINDING_INVALID' });
+  }
+  const legacy = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace), executor });
+  assert.equal(legacy.job.ownerLifecycleEpoch, undefined);
+  assert.equal(legacy.job.executionOwner, undefined);
+  assert.equal(legacy.job.hostPlacement, undefined);
+});
+
+test('stop cause accompanies only a confirmed cancelled winner matching its stop intent', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session' });
+  const cancelling = await store.transitionJob(workspace, first.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(cancelling.stopIntent, stopIntent);
+  assert.equal(cancelling.stopCause, undefined);
+  const confirmed = await store.finishJob(workspace, first.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  assert.equal(confirmed.status, 'cancelled');
+  assert.equal(confirmed.stopCause, 'user');
+  assert.deepEqual(confirmed.stopIntent, stopIntent);
+
+  for (const item of /** @type {any[]} */ ([
+    { agentId: 'cause-without-intent', legacy: true, finish: { stopCause: 'user' } },
+    { agentId: 'cause-mismatch', intent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' }, finish: { stopCause: 'user' } },
+    { agentId: 'non-cancelled-winner', intent: stopIntent, finish: { stopCause: 'user', error: { message: 'a stop cause cannot label a failure' } }, next: 'failed' },
+  ])) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+      executor: { ...legacyExecutor(workspace), agentId: item.agentId }, ...(item.legacy ? {} : { lifecycle }) });
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `session-${item.agentId}` });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+      item.intent === undefined ? {} : { stopIntent: item.intent });
+    await assert.rejects(store.finishJob(workspace, reserved.job.id, ['cancelling'], item.next ?? 'cancelled', item.finish),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+    if (item.legacy) await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled');
+    else await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { stopCause: item.intent.cause });
+  }
+
+  const shaped = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'invalid-intent-shape' }, lifecycle });
+  await startWritableRescueForTest(store, workspace, shaped.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-invalid-intent' });
+  await assert.rejects(store.transitionJob(workspace, shaped.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 2, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, shaped.job.id, ['running'], 'cancelling', { stopIntent });
+  await store.finishJob(workspace, shaped.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+});
+
+test('persisted Host-owned Rescue lifecycle and stop cause fields are schema-validated before use', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace),
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${reserved.job.id}.json`);
+  const partial = { ...reserved.job }; delete partial.hostPlacement;
+  for (const invalidJob of /** @type {any[]} */ ([
+    { ...reserved.job, hostPlacement: 'detached' },
+    { ...reserved.job, executionOwner: 'detached-worker' },
+    { ...reserved.job, ownerLifecycleEpoch: 'not-a-digest' },
+    partial,
+    { ...reserved.job, stopIntent: { version: 1, cause: 'timeout', requestedAt: '2026-09-02T00:00:00.000Z' } },
+    { ...reserved.job, stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z', extra: true } },
+    { ...reserved.job, stopCause: 'user' },
+    { ...reserved.job, stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' }, stopCause: 'user' },
+    { ...reserved.job, status: 'cancelled' },
+  ])) {
+    await atomicWriteJson(path, invalidJob);
+    await assert.rejects(store.readJob(workspace, reserved.job.id),
+      (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  }
+  await atomicWriteJson(path, reserved.job);
+  assert.equal((await store.readJob(workspace, reserved.job.id)).hostPlacement, 'background');
+});
+
+test('stop intent patches outside a writable Rescue job fail at the patch surface', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, job.id, ['queued'], 'running');
+  await assert.rejects(store.transitionJob(workspace, job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+  await store.finishJob(workspace, job.id, ['cancelling'], 'cancelled');
+});
+
+test('a Host-owned stop attempt requires its durable stop intent before entering cancelling', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-f', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+
+  const samePatch = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, samePatch.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-same-patch' });
+  const entered = await store.transitionJob(workspace, samePatch.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(entered.stopIntent, stopIntent);
+  await store.finishJob(workspace, samePatch.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+
+  const bare = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'bare-stop' }, lifecycle });
+  await startWritableRescueForTest(store, workspace, bare.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-bare' });
+  await assert.rejects(store.transitionJob(workspace, bare.job.id, ['running'], 'cancelling'),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, bare.job.id, ['running'], 'running', { stopIntent });
+  const authorized = await store.transitionJob(workspace, bare.job.id, ['running'], 'cancelling');
+  assert.deepEqual(authorized.stopIntent, stopIntent);
+  await store.finishJob(workspace, bare.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+
+  const legacy = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'legacy-permissive' } });
+  await startWritableRescueForTest(store, workspace, legacy.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-legacy-permissive' });
+  assert.equal((await store.transitionJob(workspace, legacy.job.id, ['running'], 'cancelling')).status, 'cancelling');
+  await store.finishJob(workspace, legacy.job.id, ['cancelling'], 'cancelled');
+});
+
+test('a persisted stop intent replays exactly and cannot be replaced by a later intent', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-g', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-intent-replay' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { stopIntent });
+  await assert.rejects(store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  const replayed = await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(replayed.stopIntent, stopIntent);
+  await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
 });
 
 /** @param {string} indexRoot @param {string} jobId */

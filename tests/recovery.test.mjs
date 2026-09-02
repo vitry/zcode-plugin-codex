@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { closeSync, constants, openSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1102,4 +1102,31 @@ test('fake peer tolerates non-string send content and still completes stop', asy
   ].map((message) => JSON.stringify(message)).join('\n') + '\n');
   const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('fake stop path timed out')); }, 2_000); child.once('error', reject); child.once('exit', (value) => { clearTimeout(timer); resolve(value); }); });
   assert.equal(code, 0); const messages = stdout.trim().split('\n').map(JSON.parse); assert.deepEqual(messages.filter(({ id }) => id === 3).map(({ result }) => result), [{}]);
+});
+
+test('SessionEnd settlement persists the durable session-end stop intent for a Host-owned running Rescue', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const workspace = await realpath(fixture.workspace);
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
+    ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'owner', parentTurnId: 'turn', agentId: 'host-owned-session-end-child', agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: '1'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' } });
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(),
+    zcodeSessionId: 'zs-session-end-settlement', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-session-end', startRevision: 1, beforeMessageIds: [] });
+  const { settleEndedOwnerWritableJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: async () => ({
+      readSession: async () => coherentCurrentTurn('input-session-end', 'partial', 'cancelled'),
+      stopSession: async () => {}, close: async () => {},
+    }) });
+  assert.equal(outcome.kind, 'confirmed-cancellation');
+  assert.equal(outcome.job.status, 'cancelled');
+  assert.equal(outcome.job.stopCause, 'session-end');
+  assert.equal(outcome.job.stopIntent.cause, 'session-end');
+  assert.equal((await store.resolveRescueBinding({ workspace, parentSessionId: 'owner',
+    executorAgentId: 'host-owned-session-end-child' })).binding.state, 'active');
+  await cleanupRecoveryFixture(fixture);
 });
