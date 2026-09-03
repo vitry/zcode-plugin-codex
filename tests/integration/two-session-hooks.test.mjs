@@ -14,6 +14,7 @@ import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -590,4 +591,272 @@ test('SessionEnd converges an active read-only detached run: terminates the reco
   assert.equal((await store.readJob(canonicalWorkspace, ro.id)).status, 'running', 'an unproven read-only run is never claimed terminal');
   assert.equal((await lifecycle.readReceipt(epoch)).state, 'pending', 'the receipt must not settle while an active read-only run is unconverged/unproven');
   await waitFor(() => !isPidAlive(childPid), `the SessionEnd read-only convergence must terminate the recorded worker process tree (${childPid})`);
+});
+
+test('a resumed session retries deferred identity cleanup so its first caller turn succeeds', async (t) => {
+  const ctx = await fixture(t);
+  await mkdir(ctx.dataRoot, { recursive: true });
+  const dataRootPath = await realpath(ctx.dataRoot);
+  await recordSessionStartEpoch(ctx, 'contention-owner');
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'contention-owner')).startedAt;
+  await identity.beginCallerTurn({ sessionId: 'contention-owner', turnId: 'turn-1', workspace: ctx.workspace, permissionMode: 'acceptEdits', sessionStartedAt: startedAt, sessionSource: 'startup' });
+  // SessionEnd under identity contention: the destructive cleanup defers while
+  // the receipt (zero obligations) still settles.
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  const epoch = hostLifecycleEpoch('contention-owner', startedAt);
+  const holder = spawnIdentityLockHolder(dataRootPath, 'contention-owner', t);
+  await identityHolderReady(holder);
+  const ended = startHook(ctx, 'session-end-hook.mjs', { session_id: 'contention-owner', cwd: ctx.workspace, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' });
+  t.after(async () => { ended.kill('SIGKILL'); holder.stdin.end('release'); await Promise.all([onceExited(ended), onceExited(holder)]); });
+  const exited = await Promise.race([onceExited(ended).then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 2_900))]);
+  assert.equal(exited, true, 'the bounded SessionEnd must self-exit under identity contention');
+  assert.equal((await lifecycle.readReceipt(epoch))?.state, 'settled');
+  const key = createHash('sha256').update(JSON.stringify(['contention-owner'])).digest('hex');
+  const ledgerPath = join(dataRootPath, 'identity-lifecycle', 'sessions', `${key}.json`);
+  const ledgerDuringContention = JSON.parse(await readFile(ledgerPath, 'utf8'));
+  assert.equal(ledgerDuringContention.endedAt, null, 'the destructive cleanup stayed deferred while the lock was held');
+  // A resume while STILL contended fails loudly: exiting successfully would
+  // strand the host on the ended epoch with its receipt excluded from
+  // reconciliation as 'current'. The original holder is still retained here.
+  const failedResume = startHook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'contention-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  await Promise.race([onceExited(failedResume), new Promise((resolve) => setTimeout(() => resolve(false), 3_000))]).then(async (done) => { if (done && failedResume.exitCode === null) failedResume.kill('SIGKILL'); await onceExited(failedResume); });
+  assert.notEqual(failedResume.exitCode, 0, 'a contended cleanup retry must fail the SessionStart instead of silently keeping the old epoch');
+  assert.equal((await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'contention-owner')).startedAt, startedAt, 'the failed resume left the old epoch record in place');
+  holder.stdin.end('release');
+  await onceExited(holder);
+  // The uncontended resume retries the epoch-fenced cleanup and publishes the new record.
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'contention-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const ledgerAfterResume = JSON.parse(await readFile(ledgerPath, 'utf8'));
+  assert.notEqual(ledgerAfterResume.endedAt, null, 'the resume retried the deferred identity cleanup and terminated the old epoch ledger');
+  // Repeated resumes before any prompt: the older ENDED ledger must be accepted
+  // as already-cleaned residue, never mistaken for a live successor.
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'contention-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  assert.equal((await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'contention-owner')).turnSource ?? 'resume', 'resume', 'the repeated resume completed without a successor false positive');
+  // The first caller turn of the resumed session now succeeds.
+  await hook(ctx, 'user-prompt-hook.mjs', { session_id: 'contention-owner', turn_id: 'turn-2', cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'continue resumed work' });
+  const activeTurn = await identity.resolveActiveTurn({ sessionId: 'contention-owner', workspace: ctx.workspace });
+  assert.equal(activeTurn.turnId, 'turn-2', 'the resumed session established fresh caller authority on its new epoch ledger');
+});
+
+test('a failed resume compensation defers the epoch record so the boundary stays compensable', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'defer-owner');
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'defer-owner', epoch, agent: 'defer-child', remote: 'zs-defer' });
+  const startedAtBefore = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'defer-owner')).startedAt;
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  assert.equal(await lifecycle.readReceipt(epoch), null);
+  // Make the compensation's receipt publication deterministically fail: the
+  // receipts namespace is a regular FILE, so every storage setup attempt fails.
+  const receiptsPath = join(await realpath(ctx.dataRoot), 'host-lifecycle', 'receipts');
+  await mkdir(join(receiptsPath, '..'), { recursive: true, mode: 0o700 });
+  await writeFile(receiptsPath, 'not a directory\n');
+  // The failed compensation fails the SessionStart loudly (nonzero exit):
+  // the stale epoch record is never silently replaced by one that cannot
+  // compensate, and the operator sees the failed boundary.
+  const failedResume = startHook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'defer-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  t.after(async () => { failedResume.kill('SIGKILL'); await onceExited(failedResume); });
+  await onceExited(failedResume);
+  assert.equal(failedResume.exitCode, 1, 'an uncompensatable resume must fail loudly');
+  const after = await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'defer-owner');
+  assert.equal(after.startedAt, startedAtBefore, 'a failed compensation must NOT overwrite the epoch record — the boundary stays re-derivable and re-compensable');
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running');
+  // Once publication works again, the next resume compensates the SAME epoch
+  // and publishes the new record.
+  await rm(receiptsPath);
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'defer-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  assert.equal((await lifecycle.readReceipt(epoch))?.origin, 'resume-compensation', 'the retried resume compensates the still-uncompensated epoch');
+  const recovered = await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'defer-owner');
+  assert.notEqual(recovered.startedAt, startedAtBefore, 'the successful pass publishes the new epoch record');
+});
+
+test('resume compensation defers when the identity ledger is unreadable and retries after repair', async (t) => {
+  const ctx = await fixture(t);
+  await mkdir(ctx.dataRoot, { recursive: true });
+  const dataRootPath = await realpath(ctx.dataRoot);
+  const { canonicalWorkspace, epoch } = await recordSessionStartEpoch(ctx, 'corrupt-ledger-owner');
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'corrupt-ledger-owner')).startedAt;
+  await identity.beginCallerTurn({ sessionId: 'corrupt-ledger-owner', turnId: 'turn', workspace: ctx.workspace, permissionMode: 'acceptEdits', sessionStartedAt: startedAt, sessionSource: 'startup' });
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'corrupt-ledger-owner', epoch, agent: 'corrupt-ledger-child', remote: 'zs-cl' });
+  const key = createHash('sha256').update(JSON.stringify(['corrupt-ledger-owner'])).digest('hex');
+  const ledgerPath = join(dataRootPath, 'identity-lifecycle', 'sessions', `${key}.json`);
+  const validLedger = await readFile(ledgerPath, 'utf8');
+  await writeFile(ledgerPath, 'corrupt\n');
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  // The failed compensation fails the SessionStart LOUDLY (nonzero exit) — the
+  // stale epoch record is never silently replaced by one that cannot compensate.
+  const failedResume = startHook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'corrupt-ledger-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  t.after(async () => { failedResume.kill('SIGKILL'); await onceExited(failedResume); });
+  assert.equal(await Promise.race([onceExited(failedResume).then(() => failedResume.exitCode === 1), new Promise((resolve) => setTimeout(() => resolve(false), 3_000))]), true,
+    'an uncompensatable resume must fail loudly instead of replacing the epoch record');
+  const after = await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'corrupt-ledger-owner');
+  assert.equal(after.startedAt, startedAt, 'an unreadable ledger defers the epoch record — the boundary stays retryable');
+  assert.equal(await lifecycle.readReceipt(epoch), null, 'no receipt is guessed from an unprovable scope');
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running');
+  // After the ledger is repaired, the same resume compensates and publishes.
+  await writeFile(ledgerPath, validLedger);
+  const repairedResume = startHook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'corrupt-ledger-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  t.after(async () => { repairedResume.kill('SIGKILL'); await onceExited(repairedResume); });
+  await onceExited(repairedResume);
+  console.error('REPAIRED_DEBUG', repairedResume.exitCode, JSON.stringify((await readFile(repairedResume.stdout ? '' : '/dev/null', 'utf8').catch(() => '')) || ''));
+  let repairedStderr = '';
+  repairedResume.stderr.on('data', (chunk) => { repairedStderr += chunk; });
+  await onceExited(repairedResume);
+  console.error('REPAIRED_STDERR', JSON.stringify(repairedStderr.slice(0, 300)));
+  assert.equal((await lifecycle.readReceipt(epoch))?.origin, 'resume-compensation');
+  const recovered = await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'corrupt-ledger-owner');
+  assert.notEqual(recovered.startedAt, startedAt, 'the repaired resume publishes the new epoch record');
+});
+
+test('prompt-time reconciliation re-proves the retained ledger scope before settling a cwd-only receipt', async (t) => {
+  const ctx = await fixture(t);
+  await mkdir(ctx.dataRoot, { recursive: true });
+  const dataRootPath = await realpath(ctx.dataRoot);
+  await recordSessionStartEpoch(ctx, 'reconcile-scope-owner');
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'reconcile-scope-owner')).startedAt;
+  const epoch = hostLifecycleEpoch('reconcile-scope-owner', startedAt);
+  await identity.beginCallerTurn({ sessionId: 'reconcile-scope-owner', turnId: 'turn', workspace: ctx.workspace, permissionMode: 'acceptEdits', sessionStartedAt: startedAt, sessionSource: 'startup' });
+  await mkdir(join(ctx.workspace, '..', 'reconcile-scope'), { recursive: true });
+  const linkWorkspace = await realpath(join(ctx.workspace, '..', 'reconcile-scope'));
+  const key = createHash('sha256').update(JSON.stringify(['reconcile-scope-owner'])).digest('hex');
+  const ledgerPath = join(dataRootPath, 'identity-lifecycle', 'sessions', `${key}.json`);
+  const ledger = JSON.parse(await readFile(ledgerPath, 'utf8'));
+  ledger.knownWorkspaces = [...new Set([...ledger.knownWorkspaces, linkWorkspace])].sort();
+  await writeFile(ledgerPath, `${JSON.stringify(ledger)}\n`);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: linkWorkspace, ownerSessionId: 'reconcile-scope-owner', epoch, agent: 'reconcile-scope-child', remote: 'zs-rs' });
+  // The exact state a scope-deferred SessionEnd leaves: a pending receipt whose
+  // hints cover only the ambient cwd, with the identity ledger retained.
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  const ambientWorkspace = await realpath(ctx.workspace);
+  await lifecycle.publishSessionEnd({ sessionId: 'reconcile-scope-owner', sessionStartedAt: startedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [ambientWorkspace] }, { signal: AbortSignal.timeout(250) });
+  // The resumed session installs a new epoch record, making the pending receipt
+  // this session's PRIOR-epoch boundary for the prompt-time reconciliation.
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'reconcile-scope-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const record = join(ctx.dataRoot, 'reconcile-broker-calls.jsonl');
+  await writeFile(record, '');
+  ctx.env.FAKE_ZCODE_RECORD = record;
+  // The resumed session installs a new epoch record, so the pending receipt is
+  // this session's PRIOR-epoch boundary; call the exact prompt-time reconciler.
+  const { reconcilePriorEpochReceipts } = await import('../../hooks/lib/hook-state.mjs');
+  const remaining = await reconcilePriorEpochReceipts({ dataRoot: ctx.dataRoot, sessionId: 'reconcile-scope-owner', workspace: ctx.workspace });
+  assert.equal(remaining.length, 0, 'the reconciled prior-epoch receipt is no longer pending');
+  const linked = await store.readJob(linkWorkspace, job.id);
+  assert.equal(['cancelling', 'failed'].includes(linked.status), true, `the retained-ledger linked-workspace obligation is settled or delegated, never skipped (was ${linked.status})`);
+  assert.equal(linked.stopIntent?.cause, 'session-end', 'the exact session-end intent is the durable delegation evidence');
+  assert.equal((await lifecycle.readReceipt(epoch))?.state, 'settled', 'the receipt settles only after the re-proved scope discharged its obligation');
+  assert.equal((await readFileSafe(record)).trim(), '', 'prompt-time reconciliation never lazily spawns the broker');
+});
+
+test('resume compensation records the linked-workspace scope in its durable hints', async (t) => {
+  const ctx = await fixture(t);
+  await mkdir(ctx.dataRoot, { recursive: true });
+  const dataRootPath = await realpath(ctx.dataRoot);
+  await recordSessionStartEpoch(ctx, 'link-resume-owner');
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'link-resume-owner')).startedAt;
+  const epoch = hostLifecycleEpoch('link-resume-owner', startedAt);
+  await identity.beginCallerTurn({ sessionId: 'link-resume-owner', turnId: 'turn', workspace: ctx.workspace, permissionMode: 'acceptEdits', sessionStartedAt: startedAt, sessionSource: 'startup' });
+  await mkdir(join(ctx.workspace, '..', 'link-resume-scope'), { recursive: true });
+  const linkWorkspace = await realpath(join(ctx.workspace, '..', 'link-resume-scope'));
+  const key = createHash('sha256').update(JSON.stringify(['link-resume-owner'])).digest('hex');
+  const ledgerPath = join(dataRootPath, 'identity-lifecycle', 'sessions', `${key}.json`);
+  const ledger = JSON.parse(await readFile(ledgerPath, 'utf8'));
+  ledger.knownWorkspaces = [...new Set([...ledger.knownWorkspaces, linkWorkspace])].sort();
+  await writeFile(ledgerPath, `${JSON.stringify(ledger)}\n`);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: linkWorkspace, ownerSessionId: 'link-resume-owner', epoch, agent: 'link-resume-child', remote: 'zs-link-resume' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'link-resume-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const receipt = await lifecycle.readReceipt(epoch);
+  assert.ok(receipt, 'the linked-workspace obligation must gain a compensation receipt');
+  assert.equal(receipt.origin, 'resume-compensation');
+  assert.equal(receipt.state, 'pending');
+  assert.equal(receipt.workspaceHints.includes(linkWorkspace), true, 'the linked workspace is durably recorded for prompt-time reconciliation');
+  assert.equal((await store.readJob(linkWorkspace, job.id)).status, 'running', 'compensation remains a local durable write');
+});
+
+test('resume synthesizes a local receipt for an unclosed previous epoch without remote work', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'resume-owner');
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'resume-owner', epoch, agent: 'resume-child', remote: 'zs-resume' });
+  const startedAtBefore = (await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'resume-owner')).startedAt;
+  const record = join(ctx.dataRoot, 'resume-broker-calls.jsonl');
+  await writeFile(record, '');
+  ctx.env.FAKE_ZCODE_RECORD = record;
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  assert.equal(await lifecycle.readReceipt(epoch), null, 'the previous epoch closed without any SessionEnd receipt');
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'resume-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const receipt = await lifecycle.readReceipt(epoch);
+  assert.ok(receipt, 'the unclosed previous epoch must gain a compensation receipt');
+  assert.equal(receipt.origin, 'resume-compensation');
+  assert.equal(receipt.state, 'pending');
+  assert.equal((await readFileSafe(record)).trim(), '', 'resume compensation must never open or lazily spawn the broker');
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running', 'compensation is a local durable write; the owned job is untouched');
+  assert.equal(receipt.workspaceHints.includes(canonicalWorkspace), true, 'the ambient workspace is recorded as the discovery hint');
+  const after = await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, 'resume-owner');
+  assert.notEqual(after.startedAt, startedAtBefore, 'the resumed session publishes its new epoch record after compensating');
+  assert.notEqual(hostLifecycleEpoch('resume-owner', after.startedAt), epoch, 'the resumed session runs in a new epoch');
+  // A second resume recognizes the existing pending receipt and leaves it untouched.
+  const untouched = await lifecycle.readReceipt(epoch);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'resume-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const reread = await lifecycle.readReceipt(epoch);
+  assert.equal(reread.publishedAt, untouched.publishedAt, 'an existing pending receipt is never rewritten by a later resume');
+  assert.equal(reread.origin, 'resume-compensation');
+});
+
+test('UserPromptSubmit reconciles a pending prior-epoch receipt and re-admits writable reservations', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'rec-owner');
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'rec-owner', epoch, agent: 'rec-child', remote: 'zs-rec' });
+  const record = join(ctx.dataRoot, 'rec-broker-calls.jsonl');
+  await writeFile(record, '');
+  ctx.env.FAKE_ZCODE_RECORD = record;
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'rec-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  assert.equal((await lifecycle.readReceipt(epoch)).state, 'pending');
+  const turn = 'rec-turn-resumed';
+  await hook(ctx, 'user-prompt-hook.mjs', { session_id: 'rec-owner', turn_id: turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'continue the work' });
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.equal(stored.stopIntent?.cause, 'session-end', 'prompt-time reconciliation delegates the exact durable session-end stop intent');
+  assert.ok(['cancelling', 'failed'].includes(stored.status), `the obligation is durably delegated or settled (was ${stored.status})`);
+  assert.equal((await lifecycle.readReceipt(epoch)).state, 'settled', 'a receipt whose obligations are all terminal-or-delegated settles at prompt time');
+  assert.equal((await readFileSafe(record)).trim(), '', 'prompt-time reconciliation never lazily spawns the ZCode broker');
+  const caller = await createIdentityStore({ dataRoot: ctx.dataRoot }).createCallerContext({ sessionId: 'rec-owner', turnId: turn, workspace: ctx.workspace, permissionMode: 'acceptEdits' });
+  const rescue = await companion(ctx, ['rescue', '--fresh', '--wait', 'fresh work after reconciliation'], caller);
+  assert.equal(rescue.code, 0, rescue.stderr);
+  assert.equal(rescue.json.job.status, 'succeeded', 'a settled prior epoch no longer blocks new writable Rescue reservations');
+});
+
+test('an unresolved prior-epoch receipt blocks new writable Rescue but not status reads', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'blocked-owner');
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  // A legacy writable Rescue left as a BARE cancelling guard: no durable stop
+  // intent and no accepted-turn boundary, so without a broker its obligation can
+  // be neither terminally settled nor delegated — the receipt must stay pending.
+  let value = await store.reserveJob({ workspace: canonicalWorkspace, ownerSessionId: 'blocked-owner', ownerTurnId: 'blocked-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+  const claimed = await store.claimJobWorkerForExecution(canonicalWorkspace, value.id, { childPid: 999_999_999, workerLeaseId: value.id });
+  value = await store.transitionJob(canonicalWorkspace, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-blocked', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  const record = join(ctx.dataRoot, 'blocked-broker-calls.jsonl');
+  await writeFile(record, '');
+  ctx.env.FAKE_ZCODE_RECORD = record;
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: 'blocked-owner', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  assert.equal((await lifecycle.readReceipt(epoch))?.state, 'pending');
+  const turn = 'blocked-turn-resumed';
+  await hook(ctx, 'user-prompt-hook.mjs', { session_id: 'blocked-owner', turn_id: turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'try to start fresh work' });
+  assert.equal((await lifecycle.readReceipt(epoch)).state, 'pending', 'a bare cancelling guard can never settle its receipt without a broker');
+  assert.equal((await store.readJob(canonicalWorkspace, value.id)).status, 'cancelling');
+  const caller = await createIdentityStore({ dataRoot: ctx.dataRoot }).createCallerContext({ sessionId: 'blocked-owner', turnId: turn, workspace: ctx.workspace, permissionMode: 'acceptEdits' });
+  const rescue = await companion(ctx, ['rescue', '--fresh', '--wait', 'must be blocked'], caller);
+  assert.notEqual(rescue.code, 0, 'a new writable Rescue must be rejected while reconciliation remains unresolved');
+  assert.equal(rescue.json?.error?.code, 'PRIOR_EPOCH_UNSETTLED', `the stable rejection error is surfaced (was ${JSON.stringify(rescue.json)})`);
+  assert.equal((await store.readJob(canonicalWorkspace, value.id)).status, 'cancelling', 'the blocked reservation never clobbers the uncertain guard');
+  assert.equal((await readFileSafe(record)).trim(), '', 'the blocked reservation path never lazily spawns the broker');
+  const status = await companion(ctx, ['status'], caller);
+  assert.equal(status.code, 0, `status reads remain available while reconciliation is unresolved: ${status.stderr}`);
+  assert.equal(status.json?.job?.id, value.id);
 });

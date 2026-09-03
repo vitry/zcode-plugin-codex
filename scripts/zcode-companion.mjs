@@ -37,7 +37,7 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
-import { resolveRecordedSessionStart, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { pendingPriorEpochReceipts, reconcilePriorEpochReceipts, resolveRecordedSessionStart, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
@@ -128,6 +128,19 @@ export async function runCompanion(argv, runtime = {}) {
   // election inside the lock) run under the bounded observation budget; wait
   // passes its own deadline-scoped signal through unchanged.
   const controller = createJobController({ store, dataRoot, reconcile: (/** @type {any} */ request) => reconcileRescueLifecycle(request.signal ? request : { ...request, signal: boundedObservationSignal(runtime) }), beforeWaitPoll: reconcile });
+  // Resume after SessionEnd: block new Rescue work behind unresolved prior-epoch
+  // reconciliation BEFORE any reservation-time recovery can touch the uncertain
+  // prior-epoch records. Status, result, and cancel keep their existing recovery
+  // behavior and remain available.
+  if (parsed.command === 'rescue') await rejectUnsettledPriorEpoch({ dataRoot, caller, cwd, signal: runtime.signal });
+  // Management commands drive the same bounded prior-epoch retry (without the
+  // hard block): terminalizing an old job through cancel/status recovery must
+  // also settle that epoch's pending lifecycle receipt, or future Rescue work
+  // stays blocked behind an already-settled obligation.
+  if (typeof caller?.sessionId === 'string' && ['status', 'result', 'cancel'].includes(parsed.command)) {
+    try { await reconcilePriorEpochReceipts({ dataRoot, sessionId: caller.sessionId, workspace: cwd, signal: boundedObservationSignal(runtime), budgetMs: 1_500 }); }
+    catch { /* status/result/cancel remain available even when the retry cannot run */ }
+  }
   await reconcile();
   if (parsed.command === 'status') {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
@@ -1222,6 +1235,7 @@ function authorityBindingLookup(authority, caller, workspace) {
 /** @param {any} context @param {()=>Promise<any>} reserve */
 async function reservePublicRescueJob(context, reserve) {
   context.signal?.throwIfAborted();
+  await rejectUnsettledPriorEpoch(context);
   try { return await reserve(); }
   catch (error) {
     if (!(error instanceof PluginError) || error.code !== 'WRITABLE_JOB_EXISTS') throw error;
@@ -1237,11 +1251,67 @@ async function reservePublicRescueJob(context, reserve) {
   }
 }
 
+// One bounded budget for the prompt-time reconciliation retry at reservation time;
+// remote control uses only an existing broker client, never a lazy spawn.
+const PRIOR_EPOCH_RECONCILIATION_BUDGET_MS = 1_500;
+
+/**
+ * Resume after SessionEnd: while this session's previous lifecycle epoch still
+ * has unresolved pending receipts, new writable Rescue work stays blocked behind
+ * the pending compensation authority (design 'Resume after SessionEnd'). The
+ * gate first retries the same bounded reconciliation the UserPromptSubmit hook
+ * runs, then fails closed with one stable error when receipts remain pending.
+ * Status, result, and cancel never enter this path and stay available.
+ * @param {any} context
+ */
+async function rejectUnsettledPriorEpoch(context) {
+  const sessionId = context.caller?.sessionId;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+  const signal = context.signal === undefined
+    ? AbortSignal.timeout(PRIOR_EPOCH_RECONCILIATION_BUDGET_MS)
+    : AbortSignal.any([context.signal, AbortSignal.timeout(PRIOR_EPOCH_RECONCILIATION_BUDGET_MS)]);
+  const unsettledError = (/** @type {number} */ count) => new PluginError('PRIOR_EPOCH_UNSETTLED', 'A previous host lifecycle epoch of this session is still awaiting settlement.', {
+    category: 'state',
+    remedy: 'Inspect the pending reconciliation with $zcode:status or settle it with $zcode:cancel; new Rescue work is retried once the prior epoch settles.',
+    details: { pendingReceipts: count },
+  });
+  const callerAborted = () => context.signal?.aborted === true;
+  let pending = [];
+  try { pending = await pendingPriorEpochReceipts(context.dataRoot, sessionId, context.cwd, { signal }); }
+  catch {
+    // An already-aborted caller keeps its own interrupt semantics: swallowing
+    // lets the reservation's claim path raise the interruption where the
+    // cancel-before-discovery contract expects it. Any OTHER unreadable scan
+    // (contention, corruption, an unsafe path) is an unresolved reconciliation
+    // and must BLOCK new writable Rescue work instead of admitting it blind.
+    if (callerAborted()) return;
+    throw unsettledError(0);
+  }
+  if (pending.length === 0) return;
+  try { await reconcilePriorEpochReceipts({ dataRoot: context.dataRoot, sessionId, workspace: context.cwd, signal }); }
+  catch { /* the block decision reads the durable receipts below */ }
+  try { pending = await pendingPriorEpochReceipts(context.dataRoot, sessionId, context.cwd, { signal }); }
+  catch {
+    // Pending receipts were OBSERVED before reconciliation: an unreadable
+    // decision re-read (budget spent, contention) is uncertainty, and
+    // uncertainty must BLOCK new writable work — never admit it.
+    if (callerAborted()) return;
+    throw unsettledError(pending.length);
+  }
+  if (pending.length === 0) return;
+  throw unsettledError(pending.length);
+}
+
 /** @param {any} context @param {any} reservation */
 async function reservePublicJob(context, reservation) {
   const reserve = () => context.store.reserveJob(reservation);
   const creator = ['review', 'adversarial-review', 'transfer'].includes(reservation.command);
   if (creator) await context.dependencies?.testOnlyBeforeJobReservation?.(context.caller);
+  // Direct (non-child-authorized) new Rescue reserves here: the same unsettled
+  // prior-epoch block applies to every writable Rescue reservation path. The
+  // gate must not surface an already-aborted caller signal — the invocation's
+  // own interrupt semantics own that decision after the claim.
+  if (!reservation.readOnly) await rejectUnsettledPriorEpoch(context);
   const reserveDurably = () => creator
     ? withCreatorPartitionFence(context.identity, context.creatorAuthority ?? context.caller, reserve)
     : reserve();

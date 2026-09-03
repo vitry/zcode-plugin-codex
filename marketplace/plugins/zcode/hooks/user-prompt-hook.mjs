@@ -6,8 +6,9 @@ import { join, resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { resolvePluginDataContext } from '../scripts/lib/plugin-data.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { RESCUE_LAUNCHER_ERROR_CONTEXT, renderRescueLauncherCommand, renderRescueUserPromptContext } from '../scripts/lib/rescue-launcher-command.mjs';
-import { fingerprintWorkspace, isOwnedSession, resolveRecordedSessionStart, unreadJobs } from './lib/hook-state.mjs';
+import { fingerprintWorkspace, isOwnedSession, reconcilePriorEpochReceipts, resolveRecordedSessionStart, unreadJobs } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 try {
@@ -19,6 +20,26 @@ try {
   const identity = createIdentityStore({ dataRoot });
   const preparations = createRescuePreparationStore({ dataRoot });
   const session = await resolveRecordedSessionStart(dataRoot, input.cwd, input.session_id);
+  // Resume after SessionEnd: retry the pending prior-epoch reconciliation BEFORE
+  // this turn establishes new Rescue authority. Strictly local unless an existing
+  // broker answers; never lazily spawns ZCode; bounded under the hook deadline.
+  // Advisory here — an unresolved reconciliation does not fail the prompt; the
+  // writable reservation path re-checks and blocks new Rescue until it settles,
+  // while status/result/cancel remain available.
+  try {
+    await reconcilePriorEpochReceipts({
+      dataRoot,
+      sessionId: input.session_id,
+      workspace: input.cwd,
+      currentEpoch: hostLifecycleEpoch(input.session_id, session.startedAt),
+    });
+  } catch (error) {
+    // A failed reconciliation stays advisory EXCEPT when the prior epoch's
+    // workspace scope could not be persisted: beginCallerTurn would replace
+    // the ledger that still proves the linked scope, so this prompt must fail
+    // safely and retry on the next submit.
+    if (error?.code === 'PRIOR_SCOPE_UNPERSISTED') throw error;
+  }
   const begun = await identity.beginCallerTurn({
     sessionId: input.session_id,
     turnId: input.turn_id,

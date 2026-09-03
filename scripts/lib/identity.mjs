@@ -95,11 +95,13 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         const { active, ledger } = state;
         // A resumed Host reusing this session id replaces the ledger with the
-        // successor epoch's own: tombstoning it would erase the successor's
-        // boundary bookkeeping, so an ending epoch must prove it owns this
-        // ledger before cleanup may run. An unproven caller (no
-        // sessionStartedAt) keeps the existing behavior.
-        if (ledger !== null && typeof sessionStartedAt === 'string'
+        // successor epoch's own: tombstoning a LIVE mismatching ledger would
+        // erase the successor's boundary bookkeeping, so an ending epoch must
+        // prove it owns this ledger before cleanup may run. An ALREADY-ENDED
+        // ledger of an older epoch is just cleaned residue — accepting it keeps
+        // repeated resumes working. An unproven caller (no sessionStartedAt)
+        // keeps the existing behavior.
+        if (ledger !== null && ledger.endedAt === null && typeof sessionStartedAt === 'string'
           && ledger.sessionStartedAt !== sessionStartedAt) throw sessionScopeSuccessor();
         if (ledger === null) {
           // A successor's crashed pending publication (an active record without

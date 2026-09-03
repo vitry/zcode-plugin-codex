@@ -202,6 +202,25 @@ test('compact SessionStart preserves the original trusted session freshness and 
   assert.equal(initial.source, 'startup');
 });
 
+test('compact SessionStart remains in the same epoch and creates no receipt', async () => {
+  const ctx = await context();
+  await recordSession(ctx.dataRoot, { session_id: 'compact-epoch-session', cwd: ctx.cwd, source: 'startup' });
+  const before = await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-epoch-session');
+  // An unclosed owned job would justify resume compensation, but compact stays in
+  // the same epoch and must never synthesize a boundary receipt for it.
+  const { createStateStore } = await import('../scripts/lib/state.mjs');
+  await createStateStore({ dataRoot: ctx.dataRoot }).reserveJob({
+    workspace: ctx.cwd, ownerSessionId: 'compact-epoch-session', ownerTurnId: 'compact-epoch-turn',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' },
+  });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  await recordSession(ctx.dataRoot, { session_id: 'compact-epoch-session', cwd: ctx.cwd, source: 'compact' });
+  assert.deepEqual(await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-epoch-session'), before);
+  const { createHostLifecycleStore } = await import('../scripts/lib/host-lifecycle.mjs');
+  assert.equal((await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).listPendingReceipts()).length, 0,
+    'compact must never publish a resume-compensation or session-end receipt');
+});
+
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
   const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });
   assert.equal(report.status, 'ready', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);

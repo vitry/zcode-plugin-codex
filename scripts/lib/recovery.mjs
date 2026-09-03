@@ -2,6 +2,7 @@ import { PluginError } from './errors.mjs';
 import { createIdentityStore } from './identity.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
+import { realpath } from 'node:fs/promises';
 import { withFileLock } from './fs.mjs';
 import { terminateRecordedProcessTree } from './process.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
@@ -164,18 +165,26 @@ function isWritableRescueObligation(/** @type {any} */ job) {
  * old-epoch receipt never claims a post-resume run as still owned. When no
  * authoritative receipt epoch is proven (`epoch` null), every nonterminal owned
  * obligation is discovered so the legacy settle path is preserved unchanged.
- * @param {{store:any,dataRoot?:string,knownWorkspaces:readonly string[],ownerSessionId:string,epoch:string|null,endedAt?:string|null,signal?:AbortSignal,timeoutMs?:number}} input
+ * @param {{store:any,dataRoot?:string,knownWorkspaces:readonly string[],ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockFree?:boolean,signal?:AbortSignal,timeoutMs?:number}} input
  * @returns {Promise<Array<{workspace:string,job:any,readOnly:boolean}>>}
  */
 export async function discoverSessionEndObligations(input) {
   const obligations = [];
   for (const workspace of input.knownWorkspaces) {
     input.signal?.throwIfAborted();
+    // A hinted workspace whose directory no longer exists (a deleted or moved
+    // linked worktree) may still own CENTRALLY tracked jobs with live workers —
+    // treating it as empty would settle the receipt and abandon them. Fail the
+    // pass with a stable error so the caller keeps the receipt pending; the
+    // central-state read for absent worktrees lands with historical
+    // compatibility (Task 11).
     // Thread the shared signal and a bounded stage timeout into the job-state
     // lock so a contended listing fails closed at the SessionEnd sub-budget instead
     // of waiting the default five-second state lock (which cannot be interrupted by
     // a signal checked only before the call).
-    const listed = await input.store.listOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs });
+    const listed = await (input.lockFree && typeof input.store.peekOwnedJobs === 'function'
+      ? input.store.peekOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs })
+      : input.store.listOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs }));
     for (const job of listed) {
       if (TERMINAL.has(job.status)) continue;
       const writable = isWritableRescueObligation(job);
@@ -203,6 +212,10 @@ export async function activeForeignEpochWorkspaces(input) {
   if (typeof input.epoch !== 'string') return foreign;
   for (const workspace of input.knownWorkspaces) {
     input.signal?.throwIfAborted();
+    // An absent workspace cannot prove the absence of its centrally tracked
+    // jobs: its broker owner stays release-unsafe until the central state is
+    // read without the worktree (historical compatibility).
+    if (await realpath(workspace).then(() => false, (error) => error?.code === 'ENOENT')) { foreign.add(workspace); continue; }
     let listed;
     try {
       // lockFree: the caller already holds the workspace job-state lock (the
@@ -433,6 +446,17 @@ async function terminateLeasedProcessTree(input, job, terminateProcessTree) {
         : (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : 1_000);
       const terminationBudgetMs = Math.min(absoluteDeadlineMs, 750);
       if (terminationBudgetMs <= 0) return;
+      // Re-probe once immediately before signaling: the first LOCK_TIMEOUT may
+      // predate a scheduling gap in which the worker released its lease, exited,
+      // and its pid was reused — signaling then could hit an unrelated process.
+      // A second zero-timeout contention observation keeps the identity proof as
+      // close to the kill as the lease protocol allows.
+      try {
+        await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => undefined);
+        return;
+      } catch (reprobeError) {
+        if (!(reprobeError instanceof PluginError && reprobeError.code === 'LOCK_TIMEOUT')) throw reprobeError;
+      }
       await terminateProcessTree(job.childPid, { timeoutMs: terminationBudgetMs });
       return;
     }
@@ -555,7 +579,11 @@ async function reconcileOrphan(input, job) {
     // session-owners lock must never delay local worker termination past the
     // SessionEnd deadline (an aborted ownership pass settles through the same
     // retain paths as any other remote failure).
-    await raceRecoveryControl(Promise.resolve().then(() => (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId] })), input.signal);
+    await raceRecoveryControl(Promise.resolve().then(() => (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId],
+      // The ownership pass must be bounded by the SAME shared budget, not its
+      // default five-second lock timer: racing only the caller-facing promise
+      // leaves the underlying wait holding the hook process alive.
+      timeoutMs: Math.max(0, Math.min(typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : 1_000, 1_000)) })), input.signal);
     throwIfRecoveryInterrupted(input);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);

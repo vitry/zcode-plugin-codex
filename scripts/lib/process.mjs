@@ -168,7 +168,9 @@ export async function terminateRecordedProcessTree(pid, options = {}) {
     const deadline = Date.now() + totalMs;
     const remaining = () => Math.max(0, deadline - Date.now());
     await boundedProcessKill('taskkill', ['/PID', String(pid), '/T'], { timeoutMs: remaining() });
-    if (graceMs > 0 && remaining() > 0) await new Promise((resolve) => { const timer = setTimeout(resolve, Math.min(graceMs, remaining())); timer.unref?.(); });
+    // The grace timer stays REFERENCED: with no other referenced handles an
+    // unref'ed timer lets Node exit before the forced-kill fallback runs.
+    if (graceMs > 0 && remaining() > 0) await new Promise((resolve) => { setTimeout(resolve, Math.min(graceMs, remaining())); });
     if (alive() && remaining() > 0) await boundedProcessKill('taskkill', ['/PID', String(pid), '/T', '/F'], { timeoutMs: remaining() });
     return true;
   }

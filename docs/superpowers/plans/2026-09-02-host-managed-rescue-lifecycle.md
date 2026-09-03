@@ -453,6 +453,16 @@ git commit -m "feat: settle foreground rescue child loss"
 
 ### Task 8: Host-managed foreground and background Rescue execution
 
+> **Entry requirement (added during Task 6 review):** epoch validation must become
+> ATOMIC with Rescue reservation before any other Task 8 work. Prompt-time and
+> reservation-time receipt checks outside the reservation's own job lock leave a
+> race window where SessionEnd settles a receipt while an old-epoch job is being
+> reserved (codex findings, Tasks 5/6 review rounds 24-27). Move the pending-
+> receipt check INSIDE the reservation's `withFileLock` critical section (or bind
+> it to the lifecycle epoch inside `reserveJob`/`reserveFreshRescueJob`), then
+> attach the Host lifecycle trio to every child-authorized reservation as
+> already planned below.
+
 **Files:**
 - Modify: `scripts/zcode-companion.mjs`
 - Modify: `scripts/lib/invocation.mjs`

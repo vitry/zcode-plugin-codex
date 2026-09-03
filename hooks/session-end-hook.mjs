@@ -144,7 +144,9 @@ try {
     const createClient = (workspace) => (job, derivedOwnerId) => createExistingManagedZCodeClient({
       dataRoot, workspace, ownerId: derivedOwnerId, requestTimeoutMs: existingBrokerRequestTimeoutMs,
     });
+    let scheduledObligations = 0;
     await runBounded(obligations, 2, async (obligation) => {
+      scheduledObligations += 1;
       try {
         const outcome = obligation.readOnly
           ? await settleEndedReadOnlyDetachedJob({
@@ -192,6 +194,10 @@ try {
       }
       if (remoteController.signal.aborted) allDelegated = false;
     }, () => remoteController.signal.aborted || budgetExhausted());
+    // The scheduler stops at the shared deadline: any obligation it never
+    // scheduled received neither a terminal winner nor a stop intent, so the
+    // receipt must stay pending as the durable compensation authority.
+    if (scheduledObligations < obligations.length) allDelegated = false;
     // (6) A workspace still hosting an ACTIVE job from a different (newer) epoch
     // keeps its broker owner: releasing this ending owner would stop the post-resume
     // turn, which this old receipt has no authority over. Discovery already saw these
@@ -254,12 +260,49 @@ try {
   // (UserPromptSubmit retries matching pending receipts through
   // lifecycle.listPendingReceipts/readReceipt before new Rescue work — design
   // 'Resume after SessionEnd'), so an unsettled boundary is never orphaned.
+  if (receipt !== null && allDelegated && !budgetExhausted()) {
+    // Final re-scan before settlement: an obligation that raced stage (5) is
+    // delegated here, so settlement never claims more than the durable state
+    // proves. The narrow scan-to-settle window (and the equivalent resume-side
+    // window) is closed by Task 8's atomic reservation-side epoch fence.
+    let fenceClean = true;
+    try {
+      const late = await discoverSessionEndObligations({
+        store, knownWorkspaces, ownerSessionId,
+        epoch: receipt.epoch, endedAt: receipt.endedAt,
+        signal: AbortSignal.timeout(Math.max(1, Math.min(250, hookDeadline - Date.now()))),
+        timeoutMs: Math.max(1, Math.min(250, hookDeadline - Date.now())),
+      });
+      for (const obligation of late) {
+        try {
+          const delegated = await delegateEndedStopIntent({ store, dataRoot, workspace: obligation.workspace, ownerSessionId, epoch: receipt.epoch, endedAt: receipt.endedAt, signal: AbortSignal.timeout(Math.max(1, Math.min(250, hookDeadline - Date.now()))), timeoutMs: Math.max(1, Math.min(250, hookDeadline - Date.now())) }, obligation.job.id);
+          // Delegation is only discharge evidence when the job actually reached
+          // cancelling (with the exact intent) or a terminal: a QUEUED job is
+          // returned unchanged, and settlement must stay pending for it.
+          if (!endedObligationSettled({ kind: null, job: delegated })) fenceClean = false;
+        } catch { fenceClean = false; }
+      }
+    } catch (error) {
+      fenceClean = false;
+      process.stderr.write(`ZCode SessionEnd settlement fence deferred: ${error?.code ?? 'UNKNOWN'}\n`);
+    }
+    if (!fenceClean) allDelegated = false;
+  }
   if (receipt !== null && allDelegated) {
     try {
       await lifecycle.settleReceipt(receipt.epoch, receipt.updatedAt, { signal: stageSignal(receiptSettlementBudgetMs) });
     } catch (error) {
       process.stderr.write(`ZCode SessionEnd receipt settlement deferred: ${error?.code ?? 'UNKNOWN'}\n`);
     }
+  }
+  // Settled receipts follow the 30-day/512-record retention policy: prune only
+  // with a comfortable remaining budget (the prune scan carries its own internal
+  // budget, and the identity/hook-state cleanup below must never be crowded out).
+  try {
+    if (hookDeadline - Date.now() >= 1_200) await lifecycle.pruneSettledReceipts();
+    else process.stderr.write('ZCode SessionEnd receipt pruning deferred: INSUFFICIENT_BUDGET\n');
+  } catch (error) {
+    process.stderr.write(`ZCode SessionEnd receipt pruning deferred: ${error?.code ?? 'UNKNOWN'}\n`);
   }
 
   // (9) Generic identity, preparation, and hook-state cleanup with remaining budget.
@@ -275,7 +318,8 @@ try {
   // clear later), the destructive identity cleanup must NOT run: discovery and
   // receipt hints only covered the ambient cwd, and tombstoning the ledger here
   // would erase the linked-workspace evidence a later reconciliation needs.
-  if (receipt !== null && (!identityScopeComplete || !hintsPersisted)) {
+  let identityCleanupDeferred = receipt !== null && (!identityScopeComplete || !hintsPersisted);
+  if (identityCleanupDeferred) {
     process.stderr.write(`ZCode SessionEnd identity cleanup deferred: ${hintsPersisted ? 'SCOPE_UNPROVEN' : 'HINTS_UNPERSISTED'}\n`);
   } else {
     try {
@@ -289,19 +333,28 @@ try {
       // IDENTITY_SESSION_SCOPE_SUCCESSOR is an expected deferral when a resume
       // reinstalled the ledger between enumeration and cleanup: the successor's
       // identity state must survive this boundary.
+      identityCleanupDeferred = true;
       process.stderr.write(`ZCode SessionEnd identity cleanup deferred: ${error?.code ?? 'UNKNOWN'}\n`);
     }
   }
-  await runBounded(knownWorkspaces, 4, async (workspace) => {
-    const remaining = () => Math.max(0, hookDeadline - Date.now());
-    const finalSignal = () => AbortSignal.timeout(Math.max(1, remaining()));
-    await Promise.allSettled([
-      // Both generic cleanups carry the ending boundary: a resumed successor
-      // reusing this session id must keep its own records.
-      cleanupSession(dataRoot, workspace, ownerSessionId, { signal: finalSignal(), timeoutMs: Math.min(500, Math.max(1, remaining())), ...(receipt === null ? {} : { endedAt: receipt.endedAt }) }),
-      createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace }, { signal: finalSignal(), timeoutMs: Math.min(500, Math.max(1, remaining())), ...(receipt === null ? {} : { endedAt: receipt.endedAt }) }),
-    ]);
-  });
+  // When the identity cleanup deferred, the hook-state session record is the
+  // ONLY remaining epoch anchor for the next resume's compensation retry —
+  // deleting it (and the successor-fenced preparation records) must wait until
+  // the identity state itself is terminable.
+  if (identityCleanupDeferred) {
+    process.stderr.write('ZCode SessionEnd generic cleanup deferred with the identity state\n');
+  } else {
+    await runBounded(knownWorkspaces, 4, async (workspace) => {
+      const remaining = () => Math.max(0, hookDeadline - Date.now());
+      const finalSignal = () => AbortSignal.timeout(Math.max(1, remaining()));
+      await Promise.allSettled([
+        // Both generic cleanups carry the ending boundary: a resumed successor
+        // reusing this session id must keep its own records.
+        cleanupSession(dataRoot, workspace, ownerSessionId, { signal: finalSignal(), timeoutMs: Math.min(500, Math.max(1, remaining())), ...(receipt === null ? {} : { endedAt: receipt.endedAt }) }),
+        createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace }, { signal: finalSignal(), timeoutMs: Math.min(500, Math.max(1, remaining())), ...(receipt === null ? {} : { endedAt: receipt.endedAt }) }),
+      ]);
+    });
+  }
 } catch (error) {
   process.stderr.write(`ZCode session cleanup advisory failed: ${error?.code ?? 'HOOK_FAILED'}\n`);
   process.exitCode = 1;

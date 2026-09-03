@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 
 import { atomicWriteJson, ensurePrivateDirectory, readBoundedJsonFile, readJsonFile, readPrivateDirectory, withFileLock } from '../../scripts/lib/fs.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
+import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore, PERMISSION_MODES } from '../../scripts/lib/identity.mjs';
 import { RESCUE_UNREAD_JOB_LIMIT } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
@@ -74,9 +75,156 @@ export async function recordSession(dataRoot, input) {
         if (existing.kind === 'session' && existing.sessionId === input.session_id && existing.workspace === store.workspacePath
           && ['startup', 'resume', 'clear'].includes(existing.source) && Number.isFinite(Date.parse(existing.createdAt))) return;
       } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    } else if (source === 'resume') {
+      // Resume after SessionEnd: BEFORE publishing the new epoch record, atomically
+      // read the previous record under this same lock and synthesize a LOCAL
+      // resume-compensation receipt when that epoch closed with nonterminal owned
+      // jobs and no SessionEnd receipt. Strictly local — no broker, no ZCode call,
+      // no remote settlement wait — and bounded by RESUME_COMPENSATION_BUDGET_MS.
+      // A FAILED compensation leaves the previous record in place AND fails the
+      // SessionStart loudly: the epoch digest stays recoverable and the stale
+      // epoch record is never silently replaced by one that cannot compensate.
+      // The next resume re-derives the same epoch and retries.
+      const compensatedScope = await compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, input.session_id);
+      // The previous epoch's identity ledger may still be alive — SessionEnd
+      // defers its destructive cleanup under contention — and an unterminated
+      // ledger would reject this resumed session's first caller turn
+      // (IDENTITY_SESSION_MISMATCH) forever. Retry the cleanup ONCE here with
+      // the previous record's own sessionStartedAt proof: epoch-fenced, so a
+      // successor's ledger is never touched. A FAILED retry fails the
+      // SessionStart loudly: exiting successfully would leave the host running
+      // the ended epoch while its pending receipt is excluded from
+      // reconciliation as 'current'.
+      const previous = await readJsonFile(recordPath).catch(() => null);
+      if (previous?.kind === 'session' && previous.sessionId === input.session_id
+        && Number.isFinite(Date.parse(previous.createdAt))) {
+        await createIdentityStore({ dataRoot }).cleanupSession(store.workspacePath, input.session_id, {
+          sessionStartedAt: previous.createdAt,
+          timeoutMs: Math.min(750, RESUME_FENCE_BUDGET_MS),
+          signal: AbortSignal.timeout(RESUME_FENCE_BUDGET_MS),
+        });
+      }
+      // FENCE old-epoch reservations before the epoch record is replaced: while
+      // each known workspace's job lock is held, the compensation scan reruns —
+      // an old child's reservation racing this resume is discovered and
+      // compensated durably instead of losing its epoch digest forever.
+      // FENCE old-epoch reservations before AND through the epoch record
+      // replacement: every known workspace's job lock is acquired NESTED (sorted
+      // for a stable order) and stays held while the compensation scan reruns
+      // and the new record is written — an old child's reservation racing this
+      // resume is either discovered and compensated durably, or blocked until
+      // the new epoch is authoritative; it can never slip through unrecorded.
+      if (Array.isArray(compensatedScope)) {
+        const { resolveWorkspaceStorage } = await import('../../scripts/lib/workspace.mjs');
+        const fenceDeadline = Date.now() + RESUME_FENCE_BUDGET_MS;
+        const fenceSignal = AbortSignal.timeout(RESUME_FENCE_BUDGET_MS);
+        const fenceLockPaths = [];
+        for (const fenceWorkspace of compensatedScope) {
+          fenceSignal.throwIfAborted();
+          const fenceStorage = await resolveWorkspaceStorage({ dataRoot, workspace: fenceWorkspace });
+          fenceLockPaths.push(join(fenceStorage.directory, '.state.lock'));
+        }
+        fenceLockPaths.sort();
+        const writeRecordFenced = async (/** @type {number} */ index) => {
+          if (index >= fenceLockPaths.length) {
+            // Under the full fence the final scan is authoritative: any old-
+            // epoch obligation it finds gains a durable receipt, and no further
+            // old-epoch reservation can arrive while the record is replaced.
+            await compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, input.session_id, { signal: fenceSignal, timeoutMs: Math.max(1, Math.min(RESUME_COMPENSATION_BUDGET_MS, fenceDeadline - Date.now())) });
+            await atomicWriteJson(recordPath, { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, source, createdAt: new Date().toISOString() });
+            return;
+          }
+          await withFileLock(fenceLockPaths[index], async () => { await writeRecordFenced(index + 1); }, { signal: fenceSignal, timeoutMs: Math.max(1, Math.min(750, fenceDeadline - Date.now())) });
+        };
+        await writeRecordFenced(0);
+        return;
+      }
     }
     await atomicWriteJson(recordPath, { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, source, createdAt: new Date().toISOString() });
   });
+}
+
+// The whole compensation phase shares one local abort budget, mirroring the
+// SessionEnd receipt publication budget it substitutes for.
+const RESUME_COMPENSATION_BUDGET_MS = 500;
+const RESUME_FENCE_BUDGET_MS = 1_500;
+
+/**
+ * Publish one `resume-compensation` receipt for the previous lifecycle epoch when
+ * that epoch owns nonterminal jobs in the ambient workspace and has no receipt.
+ * An existing receipt — pending or settled — is recognized and left untouched
+ * (first-writer-wins publication would only merge hints, so recognition here
+ * means doing nothing). The scan reuses the exact SessionEnd obligation discovery
+ * (writable Rescue plus active read-only detached runs) so a later prompt-time
+ * reconciliation consumes exactly what this publication recorded.
+ * @param {string} dataRoot @param {any} store @param {string} recordPath @param {string} sessionId
+ */
+async function compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, sessionId, options = {}) {
+  const signal = options.signal ?? AbortSignal.timeout(RESUME_COMPENSATION_BUDGET_MS);
+  const budget = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) ? options.timeoutMs : RESUME_COMPENSATION_BUDGET_MS;
+  let previous;
+  try { previous = await readJsonFile(recordPath); }
+  catch (error) { if (error?.cause?.code === 'ENOENT') return; throw error; }
+  if (previous.kind !== 'session' || previous.sessionId !== sessionId || previous.workspace !== store.workspacePath
+    || !['startup', 'resume', 'clear'].includes(previous.source) || !Number.isFinite(Date.parse(previous.createdAt))) return;
+  const lifecycle = createHostLifecycleStore({ dataRoot });
+  const epoch = hostLifecycleEpoch(sessionId, previous.createdAt);
+  const existing = await lifecycle.readReceipt(epoch);
+  if (existing !== null) {
+    // A PENDING receipt from a scope-deferred SessionEnd still needs the old
+    // ledger's linked-workspace scope recovered and merged BEFORE this resume's
+    // cleanup tombstones that ledger — otherwise the receipt can later settle
+    // after scanning only the ambient cwd while linked jobs remain active. A
+    // settled receipt is already complete and stays untouched.
+    if (existing.state === 'pending') {
+      const retainedScope = await createIdentityStore({ dataRoot }).sessionWorkspaces(store.workspacePath, sessionId).catch(() => null);
+      if (retainedScope !== null && Array.isArray(retainedScope.knownWorkspaces) && retainedScope.knownWorkspaces.length > 0) {
+        await lifecycle.publishSessionEnd({
+          sessionId, sessionStartedAt: previous.createdAt, endedAt: existing.endedAt,
+          origin: existing.origin, workspaceHints: retainedScope.knownWorkspaces,
+        }, { signal });
+      }
+    }
+    return;
+  }
+  // Loaded lazily so the SessionStart hook's static import graph stays free of
+  // the recovery/schema machinery: an install missing optional runtime assets
+  // still records sessions and renders launcher context.
+  const [{ createStateStore }, { discoverSessionEndObligations }] = await Promise.all([
+    import('../../scripts/lib/state.mjs'),
+    import('../../scripts/lib/recovery.mjs'),
+  ]);
+  // The obligation scan covers the session's FULL identity-ledger scope — the
+  // same read-only enumeration the SessionEnd hook uses — so linked-workspace
+  // jobs of the previous epoch are recorded in the receipt's durable hints and
+  // later prompt-time reconciliation covers them, not just the ambient cwd.
+  // Only a genuine NULL (no global identity state: the ambient legacy shape IS
+  // the whole scope) falls back to the ambient workspace — an unreadable or
+  // corrupt ledger propagates so recordSession defers the epoch record and the
+  // next resume retries the compensation.
+  const identityScope = await createIdentityStore({ dataRoot }).sessionWorkspaces(store.workspacePath, sessionId);
+  const knownWorkspaces = identityScope === null ? [store.workspacePath] : identityScope.knownWorkspaces;
+  const scanStore = createStateStore({ dataRoot });
+  const obligations = await discoverSessionEndObligations({
+    store: scanStore, dataRoot, knownWorkspaces, ownerSessionId: sessionId,
+    epoch: null, endedAt: null, signal, timeoutMs: budget,
+    // The resume fence re-scans while HOLDING each workspace's job lock, so the
+    // scan itself must be lock-free (re-entrant acquisition would deadlock).
+    lockFree: typeof scanStore.peekOwnedJobs === 'function',
+  });
+  if (obligations.length > 0) {
+    await lifecycle.publishSessionEnd({
+      sessionId,
+      sessionStartedAt: previous.createdAt,
+      endedAt: new Date().toISOString(),
+      origin: 'resume-compensation',
+      workspaceHints: knownWorkspaces,
+    }, { signal });
+  }
+  // The enumerated scope is returned even when nothing needed compensating: the
+  // resume fence re-scans THESE workspaces under their job locks before the
+  // epoch record is replaced, closing the scan-to-write race.
+  return knownWorkspaces;
 }
 export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId) {
   // Strictly read-only: proving a boundary's epoch must never mutate state (no
@@ -102,6 +250,188 @@ export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId
   }
 }
 export async function isOwnedSession(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id); try { const record = await readJsonFile(join(store.directory, `session-${id}.json`)); return record.kind === 'session' && record.sessionId === input.session_id && record.workspace === store.workspacePath; } catch { return false; } }
+
+// Prompt-time reconciliation mirrors the SessionEnd settlement stage budgets:
+// one shared deadline keeps every sub-budget (receipt scan, discovery, remote
+// settlement, receipt settlement) under the native UserPromptSubmit limit, and
+// remote control uses ONLY an existing broker client — never a lazy spawn.
+const PROMPT_RECONCILIATION_BUDGET_MS = 2_000;
+const PROMPT_RECEIPT_STAGE_BUDGET_MS = 500;
+const PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS = process.platform === 'win32' ? 500 : 250;
+
+/** The prior epoch's re-proved workspace scope could not be persisted into its
+ * receipt hints: the caller must NOT replace the identity ledger (its linked
+ * scope would be lost), so the prompt fails safely and the next pass retries. */
+function priorScopeUnpersisted() {
+  return new PluginError('PRIOR_SCOPE_UNPERSISTED', 'The prior epoch workspace scope could not be recorded.', {
+    category: 'state', remedy: 'Retry the prompt; the reconciliation pass persists the scope before settlement.',
+  });
+}
+
+/**
+ * The pending host-session-end receipts of one session's PRIOR lifecycle epochs:
+ * pending receipts carry the durable compensation authority of an epoch that
+ * ended without full settlement. The current epoch (the recorded SessionStart of
+ * the resumed session) is excluded — a receipt for the live epoch is not this
+ * session's previous boundary to reconcile.
+ * @param {string} dataRoot @param {string} sessionId @param {string} workspace @param {{signal?:AbortSignal, currentEpoch?:string|null}} [options]
+ */
+export async function pendingPriorEpochReceipts(dataRoot, sessionId, workspace, options = {}) {
+  const receipts = await createHostLifecycleStore({ dataRoot }).listPendingReceipts({ signal: options.signal });
+  let current = options.currentEpoch;
+  if (current === undefined) {
+    try { current = hostLifecycleEpoch(sessionId, (await resolveRecordedSessionStart(dataRoot, workspace, sessionId)).startedAt); }
+    catch { current = null; }
+  }
+  return receipts.filter((receipt) => receipt.sessionId === sessionId && receipt.epoch !== current);
+}
+
+/**
+ * Reconcile one session's pending prior-epoch receipts before new Rescue work:
+ * for each receipt, re-run the SessionEnd convergence across its recorded
+ * workspace hints plus the ambient workspace — discover the receipt epoch's
+ * nonterminal owned obligations, settle or durably delegate each with the same
+ * bounded budgets as the SessionEnd hook, then settle the receipt when every
+ * obligation is terminal-or-delegated (a bare legacy `cancelling` guard without
+ * a valid stop intent never settles). Remote control uses only an existing
+ * broker client. Returns the still-pending prior-epoch receipts so callers can
+ * block new writable Rescue work while reconciliation remains unresolved.
+ * @param {{dataRoot:string,sessionId:string,workspace:string,currentEpoch?:string|null,budgetMs?:number,signal?:AbortSignal}} input
+ */
+export async function reconcilePriorEpochReceipts(input) {
+  const budgetMs = input.budgetMs ?? PROMPT_RECONCILIATION_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
+  const overall = input.signal === undefined ? AbortSignal.timeout(budgetMs) : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+  const stage = (budgetMsLimit) => AbortSignal.any([overall, AbortSignal.timeout(Math.max(1, Math.min(budgetMsLimit, deadline - Date.now())))]);
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const receipts = await pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS), currentEpoch: input.currentEpoch });
+  if (receipts.length === 0) return [];
+  // The recovery, state, and existing-broker machinery loads lazily: with no
+  // pending receipts — the overwhelmingly common prompt — the hook's static
+  // graph gains nothing, and installs missing optional runtime assets keep
+  // working (reconciliation is advisory and its callers fail closed elsewhere).
+  const [{ delegateEndedStopIntent, discoverSessionEndObligations, endedObligationSettled, settleEndedReadOnlyDetachedJob, settleEndedRescueJob },
+    { createStateStore, isJobNotFound },
+    { createExistingManagedZCodeClient }] = await Promise.all([
+    import('../../scripts/lib/recovery.mjs'),
+    import('../../scripts/lib/state.mjs'),
+    import('../../scripts/lib/zcode-client.mjs'),
+  ]);
+  const lifecycle = createHostLifecycleStore({ dataRoot: input.dataRoot });
+  const store = createStateStore({ dataRoot: input.dataRoot });
+  const createClient = (workspace) => (job, derivedOwnerId) => createExistingManagedZCodeClient({
+    dataRoot: input.dataRoot, workspace, ownerId: derivedOwnerId, requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS,
+  });
+  for (const receipt of receipts) {
+    if (overall.aborted) break;
+    // Re-prove the workspace scope AT SETTLEMENT TIME: SessionEnd deliberately
+    // retains the identity ledger when it could not enumerate or persist the
+    // complete scope, so that ledger — not the receipt's possibly cwd-only
+    // hints — is the union authority for discovery. An unreadable ledger means
+    // completeness cannot be proven: the obligation work still runs over the
+    // hints, but the receipt itself is never settled this pass.
+    let scopeProvable = true;
+    let identityScope = null;
+    try { identityScope = await createIdentityStore({ dataRoot: input.dataRoot }).sessionWorkspaces(input.workspace, input.sessionId); }
+    catch { scopeProvable = false; }
+    const knownWorkspaces = [...new Set([
+      resolve(input.workspace),
+      ...receipt.workspaceHints,
+      ...(scopeProvable && identityScope !== null && identityScope.sessionStartedAt === receipt.sessionStartedAt
+        ? identityScope.knownWorkspaces : []),
+    ])];
+    let allSettled = true;
+    // Persist the re-proved union BEFORE anything else — before discovery and
+    // long before beginCallerTurn replaces the ledger: a merge that stays in
+    // memory would lose the linked scope exactly when an obligation could not
+    // settle in this pass. An idempotent merge resolves without advancing the
+    // CAS token when the hints already match; a FAILED merge throws
+    // PRIOR_SCOPE_UNPERSISTED so the caller refuses to replace the ledger.
+    let settleToken = receipt.updatedAt;
+    if (!scopeProvable) throw priorScopeUnpersisted();
+    // Hints are discovery aids, never authority (design:186): a successor
+    // ledger's workspaces must not widen this receipt's reach, so only a scope
+    // whose epoch proof matches the receipt is merged.
+    else if (identityScope !== null && identityScope.sessionStartedAt === receipt.sessionStartedAt) {
+      try {
+        const merged = await lifecycle.publishSessionEnd({
+          sessionId: input.sessionId, sessionStartedAt: receipt.sessionStartedAt,
+          endedAt: receipt.endedAt, origin: receipt.origin, workspaceHints: knownWorkspaces,
+        }, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS) });
+        if (merged) settleToken = merged.updatedAt;
+      } catch (error) {
+        if (error instanceof PluginError && error.code === 'PRIOR_SCOPE_UNPERSISTED') throw error;
+        throw priorScopeUnpersisted();
+      }
+    }
+    const obligations = await discoverSessionEndObligations({
+      store, dataRoot: input.dataRoot, knownWorkspaces, ownerSessionId: input.sessionId,
+      epoch: receipt.epoch, endedAt: receipt.endedAt, signal: overall, timeoutMs: remaining(),
+    });
+      await runBounded(obligations, 2, async (obligation) => {
+        try {
+          const outcome = obligation.readOnly
+            ? await settleEndedReadOnlyDetachedJob({
+              store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, deadlineMs: deadline,
+              lockTimeoutMs: 0, requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS,
+              timeoutMs: remaining(), signal: overall, includeSettlementEvidence: true,
+              createClient: createClient(obligation.workspace),
+            }, obligation.job.id)
+            : await settleEndedRescueJob({
+              store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, lockTimeoutMs: 0,
+              requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS, timeoutMs: remaining(),
+              signal: overall, includeSettlementEvidence: true, createClient: createClient(obligation.workspace),
+            }, obligation.job.id);
+          if (!endedObligationSettled(outcome)) throw new Error('obligation not settled');
+        } catch {
+          // A reconcile/broker failure leaves durable state uncertain: durably
+          // delegate to the exact session-end stop intent instead of claiming a
+          // terminal, then re-read to decide whether the obligation discharged.
+          if (!obligation.readOnly && !overall.aborted) {
+            try {
+              await delegateEndedStopIntent({
+                store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+                epoch: receipt.epoch, endedAt: receipt.endedAt, signal: overall, timeoutMs: remaining(),
+              }, obligation.job.id);
+            } catch { /* delegation is best-effort; the pending receipt remains authority */ }
+          }
+          const reread = { discharged: false };
+          try {
+            reread.discharged = endedObligationSettled({ kind: null, job: await store.readJob(obligation.workspace, obligation.job.id, { signal: overall, timeoutMs: remaining() }) });
+          } catch (error) {
+            // Only a PROVEN missing job discharges the obligation; corruption or a
+            // contended read keeps the receipt pending as compensation authority.
+            reread.discharged = isJobNotFound(error);
+          }
+          if (!reread.discharged) allSettled = false;
+        }
+        if (overall.aborted) allSettled = false;
+      }, () => overall.aborted);
+    // Note: a late reservation racing this pass is closed out by Task 8's
+    // atomic reservation-side epoch fence, not by lock acquisition here — the
+    // fail-closed writable gate already blocks new Rescue while this receipt
+    // remains pending.
+    if (allSettled && scopeProvable && !overall.aborted) {
+      try { await lifecycle.settleReceipt(receipt.epoch, settleToken, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS) }); }
+      catch { /* settlement races are retried by the next reconciliation pass */ }
+    }
+  }
+  return pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS), currentEpoch: input.currentEpoch });
+}
+
+/** Run one bounded parallelism loop with a shared abort predicate, mirroring the SessionEnd hook scheduler. @param {readonly any[]} values @param {number} concurrency @param {(value:any)=>Promise<void>} operation @param {()=>boolean} [isAborted] */
+async function runBounded(values, concurrency, operation, isAborted = undefined) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (next < values.length) {
+      if (isAborted?.()) break;
+      const index = next; next += 1;
+      await operation(values[index]);
+    }
+  }));
+}
 export async function markForwarding(dataRoot, input, parentCaller, options = {}) {
   const publicationSeam = options.publicationSeam;
   if (publicationSeam !== undefined && typeof publicationSeam !== 'function') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route publication seam is invalid.');
