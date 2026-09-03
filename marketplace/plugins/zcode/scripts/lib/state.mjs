@@ -288,14 +288,27 @@ export function createStateStore(options) {
     },
 
     /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
-     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any}} input */
+     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any,signal?:AbortSignal,timeoutMs?:number}} input Optional trailing lock budget. */
     async revalidateBoundRescueStop(input) {
-      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isDigest(input.jobId)
-        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(input.status)
-        || input.zcodeSessionId !== undefined && !isSafeIdentifier(input.zcodeSessionId)
-        || input.status !== 'queued' && input.zcodeSessionId === undefined
-        || input.workerLeaseId !== undefined && !isDigest(input.workerLeaseId)) throw invalidRescueBinding();
-      const storage = await jobStorage(dataRoot, input.workspace);
+      // The bounded SessionEnd wrapper threads signal/timeoutMs through this
+      // same object: they are lock options, not part of the JSON stop target,
+      // so the exact-binding validation must see an explicitly-picked target —
+      // absent fields (an undefined zcodeSessionId on a queued job, a null
+      // workerLeaseId) are normalized away rather than failing JSON pliancy.
+      const { signal, timeoutMs, ...rest } = input ?? {};
+      const target = {
+        workspace: rest.workspace, jobId: rest.jobId, ownerSessionId: rest.ownerSessionId, status: rest.status,
+        ...(rest.zcodeSessionId === undefined ? {} : { zcodeSessionId: rest.zcodeSessionId }),
+        ...(rest.workerLeaseId === undefined || rest.workerLeaseId === null ? {} : { workerLeaseId: rest.workerLeaseId }),
+        ...(rest.expected === undefined ? {} : { expected: rest.expected }),
+      };
+      if (!isPlainJsonObject(target) || !isNonEmptyString(target.workspace) || !isDigest(target.jobId)
+        || !isBoundedOwnerSessionId(target.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(target.status)
+        || target.zcodeSessionId !== undefined && !isSafeIdentifier(target.zcodeSessionId)
+        || target.status !== 'queued' && target.zcodeSessionId === undefined
+        || target.workerLeaseId !== undefined && !isDigest(target.workerLeaseId)) throw invalidRescueBinding();
+      const lockOptions = boundedLockOptions({ signal, timeoutMs });
+      const storage = await jobStorage(dataRoot, target.workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readExactBindingJob(storage, input.jobId);
         const sameTarget = job.id === input.jobId && job.ownerSessionId === input.ownerSessionId
@@ -314,7 +327,7 @@ export function createStateStore(options) {
           || Object.keys(input.expected).sort().join(',') !== 'bindingKey,bindingUpdatedAt,currentJobId,operationId,workerLeaseId'
           || JSON.stringify(input.expected) !== JSON.stringify(guard))) return { kind: 'stale', job: structuredClone(job) };
         return { kind: 'current', job: structuredClone(job), guard };
-      });
+      }, lockOptions);
     },
 
     /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input */
@@ -480,8 +493,8 @@ export function createStateStore(options) {
     /** Terminalize one queued recovery candidate only if its exact effective worker lease is unchanged.
      * `null` proves no claimed or private fenced lease existed at the caller's final probe.
      * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId
-     * @param {any} rollback @param {'failed'|'cancelled'} nextStatus @param {Record<string,unknown>} [patch] */
-    async finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}) {
+     * @param {any} rollback @param {'failed'|'cancelled'} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
       if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
         || rollback !== undefined && !isPlainJsonObject(rollback)
@@ -492,7 +505,7 @@ export function createStateStore(options) {
       }
       return transitionStoredJob(dataRoot, workspace, jobId, ['queued'], nextStatus, patch, true, {
         ...(rollback === undefined ? {} : { migrationRollback: rollback }),
-        publicationHook, recoveryWorkerLeaseId: expectedWorkerLeaseId,
+        publicationHook, recoveryWorkerLeaseId: expectedWorkerLeaseId, lockOptions: boundedLockOptions(options),
       });
     },
 
@@ -794,9 +807,10 @@ export function createStateStore(options) {
      * @param {string} nextStatus
      * @param {Record<string, unknown>} [patch]
      */
-    async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget (defaults preserved when omitted). */
+    async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
-      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false);
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false, { lockOptions: boundedLockOptions(options) });
     },
 
     /**
@@ -804,7 +818,8 @@ export function createStateStore(options) {
      * @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses
      * @param {string} nextStatus @param {Record<string,unknown>} [patch]
      */
-    async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget (defaults preserved when omitted). */
+    async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
       if (!TERMINAL_STATUSES.has(nextStatus) || Object.hasOwn(patch, 'finishedAt')) {
         throw new PluginError('JOB_FINISH_INPUT_INVALID', 'Job finalization input is invalid.', {
@@ -812,7 +827,7 @@ export function createStateStore(options) {
           details: { jobId, nextStatus },
         });
       }
-      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true);
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true, { lockOptions: boundedLockOptions(options) });
     },
 
     /** Terminalize a failed execution attempt only while the job is unclaimed or carries this attempt's exact lease.
@@ -826,8 +841,8 @@ export function createStateStore(options) {
     },
 
     /** Release and clear one exact terminal private reservation while holding the State proof lock.
-     * @param {string} workspace @param {string} jobId @param {{releaseExecutionReservation:(proof:any)=>Promise<void>}} identity */
-    async cleanupTerminalExecutionReservation(workspace, jobId, identity) {
+     * @param {string} workspace @param {string} jobId @param {{releaseExecutionReservation:(proof:any)=>Promise<void>}} identity @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async cleanupTerminalExecutionReservation(workspace, jobId, identity, options = {}) {
       if (!isNonEmptyString(workspace) || !isDigest(jobId)
         || !identity || typeof identity.releaseExecutionReservation !== 'function') throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
@@ -849,7 +864,7 @@ export function createStateStore(options) {
         cleaned.updatedAt = new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString();
         validateJobRecord(cleaned, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, cleaned); return cleaned;
-      });
+      }, boundedLockOptions(options));
     },
 
     /**
@@ -910,14 +925,16 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {string} workspace @param {string} jobId */
-    async readJob(workspace, jobId) {
+    /** @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+    async readJob(workspace, jobId, options = {}) {
+      const { signal, timeoutMs } = options ?? {};
+      const lockOptions = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, () => readJobRecord(
         jobPath(storage.jobsDirectory, jobId),
         jobId,
         storage.workspacePath,
-      ));
+      ), lockOptions);
     },
 
     /** @param {string} workspace */
@@ -930,21 +947,44 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {string} workspace @param {string} ownerSessionId */
-    async listOwnedJobs(workspace, ownerSessionId) {
+    /** @param {string} workspace @param {string} ownerSessionId
+     * @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded
+     * stage budget forwarded to the workspace job-state lock. When omitted the
+     * existing default five-second lock wait with no abort signal is preserved. */
+    async listOwnedJobs(workspace, ownerSessionId, options = {}) {
       if (!isNonEmptyString(workspace) || !isBoundedOwnerSessionId(ownerSessionId)) {
         throw new PluginError('OWNED_JOB_LIST_INPUT_INVALID', 'Owned job listing input is invalid.', {
           category: 'state',
           remedy: 'Provide one workspace and its exact bounded Codex session identifier.',
         });
       }
+      const { signal, timeoutMs } = options ?? {};
+      const lockOptions = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         await ensureOwnerIndex(storage);
-        const jobs = await readOwnedJobs(storage, ownerSessionId);
+        const jobs = await readOwnedJobs(storage, ownerSessionId, signal);
         return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
           || left.id.localeCompare(right.id));
-      });
+      }, lockOptions);
+    },
+
+    /** Lock-free read-only owner listing for callers that ALREADY hold the
+     * workspace job-state lock (SessionEnd's release fence): a re-entrant
+     * listOwnedJobs would deadlock against itself. Reads are rename-atomic and
+     * fail closed on torn or invalid records.
+     * @param {string} workspace @param {string} ownerSessionId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+    async peekOwnedJobs(workspace, ownerSessionId, options = {}) {
+      if (!isNonEmptyString(workspace) || !isBoundedOwnerSessionId(ownerSessionId)) {
+        throw new PluginError('OWNED_JOB_INDEX_INVALID', 'Provide one workspace and its exact bounded Codex session identifier.', {
+          remedy: 'Provide one workspace and its exact bounded Codex session identifier.',
+        });
+      }
+      const { signal } = options ?? {};
+      const storage = await jobStorage(dataRoot, workspace);
+      const jobs = await readOwnedJobs(storage, ownerSessionId, signal);
+      return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id));
     },
   };
 }
@@ -1108,7 +1148,11 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
   });
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null}} [options] */
+/** @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+function boundedLockOptions(options = {}) {
+  return { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
+}
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null,lockOptions?:{signal?:AbortSignal,timeoutMs?:number}}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
@@ -1207,7 +1251,7 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     await atomicWriteJson(path, updated);
     return options.failedExecutionLeaseId === undefined ? updated : { kind: 'settled', job: updated };
-  });
+  }, options.lockOptions ?? {});
 }
 
 /** Close the exact current operation before publishing its cancelled job — the historical
@@ -1927,6 +1971,14 @@ export function resumableHostOwnedCancellation(job) {
   return hasHostOwnedLifecycle(job) && typeof job.zcodeSessionId === 'string';
 }
 
+/** A proven missing job — distinct from corruption, permission, unsafe-path, or
+ * lock-contention uncertainty. Session settlement may discharge an obligation
+ * only on this signal; every other read failure must keep the obligation pending.
+ * @param {unknown} error */
+export function isJobNotFound(error) {
+  return error instanceof PluginError && error.code === 'JOB_NOT_FOUND';
+}
+
 /** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
 async function resolveBindingJobsLocked(storage, binding) {
   const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
@@ -2359,7 +2411,8 @@ async function readRescueReservationEvidence(storage, job) {
 }
 
 /** @param {any} storage @param {string} ownerSessionId */
-async function readOwnedJobs(storage, ownerSessionId) {
+/** @param {any} storage @param {string} ownerSessionId @param {AbortSignal|undefined} signal */
+async function readOwnedJobs(storage, ownerSessionId, signal = undefined) {
   const directory = ownerBindingDirectory(storage.ownerIndexDirectory, ownerSessionId);
   let entries;
   try {
@@ -2376,6 +2429,10 @@ async function readOwnedJobs(storage, ownerSessionId) {
   }
   const jobs = [];
   for (const entry of canonical) {
+    // The lock budget only gates acquisition: a 10k-entry owner index must
+    // observe the SessionEnd abort signal per entry instead of scanning past
+    // the native deadline.
+    signal?.throwIfAborted();
     const jobId = entry.name.slice(0, -'.json'.length);
     let binding;
     try {

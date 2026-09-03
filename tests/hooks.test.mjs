@@ -1013,6 +1013,66 @@ test('executor routes use bounded nofollow reads and bounded sibling-safe cleanu
   await assert.rejects(cleanupSession(data, cwd, sibling.session_id), (error) => error?.code === 'HOOK_STATE_CAPACITY' && !`${error.message}${error.remedy}`.includes(sibling.session_id));
 });
 
+test('generic hook-state cleanup keeps a successor epoch session record under the ending epoch proof', async (t) => {
+  const { cwd: origin, data } = await workspace();
+  t.after(() => rm(data, { recursive: true, force: true }));
+  const sessionId = 'fence-parent';
+  await recordSession(data, { session_id: sessionId, cwd: origin, source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin });
+  const sessionRecordPath = join(storage.directory, 'hook-state', `session-${createHash('sha256').update(JSON.stringify(['session', sessionId])).digest('hex')}.json`);
+  const original = JSON.parse(await readFile(sessionRecordPath, 'utf8'));
+  // A resumed successor rewrites the SAME record with a createdAt after the
+  // old epoch's ending boundary.
+  const boundary = original.createdAt;
+  const successor = { ...original, createdAt: new Date(Date.parse(boundary) + 60_000).toISOString() };
+  await writeFile(sessionRecordPath, `${JSON.stringify(successor)}\n`);
+  // Millisecond equality is a successor too (RFC3339 ms precision race).
+  await cleanupSession(data, origin, sessionId, { endedAt: successor.createdAt });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), true, 'an exactly-equal boundary timestamp still fences the successor record');
+  await cleanupSession(data, origin, sessionId, { endedAt: boundary });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), true, 'the successor record survives the old epoch fenced cleanup');
+  // A successor executor in a LINKED workspace has no session marker there: the
+  // record's own write time is the only per-workspace succession evidence.
+  const linked = join(origin, 'linked-fence');
+  await mkdir(linked, { recursive: true });
+  const linkedStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: linked });
+  const executorRecord = (createdAt) => join(linkedStorage.directory, 'hook-state', `executor-${createHash('sha256').update(JSON.stringify(['executor', createdAt])).digest('hex')}.json`);
+  await mkdir(join(linkedStorage.directory, 'hook-state'), { recursive: true });
+  await writeFile(executorRecord(new Date(Date.parse(boundary) - 60_000).toISOString()), `${JSON.stringify({ kind: 'subagent-executor', sessionId, parentSessionId: sessionId, createdAt: new Date(Date.parse(boundary) - 60_000).toISOString() })}\n`);
+  await writeFile(executorRecord(new Date(Date.parse(boundary) + 60_000).toISOString()), `${JSON.stringify({ kind: 'subagent-executor', sessionId, parentSessionId: sessionId, createdAt: new Date(Date.parse(boundary) + 60_000).toISOString() })}\n`);
+  await cleanupSession(data, linked, sessionId, { endedAt: boundary });
+  assert.equal(await readFile(executorRecord(new Date(Date.parse(boundary) - 60_000).toISOString()), 'utf8').then(() => false, () => true), true, 'the old epoch executor record is deleted');
+  assert.equal(await readFile(executorRecord(new Date(Date.parse(boundary) + 60_000).toISOString()), 'utf8').then(() => true, () => false), true, 'the successor executor record survives in the record-less linked workspace');
+  await cleanupSession(data, origin, sessionId, { endedAt: new Date(Date.parse(boundary) + 120_000).toISOString() });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), false, 'a boundary after the record still deletes it');
+});
+
+test('generic preparation cleanup keeps successor-epoch preparations beyond the ending boundary', async (t) => {
+  const { cwd: origin, data, env } = await workspace();
+  const target = await addLinkedWorktree(origin, 'prep-successor-fence');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  assert.equal((await runHook('session-lifecycle-hook.mjs', { session_id: 'prep-fence-parent', cwd: origin, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env)).code, 0);
+  const prompt = { session_id: 'prep-fence-parent', turn_id: 'prep-fence-turn', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'finish fenced work' };
+  assert.equal((await runHook('user-prompt-hook.mjs', prompt, env)).code, 0);
+  const caller = await identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: target, workspaceBinding: 'claim' });
+  const save = () => preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'proactive', task: 'finish fenced work', options: {} } });
+  const preparedCount = async () => {
+    const { resolveWorkspaceStorage: resolveStorage } = await import('../scripts/lib/workspace.mjs');
+    const storage = await resolveStorage({ dataRoot: data, workspace: target });
+    return (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json')).length;
+  };
+  await save();
+  // A boundary BEFORE the preparation's creation is a successor epoch's: the
+  // preparation must survive it.
+  await preparations.cleanupSession({ sessionId: prompt.session_id, workspace: target }, { endedAt: new Date(Date.now() - 60_000).toISOString() });
+  assert.equal(await preparedCount(), 1, 'a successor epoch boundary must not delete the live preparation');
+  // The owning epoch's boundary (after creation) still deletes it.
+  await preparations.cleanupSession({ sessionId: prompt.session_id, workspace: target }, { endedAt: new Date(Date.now() + 60_000).toISOString() });
+  assert.equal(await preparedCount(), 0, 'the owning epoch boundary deletes its own preparation');
+});
+
 test('origin cwd Root Stop revokes authority before bound worktree preparation cleanup', async (t) => {
   const { cwd: origin, data, env } = await workspace();
   const target = await addLinkedWorktree(origin, 'origin-cwd-root-stop');
@@ -1194,8 +1254,14 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
   const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0); assert.equal(ended.stdout, '');
   const records = await Promise.all((await jsonFiles(data)).map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
-  const endedRecords = records.filter((record) => record.sessionId === 'a');
-  assert.equal(endedRecords.length, 1, 'ended v3 sessions retain only their revoking lifecycle tombstone');
+  // The receipt-first SessionEnd adds one private, epoch-scoped `host-session-end`
+  // receipt as its first durable mutation; identity/hook-state session contexts
+  // must still collapse to only the revoking lifecycle tombstone.
+  const receipts = records.filter((record) => record.kind === 'host-session-end' && record.sessionId === 'a');
+  assert.equal(receipts.length, 1, 'SessionEnd persists exactly one host-session-end receipt for the ended epoch');
+  assert.equal(receipts[0].origin, 'session-end-hook'); assert.equal(receipts[0].state, 'settled');
+  const endedRecords = records.filter((record) => record.sessionId === 'a' && record.kind !== 'host-session-end');
+  assert.equal(endedRecords.length, 1, 'ended v3 sessions retain only their revoking lifecycle tombstone among identity/hook-state contexts');
   assert.equal(endedRecords[0].kind, 'identity-session'); assert.equal(typeof endedRecords[0].endedAt, 'string');
   assert.ok(records.some((record) => record.sessionId === 'b' && record.kind === 'active-turn'));
   const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
@@ -1646,4 +1712,34 @@ test('Stop rechecks stale setup readiness before session creation and fails open
     assert.equal(result.code, 0); assert.notEqual(result.json?.decision, 'block'); assert.match(result.json.systemMessage, /\$zcode:setup/); const runs = (await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath); assert.equal(runs.length, 1); const snapshot = JSON.parse(await readFile(runs[0], 'utf8')); assert.equal(snapshot.status, 'skipped_setup_not_ready'); assert.equal(snapshot.reason, scenario.reason);
     const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/send'));
   });
+});
+
+test('SessionEnd identity cleanup forwards its abort signal to the lifecycle lock', async () => {
+  const { cwd, data } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'wired-identity-signal', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
+  // The SessionEnd hook must bound the identity stage by threading a stage signal
+  // into cleanupSession; a pre-aborted signal must abort before the lifecycle lock
+  // wait can consume the default five-second file-lock timeout.
+  const reason = Object.freeze({ phase: 'identity-stage-deadline' });
+  await assert.rejects(identity.cleanupSession(cwd, 'wired-identity-signal', { signal: AbortSignal.abort(reason) }), (error) => error === reason);
+});
+
+test('SessionEnd identity cleanup forwards its bounded lock timeout to the lifecycle lock', async () => {
+  const { cwd, data } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'wired-identity-timeout', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
+  // Acquire the exact lifecycle session lock out-of-band, then a bounded cleanup
+  // must fail closed at its sub-budget instead of the default five-second wait.
+  const { withFileLock } = await import('../scripts/lib/fs.mjs');
+  const { createHash } = await import('node:crypto');
+  const dataRootPath = await realpath(data);
+  const key = createHash('sha256').update(JSON.stringify(['wired-identity-timeout'])).digest('hex');
+  const lockDir = join(dataRootPath, 'identity-lifecycle', 'session-locks', key.slice(0, 2));
+  const started = Date.now();
+  await withFileLock(lockDir, async () => {
+    await assert.rejects(identity.cleanupSession(cwd, 'wired-identity-timeout', { timeoutMs: 50 }), (error) => error?.code === 'LOCK_TIMEOUT');
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1_500, `bounded identity cleanup must fail closed well before the default 5s lock wait (took ${elapsed}ms)`);
 });

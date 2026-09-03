@@ -79,9 +79,19 @@ export async function recordSession(dataRoot, input) {
   });
 }
 export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId) {
-  const store = await paths(dataRoot, workspace); const id = key('session', sessionId);
+  // Strictly read-only: proving a boundary's epoch must never mutate state (no
+  // ensurePrivateDirectory mkdir/chmod), so the SessionEnd receipt can remain
+  // the boundary's FIRST durable mutation even when this hook is killed right
+  // after the proof.
+  const store = await readOnlyPaths(dataRoot, workspace); const id = key('session', sessionId);
   try {
-    const record = await readJsonFile(join(store.directory, `session-${id}.json`));
+    // An absent layout reads the would-be record path directly so the failure
+    // shape stays exactly 'record file missing' (JSON_READ_FAILED/ENOENT) for
+    // every consumer, without creating any directory.
+    const hookStateDirectory = store.existing === false
+      ? join(store.dataRootPath ?? resolve(dataRoot), 'workspaces', store.workspaceKey, 'hook-state')
+      : store.directory;
+    const record = await readJsonFile(join(hookStateDirectory, `session-${id}.json`));
     if (record.kind !== 'session' || record.sessionId !== sessionId || record.workspace !== store.workspacePath
       || !['startup', 'resume', 'clear'].includes(record.source) || !Number.isFinite(Date.parse(record.createdAt))) throw new Error('invalid session record');
     return { startedAt: record.createdAt, source: record.source };
@@ -368,11 +378,30 @@ export async function isForwarding(dataRoot, input, options = {}) {
     return validExecutorRecord(executor, target.workspacePath) && executor.active === true && executorMatchesRoute(executor, snapshot.route);
   } catch { return false; }
 }
-export async function cleanupSession(dataRoot, workspace, sessionId) {
+export async function cleanupSession(dataRoot, workspace, sessionId, options = {}) {
   const store = await paths(dataRoot, workspace);
+  const lockOptions = { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
+  // Epoch fence: when the caller proves the ending boundary, a session record
+  // Epoch fence: when the caller proves the ending boundary, any record written
+  // AT OR AFTER it belongs to a resumed successor reusing the session id. The
+  // successor's SessionStart marker only exists in its own workspace, so each
+  // record's own write timestamp is the per-workspace durable succession
+  // evidence — deleting such a record would break the successor's authorization
+  // and its own receipt publication. The comparison is '>=' on purpose:
+  // RFC3339 millisecond precision makes an exactly-equal timestamp possible in
+  // the concurrent resume race.
+  const provenEndedAt = typeof options.endedAt === 'string' && Number.isFinite(Date.parse(options.endedAt)) ? Date.parse(options.endedAt) : null;
+  /** A record's own durable write time, when it carries one. @param {any} record @returns {number|null} */
+  const recordWriteTime = (record) => {
+    const value = record?.createdAt ?? record?.updatedAt;
+    return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+  };
   await withFileLock(store.lock, async () => {
     let entries; try { entries = await readPrivateDirectory(store.directory, store.directory, MAX_HOOK_STATE_RECORDS); } catch (error) { throw executorError('HOOK_STATE_CAPACITY', 'Private hook state exceeds its cleanup bound.', error); }
     for (const entry of entries) {
+      // The lock budget only gates acquisition: the sweep itself must observe
+      // the SessionEnd deadline so cleanup cannot outlive the shared budget.
+      options.signal?.throwIfAborted();
       if (!entry.isFile()) continue;
       if (!/^(?:session|forward|route|executor|notified)-[a-f0-9]{64}\.json$/u.test(entry.name)) {
         if (entry.name.startsWith('executor-') && entry.name.endsWith('.json')) await unlink(join(store.directory, entry.name)).catch(() => {});
@@ -383,13 +412,17 @@ export async function cleanupSession(dataRoot, workspace, sessionId) {
         const record = entry.name.startsWith('executor-')
           ? await readBoundedExecutor(path)
           : entry.name.startsWith('route-') ? await readExecutorRoute(path, store.directory) : await readBoundedJsonFile(store.directory, path, MAX_EXECUTOR_ROUTE_BYTES);
+        if (provenEndedAt !== null) {
+          const writtenAt = recordWriteTime(record);
+          if (writtenAt !== null && writtenAt >= provenEndedAt) continue;
+        }
         if (record.sessionId === sessionId || (['subagent-executor', 'executor-route'].includes(record.kind) && record.parentSessionId === sessionId)) await unlink(path);
       } catch (error) {
         if (entry.name.startsWith('executor-')) await unlink(path).catch(() => {});
         else throw executorError('HOOK_STATE_INVALID', 'Private hook state is invalid during exact session cleanup.', error);
       }
     }
-  });
+  }, lockOptions);
 }
 export async function unreadJobs(dataRoot, workspace, sessionId) { const store = await paths(dataRoot, workspace); const jobs = join(store.directory, '..', 'jobs'); let names = []; try { names = await readdir(jobs); } catch { return []; } return withFileLock(store.lock, async () => { const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`); let marker = { kind: 'notifications', sessionId, jobIds: [] }; try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []); const found = []; for (const name of names.slice(0, 500)) { if (!name.endsWith('.json')) continue; try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ } } const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT); for (const job of selected) seen.add(job.id); await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() }); return selected; }); }
 export async function writeGateRun(dataRoot, workspace, record) { const store = await paths(dataRoot, workspace); const directory = join(store.directory, '..', 'gate-runs'); await ensurePrivateDirectory(directory); const id = key(record.sessionId, record.turnId, record.before, record.after); const path = join(directory, `${id}.json`); return withFileLock(join(directory, '.lock'), async () => { try { return { duplicate: true, path, record: await readJsonFile(path) }; } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } await atomicWriteJson(path, record); return { duplicate: false, path, record }; }); }

@@ -3,10 +3,12 @@ import { createIdentityStore } from './identity.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
+import { terminateRecordedProcessTree } from './process.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
+import { isJobNotFound } from './state.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
@@ -126,6 +128,372 @@ function classifyEndedSettlement(job) {
   return { kind: TERMINAL.has(job?.status) ? 'terminal' : 'retained-writable-guard', job };
 }
 
+/** A durable winner that is terminal, or a record still in the durable
+ * `cancelling` guard (a retained unresolved stop, with or without a persisted
+ * session-end stop intent), discharges one receipt obligation: the receipt may
+ * settle without ever claiming that the job has stopped. @param {any} outcome */
+export function endedObligationSettled(outcome) {
+  if (outcome?.kind === 'no-active-job') return true;
+  const job = outcome?.job;
+  if (!job) return true;
+  if (TERMINAL.has(job.status)) return true;
+  // A bare legacy 'cancelling' guard — no exact persisted stop intent — is NOT
+  // settlement: the pending receipt remains the durable compensation authority.
+  return job.status === 'cancelling' && validStopIntent(job.stopIntent);
+}
+
+// Read-only detached runs (Review / Adversarial Review, and read-only Rescue)
+// remain session-bound: SessionEnd must converge them (bounded exact remote stop
+// then recorded worker-tree termination), never the writable Rescue binding path.
+const READ_ONLY_DETACHED_COMMANDS = new Set(['review', 'adversarial-review']);
+function isReadOnlyDetachedObligation(/** @type {any} */ job) {
+  return job.readOnly === true && (READ_ONLY_DETACHED_COMMANDS.has(job.command)
+    || (job.command === 'rescue' && job.rescueExecutionReservation !== undefined));
+}
+function isWritableRescueObligation(/** @type {any} */ job) {
+  return job.command === 'rescue' && job.readOnly === false;
+}
+
+/**
+ * Discover the exact session-owned obligations one genuine SessionEnd receipt
+ * owns across the receipt's workspace hints: writable Rescue records AND active
+ * read-only detached runs. Read-only obligations carry `readOnly: true` so the
+ * caller settles them through the existing recovery primitives rather than the
+ * writable Reconciler. A Host-owned record whose owner lifecycle epoch does not
+ * match the receipt epoch is not this receipt's obligation, so a retained
+ * old-epoch receipt never claims a post-resume run as still owned. When no
+ * authoritative receipt epoch is proven (`epoch` null), every nonterminal owned
+ * obligation is discovered so the legacy settle path is preserved unchanged.
+ * @param {{store:any,dataRoot?:string,knownWorkspaces:readonly string[],ownerSessionId:string,epoch:string|null,endedAt?:string|null,signal?:AbortSignal,timeoutMs?:number}} input
+ * @returns {Promise<Array<{workspace:string,job:any,readOnly:boolean}>>}
+ */
+export async function discoverSessionEndObligations(input) {
+  const obligations = [];
+  for (const workspace of input.knownWorkspaces) {
+    input.signal?.throwIfAborted();
+    // Thread the shared signal and a bounded stage timeout into the job-state
+    // lock so a contended listing fails closed at the SessionEnd sub-budget instead
+    // of waiting the default five-second state lock (which cannot be interrupted by
+    // a signal checked only before the call).
+    const listed = await input.store.listOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs });
+    for (const job of listed) {
+      if (TERMINAL.has(job.status)) continue;
+      const writable = isWritableRescueObligation(job);
+      const readOnly = isReadOnlyDetachedObligation(job);
+      if (!writable && !readOnly) continue;
+      if (!endedJobEpochOwned(input.epoch, job, input.endedAt)) continue;
+      obligations.push({ workspace, job, readOnly });
+    }
+  }
+  return obligations;
+}
+
+/**
+ * Return the workspaces whose owned active writable Rescue jobs carry a
+ * `ownerLifecycleEpoch` that does NOT match the ending receipt's epoch. Releasing
+ * a broker owner stops that owner's sessions, so an old-epoch SessionEnd must not
+ * release a workspace where a newer (post-resume) epoch still has an active run —
+ * the newer turn has a live owner and an old receipt grants it no stop authority.
+ * A null epoch cannot scope the exclusion, so nothing is treated as foreign.
+ * @param {{store:any,knownWorkspaces:readonly string[],ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockFree?:boolean,signal?:AbortSignal,timeoutMs?:number}} input
+ * @returns {Promise<Set<string>>}
+ */
+export async function activeForeignEpochWorkspaces(input) {
+  const foreign = new Set();
+  if (typeof input.epoch !== 'string') return foreign;
+  for (const workspace of input.knownWorkspaces) {
+    input.signal?.throwIfAborted();
+    let listed;
+    try {
+      // lockFree: the caller already holds the workspace job-state lock (the
+      // SessionEnd release fence), so re-entering listOwnedJobs would deadlock.
+      listed = await (input.lockFree && typeof input.store.peekOwnedJobs === 'function'
+        ? input.store.peekOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs })
+        : input.store.listOwnedJobs(workspace, input.ownerSessionId, { signal: input.signal, timeoutMs: input.timeoutMs }));
+    } catch {
+      // An unenumerable workspace is treated conservatively as unsafe to release so
+      // a broker turn is never stopped behind durable state we could not read.
+      foreign.add(workspace);
+      continue;
+    }
+    for (const job of listed) {
+      // ANY nonterminal session-bound successor of this receipt's epoch — writable
+      // Rescue, read-only Rescue, or a read-only detached run — still owns the
+      // session-ID-derived broker identity that an owner release would stop. A
+      // record with the lifecycle trio is foreign by epoch; a trio-less record is
+      // foreign when it was created strictly after the receipt's own boundary.
+      if (TERMINAL.has(job.status)) continue;
+      if (!endedJobEpochOwned(input.epoch, job, input.endedAt)) { foreign.add(workspace); break; }
+    }
+  }
+  return foreign;
+}
+
+/**
+ * Settle one exact SessionEnd obligation — the writable Rescue the receipt-scoped
+ * discovery selected — through the Rescue Lifecycle Reconciler, persisting its
+ * durable session-end stop intent before any remote control and retaining
+ * uncertainty rather than claiming a terminal stop. This is the per-obligation
+ * counterpart to settleEndedOwnerWritableJob: it targets the exact job id rather
+ * than re-deriving the workspace's latest writable job, and it fails closed for
+ * a Host-owned record whose owning epoch no longer matches the receipt epoch so
+ * a stale obligation can never stop a post-resume run.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean}} input
+ * @param {string} jobId
+ */
+export async function settleEndedRescueJob(input, jobId) {
+  // Every inner store mutation shares this stage's bounded lock budget: the
+  // default five-second waits cannot apply inside SessionEnd's shared deadline.
+  // The wrapper adds no behavior — it only forwards {signal,timeoutMs} to the
+  // store's bounded-option seams (readJob/transitionJob/finishJob).
+  const boundedStore = input.signal === undefined && input.timeoutMs === undefined ? input.store : boundedSessionEndStore(input.store, input.signal, input.timeoutMs);
+  input = { ...input, store: boundedStore };
+  // A proven-not-found read may discharge the obligation; corruption, permission,
+  // or a contended lock read must propagate so the caller keeps the obligation
+  // pending rather than settling on an unreadable record.
+  let selected = null;
+  try {
+    selected = await input.store.readJob(input.workspace, jobId, { signal: input.signal, timeoutMs: input.timeoutMs });
+  } catch (error) {
+    if (!isJobNotFound(error)) throw error;
+  }
+  if (!selected || selected.command !== 'rescue' || selected.readOnly !== false
+    || selected.ownerSessionId !== input.ownerSessionId) {
+    return input.includeSettlementEvidence === true ? { kind: 'no-active-job', job: null } : null;
+  }
+  if (TERMINAL.has(selected.status)) {
+    const cleaned = await cleanupTerminalReservation(input, selected).catch(() => selected);
+    return input.includeSettlementEvidence === true ? classifyEndedSettlement(cleaned) : cleaned;
+  }
+  if (!endedJobEpochOwned(input.epoch, selected, input.endedAt)) {
+    return input.includeSettlementEvidence === true ? { kind: 'epoch-not-owned', job: selected } : selected;
+  }
+  let settlement;
+  try {
+    settlement = await withJobCancellationLock({
+      dataRoot: input.dataRoot,
+      workspace: input.workspace,
+      jobId: selected.id,
+      timeoutMs: input.lockTimeoutMs ?? 0,
+    }, async () => {
+      const current = await input.store.readJob(input.workspace, selected.id, { signal: input.signal, timeoutMs: input.timeoutMs });
+      if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
+        || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
+      if (!endedJobEpochOwned(input.epoch, current, input.endedAt)) return { kind: 'epoch-not-owned', job: current };
+      const remotelySettleable = current.status === 'queued'
+        || (['running', 'cancelling'].includes(current.status) && typeof current.zcodeSessionId === 'string');
+      return remotelySettleable ? settleEndedRescueThroughReconciler(input, current) : { kind: 'retained-writable-guard', job: current };
+    });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') settlement = { kind: 'retained-writable-guard', job: await input.store.readJob(input.workspace, selected.id, { signal: input.signal, timeoutMs: input.timeoutMs }) };
+    else throw error;
+  }
+  try { settlement = { ...settlement, job: await cleanupTerminalReservation(input, settlement.job) }; }
+  catch { /* retain the durable settlement winner */ }
+  return input.includeSettlementEvidence === true ? settlement : settlement.job;
+}
+
+/**
+ * Converge one active read-only detached run (Review / Adversarial Review, or a
+ * historical read-only Rescue reservation) owned by the ending session. It reuses
+ * the existing orphan-recovery settlement (`reconcileOrphan`: exact session
+ * listing, bounded remote stop/reread, and winner election) and NEVER the writable
+ * Rescue binding interface, then terminates ONLY the recorded worker process tree
+ * when that tree still holds its lease. Process death alone is never remote
+ * terminal proof: unless stop/reread proves a winner the record stays unresolved,
+ * so the receipt keeps it as a pending obligation rather than settling as if the
+ * run were absent. `terminateProcessTree` is injectable so callers/tests can
+ * observe stop-then-kill ordering without a live process.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,deadlineMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,reconcileOwnership?:(input:any)=>Promise<any>,terminateProcessTree?:(pid:number,options:{signal?:AbortSignal,timeoutMs?:number})=>Promise<unknown>,includeSettlementEvidence?:boolean}} input
+ * @param {string} jobId
+ */
+export async function settleEndedReadOnlyDetachedJob(input, jobId) {
+  // Bounded inner store operations, exactly like the writable settlement.
+  const boundedStore = input.signal === undefined && input.timeoutMs === undefined ? input.store : boundedSessionEndStore(input.store, input.signal, input.timeoutMs);
+  input = { ...input, store: boundedStore };
+  const terminateProcessTree = input.terminateProcessTree ?? terminateRecordedProcessTree;
+  let selected = null;
+  let workerTerminated = false;
+  try {
+    selected = await input.store.readJob(input.workspace, jobId, { signal: input.signal, timeoutMs: input.timeoutMs });
+  } catch (error) {
+    if (!isJobNotFound(error)) throw error;
+  }
+  if (!selected || !isReadOnlyDetachedObligation(selected) || selected.ownerSessionId !== input.ownerSessionId) {
+    return input.includeSettlementEvidence === true ? { kind: 'no-active-job', job: null } : null;
+  }
+  if (TERMINAL.has(selected.status)) {
+    return input.includeSettlementEvidence === true ? classifyEndedSettlement(selected) : selected;
+  }
+  let settlement;
+  try {
+    settlement = await withJobCancellationLock({
+      dataRoot: input.dataRoot,
+      workspace: input.workspace,
+      jobId: selected.id,
+      timeoutMs: input.lockTimeoutMs ?? 0,
+    }, async () => {
+      const current = await input.store.readJob(input.workspace, selected.id, { signal: input.signal, timeoutMs: input.timeoutMs });
+      if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
+        || !isReadOnlyDetachedObligation(current) || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
+      // Bounded exact remote stop + reread + winner election through the existing
+      // orphan-recovery path (never the writable binding interface). Local worker
+      // termination runs on EVERY exit path after the bounded remote attempt —
+      // a remote failure, abort, or deadline must not leave the detached worker
+      // alive. Process death is never remote terminal proof: only the reread
+      // above can publish a winner, so a remote failure retains the unresolved
+      // record for the pending receipt.
+      let settled;
+      try {
+        settled = await reconcileOrphan({ ...input, intent: 'session-end-readonly' }, current);
+      } finally {
+        workerTerminated = true;
+        await terminateLeasedProcessTree(input, current, terminateProcessTree);
+      }
+      return settled;
+    });
+  } catch (error) {
+    // Even when reconciliation threw before its own termination ran, the
+    // recorded worker tree is terminated exactly once: repeating the kill
+    // would spend the local termination budget twice and push the hook past
+    // its hard deadline.
+    if (!workerTerminated && isDigest(selected?.workerLeaseId)) {
+      await terminateLeasedProcessTree(input, selected, terminateProcessTree).catch(() => {});
+    }
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return input.includeSettlementEvidence === true ? { kind: 'retained-writable-guard', job: selected } : selected;
+    throw error;
+  }
+  return input.includeSettlementEvidence === true ? classifyEndedSettlement(settlement) : settlement;
+}
+
+/**
+ * Wrap a StateStore so its mutating seams (readJob/transitionJob/finishJob —
+ * and listOwnedJobs, which already accepts options) forward one shared bounded
+ * lock budget; callers passing nothing keep every default.
+ * @param {any} store @param {AbortSignal|undefined} signal @param {number|undefined} timeoutMs
+ */
+function boundedSessionEndStore(store, signal, timeoutMs) {
+  const options = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
+  const forward = (/** @type {(workspace:string,jobId:string,expected:readonly string[],next:string,patch:Record<string,unknown>,methodOptions:{signal?:AbortSignal,timeoutMs?:number})=>Promise<unknown>} */ method) =>
+    /** @param {string} workspace @param {string} jobId @param {readonly string[]} expected @param {string} next @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
+    async (workspace, jobId, expected, next, patch = {}, methodOptions = {}) =>
+      method(workspace, jobId, expected, next, patch, { ...methodOptions, ...options });
+  return {
+    ...store,
+    readJob: /** @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
+      async (workspace, jobId, methodOptions = {}) => store.readJob(workspace, jobId, { ...methodOptions, ...options }),
+    transitionJob: forward(store.transitionJob.bind(store)),
+    finishJob: forward(store.finishJob.bind(store)),
+    // The remaining job-state-lock seams the settle path reaches — bound-stop
+    // revalidation (read-only detached convergence), queued recovery terminalization,
+    // and terminal reservation cleanup — are wrapped ONLY when the underlying
+    // store provides them, so callers' feature probes keep their exact semantics.
+    ...(typeof store.revalidateBoundRescueStop === 'function'
+      ? { revalidateBoundRescueStop: /** @param {any} input */ (input) => store.revalidateBoundRescueStop({ ...input, ...options }) } : {}),
+    ...(typeof store.finishQueuedJobAfterRecoveryLease === 'function'
+      ? { finishQueuedJobAfterRecoveryLease: /** @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} rollback @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
+        (workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}, methodOptions = {}) =>
+          store.finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch, { ...methodOptions, ...options }) } : {}),
+    ...(typeof store.cleanupTerminalExecutionReservation === 'function'
+      ? { cleanupTerminalExecutionReservation: /** @param {string} workspace @param {string} jobId @param {any} identity @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
+        (workspace, jobId, identity, methodOptions = {}) =>
+          store.cleanupTerminalExecutionReservation(workspace, jobId, identity, { ...methodOptions, ...options }) } : {}),
+  };
+}
+
+/**
+ * Terminate the exact recorded worker tree ONLY while its worker lease is still
+ * HELD: an acquirable (free) lease means the worker already exited and released,
+ * and the OS may have reused its pid — signaling it could kill an unrelated
+ * process group. A LOCK_TIMEOUT proves a live holder still owns the lease, so
+ * the recorded pid is still that worker. Records without a digest lease never
+ * signal.
+ * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number})=>Promise<unknown>} terminateProcessTree
+ */
+async function terminateLeasedProcessTree(input, job, terminateProcessTree) {
+  if (!isDigest(job.workerLeaseId) || !Number.isSafeInteger(job.childPid) || job.childPid <= 0) return;
+  try {
+    await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => {
+      // The lease was FREE — the recorded worker already released it, so the
+      // recorded pid is no longer proven to be that worker. Never signal it.
+      return undefined;
+    });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') {
+      // A live holder still owns the lease: the recorded pid is still that
+      // worker's group leader — the exact recorded tree, safe to terminate.
+      // Local termination runs inside the caller's ABSOLUTE deadline when one
+      // is proven (the stale initial remote timeout would grant a fresh budget
+      // after the shared budget is already spent), capped at 750ms; when the
+      // deadline is already spent, the kill is skipped and the pending receipt
+      // remains the compensation authority. The remote-control signal never
+      // gates this local kill.
+      const absoluteDeadlineMs = typeof input.deadlineMs === 'number' && Number.isFinite(input.deadlineMs)
+        ? input.deadlineMs - Date.now()
+        : (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : 1_000);
+      const terminationBudgetMs = Math.min(absoluteDeadlineMs, 750);
+      if (terminationBudgetMs <= 0) return;
+      await terminateProcessTree(job.childPid, { timeoutMs: terminationBudgetMs });
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Durably delegate one SessionEnd obligation that could not be terminally
+ * settled within the bounded budget: persist its exact session-end stop intent
+ * (transitioning a running writable Rescue to cancelling, the durable stop
+ * intent the receipt can delegate to) without ever touching the remote broker.
+ * An already-terminal or already-cancelling record is already delegated and is
+ * returned untouched. This never claims a stopped terminal on uncertainty.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,endedAt?:string|null,signal?:AbortSignal,timeoutMs?:number}} input
+ * @param {string} jobId
+ */
+export async function delegateEndedStopIntent(input, jobId) {
+  // The delegated stop intent is the durable evidence the receipt settles on, so
+  // this write shares the caller's bounded lock budget like every other SessionEnd
+  // state touch; it also re-validates the epoch so a stale discovery can never
+  // delegate a stop onto a post-resume (newer-epoch) run.
+  const lockOptions = { ...(input.signal === undefined ? {} : { signal: input.signal }), ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) };
+  const current = await input.store.readJob(input.workspace, jobId, lockOptions);
+  if (current.ownerSessionId !== input.ownerSessionId || current.command !== 'rescue' || current.readOnly !== false) {
+    throw recoveryError("The delegated job is not this owner's writable Rescue.");
+  }
+  if (!endedJobEpochOwned(typeof input.epoch === 'string' ? input.epoch : null, current, input.endedAt)) {
+    throw recoveryError('The delegated job belongs to another host lifecycle epoch.');
+  }
+  if (TERMINAL.has(current.status)) return current;
+  if (current.status === 'cancelling') {
+    if (validStopIntent(current.stopIntent)) return current;
+    const patch = hostOwnedStopIntentPatch(current, 'session-end');
+    // A legacy record carries no stop intent; leaving it as the durable cancelling
+    // guard matches the pre-receipt settle path exactly.
+    if (!('stopIntent' in patch)) return current;
+    return input.store.transitionJob(input.workspace, current.id, ['cancelling'], 'cancelling', patch, lockOptions);
+  }
+  if (current.status !== 'running') return current;
+  return input.store.transitionJob(input.workspace, current.id, ['running'], 'cancelling',
+    hostOwnedStopIntentPatch(current, 'session-end'), lockOptions);
+}
+
+/** A Host-owned record is only this receipt's obligation when its owning epoch
+ * matches exactly. A record without the lifecycle trio cannot name its epoch —
+ * its boundary evidence is its creation time: only a record that existed by the
+ * receipt's own endedAt can belong to this boundary, so a post-resume successor
+ * run (created after the end timestamp) is never this receipt's obligation and,
+ * conversely, always marks its workspace unsafe to release. Without a proven
+ * epoch, or without a durable endedAt, the legacy settle semantics is preserved.
+ * @param {string|null} epoch @param {any} job @param {unknown} [endedAt] */
+function endedJobEpochOwned(epoch, job, endedAt = undefined) {
+  if (typeof epoch !== 'string') return true;
+  if (validHostLifecycleRecord(job)) return job.ownerLifecycleEpoch === epoch;
+  // Strictly before: a record written exactly at the boundary millisecond can
+  // be a successor's creation in the concurrent resume race, and treating it
+  // as this epoch's would let an old receipt stop successor work.
+  return typeof endedAt !== 'string' || Date.parse(job.createdAt) < Date.parse(endedAt);
+}
+
 /** @param {any} input */
 async function settleSelectedJob(input) {
   return withJobCancellationLock({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: input.selectedJobId }, async () => {
@@ -183,7 +551,11 @@ async function reconcileOrphan(input, job) {
   if (input.boundStopGuard?.kind === 'stale') return input.boundStopGuard.job;
   const ownerId = ownerIdForSession(job.ownerSessionId);
   try {
-    await (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId] });
+    // Ownership reconciliation shares the stage budget: a contended
+    // session-owners lock must never delay local worker termination past the
+    // SessionEnd deadline (an aborted ownership pass settles through the same
+    // retain paths as any other remote failure).
+    await raceRecoveryControl(Promise.resolve().then(() => (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId] })), input.signal);
     throwIfRecoveryInterrupted(input);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
@@ -229,12 +601,12 @@ async function reconcileOrphan(input, job) {
       : failJob(input, job, recoveryError('The remote turn was interrupted before recovery completed.'));
     if (REMOTE_ACTIVE.has(remoteStatus)) {
       if (!hasCurrentTurnActivity(snapshot, boundary)) return input.store.readJob(input.workspace, job.id);
-      if (job.status === 'cancelling' || input.intent === 'scavenge') return stopThenSettle(input, job, client, recoveryError('The remote turn remained active after its executor exited.'), jobLog);
+      if (job.status === 'cancelling' || input.intent === 'scavenge' || input.intent === 'session-end-readonly') return stopThenSettle(input, job, client, recoveryError('The remote turn remained active after its executor exited.'), jobLog);
       return job;
     }
     if (remoteStatus === 'paused') {
       if (!hasCurrentTurnActivity(snapshot, boundary)) return input.store.readJob(input.workspace, job.id);
-      return job.status === 'cancelling'
+      return job.status === 'cancelling' || input.intent === 'session-end-readonly'
         ? stopThenSettle(input, job, client, recoveryError('The cancelling remote turn is paused.'), jobLog)
         : failJob(input, job, recoveryError('The orphaned remote turn is paused.'));
     }
@@ -329,7 +701,11 @@ async function cancelledConflictWinner(input, job, error) {
 async function settleEndedRescueThroughReconciler(input, current) {
   /** @type {{job:any,client?:any,jobLog?:any,guard?:any,racedWinner?:any}} */
   const context = { job: current };
-  const observedStop = await revalidateBoundRescueStop(input, current);
+  // A queued reservation never reached a remote session, so there is no remote
+  // stop for the exact-binding guard to fence: skip revalidation (whose 'no
+  // active anchor' stale classification must not skip queued terminalization)
+  // and let the reconciler's own ownership CAS terminalize it.
+  const observedStop = current.status === 'queued' ? null : await revalidateBoundRescueStop(input, current);
   if (observedStop?.kind === 'stale') return classifyEndedSettlement(observedStop.job);
   context.guard = observedStop?.guard;
   try {
@@ -348,11 +724,15 @@ async function settleEndedRescueThroughReconciler(input, current) {
         return { kind: 'current', job: context.job, guard: context.guard };
       },
       stopExactTurn: async (/** @type {any} */ joined, /** @type {any} */ options) => {
-        // Pre-stop read: a turn that already reached a terminal outcome BEFORE
-        // this stop keeps its own semantics (natural success publishes its
-        // result; an engine terminal failure publishes failed) instead of being
-        // misclassified as caused by the stop. The read reuses the open client.
-        try {
+        // Pre-stop read (retry passes only — already cancelling with a persisted
+        // stop intent from a prior reconciliation pass): a turn that already
+        // reached a terminal outcome BEFORE this stop keeps its own semantics
+        // instead of being misclassified as caused by the stop. A first-stop
+        // running pass skips it: the initial joined read observed the remote
+        // state moments before, and the post-stop reread owns terminal
+        // evidence — mirroring the job-control election's retry gating.
+        const retryStop = joined.job.status === 'cancelling' && validStopIntent(joined.job.stopIntent);
+        if (retryStop) try {
           const preStop = endedRemoteEvidence(await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
           if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
             return { acknowledged: true, preExistingTerminal: preStop };
@@ -494,7 +874,15 @@ export function endedRemoteEvidence(snapshot, job) {
  */
 async function retainUnresolvedEndedStop(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
-  if (TERMINAL.has(current.status) || current.status === 'cancelling' || error === undefined) return current;
+  if (TERMINAL.has(current.status) || error === undefined) return current;
+  // A cancelling record WITH a persisted stop intent keeps its status and
+  // persists the bounded failure diagnostic (public status strips the private
+  // intent, so the diagnostic is the only visible retry evidence); a legacy
+  // cancelling record (no intent schema) keeps its status with NO diagnostic —
+  // the schema admits lastCancelError on cancelling only with a valid intent.
+  if (current.status === 'cancelling') {
+    return validStopIntent(current.stopIntent) ? retainAfterStopFailure(input, current, error) : current;
+  }
   return retainAfterStopFailure(input, current, error);
 }
 
@@ -630,9 +1018,14 @@ async function stopRemote(input, job, client) {
 async function revalidateBoundRescueStop(input, job, expected) {
   if (job.command !== 'rescue' || job.readOnly !== false || job.rescueReservationKind !== 'bound') return null;
   if (typeof input.store.revalidateBoundRescueStop !== 'function') return { kind: 'stale', job: await input.store.readJob(input.workspace, job.id) };
-  return input.store.revalidateBoundRescueStop({ workspace: input.workspace, jobId: job.id,
+  // Corrupt authority or a malformed binding partition fails CLOSED: the error
+  // propagates and the caller retains the record unresolved rather than
+  // stopping a remote session without any binding/generation guard. A
+  // WELL-FORMED historical partition with no active anchor is not an error —
+  // revalidateBoundRescueStop itself returns { kind: 'stale' } for it.
+  return await input.store.revalidateBoundRescueStop({ workspace: input.workspace, jobId: job.id,
     ownerSessionId: job.ownerSessionId, status: job.status, zcodeSessionId: job.zcodeSessionId,
-    ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+    ...(job.workerLeaseId ? { workerLeaseId: job.workerLeaseId } : {}),
     ...(expected === undefined ? {} : { expected }) });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
@@ -651,7 +1044,7 @@ async function retainAfterStopFailure(input, job, error) {
       // A concurrent settlement wins: reread the durable record — the stale
       // pre-race `cancelling` snapshot must never mask a terminal winner.
       // Genuine storage failures propagate instead of being masked.
-      if (transitionError instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION'].includes(transitionError.code)) {
+      if (transitionError instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION', 'JOB_PATCH_INVALID'].includes(transitionError.code)) {
         return await input.store.readJob(input.workspace, current.id);
       }
       throw transitionError;
@@ -687,8 +1080,11 @@ function settleUnavailableOrMissingOrphan(input, job, diagnostic) {
 /** Archive SessionEnd control loss only after proving the exact worker lease is free; an unproven loss retains the durable cancelling status instead of rolling back to running. @param {any} input @param {any} job @param {PluginError} diagnostic */
 async function failEndedUnavailableJob(input, job, diagnostic) {
   throwIfRecoveryInterrupted(input);
-  if (!persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false) return retainUnresolvedEndedStop(input, job, diagnostic);
-  if (!isDigest(job.workerLeaseId)) return retainUnresolvedEndedStop(input, job, diagnostic);
+  // Broker/channel unavailability is not a stop failure: no stop was attempted,
+  // so the retained record carries no cancellation diagnostic — the durable
+  // status alone is the retry evidence (uncertainty never publishes a claim).
+  if (!persistedTurnBoundary(job) && job.command === 'rescue' && job.readOnly === false) return retainUnresolvedEndedStop(input, job, undefined);
+  if (!isDigest(job.workerLeaseId)) return retainUnresolvedEndedStop(input, job, undefined);
   try {
     return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, () => failJob(input, job, diagnostic));
   } catch (error) {

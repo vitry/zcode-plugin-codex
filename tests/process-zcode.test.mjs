@@ -561,3 +561,44 @@ test('fake peer completion waits for the exact progress-dispatch gate nonce', as
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('boundedProcessKill abandons a stalled termination command at its bound alone', async () => {
+  const { boundedProcessKill } = await import('../scripts/lib/process.mjs');
+  const sleeper = ['-e', 'setTimeout(() => {}, 30000)'];
+  let started = Date.now();
+  await boundedProcessKill(process.execPath, sleeper, { timeoutMs: 150 });
+  assert.ok(Date.now() - started < 1_500, `a stalled command is killed at its bound instead of awaited (took ${Date.now() - started}ms)`);
+  started = Date.now();
+  await boundedProcessKill(process.execPath, ['-e', 'process.exit(0)'], { timeoutMs: 2_000 });
+  assert.ok(Date.now() - started < 1_500, 'an exiting command completes without waiting for its bound');
+});
+
+test('terminateRecordedProcessTree SIGKILLs the recorded group when the leader exits but a descendant survives', { skip: process.platform === 'win32' ? 'POSIX process-group addressing only.' : false }, async () => {
+  const { terminateRecordedProcessTree } = await import('../scripts/lib/process.mjs');
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const directory = await mkdtemp(join(tmpdir(), 'tree-group-'));
+  const pidFile = join(directory, 'descendant.pid');
+  const script = `${process.execPath} -e "process.on('SIGTERM', () => {}); setInterval(() => {}, 250)" >/dev/null 2>&1 & echo $! > '${pidFile}'; sleep 30`;
+  const leader = spawn('sh', ['-c', script], { detached: true, stdio: 'ignore' });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('descendant pid never recorded')), 2_000);
+      leader.once('exit', () => { clearTimeout(timer); resolve(); });
+      const poll = setInterval(async () => {
+        try { await readFile(pidFile, 'utf8'); clearInterval(poll); clearTimeout(timer); resolve(); } catch { /* not yet */ }
+      }, 25);
+    });
+    const descendantPid = Number.parseInt(await readFile(pidFile, 'utf8'), 10);
+    assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 0);
+    await terminateRecordedProcessTree(leader.pid, { graceMs: 300 });
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      try { process.kill(descendantPid, 0); await new Promise((resolve) => setTimeout(resolve, 50)); }
+      catch { await rm(directory, { recursive: true, force: true }); return; }
+    }
+    assert.fail('a SIGTERM-immune descendant must not survive its recorded group termination');
+  } finally {
+    if (leader.exitCode === null && leader.signalCode === null) { try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* gone */ } }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

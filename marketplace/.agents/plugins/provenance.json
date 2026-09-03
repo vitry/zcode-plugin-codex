@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "d8e1eb6f9d9e0cf2c9e7c1a5152f2166f0d69557",
-  "sourceSha": "d8e1eb6f9d9e0cf2c9e7c1a5152f2166f0d69557",
+  "sourceRef": "d60bc9234da1fcacc0ed7cd5b9a01b3f62e0faa7",
+  "sourceSha": "d60bc9234da1fcacc0ed7cd5b9a01b3f62e0faa7",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "f8e024016f7976fcd4eb89deb264c29f5a48227f56f944b302007a5f3aa48baf",
+    "sha256": "d60d8841a1312bcc927524d045b6f39f4d97606d1e42a69558fb9296ae233c74",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -78,13 +78,13 @@
       },
       {
         "path": "plugins/zcode/hooks/lib/hook-state.mjs",
-        "size": 44406,
-        "sha256": "fa7cb706f10cd013eecfe9feaf0ff823c745bbfa5414cd21fe73d488c1fbd16e"
+        "size": 46766,
+        "sha256": "34a3cb86531f408dc490053e2617e59036d23064a3ec222f8112b31fff26e1c1"
       },
       {
         "path": "plugins/zcode/hooks/session-end-hook.mjs",
-        "size": 5440,
-        "sha256": "4b8625a276962def95de591ec8e2b5fd85d48739fd32c972aa97ef23439b6c87"
+        "size": 22842,
+        "sha256": "b285637ea40e851721bea086b910b791e48707526342886713d7a70aa7f71f45"
       },
       {
         "path": "plugins/zcode/hooks/session-lifecycle-hook.mjs",
@@ -563,8 +563,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/identity.mjs",
-        "size": 92172,
-        "sha256": "511d509306d789ffd2569379a6388635a15a952bc7415f413bc85b030a3b45dd"
+        "size": 96261,
+        "sha256": "5bfd780647a0ba272b5f7519a5113c56a7b0cd29e3318cb6eb7021c99658317f"
       },
       {
         "path": "plugins/zcode/scripts/lib/invocation.mjs",
@@ -598,8 +598,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/process.mjs",
-        "size": 10654,
-        "sha256": "e775215fcb84e25ee1a2d9cf8e1c3fdc75a02dd96fab78868f530d8ce6c322a0"
+        "size": 16528,
+        "sha256": "91c9ba423c5dda52ce40e9053896d7b1d224dfbcc25684da61e9da9d9109c470"
       },
       {
         "path": "plugins/zcode/scripts/lib/progress.mjs",
@@ -618,8 +618,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/recovery.mjs",
-        "size": 45661,
-        "sha256": "7378b004384f489757a395c769b5d23b1169d9b54d6bcc64fadf2bf5ab6bb759"
+        "size": 71345,
+        "sha256": "1598a46b175b6bc83ead4d29b611e96df8eaef001f34a1d41a19da32d0c021ec"
       },
       {
         "path": "plugins/zcode/scripts/lib/render.mjs",
@@ -648,8 +648,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-preparation.mjs",
-        "size": 45371,
-        "sha256": "1dfebd51aa8123926556700c601f2fc51ebbf796887518decd858108cb3bd7a8"
+        "size": 46747,
+        "sha256": "21f811927d22f8c6892f02fe0f9eeb9a2fef757dbff34ad0cb9d63348f2ebf00"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-progress-relay.mjs",
@@ -683,8 +683,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/state.mjs",
-        "size": 193444,
-        "sha256": "2bdd9365df57a495d4b6b4ff3ec6ef93e1e297ca7ad46bbed098369b73d87913"
+        "size": 198364,
+        "sha256": "c2d8556a2ab61d530e6f30bbab34fd3c55a1bd9ae5e4fcaa774289d818d2c02a"
       },
       {
         "path": "plugins/zcode/scripts/lib/tool-launch.mjs",
@@ -743,8 +743,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 142066,
-        "sha256": "c2260923103ed0aa2c4913b98ff7682c10f21be124d57ab05da6ffecedd0624d"
+        "size": 142052,
+        "sha256": "c2ddbbe407775988518989e20c1379bbe34b4424d2ab5d7049d8432c9025a9e6"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",

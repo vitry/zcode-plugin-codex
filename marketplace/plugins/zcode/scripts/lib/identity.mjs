@@ -46,21 +46,67 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
   if (publicationSeam !== undefined && typeof publicationSeam !== 'function') throw invalidIdentityInput();
 
   return {
-    /** Remove credentials belonging to one ended parent session only. */
-    /** @param {string} workspace @param {string} sessionId @returns {Promise<any>} */
-    async cleanupSession(workspace, sessionId) {
+    /**
+     * Read the session's complete known-workspace scope WITHOUT any destructive
+     * cleanup — SessionEnd discovers and durably delegates its obligations over
+     * this scope before tombstoning identity state, so a crash between the two
+     * never loses linked-workspace coverage. Returns null when the session has
+     * no global identity state at all (the caller treats that ambient legacy
+     * shape as 'the current workspace is the whole scope'). The returned
+     * `sessionStartedAt` is the ledger's own epoch proof: a caller ending a
+     * DIFFERENT proven epoch of the same session id is looking at a successor's
+     * ledger and must neither enumerate through it nor tombstone it.
+     * @param {string} workspace @param {string} sessionId @returns {Promise<{knownWorkspaces:string[],sessionStartedAt:string|null}|null>}
+     */
+    async sessionWorkspaces(workspace, sessionId) {
       if (!isNonEmptyString(sessionId)) throw invalidIdentityInput();
+      await canonicalWorkspace(workspace);
+      const global = await globalIdentityStorage(dataRoot);
+      const state = await readGlobalCleanupState(global, sessionId);
+      if (state === null) return null;
+      const { active, ledger } = state;
+      if (ledger === null) return { knownWorkspaces: [active.originWorkspace], sessionStartedAt: null };
+      return { knownWorkspaces: [...ledger.knownWorkspaces], sessionStartedAt: typeof ledger.sessionStartedAt === 'string' ? ledger.sessionStartedAt : null };
+    },
+
+    /** Remove credentials belonging to one ended parent session only.
+     * @param {string} workspace @param {string} sessionId
+     * @param {{signal?:AbortSignal,timeoutMs?:number,sessionStartedAt?:string,endedAt?:string}} [options] Optional bounded
+     * stage budget forwarded to every lifecycle/workspace lock, plus the ending
+     * epoch's own proofs: a DIFFERENT epoch's ledger (sessionStartedAt), or a
+     * pending active-only record written at/after the ending boundary (endedAt),
+     * belongs to a resumed successor, and cleanup refuses with
+     * IDENTITY_SESSION_SCOPE_SUCCESSOR instead of tombstoning that state. When
+     * omitted, the existing default five-second lock wait with no abort signal
+     * and no epoch guard is preserved.
+     * @returns {Promise<any>} */
+    async cleanupSession(workspace, sessionId, options = {}) {
+      if (!isNonEmptyString(sessionId)) throw invalidIdentityInput();
+      const { signal, timeoutMs, sessionStartedAt, endedAt: boundaryEndedAt } = options ?? {};
+      const lockOptions = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
       const cleanupWorkspace = await canonicalWorkspace(workspace);
       const global = await globalIdentityStorage(dataRoot);
       return withFileLock(sessionLockPath(global, sessionId), async () => {
         const state = await readGlobalCleanupState(global, sessionId);
         if (state === null) {
           const legacyStorage = await identityStorage(dataRoot, workspace);
-          await withFileLock(legacyStorage.lockPath, () => cleanupWorkspaceSession(legacyStorage, sessionId));
+          await withFileLock(legacyStorage.lockPath, () => cleanupWorkspaceSession(legacyStorage, sessionId), lockOptions);
           return null;
         }
         const { active, ledger } = state;
+        // A resumed Host reusing this session id replaces the ledger with the
+        // successor epoch's own: tombstoning it would erase the successor's
+        // boundary bookkeeping, so an ending epoch must prove it owns this
+        // ledger before cleanup may run. An unproven caller (no
+        // sessionStartedAt) keeps the existing behavior.
+        if (ledger !== null && typeof sessionStartedAt === 'string'
+          && ledger.sessionStartedAt !== sessionStartedAt) throw sessionScopeSuccessor();
         if (ledger === null) {
+          // A successor's crashed pending publication (an active record without
+          // its ledger yet) is exactly the state beginCallerTurn is allowed to
+          // retry — the ending epoch must not tombstone it.
+          if (active !== null && typeof boundaryEndedAt === 'string' && Number.isFinite(Date.parse(boundaryEndedAt))
+            && Number.isFinite(Date.parse(active.createdAt)) && Date.parse(active.createdAt) >= Date.parse(boundaryEndedAt)) throw sessionScopeSuccessor();
           if (active.originWorkspace !== cleanupWorkspace) throw workspaceIneligible();
           const endedAt = monotonicTimestamp(active.createdAt);
           const tombstone = orphanSessionTombstone(active, endedAt);
@@ -68,7 +114,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
           await publicationSeam?.('after-cleanup-tombstone');
           await unlink(state.activePath).catch((error) => { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; });
           const orphanStorage = await identityStorageForCanonical(global.dataRootPath, active.originWorkspace);
-          await withFileLock(orphanStorage.lockPath, () => cleanupWorkspaceSession(orphanStorage, sessionId));
+          await withFileLock(orphanStorage.lockPath, () => cleanupWorkspaceSession(orphanStorage, sessionId), lockOptions);
           return { knownWorkspaces: [active.originWorkspace] };
         }
         if (!ledger.knownWorkspaces.includes(cleanupWorkspace)) throw workspaceIneligible();
@@ -79,11 +125,15 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         await publicationSeam?.('after-cleanup-tombstone');
         if (active !== null) await unlink(state.activePath).catch((error) => { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; });
         for (const knownWorkspace of ledger.knownWorkspaces) {
+          // The lifecycle-lock budget only gates acquisition: each workspace
+          // sweep must observe the SessionEnd deadline so cleanup cannot
+          // outlive the shared budget across many linked workspaces.
+          lockOptions.signal?.throwIfAborted();
           const knownStorage = await identityStorageForCanonical(global.dataRootPath, knownWorkspace);
-          await withFileLock(knownStorage.lockPath, () => cleanupWorkspaceSession(knownStorage, sessionId));
+          await withFileLock(knownStorage.lockPath, () => cleanupWorkspaceSession(knownStorage, sessionId), lockOptions);
         }
         return { knownWorkspaces: [...ledger.knownWorkspaces] };
-      });
+      }, lockOptions);
     },
     /** @param {CallerContextInput} input */
     async createCallerContext(input) {
@@ -1587,6 +1637,12 @@ function hasSessionProof(input) { return input.sessionStartedAt !== undefined &&
 
 function workspaceIneligible() {
   return authorizationError('ACTIVE_TURN_WORKSPACE_INELIGIBLE', 'The requested workspace is not eligible for this active turn.');
+}
+
+/** The ending epoch does not own the current identity ledger: a successor epoch
+ * (a resume reusing the session id) replaced it, so its state must survive. */
+function sessionScopeSuccessor() {
+  return authorizationError('IDENTITY_SESSION_SCOPE_SUCCESSOR', 'The identity ledger belongs to a newer epoch of this session.', 'Leave the successor epoch identity state untouched.');
 }
 
 function invalidCallerContext() {

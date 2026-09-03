@@ -1077,8 +1077,53 @@ test('session workspace ledger retains at most sixteen origins and targets and r
   await identity.beginCallerTurn({ ...base, turnId: 'overflow-turn' });
   await assert.rejects(identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: candidates[15], workspaceBinding: 'claim' }), { code: 'IDENTITY_WORKSPACE_LEDGER_FULL' });
   const cleanup = await identity.cleanupSession(origin, base.sessionId);
+  assert.ok(cleanup, 'a ledger-backed cleanup reports its known-workspace scope');
   assert.equal(cleanup.knownWorkspaces.length, 16);
   assert.deepEqual(await identity.cleanupSession(origin, base.sessionId), cleanup);
+});
+
+test('scope enumeration carries the ledger epoch and cleanup refuses a successor ledger', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  const now = new Date('2026-08-20T12:00:00.000Z');
+  const origin = await realpath(workspaceA);
+  const begin = (/** @type {string} */ sessionStartedAt, /** @type {string} */ turnId) => identity.beginCallerTurn({
+    sessionId: 'epoch-session', turnId, workspace: workspaceA, permissionMode: 'workspace-write', prompt: 'work', now,
+    sessionStartedAt, sessionSource: 'startup',
+  });
+  await begin('2026-08-20T11:59:00.000Z', 'turn-1');
+  assert.deepEqual(await identity.sessionWorkspaces(workspaceA, 'epoch-session'),
+    { knownWorkspaces: [origin], sessionStartedAt: '2026-08-20T11:59:00.000Z' },
+    'the read-only scope exposes the ledger own epoch proof');
+  // The old epoch's boundary completes its identity stage, ending the ledger;
+  // a resume reusing the session id then installs a successor-epoch ledger.
+  await identity.cleanupSession(workspaceA, 'epoch-session', { sessionStartedAt: '2026-08-20T11:59:00.000Z' });
+  await begin('2026-08-20T11:59:30.000Z', 'turn-2');
+  await assert.rejects(
+    identity.cleanupSession(workspaceA, 'epoch-session', { sessionStartedAt: '2026-08-20T11:59:00.000Z', timeoutMs: 250 }),
+    (error) => error instanceof PluginError && error.code === 'IDENTITY_SESSION_SCOPE_SUCCESSOR',
+  );
+  const successorScope = await identity.sessionWorkspaces(workspaceA, 'epoch-session');
+  assert.equal(successorScope?.sessionStartedAt, '2026-08-20T11:59:30.000Z',
+    'the successor ledger survives the old epoch refused cleanup');
+  // The successor epoch owns the ledger and cleans it up normally.
+  await identity.cleanupSession(workspaceA, 'epoch-session', { sessionStartedAt: '2026-08-20T11:59:30.000Z' });
+  const ledgerAfter = JSON.parse(await readFile(await globalSessionPath(dataRoot, 'epoch-session'), 'utf8'));
+  assert.notEqual(ledgerAfter.endedAt, null, 'the owning epoch tombstones the ledger without a successor guard');
+  // A successor's crashed pending publication (active record, no ledger yet)
+  // must survive an old-epoch cleanup whose boundary predates it.
+  await begin('2026-08-20T11:59:50.000Z', 'turn-3');
+  await unlink(await globalSessionPath(dataRoot, 'epoch-session'));
+  // The crash left the publication mid-flight: status is still 'pending'.
+  const orphanActivePath = await globalActivePath(dataRoot, 'epoch-session');
+  await writeFile(orphanActivePath, `${JSON.stringify({ ...JSON.parse(await readFile(orphanActivePath, 'utf8')), status: 'pending' })}\n`);
+  await assert.rejects(
+    identity.cleanupSession(workspaceA, 'epoch-session', { endedAt: '2026-08-20T11:59:45.000Z' }),
+    (error) => error instanceof PluginError && error.code === 'IDENTITY_SESSION_SCOPE_SUCCESSOR',
+  );
+  await readFile(orphanActivePath, 'utf8');
+  // A boundary after the pending publication tombstones it as before.
+  await identity.cleanupSession(workspaceA, 'epoch-session', { endedAt: '2026-08-20T12:00:01.000Z' });
+  await assert.rejects(readFile(await globalActivePath(dataRoot, 'epoch-session'), 'utf8'), { code: 'ENOENT' });
 });
 
 test('cleanup revokes exact-session caller tokens in every known workspace without touching siblings', async () => {

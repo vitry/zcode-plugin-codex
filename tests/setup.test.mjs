@@ -180,6 +180,18 @@ async function retryManagedActivation(fixture) {
   assert.equal(batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'), fixture.kind === 'migration');
 }
 
+test('proving the SessionStart record never mutates absent hook state', async () => {
+  const ctx = await context();
+  const dataRoot = join(ctx.dataRoot, 'not-created-yet');
+  await assert.rejects(
+    resolveRecordedSessionStart(dataRoot, ctx.cwd, 'never-started'),
+    (error) => error?.code === 'SETUP_SESSION_UNPROVEN' && (error?.cause?.code === 'ENOENT' || error?.cause?.cause?.code === 'ENOENT'),
+  );
+  const { access } = await import('node:fs/promises');
+  assert.equal(await access(dataRoot).then(() => true, () => false), false,
+    'the epoch proof must be the read-only step before the receipt, not a state-creating one');
+});
+
 test('compact SessionStart preserves the original trusted session freshness and source', async () => {
   const ctx = await context();
   await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'startup' });

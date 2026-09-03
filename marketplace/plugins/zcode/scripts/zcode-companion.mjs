@@ -254,7 +254,7 @@ function createManagementRescueReconcile(input) {
       }
       const revalidated = await input.store.revalidateBoundRescueStop({ workspace: input.workspace, jobId: job.id,
         ownerSessionId: job.ownerSessionId, status: job.status, zcodeSessionId: job.zcodeSessionId,
-        ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+        ...(job.workerLeaseId ? { workerLeaseId: job.workerLeaseId } : {}),
         ...(context.guard === undefined || context.guard === null ? {} : { expected: context.guard }) });
       if (revalidated?.kind === 'stale') return { kind: 'stale', winner: revalidated.job };
       context.guard = revalidated?.guard ?? context.guard ?? null;
