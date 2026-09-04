@@ -531,6 +531,7 @@ test('subagent hook marks forwarding suppression without changing parent permiss
   assert.equal(sub.code, 0); assert.match(sub.json.hookSpecificOutput.additionalContext, /forwarding subagent/i);
   assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  console.error('STOP_DEBUG', stop.code, JSON.stringify(stop.stderr.slice(0, 300)), JSON.stringify(stop.json));
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
 });
 

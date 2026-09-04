@@ -16,7 +16,9 @@ const MAX_DIRECTIVE_BYTES = 2048;
 const TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
 const STOPPED_PROOF_KEYS = Object.freeze(['executionWorkspace', 'executor']);
-const EXECUTOR_KEYS = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+const EXECUTOR_KEYS = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+const EXECUTOR_KEYS_WITHOUT_EPOCH = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+const EXECUTOR_KEYS_STARTED_ONLY = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
 const EXECUTOR_ERROR_CODES = new Set([
   'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
   'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_STATE_MISMATCH',
@@ -355,7 +357,9 @@ function canonicalTimestamp(value) {
 function validStoppedExecutor(value) {
   if (!plain(value)) return false;
   const executor = /** @type {Record<string,any>} */ (value);
-  return sameKeys(executor, EXECUTOR_KEYS) && executor.kind === 'subagent-executor' && typeof executor.active === 'boolean'
+  if ('ownerLifecycleEpoch' in (executor ?? {}) && (typeof executor.ownerLifecycleEpoch !== 'string' || !/^[a-f0-9]{64}$/u.test(executor.ownerLifecycleEpoch))) return false;
+  if ('ownerLifecycleEpochStartedAt' in (executor ?? {}) && (typeof executor.ownerLifecycleEpochStartedAt !== 'string' || !Number.isFinite(Date.parse(executor.ownerLifecycleEpochStartedAt)))) return false;
+  return (sameKeys(executor, EXECUTOR_KEYS) || sameKeys(executor, EXECUTOR_KEYS_WITHOUT_EPOCH) || sameKeys(executor, EXECUTOR_KEYS_STARTED_ONLY)) && executor.kind === 'subagent-executor' && typeof executor.active === 'boolean'
     && [executor.agentId, executor.agentType, executor.parentSessionId, executor.parentTurnId, executor.childTurnId].every(boundedIdentifier)
     && (executor.parentGenerationId === null || typeof executor.parentGenerationId === 'string' && /^[a-f0-9]{64}$/u.test(executor.parentGenerationId))
     && PERMISSION_MODES.includes(executor.parentPermissionMode) && boundedWorkspace(executor.originWorkspace) && boundedWorkspace(executor.workspace)

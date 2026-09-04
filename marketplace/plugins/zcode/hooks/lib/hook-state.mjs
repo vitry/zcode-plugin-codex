@@ -9,6 +9,8 @@ import { atomicWriteJson, ensurePrivateDirectory, readBoundedJsonFile, readJsonF
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore, PERMISSION_MODES } from '../../scripts/lib/identity.mjs';
+
+const NOTIFICATION_CLAIM_LEASE_MS = 60_000;
 import { RESCUE_UNREAD_JOB_LIMIT } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 
@@ -22,7 +24,9 @@ const MAX_EXECUTOR_BYTES = 16 * 1024;
 const MAX_EXECUTOR_ROUTE_BYTES = 16 * 1024;
 const MAX_HOOK_STATE_RECORDS = 2_048;
 const FORWARDING_PENDING_LIFETIME_MS = 30_000;
-const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS_WITHOUT_EPOCH = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS_STARTED_ONLY = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
 const LEGACY_EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
 const EXECUTOR_ROUTE_KEYS = ['agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'state', 'targetWorkspace', 'updatedAt', 'version'];
 const FORWARDING_KEYS = ['active', 'agentId', 'generationId', 'kind', 'sessionId', 'targetWorkspace', 'turnId', 'updatedAt'];
@@ -286,6 +290,125 @@ export async function pendingPriorEpochReceipts(dataRoot, sessionId, workspace, 
   return receipts.filter((receipt) => receipt.sessionId === sessionId && receipt.epoch !== current);
 }
 
+/** The stable fail-closed rejection every reservation-time epoch fence shares. @param {number} count */
+export function priorEpochUnsettledError(count) {
+  return new PluginError('PRIOR_EPOCH_UNSETTLED', 'A previous host lifecycle epoch of this session is still awaiting settlement.', {
+    category: 'state',
+    remedy: 'Inspect the pending reconciliation with $zcode:status or settle it with $zcode:cancel; new Rescue work is retried once the prior epoch settles.',
+    details: { pendingReceipts: count },
+  });
+}
+
+// The reservation-time fence scans receipts INSIDE the reservation's own job
+// lock, so the scan must stay bounded: a stalled read must never hold the
+// state lock. One stage-sized budget mirrors the SessionEnd receipt scan.
+export const RESERVATION_EPOCH_SCAN_BUDGET_MS = 500;
+
+/**
+ * The atomic epoch fence for one writable reservation: fail closed when this
+ * session still has any PENDING prior-epoch receipt at reservation time.
+ * Callers (the StateStore reservation seam) run this inside the workspace
+ * job-state lock, so a SessionEnd receipt published after the caller's own
+ * pre-lock checks can never interleave between the check and the job persist.
+ * The scan is strictly read-only — it never reconciles (reconciliation takes
+ * job locks) and never blocks on a lock. Fail-closed: an unreadable scan or a
+ * pending receipt throws PRIOR_EPOCH_UNSETTLED, unless the caller's own signal
+ * is already aborted, in which case it returns so the reservation's claim path
+ * raises the interruption where its interrupt semantics expect it.
+ * @param {{dataRoot:string,sessionId:string,workspace:string,ownerLifecycleEpoch?:string,signal?:AbortSignal,budgetMs?:number}} input
+ */
+export async function assertNoPendingPriorEpochReceipts(input) {
+  const budgetMs = input.budgetMs ?? RESERVATION_EPOCH_SCAN_BUDGET_MS;
+  const signal = input.signal === undefined
+    ? AbortSignal.timeout(budgetMs)
+    : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+  // Unlike the prompt-time 'prior' semantics, the reservation fence must scan
+  // ALL of the session's pending receipts INCLUDING the ending epoch's own: the
+  // genuine same-epoch boundary derives its receipt from the still-present
+  // SessionStart record, and a reservation interleaving that boundary is
+  // precisely the escape this fence exists to refuse.
+  // An already-aborted caller returns quietly ONCE here — the claim path owns
+  // the interruption: it raises it right after the claim and synchronously
+  // cancels the persisted reservation (contract-anchored by tests). Killing the
+  // process in that window leaves a QUEUED job under the live epoch, which the
+  // existing queued-stale scavenge still cancels — durable coverage, no escape.
+  // Everything AFTER this point (mid-scan cancellation, budget loss) fails
+  // closed with the stable fence error.
+  if (input.signal?.aborted === true) return;
+  let pending;
+  try { pending = await pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal, currentEpoch: null }); }
+  catch (error) {
+    if (input.signal?.aborted === true && error === input.signal.reason) throw error;
+    throw priorEpochUnsettledError(0);
+  }
+  if (pending.length > 0) throw priorEpochUnsettledError(pending.length);
+  // In-lock REVALIDATION of the epoch anchor: the recorded SessionStart the
+  // reservation was derived from must STILL be the current record. A successor
+  // SessionStart published between the caller's derivation and this locked
+  // callback re-brands pre-boundary work into the successor epoch; fail closed.
+  if (typeof input.ownerLifecycleEpoch === 'string') {
+    // The SessionStart read is unbounded internally: race it against the SAME
+    // combined fence signal so a stalled lookup cannot hold the workspace
+    // job-state lock past the advertised budget. Fail closed on race loss.
+    const current = await Promise.race([
+      resolveRecordedSessionStart(input.dataRoot, input.workspace, input.sessionId),
+      new Promise((resolve) => { if (signal.aborted) { resolve(null); return; } signal.addEventListener('abort', () => resolve(null), { once: true }); }),
+    ]).catch(() => null);
+    const currentDigest = current === null ? null : hostLifecycleEpoch(input.sessionId, current.startedAt);
+    if (currentDigest !== input.ownerLifecycleEpoch) {
+      throw new PluginError('PRIOR_EPOCH_UNSETTLED', 'The recorded SessionStart changed during the reservation, so this operation belongs to a superseded lifecycle epoch.', {
+        category: 'state',
+        remedy: 'Re-run the operation from the active session turn; pre-boundary work is never reserved under a successor epoch.',
+        details: { pendingReceipts: 0, superseded: true },
+      });
+    }
+  }
+  // A receipt for the reservation's OWN lifecycle epoch fences it in ANY state:
+  // settled means the boundary already completed (settled receipts are
+  // invisible to the pending scan above — this is the scan-to-settle race),
+  // pending means it is in progress. A legitimate post-resume reservation
+  // carries a NEW epoch that has no receipt at all.
+  const ownerEpoch = input.ownerLifecycleEpoch;
+  if (typeof ownerEpoch === 'string') {
+    // The receipt read accepts no signal of its own: race it against the SAME
+    // combined fence signal (caller signal ∪ budget), checking signal.aborted
+    // IMMEDIATELY — AbortSignal does not invoke listeners added after
+    // abortion, so a budget that expired during the preceding revalidation
+    // must fail closed here rather than hang the locked read or admit on a
+    // late null.
+    const ended = await Promise.race([
+      createHostLifecycleStore({ dataRoot: input.dataRoot }).readReceipt(ownerEpoch).then((value) => value ?? 'clean', () => 'unreadable'),
+      new Promise((resolve) => {
+        if (signal.aborted) { resolve('unreadable'); return; }
+        signal.addEventListener('abort', () => resolve('unreadable'), { once: true });
+      }),
+    ]);
+    if (ended !== 'clean') {
+      throw new PluginError('PRIOR_EPOCH_UNSETTLED', 'This operation belongs to a lifecycle epoch whose SessionEnd boundary already ran.', {
+        category: 'state',
+        remedy: 'Resume the session (a new epoch) or start fresh; work for an ended epoch is never reserved.',
+        details: { pendingReceipts: 0, endedEpoch: ended === 'unreadable' ? 'unreadable' : ended.state },
+      });
+    }
+  }
+}
+
+/**
+ * The recorded SessionStart pair for one session: {epoch, startedAt} — the pair
+ * a reservation must carry so the locked fence can revalidate the anchor under
+ * the workspace job lock.
+ * The epoch digest returned here is what the locked reservation fence
+ * revalidates: for child-authorized reservations the pair is superseded by the
+ * durable `ownerLifecycleEpoch` persisted on the executor record at
+ * SubagentStart, so a same-session resume can never re-brand pre-boundary work
+ * into the successor epoch.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId
+ */
+export async function recordedSessionStartPair(dataRoot, workspace, sessionId) {
+  const record = await resolveRecordedSessionStart(dataRoot, workspace, sessionId);
+  return { epoch: hostLifecycleEpoch(sessionId, record.startedAt), startedAt: record.startedAt };
+}
+
 /**
  * Reconcile one session's pending prior-epoch receipts before new Rescue work:
  * for each receipt, re-run the SessionEnd convergence across its recorded
@@ -460,10 +583,45 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       }
     });
     await publicationSeam?.('after-route-pending');
-    const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt };
+    // Durable authorization-epoch evidence (codex, Task 8): capture the CURRENT
+    // session record's startedAt digest at SubagentStart, then REVALIDATE it
+    // together with the parent authority immediately before publishing the
+    // executor — a SessionEnd + same-ID resume landing in this window would
+    // otherwise re-brand a child authorized by the ended epoch. A record ABSENT
+    // (pre-lifecycle compat flow) omits the epoch: the reservation side then
+    // fails closed on its own SETUP_SESSION_UNPROVEN proof, so no re-brand
+    // window exists. A CORRUPT or transiently unreadable record propagates.
+    let cachedSessionRecord;
+    const readAuthorizedEpoch = async (/** @type {boolean} */ fresh = false) => {
+      if (fresh || cachedSessionRecord === undefined) {
+        cachedSessionRecord = await resolveRecordedSessionStart(dataRoot, origin.workspacePath, input.session_id).catch((error) => {
+          const absent = error?.cause?.cause?.code === 'ENOENT' || error?.cause?.code === 'ENOENT';
+          if (absent) return null;
+          throw error;
+        });
+      }
+      return cachedSessionRecord === null ? undefined : hostLifecycleEpoch(input.session_id, cachedSessionRecord.startedAt);
+    };
+    const readAuthorizedEpochStartedAt = () => cachedSessionRecord === null ? undefined : cachedSessionRecord.startedAt;
+    const authorizedEpoch = await readAuthorizedEpoch();
+    const authorizedEpochStartedAt = authorizedEpoch === undefined ? undefined : (await readAuthorizedEpochStartedAt());
+    const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt, ...(authorizedEpoch === undefined ? {} : { ownerLifecycleEpoch: authorizedEpoch, ownerLifecycleEpochStartedAt: authorizedEpochStartedAt }) };
     let finalState = 'failed'; let finalError = null;
     try {
       await withFileLock(target.lock, async () => {
+        // Revalidate authority + epoch TOGETHER atomically with the publish:
+        // if the parent turn's route authority vanished, or a same-ID resume
+        // replaced the captured epoch's SessionStart record, fail closed —
+        // never publish an executor whose epoch cannot be proven current.
+        // FRESH re-read of presence AND value: a resume may have replaced the
+        // SessionStart record between the initial capture and this publication —
+        // a record that appeared (was absent at capture) or changed (different
+        // epoch) both mean superseded authority; fail closed, never persist.
+        const republished = await readAuthorizedEpoch(true);
+        if (republished !== authorizedEpoch) throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart observed a session epoch change before executor publication.');
+        if (authorizedEpoch !== undefined && !await routeAuthorityExists(dataRoot, origin.workspacePath, { ...route, state: 'pending' })) {
+          throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart parent authority ended before executor publication.');
+        }
         await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor);
         await publicationSeam?.('after-executor-persisted');
       });
@@ -754,11 +912,132 @@ export async function cleanupSession(dataRoot, workspace, sessionId, options = {
     }
   }, lockOptions);
 }
-export async function unreadJobs(dataRoot, workspace, sessionId) { const store = await paths(dataRoot, workspace); const jobs = join(store.directory, '..', 'jobs'); let names = []; try { names = await readdir(jobs); } catch { return []; } return withFileLock(store.lock, async () => { const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`); let marker = { kind: 'notifications', sessionId, jobIds: [] }; try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []); const found = []; for (const name of names.slice(0, 500)) { if (!name.endsWith('.json')) continue; try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ } } const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT); for (const job of selected) seen.add(job.id); await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() }); return selected; }); }
+/**
+ * Record one job as delivery-acknowledged for its owner session: the next
+ * unreadJobs pass will no longer surface it as an unread notification.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string} jobId
+ */
+export async function markJobNotified(dataRoot, workspace, sessionId, jobId) {
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [] };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    seen.add(jobId);
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() });
+  });
+}
+
+export async function peekUnreadJobs(dataRoot, workspace, sessionId) {
+  const store = await paths(dataRoot, workspace);
+  const jobs = join(store.directory, '..', 'jobs');
+  let names = []; try { names = await readdir(jobs); } catch { return []; }
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  let seen = new Set();
+  try { const marker = await readJsonFile(markerPath); if (Array.isArray(marker.jobIds)) seen = new Set(marker.jobIds); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+  const found = [];
+  for (const name of names.slice(0, 500)) {
+    if (!name.endsWith('.json')) continue;
+    try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ }
+  }
+  return found.slice(-RESCUE_UNREAD_JOB_LIMIT);
+}
+
+export async function claimNotifications(dataRoot, workspace, sessionId) {
+  const store = await paths(dataRoot, workspace);
+  const jobs = join(store.directory, '..', 'jobs');
+  let names = []; try { names = await readdir(jobs); } catch { return []; }
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  return withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const notified = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    const claimed = { ...(marker.claimed ?? {}) };
+    // Abandoned claims expire: a process that died between claim and
+    // finalize/release must not suppress the notice forever. The lease window
+    // is far longer than any legitimate delivery flush.
+    const now = Date.now();
+    for (const id of Object.keys(claimed)) if (now - Date.parse(claimed[id]) > NOTIFICATION_CLAIM_LEASE_MS) delete claimed[id];
+    const found = [];
+    for (const name of names.slice(0, 500)) {
+      if (!name.endsWith('.json')) continue;
+      try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !notified.has(job.id) && !(job.id in claimed)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ }
+    }
+    const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT);
+    for (const job of selected) { notified.delete(job.id); claimed[job.id] = new Date().toISOString(); }
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...notified].slice(-500), claimed, updatedAt: new Date().toISOString() });
+    return selected;
+  });
+}
+
+/**
+ * Atomically claim ONE specific terminal job for live delivery (used by the
+ * companion's own completion path so a concurrent prompt can never double-
+ * announce it). Returns true when this caller won the claim.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string} jobId
+ */
+export async function claimNotificationForJob(dataRoot, workspace, sessionId, jobId) {
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  return withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const notified = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    const claimed = { ...(marker.claimed ?? {}) };
+    if (notified.has(jobId)) return false;
+    if (claimed[jobId] !== undefined && Date.now() - Date.parse(claimed[jobId]) <= NOTIFICATION_CLAIM_LEASE_MS) return false;
+    claimed[jobId] = new Date().toISOString();
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...notified].slice(-500), claimed, updatedAt: new Date().toISOString() });
+    return true;
+  });
+}
+
+/** Finalize claimed notifications after confirmed Host delivery: they move to the notified list and never re-announce. @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string[]} jobIds */
+export async function finalizeNotifications(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const finalized = new Set([...(Array.isArray(marker.jobIds) ? marker.jobIds : []), ...jobIds]);
+    const claimed = { ...(marker.claimed ?? {}) };
+    for (const jobId of jobIds) delete claimed[jobId];
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...finalized].slice(-500), claimed, updatedAt: new Date().toISOString() });
+  });
+}
+
+/** Release claimed notifications whose delivery failed: they return to unread so the next prompt re-announces them. @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string[]} jobIds */
+export async function releaseNotifications(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const claimed = { ...(marker.claimed ?? {}) };
+    for (const jobId of jobIds) delete claimed[jobId];
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...(Array.isArray(marker.jobIds) ? marker.jobIds : [])].slice(-500), claimed, updatedAt: new Date().toISOString() });
+  });
+}
+
+export async function markJobsNotified(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [] };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    for (const jobId of jobIds) seen.add(jobId);
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() });
+  });
+}
 export async function writeGateRun(dataRoot, workspace, record) { const store = await paths(dataRoot, workspace); const directory = join(store.directory, '..', 'gate-runs'); await ensurePrivateDirectory(directory); const id = key(record.sessionId, record.turnId, record.before, record.after); const path = join(directory, `${id}.json`); return withFileLock(join(directory, '.lock'), async () => { try { return { duplicate: true, path, record: await readJsonFile(path) }; } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } await atomicWriteJson(path, record); return { duplicate: false, path, record }; }); }
 export async function finishGateRun(path, record) { await atomicWriteJson(path, record); }
 function validExecutorRecord(record, workspace) { return isCurrentExecutorRecord(record, workspace) || isLegacyExecutorRecord(record, workspace); }
-function isCurrentExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
+function isCurrentExecutorRecord(record, workspace) { if (!record || typeof record !== 'object' || Array.isArray(record)) return false; const keys = Object.keys(record).sort().join('\0'); const epochShapes = [[...EXECUTOR_KEYS].sort().join('\0'), [...EXECUTOR_KEYS_WITHOUT_EPOCH].sort().join('\0'), [...EXECUTOR_KEYS_STARTED_ONLY].sort().join('\0')]; const epochCoherent = ((record.ownerLifecycleEpoch === undefined && record.ownerLifecycleEpochStartedAt === undefined) || (typeof record.ownerLifecycleEpoch === 'string' && /^[a-f0-9]{64}$/u.test(record.ownerLifecycleEpoch) && canonicalTimestamp(record.ownerLifecycleEpochStartedAt) && record.ownerLifecycleEpoch === hostLifecycleEpoch(record.parentSessionId, record.ownerLifecycleEpochStartedAt)));  return epochShapes.includes(keys) && epochCoherent && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
 function isLegacyExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...LEGACY_EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
 function validExecutorRoute(record, originWorkspace, input) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_ROUTE_KEYS].sort().join('\0') && record.version === 1 && record.kind === 'executor-route' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && record.originWorkspace === originWorkspace && boundedWorkspace(record.targetWorkspace) && ['pending', 'active', 'stopped'].includes(record.state) && canonicalTimestamp(record.createdAt) && canonicalTimestamp(record.updatedAt) && Date.parse(record.updatedAt) >= Date.parse(record.createdAt) && (input === undefined || record.parentSessionId === input.session_id && record.childTurnId === input.turn_id && record.agentId === input.agent_id && record.agentType === input.agent_type); }
 function executorMatchesRoute(executor, route) { return executor.agentId === route.agentId && executor.agentType === route.agentType && executor.parentSessionId === route.parentSessionId && executor.parentGenerationId === route.parentGenerationId && executor.parentTurnId === route.parentTurnId && executor.parentPermissionMode === route.parentPermissionMode && executor.childTurnId === route.childTurnId && executor.originWorkspace === route.originWorkspace && executor.workspace === route.targetWorkspace && executor.createdAt === route.createdAt; }

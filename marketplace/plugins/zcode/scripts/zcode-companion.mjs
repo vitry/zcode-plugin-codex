@@ -17,7 +17,6 @@ import { createJobController, durableCancelledWinner, ownerIdForSession, readBou
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
-import { hostLifecycleEpoch } from './lib/host-lifecycle.mjs';
 import { createExistingManagedZCodeClient, createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { readZCodeCliRuntimeModel } from './lib/zcode-runtime-config.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
@@ -37,7 +36,7 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
-import { pendingPriorEpochReceipts, reconcilePriorEpochReceipts, resolveRecordedSessionStart, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { assertNoPendingPriorEpochReceipts, claimNotificationForJob, finalizeNotifications, pendingPriorEpochReceipts, priorEpochUnsettledError, recordedSessionStartPair, reconcilePriorEpochReceipts, releaseNotifications, resolveRecordedSessionStart, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
@@ -1087,7 +1086,37 @@ async function startPublic(context) {
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
-    if (parsed.options.resume === 'fresh' || !binding && context.rescueActivationKind === 'spawn') reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+    // Every child-authorized Rescue reservation carries the Host-managed
+    // lifecycle (ADR 0018): the epoch binds the job to the SessionStart epoch
+    // that authorized it, `host-child` names the execution owner, and the
+    // placement drives Host Coordination Loss policy. Fresh reservations and
+    // bound continuations are alike here — a child-authorized record without
+    // the trio would fall back to the detached execution path the design
+    // removed for new Rescue. The epoch proof is the SessionStart record of
+    // the session's ORIGIN workspace, even when the child executes in a linked
+    // execution workspace.
+    const epochWorkspace = context.executor?.originWorkspace ?? context.authority?.originWorkspace ?? cwd;
+    // The AUTHORIZING epoch is the one that proved this child's work at the
+    // moment the caller/executor authorized it — NOT whichever epoch is
+    // current when this line executes. A same-session resume replacing the
+    // SessionStart record in between must not re-brand pre-boundary work into
+    // the successor epoch (that would let it escape its own settled receipt),
+    // Durable authorization-epoch evidence (codex, Task 8): when the child's
+    // executor record carries the epoch captured at its SubagentStart, THAT is
+    // the authorizing epoch — a same-session resume replacing the session
+    // record afterwards can never re-brand this work into the successor epoch.
+    // Records without the evidence (frozen/legacy manifests) fall back to the
+    // current-record derivation.
+    const epochPair = typeof context.executor?.ownerLifecycleEpoch === 'string'
+      ? { epoch: context.executor.ownerLifecycleEpoch }
+      : await recordedSessionStartPair(dataRoot, epochWorkspace, caller.sessionId);
+    const lifecycle = {
+      ownerLifecycleEpoch: epochPair.epoch,
+      executionOwner: 'host-child',
+      hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
+    };
+    const beforePersist = reservationEpochGate(context, epochPair.epoch);
+    if (parsed.options.resume === 'fresh' || !binding && context.rescueActivationKind === 'spawn') reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, lifecycle, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }, { beforePersist }));
     else if (binding) {
       const previewMigrationProof = binding.state === 'closed' ? context.rescueRoute?.migrationProof : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
@@ -1095,13 +1124,13 @@ async function startPublic(context) {
         : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
       permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
       const migrationProof = previewMigrationProof;
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? {
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, lifecycle, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? {
         expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId,
         expectedAnchorJobId: context.rescueRoute.expectedAnchorJobId ?? context.rescueRoute.candidateJobId,
         ...(context.rescueRoute.expectedBindingKey ? { expectedBindingKey: context.rescueRoute.expectedBindingKey } : {}),
         ...(context.rescueRoute.expectedBindingUpdatedAt ? { expectedBindingUpdatedAt: context.rescueRoute.expectedBindingUpdatedAt } : {}),
         ...(context.rescueRoute.expectedResumeSessionId ? { expectedResumeSessionId: context.rescueRoute.expectedResumeSessionId } : {}),
-      } : {}) }));
+      } : {}) }, { beforePersist }));
       candidate = reserved.anchorJob;
     } else throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
     job = reserved.job;
@@ -1145,20 +1174,23 @@ async function startPublic(context) {
       // derives from the CURRENT recorded session start (fail closed when the
       // record is missing — reusing the superseded record's epoch would let a
       // prior ended epoch's receipt stop the new work), and the placement
-      // honors this turn's execution choice.
-      const sessionRecord = await resolveRecordedSessionStart(dataRoot, cwd, caller.sessionId).catch((/** @type {any} */ error) => {
-        if (error?.cause?.cause?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
-          throw new PluginError('RESUME_EPOCH_UNPROVEN', 'The current Host session record is missing, so the resumed lifecycle epoch cannot be derived.', { category: 'authorization', remedy: 'Restart the Codex session or resume from a session with a recorded start.', cause: error });
+      // honors this turn's execution choice. A missing record surfaces as the
+      // stable RESUME_EPOCH_UNPROVEN PluginError, never a raw INTERNAL_ERROR.
+      let epochPair;
+      try { epochPair = await recordedSessionStartPair(dataRoot, cwd, caller.sessionId); }
+      catch (/** @type {any} */ typedError) {
+        if (typedError?.code === 'SETUP_SESSION_UNPROVEN') {
+          throw new PluginError('RESUME_EPOCH_UNPROVEN', 'The current Host session record is missing, so the lifecycle epoch cannot be derived.', { category: 'authorization', remedy: 'Restart the Codex session or resume from a session with a recorded start.', cause: typedError });
         }
-        throw error;
-      });
+        throw typedError;
+      }
       const lifecycle = {
-        ownerLifecycleEpoch: hostLifecycleEpoch(caller.sessionId, sessionRecord.startedAt),
+        ownerLifecycleEpoch: epochPair.epoch,
         executionOwner: 'host-child',
         hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
       };
       const reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor,
-        operationId: prior.operationId, expectedCurrentJobId: candidate.id, expectedAnchorJobId: prior.anchorJobId, lifecycle }));
+        operationId: prior.operationId, expectedCurrentJobId: candidate.id, expectedAnchorJobId: prior.anchorJobId, lifecycle }, { beforePersist: reservationEpochGate(context, epochPair.epoch) }));
       job = reserved.job;
       candidate = reserved.anchorJob;
     } else {
@@ -1180,8 +1212,46 @@ async function startPublic(context) {
     // reservation keeps the caller's session-bound execution alive until the
     // turn settles; the reserved background contract surfaces only after the
     // durable terminal winner exists.
-    const terminal = await executeWithWorkerLease({ ...context, job, spec });
-    return { type: 'background-terminal', job: publicReservedJob(terminal?.job ?? terminal) };
+    let terminal;
+    try {
+      terminal = await executeWithWorkerLease({ ...context, job, spec });
+    } catch (executionError) {
+      // A failed/cancelled durable winner still owes the bounded completion
+      // notice: reread the durable terminal job, emit the notice with the
+      // failure summary / stop cause, then rethrow the original execution
+      // error so the CLI surfaces it.
+      let reread = null;
+      try { reread = await store.readJob(cwd, job.id); } catch { reread = null; }
+      // Only a run whose remote session was ACCEPTED owes the failure notice:
+      // resume/setup failures before acceptance roll back exactly as foreground
+      // does (rejection), per the Engine Terminal Failure semantics.
+      if (reread !== null && typeof reread.zcodeSessionId !== 'string') { reread = null; }
+      // An EXTERNAL cancel/steer keeps its interrupted-turn contract (the
+      // child surfaces ZCODE_SESSION_STOPPED with a nonzero exit); only an
+      // engine/model terminal failure emits the bounded failure notice.
+      const typedExecutionError = /** @type {any} */ (executionError);
+      const interruptedTurn = typedExecutionError?.code === 'JOB_INTERRUPTED'
+        || typedExecutionError?.code === 'ZCODE_SESSION_STOPPED'
+        || /ZCODE_SESSION_STOPPED/.test(String(typedExecutionError?.message ?? ''));
+      if (reread !== null && interruptedTurn) { reread = null; }
+      if (reread !== null && ['failed', 'cancelled'].includes(reread.status)) {
+        // Route through the normal claimed delivery path WITHOUT pre-claiming:
+        // the CLI's claimNotificationForJob is the single ownership point —
+        // pre-claiming here would make the CLI lose to its own live claim and
+        // silently drop the failure notice.
+        const bindingCurrent = await bindingCurrencyEvidence(store, cwd, caller.sessionId, reread).catch(() => false);
+        return { type: 'background-terminal', noticeTarget: { dataRoot, workspace: cwd, sessionId: caller.sessionId }, job: terminalResultJob(reread, caller.permissionMode, bindingCurrent), resultCommand: '$zcode:result' };
+      }
+      throw executionError;
+    }
+    // The Host Completion Notice is bounded by design 319: job ID, terminal
+    // status, bounded stop cause / failure summary, resumability, and the
+    // Result command — no session IDs, private paths, or raw job internals.
+    let settledJob = terminal?.job ?? terminal;
+    const bindingCurrent = await bindingCurrencyEvidence(store, cwd, caller.sessionId, settledJob);
+    // Acknowledgement happens at the delivery-success boundary in
+    // runCompanionCli (after the notice is rendered to stdout), not here.
+    return { type: 'background-terminal', noticeTarget: { dataRoot, workspace: cwd, sessionId: caller.sessionId }, job: terminalResultJob(settledJob, caller.permissionMode, bindingCurrent), resultCommand: '$zcode:result' };
   }
   if (parsed.options.execution === 'background') {
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
@@ -1232,6 +1302,17 @@ function authorityBindingLookup(authority, caller, workspace) {
   return { workspace, parentSessionId: caller.sessionId, executorAgentId: authority.childAgentId };
 }
 
+/**
+ * Derive the Host lifecycle epoch of one session from its CURRENT recorded
+ * SessionStart. Fails closed when the record is missing: reusing a superseded
+ * record's epoch would let a prior ended epoch's receipt stop the new work, and
+ * reserving without an epoch would recreate the untracked legacy records the
+ * Host-managed lifecycle replaces (ADR 0018).
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId
+ */
+/** Derive the Host lifecycle epoch of one session from its CURRENT recorded SessionStart (fail-closed on a missing record).
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId */
+
 /** @param {any} context @param {()=>Promise<any>} reserve */
 async function reservePublicRescueJob(context, reserve) {
   context.signal?.throwIfAborted();
@@ -1256,12 +1337,61 @@ async function reservePublicRescueJob(context, reserve) {
 const PRIOR_EPOCH_RECONCILIATION_BUDGET_MS = 1_500;
 
 /**
+ * The atomic epoch fence passed as the reservation's own `beforePersist` gate:
+ * it runs INSIDE the reservation's `withFileLock` critical section immediately
+ * before any record is written, so a SessionEnd receipt published between the
+ * prompt-time checks and the persist can no longer interleave — the waiter
+ * either entered before the boundary's final scan (and gets delegated) or is
+ * rejected here with PRIOR_EPOCH_UNSETTLED. The scan is read-only and bounded;
+ * it never reconciles (reconciliation takes job locks).
+ * @param {any} context @param {string=} epochPair The reservation's derived lifecycle epoch, so a receipt for this exact epoch (ANY state) and a superseded-anchor revalidation fence the reservation.
+ */
+function reservationEpochGate(context, epochPair = undefined) {
+  return async () => {
+    const sessionId = context.caller?.sessionId;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    // The current epoch is proved against the session's origin workspace, the
+    // same record the reservation's lifecycle epoch derived from.
+    const workspace = context.executor?.originWorkspace ?? context.authority?.originWorkspace ?? context.cwd;
+    let epoch = epochPair;
+    if (epoch === undefined) {
+      // Generic (non-trio) reservations derive their caller's current epoch
+      // lazily, raced against the same bounded budget the fence advertises
+      // (the unbounded read runs while reserveJob holds the job lock). Only a
+      // PROVEN absence (ENOENT) tolerates an undefined epoch; corruption,
+      // contention, or a budget loss fails closed — the reservation is
+      // rejected instead of being admitted without anchor evidence.
+      const derivationSignal = AbortSignal.timeout(PRIOR_EPOCH_RECONCILIATION_BUDGET_MS);
+      try {
+        epoch = (await Promise.race([
+          recordedSessionStartPair(context.dataRoot, workspace, sessionId),
+          new Promise((resolve, reject) => {
+            if (derivationSignal.aborted) { reject(derivationSignal.reason); return; }
+            derivationSignal.addEventListener('abort', () => reject(derivationSignal.reason), { once: true });
+          }),
+        ])).epoch;
+      } catch (error) {
+        const typedError = /** @type {any} */ (error);
+        const absent = typedError?.code === 'SETUP_SESSION_UNPROVEN'
+          && (typedError?.cause?.cause?.code === 'ENOENT' || typedError?.cause?.code === 'ENOENT');
+        if (!absent) throw error;
+        epoch = undefined;
+      }
+    }
+    await assertNoPendingPriorEpochReceipts({ dataRoot: context.dataRoot, sessionId, workspace, ownerLifecycleEpoch: epoch, signal: context.signal });
+  };
+}
+
+/**
  * Resume after SessionEnd: while this session's previous lifecycle epoch still
  * has unresolved pending receipts, new writable Rescue work stays blocked behind
  * the pending compensation authority (design 'Resume after SessionEnd'). The
  * gate first retries the same bounded reconciliation the UserPromptSubmit hook
  * runs, then fails closed with one stable error when receipts remain pending.
- * Status, result, and cancel never enter this path and stay available.
+ * Status, result, and cancel never enter this path and stay available. This is
+ * the PROMPT-TIME gate; the reservation's own locked critical section repeats
+ * the fail-closed check through reservationEpochGate, which closes the
+ * publish-between-check-and-persist window this pre-lock pass cannot.
  * @param {any} context
  */
 async function rejectUnsettledPriorEpoch(context) {
@@ -1270,11 +1400,6 @@ async function rejectUnsettledPriorEpoch(context) {
   const signal = context.signal === undefined
     ? AbortSignal.timeout(PRIOR_EPOCH_RECONCILIATION_BUDGET_MS)
     : AbortSignal.any([context.signal, AbortSignal.timeout(PRIOR_EPOCH_RECONCILIATION_BUDGET_MS)]);
-  const unsettledError = (/** @type {number} */ count) => new PluginError('PRIOR_EPOCH_UNSETTLED', 'A previous host lifecycle epoch of this session is still awaiting settlement.', {
-    category: 'state',
-    remedy: 'Inspect the pending reconciliation with $zcode:status or settle it with $zcode:cancel; new Rescue work is retried once the prior epoch settles.',
-    details: { pendingReceipts: count },
-  });
   const callerAborted = () => context.signal?.aborted === true;
   let pending = [];
   try { pending = await pendingPriorEpochReceipts(context.dataRoot, sessionId, context.cwd, { signal }); }
@@ -1285,7 +1410,7 @@ async function rejectUnsettledPriorEpoch(context) {
     // (contention, corruption, an unsafe path) is an unresolved reconciliation
     // and must BLOCK new writable Rescue work instead of admitting it blind.
     if (callerAborted()) return;
-    throw unsettledError(0);
+    throw priorEpochUnsettledError(0);
   }
   if (pending.length === 0) return;
   try { await reconcilePriorEpochReceipts({ dataRoot: context.dataRoot, sessionId, workspace: context.cwd, signal }); }
@@ -1296,22 +1421,27 @@ async function rejectUnsettledPriorEpoch(context) {
     // decision re-read (budget spent, contention) is uncertainty, and
     // uncertainty must BLOCK new writable work — never admit it.
     if (callerAborted()) return;
-    throw unsettledError(pending.length);
+    throw priorEpochUnsettledError(pending.length);
   }
   if (pending.length === 0) return;
-  throw unsettledError(pending.length);
+  throw priorEpochUnsettledError(pending.length);
 }
 
 /** @param {any} context @param {any} reservation */
 async function reservePublicJob(context, reservation) {
-  const reserve = () => context.store.reserveJob(reservation);
-  const creator = ['review', 'adversarial-review', 'transfer'].includes(reservation.command);
-  if (creator) await context.dependencies?.testOnlyBeforeJobReservation?.(context.caller);
   // Direct (non-child-authorized) new Rescue reserves here: the same unsettled
   // prior-epoch block applies to every writable Rescue reservation path. The
   // gate must not surface an already-aborted caller signal — the invocation's
-  // own interrupt semantics own that decision after the claim.
+  // own interrupt semantics own that decision after the claim. The prompt-time
+  // check below is the reconciliation retry; the reservation's OWN locked
+  // critical section repeats the fail-closed check via beforePersist.
+  const creator = ['review', 'adversarial-review', 'transfer'].includes(reservation.command);
+  if (creator) await context.dependencies?.testOnlyBeforeJobReservation?.(context.caller);
   if (!reservation.readOnly) await rejectUnsettledPriorEpoch(context);
+  const gate = reservationEpochGate(context);
+  const reserve = () => reservation.readOnly
+    ? context.store.reserveJob(reservation)
+    : context.store.reserveJob(reservation, { beforePersist: gate });
   const reserveDurably = () => creator
     ? withCreatorPartitionFence(context.identity, context.creatorAuthority ?? context.caller, reserve)
     : reserve();
@@ -1881,7 +2011,7 @@ async function failQueuedJob(store, workspace, jobId, error) {
 }
 
 export async function runCompanionCli(argv = process.argv.slice(2)) {
-  let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  /** @type {any} */ let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const boundStatusDirect = argv.length === 2 && entry === 'invoke-status' && argv[1] === 'rescue';
   const rescueDirect = direct && argv[1] === 'rescue';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
@@ -1895,7 +2025,32 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
       ...(signalController ? { signal: signalController.signal } : {}),
     };
     output = direct ? await runDirectInvocation(argv, foregroundProgress) : await runCompanion(argv, { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
-    if (!setup && !roleStatus && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
+    if (!setup && !roleStatus && !direct && !worker) await writeInternalResponse(output);
+    if (!worker) {
+      const rendered = renderOutput(output);
+      if (/** @type {any} */ (output)?.type === 'background-terminal' && /** @type {any} */ (output)?.job?.id && /** @type {any} */ (output)?.noticeTarget) {
+        // OWNERSHIP-AWARE single-notice delivery (design 308-317): claim the
+        // terminal job, render the bounded notice, and only finalize the claim
+        // after the notice is CONFIRMED flushed to stdout. A flush failure or
+        // a lost race releases the claim so the next UserPromptSubmit
+        // re-announces the job — never duplicated, never suppressed.
+        const won = await claimNotificationForJob(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, output.job.id).catch(() => false);
+        // Only the process that WON the claim for THIS job delivers the notice;
+        // a losing racer stays silent because the winner owns the delivery.
+        if (won) {
+          const delivered = await new Promise((resolve) => {
+            const onError = () => { process.stdout.removeListener('error', onError); resolve(false); };
+            process.stdout.once('error', onError);
+            process.stdout.write(rendered, (writeError) => { process.stdout.removeListener('error', onError); resolve(!writeError); });
+          });
+          if (delivered) { try { await finalizeNotifications(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, [output.job.id]); } catch (/** @type {any} */ markerError) { process.stderr.write(`ZCode completion notice finalization deferred: ${markerError?.code ?? 'UNKNOWN'}\n`); } }
+          else { try { await releaseNotifications(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, [output.job.id]); } catch { /* the claim stays; delivery retried next prompt */ } }
+        }
+      } else {
+        process.stdout.write(rendered);
+      }
+    }
+    if (output?.type === 'needs-choice') process.exitCode = 3;
   }
   catch (error) {
     if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED') {

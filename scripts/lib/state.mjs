@@ -105,11 +105,19 @@ export function createStateStore(options) {
 
   return {
     dataRoot,
-    /** @param {JobReservation} reservation */
-    async reserveJob(reservation) {
+    /**
+     * Reserve one generic job. `options.beforePersist` (optional) runs INSIDE
+     * the job-state lock before any record is written — the atomic epoch fence:
+     * a pending prior-epoch receipt published while this reservation waited can
+     * still reject it, so no old-epoch job can slip past SessionEnd settlement.
+     * @param {JobReservation} reservation @param {{beforePersist?:()=>void|Promise<void>}} [options]
+     */
+    async reserveJob(reservation, options = {}) {
       validateReservation(reservation);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, reservation.workspace);
       return withFileLock(storage.lockPath, async () => {
+        await beforePersist?.();
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         await ensureOwnerIndex(storage, jobs);
         return reserveJobLocked(storage, jobs, reservation);
@@ -330,13 +338,19 @@ export function createStateStore(options) {
       }, lockOptions);
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input */
-    async reserveFreshRescueJob(input) {
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    async reserveFreshRescueJob(input, options = {}) {
       validateRescueReservationInput(input);
       validateOptionalBindingExpectation(input);
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        // Atomic epoch fence: the fail-closed pending prior-epoch receipt check
+        // runs inside the reservation's own critical section, before any
+        // binding or job record is written, so a receipt settled by SessionEnd
+        // while this reservation waited on the lock still rejects it.
+        await beforePersist?.();
         const lockIdentity = await captureStateLockIdentity(storage);
         const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode, true);
         const exactIdentity = context.identity;
@@ -369,14 +383,19 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input */
-    async reserveBoundRescueContinuation(input) {
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    async reserveBoundRescueContinuation(input, options = {}) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
       if (input.expectedCurrentJobId !== undefined && !isDigest(input.expectedCurrentJobId)) throw staleRescueBinding();
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        // Atomic epoch fence (same contract as reserveFreshRescueJob): the
+        // pending prior-epoch receipt check runs inside this reservation's own
+        // critical section before the continuation record is written.
+        await beforePersist?.();
         const lockIdentity = await captureStateLockIdentity(storage);
         const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode, true);
         const resolved = await resolveBindingForResumeLocked(storage, {
@@ -1958,6 +1977,26 @@ function validateHostLifecycleInput(lifecycle) {
   if (!isPlainJsonObject(lifecycle) || Object.keys(lifecycle).sort().join('\0') !== [...HOST_LIFECYCLE_FIELDS].sort().join('\0')
     || !validHostLifecycleRecord(lifecycle)) throw invalidRescueBinding();
   return { ownerLifecycleEpoch: lifecycle.ownerLifecycleEpoch, executionOwner: lifecycle.executionOwner, hostPlacement: lifecycle.hostPlacement };
+}
+
+/**
+ * Validate the optional in-lock reservation gate. Production callers pass one
+ * fail-closed function (the atomic epoch fence); the option never reaches the
+ * persisted record.
+ * @param {{beforePersist?:()=>void|Promise<void>}} [options]
+ * @returns {(() => void|Promise<void>)|undefined}
+ */
+function validateBeforePersistOption(options = {}) {
+  if (options === undefined) return undefined;
+  if (typeof options !== 'object' || options === null || Array.isArray(options)
+    || Object.getPrototypeOf(options) !== Object.prototype) {
+    throw new TypeError('beforePersist reservation options accept one optional function');
+  }
+  if (Object.keys(options).some((key) => key !== 'beforePersist')
+    || (options.beforePersist !== undefined && typeof options.beforePersist !== 'function')) {
+    throw new TypeError('beforePersist reservation options accept one optional function');
+  }
+  return options.beforePersist;
 }
 
 /** The indivisible Host-owned trio marks the writable Rescue records whose confirmed cancellation preserves the exact binding. @param {any} job */

@@ -8,7 +8,7 @@ import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.
 import { resolvePluginDataContext } from '../scripts/lib/plugin-data.mjs';
 import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { RESCUE_LAUNCHER_ERROR_CONTEXT, renderRescueLauncherCommand, renderRescueUserPromptContext } from '../scripts/lib/rescue-launcher-command.mjs';
-import { fingerprintWorkspace, isOwnedSession, reconcilePriorEpochReceipts, resolveRecordedSessionStart, unreadJobs } from './lib/hook-state.mjs';
+import { claimNotifications, finalizeNotifications, fingerprintWorkspace, isOwnedSession, reconcilePriorEpochReceipts, releaseNotifications, resolveRecordedSessionStart } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 try {
@@ -63,7 +63,22 @@ try {
   try { rescueLauncherCommand = renderRescueLauncherCommand(join(pluginData.runtimePluginRoot, 'skills', 'rescue', 'launcher.mjs')); }
   catch { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: RESCUE_LAUNCHER_ERROR_CONTEXT } })); process.exit(0); }
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }
-  const unread = await unreadJobs(dataRoot, input.cwd, input.session_id);
-  const context = renderRescueUserPromptContext(rescueLauncherCommand, unread);
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } }));
+  // The claim is ATOMIC (peek+mark in one lock): overlapping prompts for the
+  // same session can never duplicate the Host notice. The claim is provisional
+  // until stdout delivery is CONFIRMED — a failed delivery releases the jobs
+  // back to unread for the next prompt (delivery contract design 308-317).
+  const unread = await claimNotifications(dataRoot, input.cwd, input.session_id);
+  const delivered = await new Promise((resolve) => {
+    const context = renderRescueUserPromptContext(rescueLauncherCommand, unread);
+    const payload = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } });
+    const onError = () => { process.stdout.removeListener('error', onError); resolve(false); };
+    process.stdout.once('error', onError);
+    process.stdout.write(payload, (writeError) => { process.stdout.removeListener('error', onError); resolve(!writeError); });
+  });
+  if (unread.length > 0) {
+    try {
+      if (delivered) await finalizeNotifications(dataRoot, input.cwd, input.session_id, unread.map((job) => job.id));
+      else await releaseNotifications(dataRoot, input.cwd, input.session_id, unread.map((job) => job.id));
+    } catch { /* the next prompt retries the bookkeeping; the announcement itself already went out */ }
+  }
 } catch (error) { process.stderr.write(`ZCode prompt hook failed safely: ${error?.code ?? 'HOOK_FAILED'}\n`); process.exitCode = 1; }

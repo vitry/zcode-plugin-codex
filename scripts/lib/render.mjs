@@ -27,6 +27,20 @@ export function renderOutput(value, options = {}) {
       ? 'Rescue hint: run $zcode:rescue --resume to continue this session\n' : '';
     return `${value.result}\n${indicator}${hint}`;
   }
+  if (value?.type === 'background-terminal' && value.job) {
+    // The Host Completion Notice (design 319) is built DIRECTLY from the
+    // bounded fields — job ID, terminal status, bounded stop cause or failure
+    // summary, resumability, and the Result command. renderJob's full status
+    // view (progress, resume hints, duration internals) is deliberately not
+    // used here.
+    const job = value.job;
+    const statusLabel = `Rescue ${job.id}: ${job.status}`;
+    const failureSummary = job.error?.message ?? (job.stopCause ? `stop cause: ${job.stopCause}` : null);
+    const lines = [failureSummary ? `${statusLabel} (${failureSummary})` : statusLabel];
+    if (job.resumable !== undefined) lines.push(job.resumable === true ? 'Resumable: yes' : 'Resumable: no');
+    lines.push(`Result: ${value.resultCommand}`);
+    return lines.join('\n');
+  }
   if (value?.job) return `${renderJob(value.job)}${renderModelPolicy(value.modelPolicy)}`;
   return `${JSON.stringify(redact(value))}\n`;
 }

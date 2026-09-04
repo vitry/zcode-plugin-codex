@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { withFileLock } from '../../scripts/lib/fs.mjs';
 import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
@@ -860,3 +861,43 @@ test('an unresolved prior-epoch receipt blocks new writable Rescue but not statu
   assert.equal(status.code, 0, `status reads remain available while reconciliation is unresolved: ${status.stderr}`);
   assert.equal(status.json?.job?.id, value.id);
 });
+
+test('a SessionEnd receipt published inside the job-state lock window fences the blocked Rescue reservation atomically', async (t) => {
+  const ctx = await fixture(t);
+  const { canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'fence-race-owner');
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  // The prior epoch's unsettleable obligation: a bare legacy cancelling guard
+  // with no durable stop intent, so the receipt below can never settle and the
+  // race decision is visible no matter which gate observes it first.
+  const guard = await store.reserveJob({ workspace: canonicalWorkspace, ownerSessionId: 'fence-race-owner', ownerTurnId: 'guard-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } });
+  const guardClaimed = await store.claimJobWorkerForExecution(canonicalWorkspace, guard.id, { childPid: 999_999_999, workerLeaseId: guard.id });
+  await store.transitionJob(canonicalWorkspace, guard.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-fence-race', childPid: guardClaimed.childPid, workerLeaseId: guardClaimed.workerLeaseId });
+  await store.transitionJob(canonicalWorkspace, guard.id, ['running'], 'cancelling', {});
+  const caller = await createIdentityStore({ dataRoot: ctx.dataRoot }).createCallerContext({ sessionId: 'fence-race-owner', turnId: 'fence-race-turn', workspace: ctx.workspace, permissionMode: 'acceptEdits' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  let holderEntered; const entered = new Promise((resolve) => { holderEntered = resolve; });
+  let releaseHeldLock; const heldUntilReleased = new Promise((release) => { releaseHeldLock = release; });
+  const holder = withFileLock(join(storage.directory, '.state.lock'), async () => { holderEntered(); await heldUntilReleased; });
+  try {
+    await entered;
+    const rescue = companion(ctx, ['rescue', '--fresh', '--wait', 'must be fenced atomically'], caller);
+    // SessionEnd publishes the PRIOR epoch receipt while the reservation waits
+    // on the job lock, then the boundary completes and the waiter proceeds.
+    await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).publishSessionEnd({
+      sessionId: 'fence-race-owner',
+      sessionStartedAt: new Date(Date.now() - 120_000).toISOString(),
+      endedAt: new Date().toISOString(),
+      origin: 'session-end-hook',
+      workspaceHints: [canonicalWorkspace],
+    });
+    releaseHeldLock();
+    const result = await rescue;
+    assert.notEqual(result.code, 0, 'a reservation that raced a lock-window receipt must never persist');
+    assert.equal(result.json?.error?.code, 'PRIOR_EPOCH_UNSETTLED', `the stable rejection error is surfaced (was ${JSON.stringify(result.json)})`);
+  } finally { releaseHeldLock(); }
+  await holder;
+  const jobs = await store.listJobs(canonicalWorkspace);
+  assert.deepEqual(jobs.map((/** @type {any} */ job) => job.id).sort(), [guard.id], 'the fenced reservation never persisted a job record');
+  assert.equal((await store.readJob(canonicalWorkspace, guard.id)).status, 'cancelling', 'the guard keeps its durable uncertainty');
+});
+

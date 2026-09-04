@@ -1,5 +1,7 @@
 // @ts-nocheck
 import { createHash } from 'node:crypto';
+
+import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -250,9 +252,26 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   }
   const executor = parseObject(input.executorRecordBytes, 'continuation-executor-provenance');
   const exactExecutorKeys = activeTurn.version === 3
-    ? ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']
+    ? ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']
     : ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
   assertExactKeys(executor, exactExecutorKeys, 'continuation-executor-provenance');
+  if (exactExecutorKeys.includes('ownerLifecycleEpoch')) {
+    // Self-consistent authorization evidence: the digest must equal
+    // hostLifecycleEpoch(parentSessionId, startedAt) for the persisted start,
+    // and that start must not postdate the executor's own creation — provable
+    // from the capture alone, without the volatile current record.
+    if (typeof executor.ownerLifecycleEpoch !== 'string' || !/^[a-f0-9]{64}$/u.test(executor.ownerLifecycleEpoch)
+      || typeof executor.ownerLifecycleEpochStartedAt !== 'string' || !Number.isFinite(Date.parse(executor.ownerLifecycleEpochStartedAt))) {
+      mismatch('continuation-executor-provenance', 'The captured executor record lacks a well-formed authorization-epoch digest.');
+    }
+    const expectedEpoch = hostLifecycleEpoch(executor.parentSessionId, executor.ownerLifecycleEpochStartedAt);
+    if (executor.ownerLifecycleEpoch !== expectedEpoch) {
+      mismatch('continuation-executor-provenance', 'The captured authorization-epoch digest does not match its recorded SessionStart.');
+    }
+    if (Number.isFinite(Date.parse(executor.createdAt)) && Date.parse(executor.createdAt) < Date.parse(executor.ownerLifecycleEpochStartedAt)) {
+      mismatch('continuation-executor-provenance', 'The executor was created before its own session start.');
+    }
+  }
   if (executor.kind !== 'subagent-executor' || executor.active !== false || executor.agentId !== childThreadId || executor.parentSessionId !== parentSessionId
     || executor.parentTurnId !== originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.workspace !== workspaceAuthority.executionWorkspace
     || activeTurn.version === 3 && (executor.parentGenerationId !== activeTurn.generationId || executor.originWorkspace !== workspaceAuthority.originWorkspace)

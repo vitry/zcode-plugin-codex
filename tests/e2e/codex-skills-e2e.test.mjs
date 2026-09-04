@@ -808,7 +808,9 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const executorArtifact = executorArtifacts.find((bytes) => JSON.parse(bytes).kind === 'subagent-executor');
     assert.ok(executorArtifact, 'installed hooks must persist the exact stopped executor record');
     const executor = JSON.parse(executorArtifact);
-    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.match(executor.ownerLifecycleEpochStartedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.match(executor.ownerLifecycleEpoch, /^[a-f0-9]{64}$/u);
     assert.equal(executor.kind, 'subagent-executor'); assert.equal(executor.active, false);
     assert.equal(executor.agentId, '019fe6e0-4764-7192-83ba-0b0cc2c48660'); assert.equal(executor.agentType, agentType);
     assert.equal(executor.parentSessionId, parentSessionId); assert.equal(executor.parentTurnId, 'turn-original');
