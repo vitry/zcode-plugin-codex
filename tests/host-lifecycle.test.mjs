@@ -7,7 +7,8 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { withFileLock } from '../scripts/lib/fs.mjs';
-import { createHostLifecycleStore, hostLifecycleEpoch, raceAbort, raceAbortHeldWrite } from '../scripts/lib/host-lifecycle.mjs';
+import { RECEIPT_ABORT_BUDGET_MS, RECEIPT_SCAN_ABORT_BUDGET_MS, createHostLifecycleStore, hostLifecycleEpoch, raceAbort, raceAbortHeldWrite } from '../scripts/lib/host-lifecycle.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const START = '2026-09-02T00:00:00.000Z';
 const END = '2026-09-02T02:00:00.000Z';
@@ -15,6 +16,18 @@ const LATER = '2026-09-02T03:00:00.000Z';
 const RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SETTLED_CAP = 512;
 const RECEIPTS_CEILING = 4_096;
+
+// Continuous-integration runners — particularly Windows Defender-scanned
+// file systems under parallel test load — routinely exceed the production
+// 500 ms per-operation and 5 s ceiling-scan budgets on cold caches. The
+// store's test-only budget seams scale those bounds with the suite's timeout
+// multiplier (ZCODE_TEST_TIMEOUT_MULTIPLIER) without touching the production
+// deadlines the deadline-behavior tests below still exercise at their exact
+// production values.
+/** @returns {number} */
+const scaledAbortBudget = () => scaleTestTimeout(RECEIPT_ABORT_BUDGET_MS);
+/** @returns {number} */
+const scaledScanBudget = () => scaleTestTimeout(RECEIPT_SCAN_ABORT_BUDGET_MS);
 
 /** @param {number} [initialTimeMs] */
 async function fixture(initialTimeMs = Date.parse('2026-09-02T04:00:00.000Z')) {
@@ -364,7 +377,7 @@ test('a host-lifecycle symlink redirecting to a populated in-root directory fail
 
 test('a maximum-size valid receipt with escaping-heavy hints remains readable', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: scaledAbortBudget() });
   const escapingHint = join(fixtureState.root, '"'.repeat(3_950));
   const hints = Array.from({ length: 128 }, (_, index) => `${escapingHint}-${index}`);
   const receipt = await store.publishSessionEnd({ sessionId: 'session-wide', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook', workspaceHints: hints });
@@ -376,7 +389,7 @@ test('a maximum-size valid receipt with escaping-heavy hints remains readable', 
 
 test('repeated publication caps merged hints at the bounded maximum', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: scaledAbortBudget() });
   const firstHints = Array.from({ length: 128 }, (_, index) => join(fixtureState.root, 'first', String(index)));
   const secondHints = Array.from({ length: 128 }, (_, index) => join(fixtureState.root, 'second', String(index)));
   await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook', workspaceHints: firstHints });
@@ -484,7 +497,10 @@ test('persisted hints must already be canonical when read back', async () => {
 test('pruning recovers a receipts directory above the bounded receipt ceiling', async (t) => {
   const fixtureState = await fixture();
   t.after(() => rm(fixtureState.root, { recursive: true, force: true }));
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({
+    dataRoot: fixtureState.dataRoot, now: fixtureState.now,
+    testOnlyAbortBudgetMs: scaledAbortBudget(), testOnlyScanBudgetMs: scaledScanBudget(),
+  });
   const epochs = await installBulkReceipts(fixtureState, RECEIPTS_CEILING + 1, 'settled');
   await assert.rejects(store.listPendingReceipts(), (error) => error instanceof PluginError && error.code === 'RECEIPTS_DIRECTORY_EXHAUSTED');
   // A single prune call's deletion loop is bounded by the scan-level
@@ -515,7 +531,7 @@ test('an abort signal firing mid-scan stops enumeration instead of returning suc
 
 test('pruning skips a contended receipt, removes the others, and stays deletable later', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: scaledAbortBudget() });
   const first = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   await store.settleReceipt(first.epoch, first.updatedAt);
   const second = await store.publishSessionEnd({ sessionId: 'session-b', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
@@ -536,7 +552,7 @@ test('pruning skips a contended receipt, removes the others, and stays deletable
 test('a contended deletion loop yields to the scan-level deadline instead of summing per-file waits', async (t) => {
   const fixtureState = await fixture();
   t.after(() => rm(fixtureState.root, { recursive: true, force: true }));
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyPruneScanBudgetMs: 400 });
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyScanBudgetMs: 400 });
   const epochs = await installBulkReceipts(fixtureState, 4, 'settled');
   fixtureState.advance(RETENTION_MS + 60_000);
   const receiptsRoot = join(fixtureState.dataRoot, 'host-lifecycle', 'receipts');
@@ -648,7 +664,10 @@ test('endedAt cannot precede sessionStartedAt', async () => {
 test('pending receipts stay discoverable and settleable above the settled ceiling', async (t) => {
   const fixtureState = await fixture();
   t.after(() => rm(fixtureState.root, { recursive: true, force: true }));
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({
+    dataRoot: fixtureState.dataRoot, now: fixtureState.now,
+    testOnlyAbortBudgetMs: scaledAbortBudget(), testOnlyScanBudgetMs: scaledScanBudget(),
+  });
   await installBulkReceipts(fixtureState, RECEIPTS_CEILING + 1, 'pending');
   const pending = await store.listPendingReceipts();
   assert.equal(pending.length, RECEIPTS_CEILING + 1);
@@ -668,7 +687,7 @@ test('a symlinked receipts directory fails before any mutation outside the priva
   assert.deepEqual(await readdir(outside), []);
 });
 
-test('receipt files with drifted permissions are rejected on read', async () => {
+test('receipt files with drifted permissions are rejected on read', { skip: process.platform === 'win32' && 'Windows does not expose POSIX private modes.' }, async () => {
   const fixtureState = await fixture();
   const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
   const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
@@ -793,14 +812,24 @@ test('a symlinked data root fails before mutating its target', async () => {
   const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
   await assert.rejects(store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' }), (error) => error instanceof PluginError && error.code === 'PRIVATE_PATH_UNSAFE');
   const stats = await stat(outside);
-  assert.equal(stats.mode & 0o777, 0o755);
+  assert.equal(stats.isDirectory(), true, 'the symlink target must stay an untouched directory');
+  if (process.platform !== 'win32') {
+    // Windows does not track POSIX modes: a freshly made directory reports
+    // 0o666 regardless, so "never chmod'd to the private 0o700" is only
+    // observable on platforms where private modes exist (the production
+    // permission checks are POSIX-only by design for the same reason).
+    assert.equal(stats.mode & 0o777, 0o755);
+  }
   assert.deepEqual(await readdir(outside), []);
 });
 
 test('the settled ceiling crossing fails fast while receipts are still loading', async (t) => {
   const fixtureState = await fixture();
   t.after(() => rm(fixtureState.root, { recursive: true, force: true }));
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({
+    dataRoot: fixtureState.dataRoot, now: fixtureState.now,
+    testOnlyScanBudgetMs: scaledScanBudget(),
+  });
   await installBulkReceipts(fixtureState, RECEIPTS_CEILING + 3, 'settled');
   await assert.rejects(store.listPendingReceipts(), (error) => error instanceof PluginError
     && error.code === 'RECEIPTS_DIRECTORY_EXHAUSTED'
@@ -829,7 +858,7 @@ test('a symlinked ancestor above an existing directory fails before creating out
 
 test('pending receipts must not carry updatedAt before publishedAt', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: scaledAbortBudget() });
   const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const stored = JSON.parse(await readFile(receipt.path, 'utf8'));
   stored.updatedAt = '2026-08-01T00:00:00.000Z';

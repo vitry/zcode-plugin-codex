@@ -32,7 +32,7 @@ const RECEIPTS_DIRECTORY_MAX_ENTRIES = 262_144;
 const RECEIPTS_MAX_RECEIPT_FILES = 4_096;
 // Maintenance enumeration scans up to the hard entry ceiling, so its local
 // abort budget is larger than the 500 ms SessionEnd publication budget.
-const RECEIPT_SCAN_ABORT_BUDGET_MS = 5_000;
+export const RECEIPT_SCAN_ABORT_BUDGET_MS = 5_000;
 const RECEIPT_FILE_NAME_PATTERN = /^[0-9a-f]{64}\.json$/u;
 const RECEIPT_INPUT_KEYS = ['sessionId', 'sessionStartedAt', 'endedAt', 'origin', 'workspaceHints'];
 
@@ -104,15 +104,17 @@ export function raceAbortHeldWrite(held, signal) {
 }
 
 /**
- * @param {{ dataRoot: string, now?: () => string, testOnlyAfterStorageValidation?: () => void|Promise<void>, testOnlyReceiptsDirectoryMaxEntries?: number, testOnlyPruneScanBudgetMs?: number }} options
+ * @param {{ dataRoot: string, now?: () => string, testOnlyAfterStorageValidation?: () => void|Promise<void>, testOnlyReceiptsDirectoryMaxEntries?: number, testOnlyAbortBudgetMs?: number, testOnlyScanBudgetMs?: number }} options
  * The test-only seams are deterministic: the hook fires after storage
- * validation and before lock acquisition, and the entry ceiling may only be
- * lowered for tests. Production callers must omit both.
+ * validation and before lock acquisition, the entry ceiling may only be
+ * lowered for tests, and the budget seams may raise (to tolerate slow
+ * continuous-integration filesystems) or lower (to exercise deadline
+ * behavior) the production bounds. Production callers must omit all three.
  */
 export function createHostLifecycleStore(options) {
   const valid = options !== null && typeof options === 'object' && !Array.isArray(options)
     && [Object.prototype, null].includes(Object.getPrototypeOf(options))
-    && Object.keys(options).every((key) => ['dataRoot', 'now', 'testOnlyAfterStorageValidation', 'testOnlyReceiptsDirectoryMaxEntries', 'testOnlyPruneScanBudgetMs'].includes(key));
+    && Object.keys(options).every((key) => ['dataRoot', 'now', 'testOnlyAfterStorageValidation', 'testOnlyReceiptsDirectoryMaxEntries', 'testOnlyAbortBudgetMs', 'testOnlyScanBudgetMs'].includes(key));
   const dataRoot = valid ? options.dataRoot : undefined;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
@@ -129,22 +131,25 @@ export function createHostLifecycleStore(options) {
     && (!Number.isSafeInteger(receiptsDirectoryMaxEntries) || receiptsDirectoryMaxEntries < 1 || receiptsDirectoryMaxEntries > RECEIPTS_DIRECTORY_MAX_ENTRIES)) {
     throw new TypeError('testOnlyReceiptsDirectoryMaxEntries must be a positive safe integer no larger than the production bound');
   }
-  const pruneScanBudgetMs = options.testOnlyPruneScanBudgetMs ?? RECEIPT_SCAN_ABORT_BUDGET_MS;
-  if (pruneScanBudgetMs !== RECEIPT_SCAN_ABORT_BUDGET_MS
-    && (!Number.isSafeInteger(pruneScanBudgetMs) || pruneScanBudgetMs < 1 || pruneScanBudgetMs > RECEIPT_SCAN_ABORT_BUDGET_MS)) {
-    throw new TypeError('testOnlyPruneScanBudgetMs must be a positive safe integer no larger than the production bound');
+  const abortBudgetMs = options.testOnlyAbortBudgetMs ?? RECEIPT_ABORT_BUDGET_MS;
+  if (abortBudgetMs !== RECEIPT_ABORT_BUDGET_MS && (!Number.isSafeInteger(abortBudgetMs) || abortBudgetMs < 1)) {
+    throw new TypeError('testOnlyAbortBudgetMs must be a positive safe integer');
+  }
+  const scanBudgetMs = options.testOnlyScanBudgetMs ?? RECEIPT_SCAN_ABORT_BUDGET_MS;
+  if (scanBudgetMs !== RECEIPT_SCAN_ABORT_BUDGET_MS && (!Number.isSafeInteger(scanBudgetMs) || scanBudgetMs < 1)) {
+    throw new TypeError('testOnlyScanBudgetMs must be a positive safe integer');
   }
 
   return Object.freeze({
     /** @param {any} input @param {{ signal?: AbortSignal }} [options] */
-    publishSessionEnd: (input, options = {}) => publishReceipt(dataRoot, now, afterStorageValidation, input, options),
+    publishSessionEnd: (input, options = {}) => publishReceipt(dataRoot, now, afterStorageValidation, input, options, abortBudgetMs),
     /** @param {string} epoch */
     readReceipt: (epoch) => readReceiptAt(dataRoot, epoch),
     /** @param {{ signal?: AbortSignal }} [options] */
-    listPendingReceipts: (options = {}) => listPending(dataRoot, options, receiptsDirectoryMaxEntries),
+    listPendingReceipts: (options = {}) => listPending(dataRoot, options, receiptsDirectoryMaxEntries, scanBudgetMs),
     /** @param {string} epoch @param {string} expectedUpdatedAt @param {{ signal?: AbortSignal }} [options] */
-    settleReceipt: (epoch, expectedUpdatedAt, options = {}) => settleReceipt(dataRoot, now, afterStorageValidation, epoch, expectedUpdatedAt, options),
-    pruneSettledReceipts: () => pruneSettled(dataRoot, now, receiptsDirectoryMaxEntries, pruneScanBudgetMs),
+    settleReceipt: (epoch, expectedUpdatedAt, options = {}) => settleReceipt(dataRoot, now, afterStorageValidation, epoch, expectedUpdatedAt, options, abortBudgetMs),
+    pruneSettledReceipts: () => pruneSettled(dataRoot, now, receiptsDirectoryMaxEntries, scanBudgetMs, abortBudgetMs),
   });
 }
 
@@ -154,9 +159,10 @@ export function createHostLifecycleStore(options) {
  * @param {() => void|Promise<void>} afterStorageValidation
  * @param {any} input
  * @param {{ signal?: AbortSignal }} options
+ * @param {number} abortBudgetMs
  */
-async function publishReceipt(dataRoot, now, afterStorageValidation, input, options) {
-  const signal = budgetSignal(options);
+async function publishReceipt(dataRoot, now, afterStorageValidation, input, options, abortBudgetMs) {
+  const signal = budgetSignal(options, abortBudgetMs);
   signal.throwIfAborted();
   await validatePublicationInput(input, signal);
   const clock = validatedClock(now);
@@ -199,7 +205,7 @@ async function publishReceipt(dataRoot, now, afterStorageValidation, input, opti
       };
     await atomicWriteJson(epochPath.filePath, receipt, { signal, privateRoot: dataRoot });
     return withPath(receipt, epochPath.filePath);
-  }, signal);
+  }, signal, abortBudgetMs);
   return raceAbortHeldWrite(held, signal);
 }
 
@@ -214,9 +220,9 @@ async function readReceiptAt(dataRoot, epoch) {
   return receipt === null ? null : withPath(receipt, epochPath.filePath);
 }
 
-/** @param {string} dataRoot @param {{ signal?: AbortSignal }} options @param {number} maxEntries */
-async function listPending(dataRoot, options, maxEntries) {
-  const signal = budgetSignal(options, RECEIPT_SCAN_ABORT_BUDGET_MS);
+/** @param {string} dataRoot @param {{ signal?: AbortSignal }} options @param {number} maxEntries @param {number} scanBudgetMs */
+async function listPending(dataRoot, options, maxEntries, scanBudgetMs) {
+  const signal = budgetSignal(options, scanBudgetMs);
   signal.throwIfAborted();
   const receipts = await readAllReceipts(dataRoot, signal, { maxEntries });
   return receipts.filter((entry) => entry.receipt.state === 'pending')
@@ -224,13 +230,13 @@ async function listPending(dataRoot, options, maxEntries) {
     .sort((left, right) => left.epoch.localeCompare(right.epoch));
 }
 
-/** @param {string} dataRoot @param {() => string} now @param {() => void|Promise<void>} afterStorageValidation @param {string} epoch @param {string} expectedUpdatedAt @param {{ signal?: AbortSignal }} [options] */
-async function settleReceipt(dataRoot, now, afterStorageValidation, epoch, expectedUpdatedAt, options = {}) {
+/** @param {string} dataRoot @param {() => string} now @param {() => void|Promise<void>} afterStorageValidation @param {string} epoch @param {string} expectedUpdatedAt @param {{ signal?: AbortSignal }} [options] @param {number} [abortBudgetMs] */
+async function settleReceipt(dataRoot, now, afterStorageValidation, epoch, expectedUpdatedAt, options = {}, abortBudgetMs = RECEIPT_ABORT_BUDGET_MS) {
   validateEpoch(epoch);
   validateTimestamp(expectedUpdatedAt, 'expectedUpdatedAt');
   const clock = validatedClock(now);
   const epochPath = receiptPath(dataRoot, epoch);
-  const signal = budgetSignal(options);
+  const signal = budgetSignal(options, abortBudgetMs);
   const storage = await ensureReceiptStorage(dataRoot, signal);
   await afterStorageValidation();
   // Same decoupling as publication: the operation awaits the write so the
@@ -250,7 +256,7 @@ async function settleReceipt(dataRoot, now, afterStorageValidation, epoch, expec
     const receipt = { ...existing, state: 'settled', settledAt, updatedAt: settledAt };
     await atomicWriteJson(epochPath.filePath, receipt, { signal, privateRoot: dataRoot });
     return withPath(receipt, epochPath.filePath);
-  }, signal);
+  }, signal, abortBudgetMs);
   return raceAbortHeldWrite(held, signal);
 }
 
@@ -268,9 +274,9 @@ async function settleReceipt(dataRoot, now, afterStorageValidation, epoch, expec
  * scan-level budget) before the count is reported, and once that bound
  * expires the count is frozen, so the returned number always equals exactly
  * the deletions settled by the time the caller observes the result.
- * @param {string} dataRoot @param {() => string} now @param {number} maxEntries @param {number} [scanBudgetMs]
+ * @param {string} dataRoot @param {() => string} now @param {number} maxEntries @param {number} [scanBudgetMs] @param {number} [abortBudgetMs]
  */
-async function pruneSettled(dataRoot, now, maxEntries, scanBudgetMs = RECEIPT_SCAN_ABORT_BUDGET_MS) {
+async function pruneSettled(dataRoot, now, maxEntries, scanBudgetMs = RECEIPT_SCAN_ABORT_BUDGET_MS, abortBudgetMs = RECEIPT_ABORT_BUDGET_MS) {
   const scanSignal = budgetSignal({}, scanBudgetMs);
   const entries = await readAllReceipts(dataRoot, scanSignal, { tolerateExcess: true, maxEntries });
   const settled = entries.filter((entry) => entry.receipt.state === 'settled')
@@ -288,7 +294,7 @@ async function pruneSettled(dataRoot, now, maxEntries, scanBudgetMs = RECEIPT_SC
     // contended receipts cannot stretch the deletion loop to N per-file waits
     // beyond the advertised scan bound: once the scan deadline fires, the
     // in-flight file cuts short and later files fail fast at acquisition.
-    const fileSignal = AbortSignal.any([AbortSignal.timeout(RECEIPT_ABORT_BUDGET_MS), scanSignal]);
+    const fileSignal = AbortSignal.any([AbortSignal.timeout(abortBudgetMs), scanSignal]);
     try {
       // Same discipline as the publication and settlement writes: the
       // operation awaits the unlink directly, so the epoch lock is released
@@ -313,7 +319,7 @@ async function pruneSettled(dataRoot, now, maxEntries, scanBudgetMs = RECEIPT_SC
         // counting is live: once the scan-level bound has frozen the count,
         // later completions must not mutate the number the caller observed.
         if (!countsFrozen) pruned += 1;
-      }, fileSignal);
+      }, fileSignal, abortBudgetMs);
       heldDeletions.push(held);
       await raceAbortHeldWrite(held, fileSignal);
     } catch (error) {
@@ -595,9 +601,10 @@ async function validateReceiptsParentChain(dataRoot, receiptsRoot) {
  * @param {string} lockPath
  * @param {() => Promise<T>} operation
  * @param {AbortSignal} signal
+ * @param {number} abortBudgetMs
  * @returns {Promise<T>}
  */
-async function withReceiptLock(storage, lockPath, operation, signal) {
+async function withReceiptLock(storage, lockPath, operation, signal, abortBudgetMs) {
   signal.throwIfAborted();
   // Lock setup's filesystem awaits are raced against the abort budget too, so
   // slow identity checks or layout creation cannot stall past the deadline
@@ -609,7 +616,7 @@ async function withReceiptLock(storage, lockPath, operation, signal) {
     throw unsafeReceiptsPath(lockPath);
   }
   await raceAbort(assertReceiptsRootIdentity(storage), signal);
-  return withFileLock(lockPath, operation, { signal, timeoutMs: RECEIPT_ABORT_BUDGET_MS, createLayout: false });
+  return withFileLock(lockPath, operation, { signal, timeoutMs: abortBudgetMs, createLayout: false });
 }
 
 /** @param {{ receiptsRoot: string, identity: { dev: number, ino: number } }} storage */

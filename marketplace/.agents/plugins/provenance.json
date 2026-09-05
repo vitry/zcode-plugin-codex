@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "d22c5e15ea8feb81f2b967c5315b4157369d990f",
-  "sourceSha": "d22c5e15ea8feb81f2b967c5315b4157369d990f",
+  "sourceRef": "f89f9bc7ba8d03c6a1ca6c367e585696d8412fd7",
+  "sourceSha": "f89f9bc7ba8d03c6a1ca6c367e585696d8412fd7",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "f3ccb626cf2c678013cac7c3e97da23ea7952c37c81da7c9b149466a6a77dd1e",
+    "sha256": "afb7b0004d9700409533738ae364937a09c4e66cebc2ceec8b722720031b7413",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -553,8 +553,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/host-lifecycle.mjs",
-        "size": 44693,
-        "sha256": "1df61de219d34d12aabeb7c3e71f112bf998124c5c4a9bcce3459949ed6d53d5"
+        "size": 45441,
+        "sha256": "bb2a477e67db58d1362bea847181babd90c11e65f47287f0f92358de7476d8a5"
       },
       {
         "path": "plugins/zcode/scripts/lib/identifier.mjs",
@@ -743,8 +743,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 159256,
-        "sha256": "14ab9237a5f74863362a33527ab8af4d1d543c255adbe8baf3861b3c26137b59"
+        "size": 160167,
+        "sha256": "409c86a5f2fe7a4fe3fdbaadae7766c2608e4826d0d9057f2eb9f5b5982dc616"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",

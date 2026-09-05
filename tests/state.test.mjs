@@ -78,7 +78,13 @@ async function holdJobLock(lockPath) {
  */
 async function jobLockIsHeld(lockPath) {
   const handle = await open(join(lockPath, 'advisory.lock'), 'r+');
-  try { return !tryLock(handle.fd); } finally { unlock(handle.fd); await handle.close(); }
+  try {
+    // Only a lock this probe actually took may be unlocked: Windows UnlockFile
+    // fails with a native "unknown error" when no matching LockFile region is
+    // held, whereas POSIX unlock of an unacquired fd is a silent no-op.
+    if (tryLock(handle.fd)) { unlock(handle.fd); return false; }
+    return true;
+  } finally { await handle.close(); }
 }
 
 /** The StateStore's job-state lock path for one resolved workspace storage. @param {any} storage */

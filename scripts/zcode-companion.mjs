@@ -58,9 +58,26 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
   'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_ROUTE_NOT_FOUND', 'EXECUTOR_STATE_MISMATCH',
 ]);
 
+/**
+ * The spawned companion trusts the process working directory, but its textual
+ * form is platform-dependent: Windows keeps 8.3 short-name components (and any
+ * drive-letter casing) from the ambient environment, while POSIX children see
+ * the symlink-resolved physical path. Every durable workspace identity —
+ * reservations, bindings, job records — is the realpath-canonical form, so
+ * the ambient cwd is canonicalized once at this boundary; otherwise a strict
+ * workspace equality (for example the reservation's durable executor record)
+ * rejects the same directory expressed in two textual forms. A failed
+ * resolution keeps the raw form: workspace-scoped commands then surface their
+ * own stable storage errors for an unusable cwd.
+ * @returns {string}
+ */
+function canonicalProcessWorkspace() {
+  try { return realpathSync(process.cwd()); } catch { return process.cwd(); }
+}
+
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,creatorAuthority?:any,executor?:any,authority?:any,legacyActivation?:boolean,rescueRoute?:any,rescueActivationKind?:string,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
-  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
+  const cwd = runtime.cwd ?? canonicalProcessWorkspace(); const env = runtime.env ?? process.env;
   const pluginRoot = activePluginRoot; const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot, entryPath: invocationEntryPath() }); const { dataRoot } = pluginData;
   if (parsed.command === 'setup') {
     let activeTurn;
