@@ -13,6 +13,8 @@ const PENDING_INVOCATION_VERSION = 2;
 const LEGACY_AUTHORITY_PENDING_VERSION = 3;
 const LEGACY_PENDING_INVOCATION_VERSION = 1;
 const RESCUE_SOURCES = new Set(['explicit', 'proactive']);
+const RESCUE_PLACEMENT_EXPLICIT_CHOICES = new Set(['wait', 'background']);
+const RESCUE_PLACEMENT_COMPLEXITIES = new Set(['low', 'high', 'open-ended']);
 const LEGACY_CONTINUATION_KEYS = Object.freeze([
   'agentPathDigest', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
   'bindingKey', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace', 'preparationAuthorityId',
@@ -90,6 +92,13 @@ export function createInvocationStore({ dataRoot }) {
 
 /** @param {string} command @param {string[]} argv */
 export function requiresExecutionChoice(command, argv) { return ['review', 'adversarial-review'].includes(command) && !argv.includes('--wait') && !argv.includes('--background'); }
+
+/** Select the Rescue placement from authoritative explicit flags, then inferred task complexity. @param {{explicit?:'wait'|'background', complexity?:'low'|'high'|'open-ended'}} input */
+export function classifyRescuePlacement(input) {
+  if (!plain(input) || input.explicit !== undefined && !RESCUE_PLACEMENT_EXPLICIT_CHOICES.has(input.explicit) || input.complexity !== undefined && !RESCUE_PLACEMENT_COMPLEXITIES.has(input.complexity)) throw invocationError('INVOCATION_CHOICE_INVALID', 'The Rescue placement choice is invalid.');
+  if (input.explicit !== undefined) return input.explicit === 'background' ? 'background' : 'foreground';
+  return input.complexity === 'high' || input.complexity === 'open-ended' ? 'background' : 'foreground';
+}
 
 /** @param {string} text */
 function tokenize(text) {
