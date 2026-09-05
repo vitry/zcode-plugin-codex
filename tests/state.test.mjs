@@ -1673,6 +1673,33 @@ test('progress winning the lock prevents an earlier completion but permits a lat
   assert.ok(Date.parse(succeeded.finishedAt) >= Date.parse(progressed.lastActivityAt));
 });
 
+test('finishJob under clock skew terminalizes with updatedAt clamped to the generated finishedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const running = await store.transitionJob(workspace, queued.id, ['queued'], 'running', {
+    startedAt: queued.createdAt,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${running.id}.json`);
+  const skewedActivityAt = new Date(Date.now() + 60_000).toISOString();
+  await atomicWriteJson(path, {
+    ...running,
+    phase: 'running',
+    lastActivityAt: skewedActivityAt,
+    progressPreview: ['Activity observed ahead of the local clock.'],
+    updatedAt: skewedActivityAt,
+  });
+  const succeeded = await store.finishJob(workspace, running.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.lastActivityAt, skewedActivityAt);
+  assert.equal(succeeded.finishedAt, skewedActivityAt,
+    'the locked terminal time must clamp to the future activity instead of the lagging local clock');
+  assert.ok(Date.parse(succeeded.updatedAt) >= Date.parse(succeeded.finishedAt),
+    'updatedAt must never lag the generated finishedAt, or record validation rejects the terminal record');
+  assert.deepEqual(await store.readJob(workspace, running.id), succeeded);
+});
+
 test('progress rejects malformed, unsafe, and out-of-timeline events', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

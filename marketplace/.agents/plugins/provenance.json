@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "02b89fb9b81cb47672c51b3d3281dfb857cd0ef9",
-  "sourceSha": "02b89fb9b81cb47672c51b3d3281dfb857cd0ef9",
+  "sourceRef": "284bef432363dde3ad061d4e746f21ca82a23589",
+  "sourceSha": "284bef432363dde3ad061d4e746f21ca82a23589",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "e2d03bee4ef3fbd8f6a4832f50af3ea4f1e63e1451063410726caccec4a67a57",
+    "sha256": "ad0acc9ba9d99ab0caf0f8cdd07d3675c4deab42fb80d51194a2de01fa563702",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -98,8 +98,8 @@
       },
       {
         "path": "plugins/zcode/hooks/subagent-hook.mjs",
-        "size": 8622,
-        "sha256": "a013ffc33b22d8630d8aae0691b2b75add9a24b9dd697aec026a10a0fe2786dd"
+        "size": 9203,
+        "sha256": "a7c29ae5c1fb26457c7921ba26c892cd0e07cdd0be8629a47b1c57c1b221ac3b"
       },
       {
         "path": "plugins/zcode/hooks/user-prompt-hook.mjs",
@@ -683,8 +683,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/state.mjs",
-        "size": 203951,
-        "sha256": "832d97890232c4224ecf66d61d569584fea154a185e8dd8c5391c8281f76397d"
+        "size": 203983,
+        "sha256": "7089b8ab963a5fd4bc09f32a4146ad61c81488e13fbe1da75d3622f6c1e1c52d"
       },
       {
         "path": "plugins/zcode/scripts/lib/tool-launch.mjs",
@@ -743,8 +743,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 156963,
-        "sha256": "745ac86966142624e6cbb33b0603ac58457477e1a8dfa71f3f3ecd0027a6fff8"
+        "size": 158589,
+        "sha256": "720a8b74ef9cb11cf62ded4a9658266447b1b534fa98851ebfa64e0c2c4110fc"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",

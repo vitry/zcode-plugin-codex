@@ -1266,8 +1266,8 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       ...job, ...terminalEffectivePatch, id: job.id, status: nextStatus,
       updatedAt: new Date(Math.max(
         Date.now(), Date.parse(job.createdAt), Date.parse(job.updatedAt),
-        typeof effectivePatch.startedAt === 'string' ? Date.parse(effectivePatch.startedAt) : Number.NEGATIVE_INFINITY,
-        typeof effectivePatch.finishedAt === 'string' ? Date.parse(effectivePatch.finishedAt) : Number.NEGATIVE_INFINITY,
+        typeof terminalEffectivePatch.startedAt === 'string' ? Date.parse(terminalEffectivePatch.startedAt) : Number.NEGATIVE_INFINITY,
+        typeof terminalEffectivePatch.finishedAt === 'string' ? Date.parse(terminalEffectivePatch.finishedAt) : Number.NEGATIVE_INFINITY,
       )).toISOString(),
       workspace: job.workspace,
     };

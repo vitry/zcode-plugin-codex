@@ -24,15 +24,15 @@ import { createRescueBindingPartition, hostOwnedCancelledPatch, hostOwnedStopInt
 import { planRescueActivation } from '../../scripts/lib/rescue-route-planner.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
-import { writeResultArtifact } from '../../scripts/lib/review.mjs';
+import { readResultArtifact, writeResultArtifact } from '../../scripts/lib/review.mjs';
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { terminateProcess } from '../../scripts/lib/process.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
-import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { deliverCompletionNotice, runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
-import { markForwarding, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
+import { claimNotifications, finalizeNotifications, markForwarding, peekUnreadJobs, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -2659,6 +2659,93 @@ test('child-authorized bound continuations reserve the Host lifecycle trio for t
   assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
   assert.equal(second.job.zcodeSessionId, undefined, 'the bounded notice projection never carries the session ID');
   assert.equal(second.resultCommand, '$zcode:result');
+});
+
+/** Shared Host-owned attached background completion harness for notice delivery tests. @param {any} context @param {string} label */
+async function attachedBackgroundCompletion(context, label) {
+  const workspace = await realpath(context.workspace);
+  const parentSessionId = `${label}-parent`; const childId = `${label}-child`;
+  const record = join(context.directory, `${label}.jsonl`); await writeFile(record, '');
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: `${label}-turn`, workspace,
+    permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${label} native child` });
+  await recordParentSession(context, parentSessionId);
+  const active = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace });
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: `${label}-child-turn`, cwd: workspace,
+    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue',
+  }, active);
+  const childEnv = { ...context.env, FAKE_CODEX_THREAD_JSON: JSON.stringify(rawCodexChild({ id: childId, parentThreadId: parentSessionId, cwd: workspace })), CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'explicit',
+    task: `${label} native child`, options: { execution: 'background', resume: 'fresh' } }), legacyPreparedRoute);
+  return { output: await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace, env: childEnv }), parentSessionId, workspace };
+}
+
+test('background completion publishes durable winner before one Host notice', async () => {
+  const context = await fixture();
+  const { output, parentSessionId, workspace } = await attachedBackgroundCompletion(context, 'durable-winner-notice');
+  assert.equal(output.type, 'background-terminal');
+  assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.noticeTarget.sessionId, parentSessionId);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  // The durable winner — terminal StateStore record AND stored result
+  // artifact — is already published when the completion path returns, before
+  // any notice exists.
+  const durable = await store.readJob(workspace, output.job.id);
+  assert.equal(durable.status, 'succeeded');
+  assert.equal(typeof durable.resultArtifact, 'string');
+  assert.equal(typeof await readResultArtifact({ dataRoot: context.dataRoot, workspace, artifact: durable.resultArtifact }), 'string');
+  // Observation without acknowledgement: the job is unread until delivered.
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), [{ id: output.job.id, status: 'succeeded' }]);
+  const events = /** @type {string[]} */ ([]);
+  const delivered = await deliverCompletionNotice(output, renderOutput(output), {
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ jobId) => {
+      const current = await store.readJob(readWorkspace, jobId);
+      if (typeof current.resultArtifact === 'string') events.push('artifact');
+      if (['succeeded', 'failed', 'cancelled'].includes(current.status)) events.push('terminal');
+      return current;
+    },
+    write: async () => { events.push('notice'); return true; },
+  });
+  assert.equal(delivered, true);
+  assert.deepEqual(events, ['artifact', 'terminal', 'notice']);
+  // Acknowledgement happened only after the confirmed delivery: nothing unread remains.
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), []);
+  // Exactly one notice, ever: a replay loses to the finalized claim.
+  assert.equal(await deliverCompletionNotice(output, renderOutput(output), { write: async () => { events.push('notice'); return true; } }), false);
+  assert.deepEqual(events, ['artifact', 'terminal', 'notice']);
+});
+
+test('failed live delivery remains unread for PromptSubmit fallback', async () => {
+  const context = await fixture();
+  const { output, parentSessionId, workspace } = await attachedBackgroundCompletion(context, 'lost-notice');
+  assert.equal(output.type, 'background-terminal');
+  await assert.rejects(deliverCompletionNotice(output, renderOutput(output), { write: async () => { throw new Error('delivery lost'); } }), /delivery lost/);
+  // The failed live delivery left the job unread (its claim released) ...
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), [{ id: output.job.id, status: 'succeeded' }]);
+  // ... so the UserPromptSubmit fallback can claim and finalize it exactly once.
+  const claimed = await claimNotifications(context.dataRoot, workspace, parentSessionId);
+  assert.deepEqual(claimed, [{ id: output.job.id, status: 'succeeded' }]);
+  await finalizeNotifications(context.dataRoot, workspace, parentSessionId, claimed.map((job) => job.id));
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), []);
+});
+
+test('the completion notice is withheld while the durable winner is unpublished', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const ownerSessionId = 'notice-guard-owner';
+  const job = await store.reserveJob({ workspace, ownerSessionId, ownerTurnId: 'notice-guard-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await startWritableRescueForTest(store, workspace, job, { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-notice-guard' });
+  // A succeeded record WITHOUT its result artifact receipt is not a durable
+  // winner: announcing success before the artifact exists would strand the
+  // Result command.
+  await store.finishJob(workspace, job.id, ['running'], 'succeeded');
+  let writes = 0;
+  const delivered = await deliverCompletionNotice({ type: 'background-terminal', noticeTarget: { dataRoot: context.dataRoot, workspace, sessionId: ownerSessionId }, job: { id: job.id, status: 'succeeded' }, resultCommand: '$zcode:result' }, 'Rescue: succeeded\n', { write: async () => { writes += 1; return true; } });
+  assert.equal(delivered, false);
+  assert.equal(writes, 0, 'no notice may be emitted without the durable winner');
+  // The released claim leaves the job unread for the fallback.
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, ownerSessionId), [{ id: job.id, status: 'succeeded' }]);
 });
 
 for (const execution of ['foreground', 'background']) test(`child-authorized fresh ${execution} Rescue fails closed without a recorded session start`, async () => {

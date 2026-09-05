@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import process from 'node:process';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
@@ -46,7 +47,13 @@ function deferStoppedRescueSettlement() {
 
 // The hook flow runs only when the file is invoked directly as a script; the
 // module stays importable so the settlement boundary is regression-testable.
-const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Both sides are canonicalized to their real paths first: a symlinked plugin
+// installation reaches this file through a link path that import.meta.url
+// resolves away, and a string comparison would wrongly treat that direct
+// execution as an import. A missing argv[1] path (e.g. `node -e`) keeps its
+// uncanonicalized form so the comparison still fails closed.
+const canonicalEntryPath = (path) => { try { return realpathSync(path); } catch { return path; } };
+const invokedDirectly = process.argv[1] !== undefined && pathToFileURL(canonicalEntryPath(process.argv[1])).href === pathToFileURL(canonicalEntryPath(fileURLToPath(import.meta.url))).href;
 
 if (invokedDirectly) try {
   const input = await readHookInput(['SubagentStart', 'SubagentStop']); const rawEvent = input.hook_event_name; const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) }); const parentCaller = rawEvent === 'SubagentStart' ? await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: input.session_id, workspace: input.cwd, workspaceBinding: 'execution' }) : undefined;

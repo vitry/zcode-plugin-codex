@@ -2010,6 +2010,51 @@ async function failQueuedJob(store, workspace, jobId, error) {
   await store.finishJob(workspace, jobId, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Background preparation failed' }, exitCode: 1 });
 }
 
+/** Write the completion notice to stdout, resolving whether the flush was confirmed. @param {string} chunk */
+function writeNoticeToStdout(chunk) {
+  return new Promise((resolve) => {
+    const onError = () => { process.stdout.removeListener('error', onError); resolve(false); };
+    process.stdout.once('error', onError);
+    process.stdout.write(chunk, (writeError) => { process.stdout.removeListener('error', onError); resolve(!writeError); });
+  });
+}
+
+/**
+ * Deliver the ONE Host completion notice for a terminal background job
+ * (design 308-317): win the ownership claim, verify the durable winner is
+ * published (the terminal StateStore record, plus the stored result artifact
+ * for a succeeded run), emit the bounded notice, and acknowledge the claim
+ * only after the flush is CONFIRMED. A lost race, a missing durable winner,
+ * or a failed live delivery releases the claim so the job stays unread for
+ * the next UserPromptSubmit — never duplicated, never suppressed.
+ * @param {any} output @param {string} rendered @param {{readJob?:(workspace:string, jobId:string)=>Promise<any>, write?:(chunk:string)=>Promise<boolean>}} [dependencies]
+ */
+export async function deliverCompletionNotice(output, rendered, dependencies = {}) {
+  if (output?.type !== 'background-terminal' || !output.job?.id || !output.noticeTarget) return false;
+  const { dataRoot, workspace, sessionId } = output.noticeTarget;
+  const won = await claimNotificationForJob(dataRoot, workspace, sessionId, output.job.id).catch(() => false);
+  // Only the process that WON the claim for THIS job delivers the notice; a
+  // losing racer stays silent because the winner owns the delivery.
+  if (!won) return false;
+  const release = () => releaseNotifications(dataRoot, workspace, sessionId, [output.job.id]).catch(() => { /* the claim stays; delivery retried next prompt */ });
+  // The notice may only be emitted after BOTH the result artifact write and
+  // the terminal StateStore publication: a missing or mismatched durable
+  // winner releases the claim and leaves the job unread.
+  try {
+    const durable = await (dependencies.readJob ?? createStateStore({ dataRoot }).readJob)(workspace, output.job.id);
+    const winnerPublished = durable !== null && durable.status === output.job.status
+      && (durable.status !== 'succeeded' || typeof durable.resultArtifact === 'string');
+    if (!winnerPublished) { await release(); return false; }
+  } catch { await release(); return false; }
+  let delivered;
+  try { delivered = await (dependencies.write ?? writeNoticeToStdout)(rendered); }
+  catch (error) { await release(); throw error; }
+  if (!delivered) { await release(); return false; }
+  try { await finalizeNotifications(dataRoot, workspace, sessionId, [output.job.id]); }
+  catch (/** @type {any} */ markerError) { process.stderr.write(`ZCode completion notice finalization deferred: ${markerError?.code ?? 'UNKNOWN'}\n`); }
+  return true;
+}
+
 export async function runCompanionCli(argv = process.argv.slice(2)) {
   /** @type {any} */ let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const boundStatusDirect = argv.length === 2 && entry === 'invoke-status' && argv[1] === 'rescue';
@@ -2029,23 +2074,11 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
     if (!worker) {
       const rendered = renderOutput(output);
       if (/** @type {any} */ (output)?.type === 'background-terminal' && /** @type {any} */ (output)?.job?.id && /** @type {any} */ (output)?.noticeTarget) {
-        // OWNERSHIP-AWARE single-notice delivery (design 308-317): claim the
-        // terminal job, render the bounded notice, and only finalize the claim
-        // after the notice is CONFIRMED flushed to stdout. A flush failure or
-        // a lost race releases the claim so the next UserPromptSubmit
-        // re-announces the job — never duplicated, never suppressed.
-        const won = await claimNotificationForJob(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, output.job.id).catch(() => false);
-        // Only the process that WON the claim for THIS job delivers the notice;
-        // a losing racer stays silent because the winner owns the delivery.
-        if (won) {
-          const delivered = await new Promise((resolve) => {
-            const onError = () => { process.stdout.removeListener('error', onError); resolve(false); };
-            process.stdout.once('error', onError);
-            process.stdout.write(rendered, (writeError) => { process.stdout.removeListener('error', onError); resolve(!writeError); });
-          });
-          if (delivered) { try { await finalizeNotifications(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, [output.job.id]); } catch (/** @type {any} */ markerError) { process.stderr.write(`ZCode completion notice finalization deferred: ${markerError?.code ?? 'UNKNOWN'}\n`); } }
-          else { try { await releaseNotifications(output.noticeTarget.dataRoot, output.noticeTarget.workspace, output.noticeTarget.sessionId, [output.job.id]); } catch { /* the claim stays; delivery retried next prompt */ } }
-        }
+        // OWNERSHIP-AWARE single-notice delivery (design 308-317): the durable
+        // winner is already published by the completion path above, the claim
+        // decides single ownership, and the acknowledgement happens only after
+        // the notice is CONFIRMED flushed to stdout.
+        await deliverCompletionNotice(output, rendered);
       } else {
         process.stdout.write(rendered);
       }
