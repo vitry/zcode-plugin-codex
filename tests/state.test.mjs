@@ -24,11 +24,67 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { open } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
+import { createHostLifecycleStore, hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import { assertNoPendingPriorEpochReceipts, recordSession, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
+
+const require = createRequire(import.meta.url);
+const { tryLock, unlock } = /** @type {{ tryLock(fd: number): boolean, unlock(fd: number): void }} */ (require('fs-native-extensions'));
+
+/**
+ * Publish one pending SessionEnd receipt for a PRIOR lifecycle epoch of the
+ * session (a sessionStartedAt older than the currently recorded start).
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId
+ */
+async function publishPriorEpochReceipt(dataRoot, workspace, sessionId) {
+  await createHostLifecycleStore({ dataRoot }).publishSessionEnd({
+    sessionId,
+    sessionStartedAt: '2026-01-01T00:00:00.000Z',
+    endedAt: '2026-01-01T00:05:00.000Z',
+    origin: 'session-end-hook',
+    workspaceHints: [workspace],
+  });
+}
+
+/**
+ * Hold the workspace job-state lock until released, mirroring SessionEnd (or
+ * any other state consumer) owning the critical section.
+ * @param {string} lockPath
+ */
+async function holdJobLock(lockPath) {
+  /** @type {undefined | ((value?: unknown) => void)} */
+  let holderEntered;
+  const entered = new Promise((resolve) => { holderEntered = resolve; });
+  /** @type {undefined | ((value?: unknown) => void)} */
+  let releaseHeldLock;
+  const heldUntilReleased = new Promise((release) => { releaseHeldLock = release; });
+  const holder = withFileLock(lockPath, async () => { holderEntered?.(); await heldUntilReleased; });
+  await entered;
+  return { holder, release: () => releaseHeldLock?.() };
+}
+
+/**
+ * Probe whether the workspace job-state lock is held right now (a fresh fd in
+ * this process cannot acquire while the reservation's own critical section is
+ * open — exactly how the in-lock gate can prove where it runs).
+ * @param {string} lockPath
+ */
+async function jobLockIsHeld(lockPath) {
+  const handle = await open(join(lockPath, 'advisory.lock'), 'r+');
+  try { return !tryLock(handle.fd); } finally { unlock(handle.fd); await handle.close(); }
+}
+
+/** The StateStore's job-state lock path for one resolved workspace storage. @param {any} storage */
+function stateLockPath(storage) {
+  return join(storage.directory, '.state.lock');
+}
 
 test('production terminal callers delegate finishedAt selection to the locked state API', async () => {
   const sources = ['job-control.mjs', 'review.mjs', 'recovery.mjs', 'transfer.mjs'].map((name) => fileURLToPath(new URL(`../scripts/lib/${name}`, import.meta.url))).concat(fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url)));
@@ -291,6 +347,225 @@ test('StateStore adoption producer is disabled before binding or job publication
     candidateJobId: candidate.id }), { code: 'RESCUE_BINDING_INVALID' });
   assert.deepEqual(await store.listJobs(workspace), before);
   assert.deepEqual(await store.resolveRescueBinding({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child' }), { kind: 'missing' });
+});
+
+test('new Host-owned Rescue persists placement epoch and execution owner', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const { job } = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace),
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+  assert.equal(job.ownerLifecycleEpoch, epoch);
+  assert.equal(job.executionOwner, 'host-child');
+  assert.equal(job.hostPlacement, 'background');
+  const reread = await store.readJob(workspace, job.id);
+  assert.equal(reread.ownerLifecycleEpoch, epoch);
+  assert.equal(reread.executionOwner, 'host-child');
+  assert.equal(reread.hostPlacement, 'background');
+});
+
+test('rescueBindingPointsAtJob proves exact binding currency for terminal views', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-binding-currency' });
+  await store.finishJob(workspace, reserved.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: reserved.job.id }), true, 'the active binding still anchors its succeeded current job');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+    executor: legacyExecutor(workspace), operationId: reserved.binding.operationId, expectedCurrentJobId: reserved.job.id, lifecycle });
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: reserved.job.id }), false, 'an advanced binding no longer anchors the older job');
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: continuation.job.id }), true, 'the continuation is the binding current job');
+  assert.equal(await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'another-session', jobId: continuation.job.id }), false, 'a foreign owner partition has no matching binding');
+  await assert.rejects(store.rescueBindingPointsAtJob({ workspace, ownerSessionId: 'parent-session', jobId: 'not-a-digest' }), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('Host-owned Rescue lifecycle requires the indivisible execution trio', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const executor = legacyExecutor(workspace);
+  for (const lifecycle of /** @type {any[]} */ ([
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child' },
+    { ownerLifecycleEpoch: epoch, hostPlacement: 'background' },
+    { executionOwner: 'host-child', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: 'not-a-digest', executionOwner: 'host-child', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'detached-worker', hostPlacement: 'background' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'detached' },
+    { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background', extra: true },
+  ])) {
+    await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+      executor, lifecycle }), { code: 'RESCUE_BINDING_INVALID' });
+  }
+  const legacy = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace), executor });
+  assert.equal(legacy.job.ownerLifecycleEpoch, undefined);
+  assert.equal(legacy.job.executionOwner, undefined);
+  assert.equal(legacy.job.hostPlacement, undefined);
+});
+
+test('stop cause accompanies only a confirmed cancelled winner matching its stop intent', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session' });
+  const cancelling = await store.transitionJob(workspace, first.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(cancelling.stopIntent, stopIntent);
+  assert.equal(cancelling.stopCause, undefined);
+  const confirmed = await store.finishJob(workspace, first.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  assert.equal(confirmed.status, 'cancelled');
+  assert.equal(confirmed.stopCause, 'user');
+  assert.deepEqual(confirmed.stopIntent, stopIntent);
+
+  for (const item of /** @type {any[]} */ ([
+    { agentId: 'cause-without-intent', legacy: true, finish: { stopCause: 'user' } },
+    { agentId: 'cause-mismatch', intent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' }, finish: { stopCause: 'user' } },
+    { agentId: 'non-cancelled-winner', intent: stopIntent, finish: { stopCause: 'user', error: { message: 'a stop cause cannot label a failure' } }, next: 'failed' },
+  ])) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+      executor: { ...legacyExecutor(workspace), agentId: item.agentId }, ...(item.legacy ? {} : { lifecycle }) });
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `session-${item.agentId}` });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+      item.intent === undefined ? {} : { stopIntent: item.intent });
+    await assert.rejects(store.finishJob(workspace, reserved.job.id, ['cancelling'], item.next ?? 'cancelled', item.finish),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+    if (item.legacy) await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled');
+    else await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { stopCause: item.intent.cause });
+  }
+
+  const shaped = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'invalid-intent-shape' }, lifecycle });
+  await startWritableRescueForTest(store, workspace, shaped.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-invalid-intent' });
+  await assert.rejects(store.transitionJob(workspace, shaped.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 2, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, shaped.job.id, ['running'], 'cancelling', { stopIntent });
+  await store.finishJob(workspace, shaped.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+});
+
+test('coordination-loss stop cause correction is a one-way cancelling-guard upgrade', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const coordinationLossIntent = { version: 1, cause: 'host-coordination-loss', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const retained = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, retained.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session' });
+  await store.transitionJob(workspace, retained.job.id, ['running'], 'cancelling', { stopIntent: coordinationLossIntent });
+  const corrected = await store.correctCoordinationLossStopCause(workspace, retained.job.id, { timeoutMs: 250 });
+  assert.equal(corrected.status, 'cancelling', 'the correction keeps the durable cancelling guard');
+  assert.deepEqual(corrected.stopIntent, { ...coordinationLossIntent, cause: 'session-end' });
+  assert.equal((await store.readJob(workspace, retained.job.id)).stopIntent.cause, 'session-end');
+  // The upgrade is one-way: a corrected or foreign cause is returned unchanged.
+  const again = await store.correctCoordinationLossStopCause(workspace, retained.job.id);
+  assert.deepEqual(again.stopIntent, { ...coordinationLossIntent, cause: 'session-end' });
+  const terminal = await store.finishJob(workspace, retained.job.id, ['cancelling'], 'cancelled', { stopCause: 'session-end' });
+  assert.deepEqual(await store.correctCoordinationLossStopCause(workspace, retained.job.id), terminal,
+    'a terminal record is returned untouched');
+  assert.equal(terminal.stopCause, 'session-end');
+  for (const item of /** @type {any[]} */ ([
+    { agentId: 'user-cause', intent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } },
+    { agentId: 'legacy-record', legacy: true },
+  ])) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+      executor: { ...legacyExecutor(workspace), agentId: item.agentId }, ...(item.legacy ? {} : { lifecycle }) });
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `session-${item.agentId}` });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+      item.intent === undefined ? {} : { stopIntent: item.intent });
+    const untouched = await store.correctCoordinationLossStopCause(workspace, reserved.job.id);
+    assert.equal(untouched.stopIntent?.cause, item.intent?.cause, 'only the coordination-loss cause is upgraded');
+    await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled',
+      item.intent === undefined ? {} : { stopCause: item.intent.cause });
+  }
+});
+
+test('persisted Host-owned Rescue lifecycle and stop cause fields are schema-validated before use', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace),
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${reserved.job.id}.json`);
+  const partial = { ...reserved.job }; delete partial.hostPlacement;
+  for (const invalidJob of /** @type {any[]} */ ([
+    { ...reserved.job, hostPlacement: 'detached' },
+    { ...reserved.job, executionOwner: 'detached-worker' },
+    { ...reserved.job, ownerLifecycleEpoch: 'not-a-digest' },
+    partial,
+    { ...reserved.job, stopIntent: { version: 1, cause: 'timeout', requestedAt: '2026-09-02T00:00:00.000Z' } },
+    { ...reserved.job, stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z', extra: true } },
+    { ...reserved.job, stopCause: 'user' },
+    { ...reserved.job, stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' }, stopCause: 'user' },
+    { ...reserved.job, status: 'cancelled' },
+  ])) {
+    await atomicWriteJson(path, invalidJob);
+    await assert.rejects(store.readJob(workspace, reserved.job.id),
+      (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  }
+  await atomicWriteJson(path, reserved.job);
+  assert.equal((await store.readJob(workspace, reserved.job.id)).hostPlacement, 'background');
+});
+
+test('stop intent patches outside a writable Rescue job fail at the patch surface', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, job.id, ['queued'], 'running');
+  await assert.rejects(store.transitionJob(workspace, job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+  await store.finishJob(workspace, job.id, ['cancelling'], 'cancelled');
+});
+
+test('a Host-owned stop attempt requires its durable stop intent before entering cancelling', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-f', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+
+  const samePatch = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, samePatch.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-same-patch' });
+  const entered = await store.transitionJob(workspace, samePatch.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(entered.stopIntent, stopIntent);
+  await store.finishJob(workspace, samePatch.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+
+  const bare = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'bare-stop' }, lifecycle });
+  await startWritableRescueForTest(store, workspace, bare.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-bare' });
+  await assert.rejects(store.transitionJob(workspace, bare.job.id, ['running'], 'cancelling'),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  await store.transitionJob(workspace, bare.job.id, ['running'], 'running', { stopIntent });
+  const authorized = await store.transitionJob(workspace, bare.job.id, ['running'], 'cancelling');
+  assert.deepEqual(authorized.stopIntent, stopIntent);
+  await store.finishJob(workspace, bare.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+
+  const legacy = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: { ...legacyExecutor(workspace), agentId: 'legacy-permissive' } });
+  await startWritableRescueForTest(store, workspace, legacy.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-legacy-permissive' });
+  assert.equal((await store.transitionJob(workspace, legacy.job.id, ['running'], 'cancelling')).status, 'cancelling');
+  await store.finishJob(workspace, legacy.job.id, ['cancelling'], 'cancelled');
+});
+
+test('a persisted stop intent replays exactly and cannot be replaced by a later intent', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-g', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'session-intent-replay' });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { stopIntent });
+  await assert.rejects(store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' } }),
+  (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID');
+  const replayed = await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling', { stopIntent });
+  assert.deepEqual(replayed.stopIntent, stopIntent);
+  await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
 });
 
 /** @param {string} indexRoot @param {string} jobId */
@@ -1398,6 +1673,33 @@ test('progress winning the lock prevents an earlier completion but permits a lat
   assert.ok(Date.parse(succeeded.finishedAt) >= Date.parse(progressed.lastActivityAt));
 });
 
+test('finishJob under clock skew terminalizes with updatedAt clamped to the generated finishedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const running = await store.transitionJob(workspace, queued.id, ['queued'], 'running', {
+    startedAt: queued.createdAt,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${running.id}.json`);
+  const skewedActivityAt = new Date(Date.now() + 60_000).toISOString();
+  await atomicWriteJson(path, {
+    ...running,
+    phase: 'running',
+    lastActivityAt: skewedActivityAt,
+    progressPreview: ['Activity observed ahead of the local clock.'],
+    updatedAt: skewedActivityAt,
+  });
+  const succeeded = await store.finishJob(workspace, running.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.lastActivityAt, skewedActivityAt);
+  assert.equal(succeeded.finishedAt, skewedActivityAt,
+    'the locked terminal time must clamp to the future activity instead of the lagging local clock');
+  assert.ok(Date.parse(succeeded.updatedAt) >= Date.parse(succeeded.finishedAt),
+    'updatedAt must never lag the generated finishedAt, or record validation rejects the terminal record');
+  assert.deepEqual(await store.readJob(workspace, running.id), succeeded);
+});
+
 test('progress rejects malformed, unsafe, and out-of-timeline events', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });
@@ -1566,6 +1868,168 @@ test('writable exclusion remedy does not advertise a read-only rescue mode', asy
       && !/read-only/i.test(error.remedy),
   );
 });
+
+test('a prior-epoch receipt settled inside the job lock window fences reserveJob with PRIOR_EPOCH_UNSETTLED', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'fence-owner', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const held = await holdJobLock(stateLockPath(storage));
+  try {
+    const gateInvocations = [];
+    const gate = async () => {
+      // The gate must run INSIDE the reservation's own critical section: while
+      // it runs, a fresh fd in this process cannot acquire the job lock.
+      assert.equal(await jobLockIsHeld(stateLockPath(storage)), true, 'the reservation gate ran outside the job lock');
+      gateInvocations.push(true);
+      await assertNoPendingPriorEpochReceipts({ dataRoot, sessionId: 'fence-owner', workspace });
+    };
+    const reserved = store.reserveJob({
+      workspace, ownerSessionId: 'fence-owner', ownerTurnId: 'fence-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    }, { beforePersist: gate });
+    // The reservation blocks on the held lock; SessionEnd publishes the prior
+    // epoch's receipt INSIDE that window, then the boundary completes.
+    await publishPriorEpochReceipt(dataRoot, workspace, 'fence-owner');
+    held.release(); await held.holder;
+    await assert.rejects(reserved, (error) => error instanceof PluginError && error.code === 'PRIOR_EPOCH_UNSETTLED'
+      && error.details?.pendingReceipts === 1);
+    assert.equal(gateInvocations.length, 1, 'the gate ran exactly once before the job record was persisted');
+    assert.deepEqual(await store.listJobs(workspace), [], 'a fenced reservation never persists its job record');
+  } finally { held.release(); await held.holder.catch(() => {}); }
+});
+
+test('the fence also refuses a receipt for the ENDING epoch itself (same-epoch boundary shape)', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'same-epoch-owner', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const held = await holdJobLock(stateLockPath(storage));
+  try {
+    const gate = () => assertNoPendingPriorEpochReceipts({ dataRoot, sessionId: 'same-epoch-owner', workspace });
+    const reserved = store.reserveJob({
+      workspace, ownerSessionId: 'same-epoch-owner', ownerTurnId: 'same-epoch-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    }, { beforePersist: gate });
+    // The genuine boundary shape: SessionEnd derives its receipt from the
+    // STILL-PRESENT SessionStart record, so receipt.sessionStartedAt EQUALS the
+    // recorded start. The fence must refuse it too — the current-epoch
+    // exclusion applies only to prompt-time 'prior' semantics, never here.
+    const recordedStartedAt = (await resolveRecordedSessionStart(dataRoot, workspace, 'same-epoch-owner')).startedAt;
+    await createHostLifecycleStore({ dataRoot }).publishSessionEnd({
+      sessionId: 'same-epoch-owner', sessionStartedAt: recordedStartedAt,
+      endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [workspace],
+    });
+    held.release(); await held.holder;
+    await assert.rejects(reserved, (error) => error instanceof PluginError && error.code === 'PRIOR_EPOCH_UNSETTLED');
+    assert.deepEqual(await store.listJobs(workspace), [], 'a same-epoch fenced reservation never persists its job record');
+  } finally { held.release(); await held.holder.catch(() => {}); }
+});
+
+test('the fence refuses a reservation whose own epoch receipt is already SETTLED (scan-to-settle race)', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'settled-epoch-owner', source: 'startup' });
+  const recordedStartedAt = (await resolveRecordedSessionStart(dataRoot, workspace, 'settled-epoch-owner')).startedAt;
+  const ownEpoch = hostLifecycleEpoch('settled-epoch-owner', recordedStartedAt);
+  const lifecycle = createHostLifecycleStore({ dataRoot });
+  // The EXACT codex race shape: the boundary completes (receipt published AND
+  // settled) while the reservation waits on the job lock — a settled receipt is
+  // invisible to the pending-only scan, so the fence must match the
+  // reservation's own lifecycle epoch regardless of receipt state.
+  const receipt = await lifecycle.publishSessionEnd({
+    sessionId: 'settled-epoch-owner', sessionStartedAt: recordedStartedAt,
+    endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [workspace],
+  });
+  await lifecycle.settleReceipt(receipt.epoch, receipt.updatedAt);
+  assert.equal((await lifecycle.readReceipt(ownEpoch)).state, 'settled');
+  const gate = () => assertNoPendingPriorEpochReceipts({
+    dataRoot, sessionId: 'settled-epoch-owner', workspace, ownerLifecycleEpoch: ownEpoch,
+  });
+  await assert.rejects(store.reserveJob({
+    workspace, ownerSessionId: 'settled-epoch-owner', ownerTurnId: 'settled-epoch-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' },
+  }, { beforePersist: gate }), (error) => error instanceof PluginError && error.code === 'PRIOR_EPOCH_UNSETTLED'
+    && error.details?.endedEpoch === 'settled');
+  assert.deepEqual(await store.listJobs(workspace), [], 'a reservation for an ended epoch never persists its job record');
+});
+
+test('reserveJob admits the reservation through the gate when no prior-epoch receipt is pending', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'admit-owner', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const gateInvocations = [];
+  const gate = async () => {
+    assert.equal(await jobLockIsHeld(stateLockPath(storage)), true, 'the reservation gate ran outside the job lock');
+    gateInvocations.push(true);
+    await assertNoPendingPriorEpochReceipts({ dataRoot, sessionId: 'admit-owner', workspace });
+  };
+  const job = await store.reserveJob({
+    workspace, ownerSessionId: 'admit-owner', ownerTurnId: 'admit-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' },
+  }, { beforePersist: gate });
+  assert.equal(job.status, 'queued');
+  assert.equal(gateInvocations.length, 1, 'the gate ran exactly once inside the critical section');
+  assert.equal((await store.listJobs(workspace)).length, 1);
+});
+
+test('a prior-epoch receipt published inside the lock window fences a child-authorized fresh Rescue reservation', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'fence-owner', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const held = await holdJobLock(stateLockPath(storage));
+  try {
+    const gate = () => assertNoPendingPriorEpochReceipts({ dataRoot, sessionId: 'fence-owner', workspace });
+    const reserved = store.reserveFreshRescueJob({
+      workspace, reservation: rescueReservation(workspace, 'fence-turn'), executor: legacyExecutor(workspace),
+      lifecycle: { ownerLifecycleEpoch: hostLifecycleEpoch('fence-owner', (await resolveRecordedSessionStart(dataRoot, workspace, 'fence-owner')).startedAt), executionOwner: 'host-child', hostPlacement: 'foreground' },
+    }, { beforePersist: gate });
+    await publishPriorEpochReceipt(dataRoot, workspace, 'fence-owner');
+    held.release(); await held.holder;
+    await assert.rejects(reserved, { code: 'PRIOR_EPOCH_UNSETTLED' });
+    assert.deepEqual(await store.listJobs(workspace), [], 'a fenced fresh reservation never persists its job record');
+    assert.equal(await readBindingPartitionRecordCount(dataRoot, workspace), 0, 'a fenced fresh reservation never publishes its binding');
+  } finally { held.release(); await held.holder.catch(() => {}); }
+});
+
+test('a prior-epoch receipt published inside the lock window fences a bound Rescue continuation', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const { dataRoot } = base;
+  const store = createStateStore({ dataRoot });
+  await recordSession(dataRoot, { cwd: workspace, session_id: 'fence-owner', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace) });
+  await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'fence-continuation-session' });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const held = await holdJobLock(stateLockPath(storage));
+  try {
+    const gate = () => assertNoPendingPriorEpochReceipts({ dataRoot, sessionId: 'fence-owner', workspace });
+    const continuation = store.reserveBoundRescueContinuation({
+      workspace, reservation: rescueReservation(workspace, 'turn-b'), executor: legacyExecutor(workspace),
+      operationId: first.binding.operationId,
+    }, { beforePersist: gate });
+    await publishPriorEpochReceipt(dataRoot, workspace, 'fence-owner');
+    held.release(); await held.holder;
+    await assert.rejects(continuation, { code: 'PRIOR_EPOCH_UNSETTLED' });
+    const jobs = await store.listJobs(workspace);
+    assert.deepEqual(jobs.map((/** @type {any} */ job) => job.id), [first.job.id], 'a fenced continuation never persists its job record');
+    const bindingAfter = await store.resolveRescueBinding({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child' });
+    assert.equal(bindingAfter.kind === 'bound' ? bindingAfter.binding.currentJobId : null,
+      first.job.id, 'the binding never advances to the fenced continuation');
+  } finally { held.release(); await held.holder.catch(() => {}); }
+});
+
+/** @param {string} dataRoot @param {string} workspace */
+async function readBindingPartitionRecordCount(dataRoot, workspace) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const name = (await readdir(storage.directory)).find((candidate) => candidate.startsWith('rescue-binding-session-'));
+  if (name === undefined) return 0;
+  const partition = JSON.parse(await readFile(join(storage.directory, name), 'utf8'));
+  return partition.records.length;
+}
+
 
 test('workspace storage hashes the real path and creates private directories', async () => {
   const { dataRoot, workspace } = await fixture();
@@ -1797,5 +2261,27 @@ test('path and JSON failures retain their causes behind stable PluginErrors', as
     (error) => error instanceof PluginError
       && error.code === 'JSON_PARSE_FAILED'
       && error.cause instanceof Error,
+  );
+});
+
+test('the reservation fence rejects a reservation whose anchor was superseded by a resume', async () => {
+  const fixtureState = await fixture(); const workspace = await realpath(fixtureState.workspace);
+  const { assertNoPendingPriorEpochReceipts, recordSession, resolveRecordedSessionStart } = await import('../hooks/lib/hook-state.mjs');
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  await recordSession(fixtureState.dataRoot, { cwd: workspace, session_id: 'superseded-owner', source: 'startup' });
+  const startedAt = (await resolveRecordedSessionStart(fixtureState.dataRoot, workspace, 'superseded-owner')).startedAt;
+  const originalEpoch = hostLifecycleEpoch('superseded-owner', startedAt);
+  // A same-session resume replaces the record with a NEWER startedAt.
+  await recordSession(fixtureState.dataRoot, { cwd: workspace, session_id: 'superseded-owner', source: 'resume' });
+  const resumedStartedAt = (await resolveRecordedSessionStart(fixtureState.dataRoot, workspace, 'superseded-owner')).startedAt;
+  assert.notEqual(resumedStartedAt, startedAt);
+  // A child authorized under the ORIGINAL epoch is refused under the successor record.
+  await assert.rejects(
+    assertNoPendingPriorEpochReceipts({ dataRoot: fixtureState.dataRoot, sessionId: 'superseded-owner', workspace, ownerLifecycleEpoch: originalEpoch }),
+    (error) => error instanceof PluginError && error.code === 'PRIOR_EPOCH_UNSETTLED' && error.details?.superseded === true,
+  );
+  // The successor epoch itself is admitted (no receipts at all).
+  await assert.doesNotReject(
+    assertNoPendingPriorEpochReceipts({ dataRoot: fixtureState.dataRoot, sessionId: 'superseded-owner', workspace, ownerLifecycleEpoch: hostLifecycleEpoch('superseded-owner', resumedStartedAt) }),
   );
 });

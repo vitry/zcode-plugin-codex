@@ -11,13 +11,14 @@ import test from 'node:test';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRecordedSessionStart, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
@@ -531,7 +532,23 @@ test('subagent hook marks forwarding suppression without changing parent permiss
   assert.equal(sub.code, 0); assert.match(sub.json.hookSpecificOutput.additionalContext, /forwarding subagent/i);
   assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  console.error('STOP_DEBUG', stop.code, JSON.stringify(stop.stderr.slice(0, 300)), JSON.stringify(stop.json));
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+});
+
+test('subagent hook runs its forwarding flow when invoked through a symlinked plugin path', async (t) => {
+  const { cwd, data, env } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'symlink-parent', turnId: 'symlink-parent-turn', workspace: cwd, permissionMode: 'acceptEdits', prompt: 'linked install' });
+  const linkDirectory = await mkdtemp(join(tmpdir(), 'zpc-linked-plugin-'));
+  t.after(() => rm(linkDirectory, { recursive: true, force: true }));
+  const linkedHook = join(linkDirectory, 'subagent-hook.mjs');
+  await symlink(join(root, 'hooks', 'subagent-hook.mjs'), linkedHook);
+  const input = { session_id: 'symlink-parent', turn_id: 'symlink-child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'symlink-child', agent_type: 'zcode-rescue' };
+  const linked = await runHook(linkedHook, input, env, { absolute: true });
+  assert.equal(linked.code, 0, linked.stderr);
+  assert.match(linked.json?.hookSpecificOutput?.additionalContext ?? '', /forwarding subagent/i, 'a symlinked invocation path must still run the forwarding hook flow');
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'symlink-child')).parentSessionId, 'symlink-parent', 'the symlinked invocation must durably record SubagentStart forwarding');
 });
 
 test('origin cwd routes a bound worktree child and exact replacement stop without scanning', async (t) => {
@@ -629,6 +646,127 @@ test('stopped routed executor wrapper fails closed on active, Role, route, and t
     await writeFile(fixture.routePath, JSON.stringify({ ...route, targetWorkspace: fixture.origin }), { mode: 0o600 });
   }, 'EXECUTOR_ROUTE_INVALID');
   await assert.rejects(resolveRoutedStoppedForwardingExecutor('data', 'origin', 'child', { unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  for (const options of [{ timeoutMs: -1 }, { timeoutMs: 1.5 }, { timeoutMs: Number.NaN }, { signal: 'now' }, { signal: null, timeoutMs: 0 }, { signal: new AbortController().signal, timeoutMs: Number.MAX_SAFE_INTEGER + 1 }]) {
+    await assert.rejects(resolveRoutedStoppedForwardingExecutor('data', 'origin', 'child', options), { code: 'EXECUTOR_ROUTE_INVALID' });
+  }
+});
+
+test('stopped routed executor lookup fails closed on its own bounded lock budget', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'bounded-stopped-routed');
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now(); let caught;
+  try { await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { timeoutMs: 200 }); } catch (error) { caught = error; }
+  assert.equal(caught?.cause?.code, 'LOCK_TIMEOUT', 'the bounded stopped lookup must fail closed on its own lock budget');
+  assert.ok(Date.now() - started < 2_000, `a bounded stopped lookup must fail closed on its own budget instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  const stopped = await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { signal: AbortSignal.timeout(10_000), timeoutMs: 5_000 });
+  assert.equal(stopped.executor.active, false);
+  assert.equal(stopped.executionWorkspace, await realpath(fixture.target));
+});
+
+test('stopped routed executor lookup keeps the default lock budget when no options are passed', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'default-stopped-routed');
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now(); let caught;
+  try { await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id); } catch (error) { caught = error; }
+  assert.equal(caught?.cause?.code, 'LOCK_TIMEOUT', 'without options the stopped lookup must still run the lock to its default budget');
+  assert.ok(Date.now() - started >= 4_000, `without options the stopped lookup must keep the five-second default lock budget (took ${Date.now() - started}ms)`);
+});
+
+test('markForwarding fails bounded under lock contention with a caller-supplied budget', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'bounded-mark-forwarding');
+  // A lock-holder child owns the origin hook-state lock (the route-write phase
+  // markForwarding must acquire first on SubagentStop).
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 750 }),
+    { code: 'LOCK_TIMEOUT' },
+  );
+  assert.ok(Date.now() - started < 4_000, `markForwarding must fail within its caller budget instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  // The deadline signal is honored too: a short signal-only budget fails bounded.
+  const signalStarted = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { signal: AbortSignal.timeout(150) }),
+    (error) => error?.name === 'TimeoutError',
+  );
+  assert.ok(Date.now() - signalStarted < 4_000, `the signal-only budget must also fail bounded (took ${Date.now() - signalStarted}ms)`);
+  // Validation stays strict: only the known option keys are admitted.
+  await assert.rejects(markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 1.5 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // After the holder releases, the same publication completes with a normal budget.
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 5_000 });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped');
+});
+
+test('SubagentStart compensation inherits the shared deadline when the target lock stays contended', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'deadline-compensation');
+  // A sibling child of the same parent turn publishes through the same target
+  // lock while a holder child keeps that lock contended past the whole shared
+  // deadline: the target acquisition consumes the budget, and the finally
+  // compensation must fail fast on the SAME deadline instead of waiting out
+  // withFileLock's five-second default past the hook's deadline.
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.targetDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const budget = 600;
+  const start = { ...fixture.start, turn_id: `${fixture.start.turn_id}-deadline`, agent_id: `${fixture.start.agent_id}-deadline` };
+  const started = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, start, fixture.caller, { signal: AbortSignal.timeout(budget), timeoutMs: budget }),
+    { code: 'EXECUTOR_ROUTE_INVALID' },
+  );
+  assert.ok(Date.now() - started < 4_000, `the SubagentStart compensation must inherit the shared deadline instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  // After the holder releases, the same publication completes with a normal budget.
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  const retry = { ...fixture.start, turn_id: `${fixture.start.turn_id}-deadline-retry`, agent_id: `${fixture.start.agent_id}-deadline-retry` };
+  await markForwarding(fixture.data, retry, fixture.caller, { timeoutMs: 5_000 });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, retry.session_id, retry.turn_id)).state, 'active');
+});
+
+test('an elapsed shared deadline defers SubagentStop rescue settlement instead of manufacturing fresh stage windows', async (t) => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  // The full foreground coordination-loss scenario: one stopped Rescue child
+  // (route + executor) owning one Host-owned RUNNING writable job, so any
+  // post-deadline stage window would let the settlement mutate durable state.
+  const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await recordSession(data, { session_id: 'deadline-loss-owner', cwd, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: 'deadline-loss-owner', turnId: 'deadline-loss-parent-turn', workspace: cwd, permissionMode: 'acceptEdits', prompt: 'deadline loss', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'deadline-loss-owner', workspace: cwd, workspaceBinding: 'claim' });
+  const start = { session_id: 'deadline-loss-owner', turn_id: 'deadline-loss-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'deadline-loss-child', agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' });
+  const epoch = hostLifecycleEpoch('deadline-loss-owner', (await resolveRecordedSessionStart(data, cwd, 'deadline-loss-owner')).startedAt);
+  const store = createStateStore({ dataRoot: data });
+  const reserved = await store.reserveFreshRescueJob({
+    workspace: cwd,
+    reservation: { workspace: cwd, ownerSessionId: 'deadline-loss-owner', ownerTurnId: 'deadline-loss-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } },
+    executor: { parentSessionId: 'deadline-loss-owner', parentTurnId: 'deadline-loss-parent-turn', agentId: 'deadline-loss-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: cwd, parentPermissionMode: 'acceptEdits' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' },
+  });
+  const claimed = await store.claimJobWorkerForExecution(cwd, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  let running = await store.transitionJob(cwd, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-deadline-loss', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  running = await store.transitionJob(cwd, running.id, ['running'], 'running', { inputId: 'input-deadline-loss-child', startRevision: 1, beforeMessageIds: [] });
+  // Capture the hook's advisory stderr: the written deferral notice is the
+  // elapsed-deadline contract's observable.
+  const stderrChunks = []; const originalStderrWrite = process.stderr.write;
+  process.stderr.write = (/** @type {any} */ chunk) => { stderrChunks.push(String(chunk)); return true; };
+  t.after(() => { process.stderr.write = originalStderrWrite; });
+  const { settleStoppedRescueChild } = await import('../hooks/subagent-hook.mjs');
+  const stop = { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null };
+  // The forwarding publication already consumed the whole shared budget: the
+  // settlement boundary is reached with the deadline already in the past, and
+  // it must defer — no stage may start, mutate, or read past that deadline.
+  await assert.doesNotReject(settleStoppedRescueChild({ dataRoot: data, input: stop, deadline: Date.now() - 1 }));
+  assert.ok(stderrChunks.some((chunk) => chunk.includes('ZCode SubagentStop rescue settlement deferred: DEADLINE_ELAPSED')), `an elapsed deadline must defer instead of running stages (stderr: ${JSON.stringify(stderrChunks)})`);
+  const stored = await store.readJob(cwd, running.id);
+  assert.equal(stored.status, 'running', `no settlement stage may mutate the job after the deadline (was ${stored.status})`);
+  assert.equal(stored.stopIntent, undefined, 'no stop intent may be persisted after the deadline');
 });
 
 test('direct executor resolver preserves workspace and lock infrastructure errors', async (t) => {
@@ -1013,6 +1151,66 @@ test('executor routes use bounded nofollow reads and bounded sibling-safe cleanu
   await assert.rejects(cleanupSession(data, cwd, sibling.session_id), (error) => error?.code === 'HOOK_STATE_CAPACITY' && !`${error.message}${error.remedy}`.includes(sibling.session_id));
 });
 
+test('generic hook-state cleanup keeps a successor epoch session record under the ending epoch proof', async (t) => {
+  const { cwd: origin, data } = await workspace();
+  t.after(() => rm(data, { recursive: true, force: true }));
+  const sessionId = 'fence-parent';
+  await recordSession(data, { session_id: sessionId, cwd: origin, source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin });
+  const sessionRecordPath = join(storage.directory, 'hook-state', `session-${createHash('sha256').update(JSON.stringify(['session', sessionId])).digest('hex')}.json`);
+  const original = JSON.parse(await readFile(sessionRecordPath, 'utf8'));
+  // A resumed successor rewrites the SAME record with a createdAt after the
+  // old epoch's ending boundary.
+  const boundary = original.createdAt;
+  const successor = { ...original, createdAt: new Date(Date.parse(boundary) + 60_000).toISOString() };
+  await writeFile(sessionRecordPath, `${JSON.stringify(successor)}\n`);
+  // Millisecond equality is a successor too (RFC3339 ms precision race).
+  await cleanupSession(data, origin, sessionId, { endedAt: successor.createdAt });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), true, 'an exactly-equal boundary timestamp still fences the successor record');
+  await cleanupSession(data, origin, sessionId, { endedAt: boundary });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), true, 'the successor record survives the old epoch fenced cleanup');
+  // A successor executor in a LINKED workspace has no session marker there: the
+  // record's own write time is the only per-workspace succession evidence.
+  const linked = join(origin, 'linked-fence');
+  await mkdir(linked, { recursive: true });
+  const linkedStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: linked });
+  const executorRecord = (createdAt) => join(linkedStorage.directory, 'hook-state', `executor-${createHash('sha256').update(JSON.stringify(['executor', createdAt])).digest('hex')}.json`);
+  await mkdir(join(linkedStorage.directory, 'hook-state'), { recursive: true });
+  await writeFile(executorRecord(new Date(Date.parse(boundary) - 60_000).toISOString()), `${JSON.stringify({ kind: 'subagent-executor', sessionId, parentSessionId: sessionId, createdAt: new Date(Date.parse(boundary) - 60_000).toISOString() })}\n`);
+  await writeFile(executorRecord(new Date(Date.parse(boundary) + 60_000).toISOString()), `${JSON.stringify({ kind: 'subagent-executor', sessionId, parentSessionId: sessionId, createdAt: new Date(Date.parse(boundary) + 60_000).toISOString() })}\n`);
+  await cleanupSession(data, linked, sessionId, { endedAt: boundary });
+  assert.equal(await readFile(executorRecord(new Date(Date.parse(boundary) - 60_000).toISOString()), 'utf8').then(() => false, () => true), true, 'the old epoch executor record is deleted');
+  assert.equal(await readFile(executorRecord(new Date(Date.parse(boundary) + 60_000).toISOString()), 'utf8').then(() => true, () => false), true, 'the successor executor record survives in the record-less linked workspace');
+  await cleanupSession(data, origin, sessionId, { endedAt: new Date(Date.parse(boundary) + 120_000).toISOString() });
+  assert.equal(await readFile(sessionRecordPath, 'utf8').then(() => true, () => false), false, 'a boundary after the record still deletes it');
+});
+
+test('generic preparation cleanup keeps successor-epoch preparations beyond the ending boundary', async (t) => {
+  const { cwd: origin, data, env } = await workspace();
+  const target = await addLinkedWorktree(origin, 'prep-successor-fence');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  assert.equal((await runHook('session-lifecycle-hook.mjs', { session_id: 'prep-fence-parent', cwd: origin, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env)).code, 0);
+  const prompt = { session_id: 'prep-fence-parent', turn_id: 'prep-fence-turn', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'finish fenced work' };
+  assert.equal((await runHook('user-prompt-hook.mjs', prompt, env)).code, 0);
+  const caller = await identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: target, workspaceBinding: 'claim' });
+  const save = () => preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'proactive', task: 'finish fenced work', options: {} } });
+  const preparedCount = async () => {
+    const { resolveWorkspaceStorage: resolveStorage } = await import('../scripts/lib/workspace.mjs');
+    const storage = await resolveStorage({ dataRoot: data, workspace: target });
+    return (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json')).length;
+  };
+  await save();
+  // A boundary BEFORE the preparation's creation is a successor epoch's: the
+  // preparation must survive it.
+  await preparations.cleanupSession({ sessionId: prompt.session_id, workspace: target }, { endedAt: new Date(Date.now() - 60_000).toISOString() });
+  assert.equal(await preparedCount(), 1, 'a successor epoch boundary must not delete the live preparation');
+  // The owning epoch's boundary (after creation) still deletes it.
+  await preparations.cleanupSession({ sessionId: prompt.session_id, workspace: target }, { endedAt: new Date(Date.now() + 60_000).toISOString() });
+  assert.equal(await preparedCount(), 0, 'the owning epoch boundary deletes its own preparation');
+});
+
 test('origin cwd Root Stop revokes authority before bound worktree preparation cleanup', async (t) => {
   const { cwd: origin, data, env } = await workspace();
   const target = await addLinkedWorktree(origin, 'origin-cwd-root-stop');
@@ -1194,8 +1392,14 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
   const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0); assert.equal(ended.stdout, '');
   const records = await Promise.all((await jsonFiles(data)).map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
-  const endedRecords = records.filter((record) => record.sessionId === 'a');
-  assert.equal(endedRecords.length, 1, 'ended v3 sessions retain only their revoking lifecycle tombstone');
+  // The receipt-first SessionEnd adds one private, epoch-scoped `host-session-end`
+  // receipt as its first durable mutation; identity/hook-state session contexts
+  // must still collapse to only the revoking lifecycle tombstone.
+  const receipts = records.filter((record) => record.kind === 'host-session-end' && record.sessionId === 'a');
+  assert.equal(receipts.length, 1, 'SessionEnd persists exactly one host-session-end receipt for the ended epoch');
+  assert.equal(receipts[0].origin, 'session-end-hook'); assert.equal(receipts[0].state, 'settled');
+  const endedRecords = records.filter((record) => record.sessionId === 'a' && record.kind !== 'host-session-end');
+  assert.equal(endedRecords.length, 1, 'ended v3 sessions retain only their revoking lifecycle tombstone among identity/hook-state contexts');
   assert.equal(endedRecords[0].kind, 'identity-session'); assert.equal(typeof endedRecords[0].endedAt, 'string');
   assert.ok(records.some((record) => record.sessionId === 'b' && record.kind === 'active-turn'));
   const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
@@ -1646,4 +1850,34 @@ test('Stop rechecks stale setup readiness before session creation and fails open
     assert.equal(result.code, 0); assert.notEqual(result.json?.decision, 'block'); assert.match(result.json.systemMessage, /\$zcode:setup/); const runs = (await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath); assert.equal(runs.length, 1); const snapshot = JSON.parse(await readFile(runs[0], 'utf8')); assert.equal(snapshot.status, 'skipped_setup_not_ready'); assert.equal(snapshot.reason, scenario.reason);
     const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/send'));
   });
+});
+
+test('SessionEnd identity cleanup forwards its abort signal to the lifecycle lock', async () => {
+  const { cwd, data } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'wired-identity-signal', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
+  // The SessionEnd hook must bound the identity stage by threading a stage signal
+  // into cleanupSession; a pre-aborted signal must abort before the lifecycle lock
+  // wait can consume the default five-second file-lock timeout.
+  const reason = Object.freeze({ phase: 'identity-stage-deadline' });
+  await assert.rejects(identity.cleanupSession(cwd, 'wired-identity-signal', { signal: AbortSignal.abort(reason) }), (error) => error === reason);
+});
+
+test('SessionEnd identity cleanup forwards its bounded lock timeout to the lifecycle lock', async () => {
+  const { cwd, data } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'wired-identity-timeout', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
+  // Acquire the exact lifecycle session lock out-of-band, then a bounded cleanup
+  // must fail closed at its sub-budget instead of the default five-second wait.
+  const { withFileLock } = await import('../scripts/lib/fs.mjs');
+  const { createHash } = await import('node:crypto');
+  const dataRootPath = await realpath(data);
+  const key = createHash('sha256').update(JSON.stringify(['wired-identity-timeout'])).digest('hex');
+  const lockDir = join(dataRootPath, 'identity-lifecycle', 'session-locks', key.slice(0, 2));
+  const started = Date.now();
+  await withFileLock(lockDir, async () => {
+    await assert.rejects(identity.cleanupSession(cwd, 'wired-identity-timeout', { timeoutMs: 50 }), (error) => error?.code === 'LOCK_TIMEOUT');
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1_500, `bounded identity cleanup must fail closed well before the default 5s lock wait (took ${elapsed}ms)`);
 });

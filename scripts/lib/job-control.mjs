@@ -7,6 +7,7 @@ import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -68,13 +69,17 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
+  if (options.reconcile !== undefined && typeof options.reconcile !== 'function') throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'The lifecycle reconciliation seam must be a function.', { category: 'validation', remedy: 'Provide the Rescue Lifecycle Reconciler bound to one exact workspace owner.' });
+  const reconcile = options.reconcile ?? (async () => null);
   const pollIntervalMs = options.pollIntervalMs ?? 50;
   const clock = options.clock ?? Date.now;
   const scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
   const cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
+  /** Join the exact lifecycle selection before every management mutation or projection; the default seam is a no-op so legacy callers keep bare store semantics. @param {{kind:'observe'|'wait'}|{kind:'stop',cause:string}} intent @param {string} workspace @param {string} ownerSessionId @param {string} jobId @param {AbortSignal} [signal] */
+  const reconcileLifecycle = (intent, workspace, ownerSessionId, jobId, signal) => reconcile({ intent, authority: { ownerSessionId }, workspace, selector: { jobId }, ...(signal ? { signal } : {}) });
   /** @type {Map<string,Promise<any>>} */
   const inFlight = new Map();
   return {
@@ -82,50 +87,270 @@ export function createJobController(options) {
     async listOwned(workspace, ownerSessionId) {
       return options.store.listOwnedJobs(workspace, ownerSessionId);
     },
-    /** @param {string} workspace @param {string} ownerSessionId @param {string} [jobId] @param {'status'|'result'|'cancel'} [eligibility] */
-    async selectOwned(workspace, ownerSessionId, jobId, eligibility = 'status') {
+    /** @param {string} workspace @param {string} ownerSessionId @param {string} [jobId] @param {'status'|'result'|'cancel'} [eligibility] @param {{signal?:AbortSignal}} [selection] */
+    async selectOwned(workspace, ownerSessionId, jobId, eligibility = 'status', selection = {}) {
+      // Status and Result reconcile the exact owned selection before projection.
+      // An explicit job ID reconciles before selection; an implicit selection
+      // reconciles the exact latest owned job it selected and rereads it, so a
+      // view never projects a stale pre-reconciliation record (ADR 0019). The
+      // remaining implicit divergence is eligibility only: implicit Result
+      // stays terminal-only while implicit Status accepts any status.
+      if (typeof jobId === 'string' && (eligibility === 'status' || eligibility === 'result')) {
+        // The bounded caller signal keeps a stalled remote observation from
+        // outliving the command (SIGINT or the management budget).
+        await reconcileLifecycle({ kind: 'observe' }, workspace, ownerSessionId, jobId, selection.signal);
+      }
       const jobs = (await options.store.listOwnedJobs(workspace, ownerSessionId))
         .filter((/** @type {any} */ job) => jobId ? job.id === jobId : eligibleImplicit(job, eligibility));
       const selected = jobs.at(-1);
       if (!selected) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
+      if (jobId === undefined && (eligibility === 'status' || eligibility === 'result')) {
+        await reconcileLifecycle({ kind: 'observe' }, workspace, ownerSessionId, selected.id, selection.signal);
+        return options.store.readJob(workspace, selected.id);
+      }
       return selected;
     },
-    /** @param {string} workspace @param {string} jobId @param {number} timeoutMs @param {AbortSignal} [signal] */
-    async wait(workspace, jobId, timeoutMs, signal) {
+    /**
+     * Wait for one job's durable terminal winner. The legacy form polls the bare
+     * store; the managed owner form additionally repeats the Rescue Lifecycle
+     * Reconciler every poll, so a persisted unresolved stop is retried until it
+     * settles or the bounded wait timeout expires — a timeout stays observational
+     * and never authorizes a stop or a guard release.
+     * @param {string} workspace @param {string} jobId @param {string|number} ownerOrTimeoutMs @param {AbortSignal|{reconciler?:{reconcile:(request:any)=>Promise<any>},timeoutMs:number,signal?:AbortSignal}} [signalOrOptions]
+     */
+    async wait(workspace, jobId, ownerOrTimeoutMs, signalOrOptions) {
+      const managed = typeof ownerOrTimeoutMs === 'string';
+      const managedOptions = managed ? /** @type {any} */ (signalOrOptions) : undefined;
+      const ownerSessionId = managed ? ownerOrTimeoutMs : undefined;
+      const timeoutMs = managed ? managedOptions?.timeoutMs : ownerOrTimeoutMs;
+      const signal = managed ? managedOptions?.signal : signalOrOptions;
+      const pollReconcile = managed ? managedOptions?.reconciler?.reconcile ?? reconcile : undefined;
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw new PluginError('JOB_WAIT_INPUT_INVALID', 'The wait timeout must be a bounded non-negative duration.', { category: 'validation', remedy: `Retry $zcode:status ${jobId} --wait with a bounded timeout.`, details: { jobId, timeoutMs } });
       const started = clock();
       while (true) {
         signal?.throwIfAborted();
         await abortable(() => options.beforeWaitPoll?.(), signal);
+        // The durable winner is read before expiration so a zero-length wait
+        // still returns an already-terminal job instead of timing out.
         const job = await abortable(() => options.store.readJob(workspace, jobId), signal);
         if (TERMINAL.has(job.status)) return job;
-        if (clock() - started >= timeoutMs) throw new PluginError('JOB_WAIT_TIMEOUT', `Timed out waiting for job ${jobId}.`, { category: 'timeout', remedy: `Retry $zcode:status ${jobId} --wait.`, details: { jobId, status: job.status, timeoutMs } });
+        if (clock() - started >= timeoutMs) throw waitTimeout(jobId, job.status, timeoutMs);
+        if (pollReconcile !== undefined) {
+          // One hung reconciliation poll is bounded by both the wait deadline
+          // and the caller's abort signal, and never starts once no budget
+          // remains — a stuck adapter call can neither outlive the advertised
+          // timeout nor block an interrupting SIGINT.
+          const remaining = timeoutMs - (clock() - started);
+          // The deadline aborts the poll's own signal so an expired wait also
+          // cuts off any control client the slow reconciliation still holds.
+          const deadlineAbort = new AbortController();
+          const pollSignal = signal === undefined ? deadlineAbort.signal : AbortSignal.any([signal, deadlineAbort.signal]);
+          const poll = pollReconcile({ intent: { kind: 'wait' }, authority: { ownerSessionId: /** @type {string} */ (ownerSessionId) }, workspace, selector: { jobId }, signal: pollSignal });
+          poll.catch(() => {});
+          await new Promise((resolvePoll, rejectPoll) => {
+            const timer = scheduleTimeout(() => { const timeout = waitTimeout(jobId, job.status, timeoutMs); deadlineAbort.abort(timeout); rejectPoll(timeout); }, remaining);
+            const onAbort = () => { cancelTimeout(timer); rejectPoll(signal?.reason ?? waitTimeout(jobId, job.status, timeoutMs)); };
+            if (signal) {
+              if (signal.aborted) { deadlineAbort.abort(signal.reason); onAbort(); return; }
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+            poll.then((/** @type {any} */ value) => { cancelTimeout(timer); signal?.removeEventListener('abort', onAbort); resolvePoll(value); }, (/** @type {any} */ error) => { cancelTimeout(timer); signal?.removeEventListener('abort', onAbort); rejectPoll(error); });
+          });
+        }
         const waitMs = Math.min(pollIntervalMs, Math.max(0, timeoutMs - (clock() - started)));
         const customDelay = options.delay;
         if (customDelay) await abortable(() => customDelay(waitMs), signal);
         else await pollDelay(waitMs, signal, scheduleTimeout, cancelTimeout);
       }
     },
-    /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId */
-    cancel(workspace, jobId, ownerSessionId) {
-      const dataRoot = options.dataRoot ?? options.store.dataRoot;
-      if (!dataRoot) return Promise.reject(cancelError(jobId, 'Cancellation lock storage is unavailable.'));
-      let canonicalWorkspace;
-      try { canonicalWorkspace = realpathSync(resolve(workspace)); }
-      catch { return resolveWorkspaceStorage({ dataRoot, workspace }).then((storage) => cancelWithElection({ options, storage, workspace: storage.workspacePath, jobId, ownerSessionId })); }
-      const key = `${canonicalWorkspace}:${jobId}`; const existing = inFlight.get(key); if (existing) return existing;
-      const attempt = resolveWorkspaceStorage({ dataRoot, workspace: canonicalWorkspace }).then((storage) => cancelWithElection({ options, storage, workspace: canonicalWorkspace, jobId, ownerSessionId }));
-      inFlight.set(key, attempt); const cleanup = () => { if (inFlight.get(key) === attempt) inFlight.delete(key); }; attempt.then(cleanup, cleanup); return attempt;
+    /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId @param {string} [stopCause] The bounded durable stop cause; explicit user cancellation is the default and lifecycle callers supply their own. */
+    cancel(workspace, jobId, ownerSessionId, stopCause = 'user') {
+      if (!STOP_CAUSES.has(stopCause)) {
+        throw new PluginError('JOB_CANCEL_INPUT_INVALID', 'The cancellation stop cause is invalid.', {
+          category: 'validation', remedy: `Pass one of the bounded stop causes: ${[...STOP_CAUSES].sort().join(', ')}.`,
+          details: { stopCause },
+        });
+      }
+      return reconcileThenElectCancel({ options, reconcileLifecycle, workspace, jobId, ownerSessionId, stopCause, inFlight });
     },
-    /** @param {string} workspace @param {string} ownerSessionId */
-    async resumeCandidate(workspace, ownerSessionId) {
-      const candidates = (await options.store.listOwnedJobs(workspace, ownerSessionId))
-        .filter((/** @type {any} */ job) => job.command === 'rescue' && typeof job.zcodeSessionId === 'string' && ['running', 'succeeded', 'failed'].includes(job.status));
-      return candidates.at(-1) ?? null;
+    /**
+     * Select the latest owned Rescue job an explicit --resume may target. A
+     * cancelled candidate qualifies only through the full durable predicate —
+     * the Host-owned trio, an accepted session, its confirmed stop cause, the
+     * viewing turn's permission mode equaling the binding snapshot, and the
+     * active binding still anchoring that exact job — so historical
+     * closed/cancel records, superseded winners, and permission changes stay
+     * excluded (a permission change requires fresh).
+     * @param {string} workspace @param {string} ownerSessionId @param {string} [permissionMode] The viewing turn's permission mode; a cancelled candidate is eligible only under its exact binding snapshot.
+     */
+    async resumeCandidate(workspace, ownerSessionId, permissionMode) {
+      const owned = (await options.store.listOwnedJobs(workspace, ownerSessionId))
+        .filter((/** @type {any} */ job) => job.command === 'rescue' && typeof job.zcodeSessionId === 'string');
+      // The newest owned Rescue record is a barrier while its stop is
+      // unresolved: selection must never fall back to an older session behind
+      // an in-flight cancellation.
+      if (owned.at(-1)?.status === 'cancelling') return null;
+      const candidates = owned.filter((/** @type {any} */ job) => ['running', 'succeeded', 'failed', 'cancelled'].includes(job.status));
+      /** @type {{job:any, operationId:string}|null} */
+      let selected = null;
+      for (let index = candidates.length - 1; index >= 0; index -= 1) {
+        const job = candidates[index];
+        // Full eligibility applies to EVERY candidate: the viewing turn's
+        // permission mode must equal the candidate's binding snapshot. The
+        // newest candidate failing it terminates selection — resuming an
+        // older, superseded session is never a fallback; below an eligible
+        // selection, ineligible jobs are simply that operation's superseded
+        // history.
+        if (permissionMode === undefined || job.permissionSnapshot?.permissionMode !== permissionMode) {
+          if (selected !== null) continue;
+          return null;
+        }
+        // Unbound (legacy) candidates keep their recency semantics: a
+        // historical unbound cancelled record stays ineligible before
+        // selection, and other children's bindings never supersede an unbound
+        // job (ADR 0018 preserves legacy resume semantics).
+        if (job.rescueReservationKind !== 'bound') {
+          if (job.status === 'cancelled') return null;
+          // An eligible bound candidate newer than this unbound job already
+          // owns the selection (recency within one lineage); older unbound
+          // history never supersedes it and never disambiguates it.
+          if (selected !== null) break;
+          return job;
+        }
+        // A bound candidate requires PROOF that the active binding still
+        // anchors it — an absent anchor (active elsewhere, ambiguous, closed
+        // history, or removed by binding GC) is unproven and fails closed.
+        if (typeof options.store.rescueBindingPointsAtJob !== 'function') return null;
+        const anchored = await options.store.rescueBindingPointsAtJob({ workspace, ownerSessionId: job.ownerSessionId, jobId: job.id }).catch(() => false);
+        if (!anchored) {
+          // The newest candidate losing its anchor fails closed; below an
+          // eligible selection an unanchored job is just that operation's
+          // superseded history.
+          if (selected !== null) continue;
+          return null;
+        }
+        if (job.status !== 'cancelled') {
+          // Every eligible bound candidate anchors its own retained operation:
+          // a second candidate under a DIFFERENT operation makes the selection
+          // ambiguous — the Host must ask once for the logical operation
+          // instead of guessing by recency (ADR 0018 line 25).
+          const prior = await options.store.rescueBindingForJob?.({ workspace, ownerSessionId: job.ownerSessionId, jobId: job.id }).catch(() => null);
+          if (prior === null || prior === undefined) return null;
+          if (selected !== null && selected.operationId !== prior.operationId) {
+            throw new PluginError('RESUME_AMBIGUOUS', 'More than one retained Rescue operation is eligible for resume.', {
+              category: 'authorization',
+              remedy: 'Resume from the active parent turn (the Host asks once for the logical operation), or start a fresh operation.',
+            });
+          }
+          selected = { job, operationId: prior.operationId };
+          continue;
+        }
+        // Cancelled candidates qualify only through the full durable
+        // predicate — the Host-owned trio with an accepted session, its
+        // confirmed stop cause, and the active binding still anchoring that
+        // exact job.
+        if (!(await resumableCancelledCandidate(options.store, workspace, job, permissionMode))) return null;
+        const prior = await options.store.rescueBindingForJob?.({ workspace, ownerSessionId: job.ownerSessionId, jobId: job.id }).catch(() => null);
+        if (prior === null || prior === undefined) {
+          if (selected !== null) continue;
+          return null;
+        }
+        if (selected !== null && selected.operationId !== prior.operationId) {
+          throw new PluginError('RESUME_AMBIGUOUS', 'More than one retained Rescue operation is eligible for resume.', {
+            category: 'authorization',
+            remedy: 'Resume from the active parent turn (the Host asks once for the logical operation), or start a fresh operation.',
+          });
+        }
+        selected = { job, operationId: prior.operationId };
+      }
+      return selected?.job ?? null;
     },
   };
 }
 
-/** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string}} input */
+/**
+ * The full durable predicate one cancelled candidate must pass before an
+ * explicit resume may target it: the indivisible Host-owned trio with an
+ * accepted session (state.mjs's resumableHostOwnedCancellation predicate), its
+ * confirmed durable stop cause, the viewing turn's permission mode equaling
+ * the binding snapshot, and the active binding partition still anchoring this
+ * exact job. Anything unproven excludes the candidate.
+ * @param {any} store @param {string} workspace @param {any} job @param {string} [permissionMode]
+ */
+async function resumableCancelledCandidate(store, workspace, job, permissionMode) {
+  if (!validHostLifecycleRecord(job) || typeof job.zcodeSessionId !== 'string' || !STOP_CAUSES.has(job.stopCause)) return false;
+  if (permissionMode === undefined || job.permissionSnapshot?.permissionMode !== permissionMode) return false;
+  if (typeof store.rescueBindingPointsAtJob !== 'function') return false;
+  try { return await store.rescueBindingPointsAtJob({ workspace, ownerSessionId: job.ownerSessionId, jobId: job.id }); }
+  catch { return false; }
+}
+
+/** @param {string} jobId @param {string} status @param {number} timeoutMs */
+function waitTimeout(jobId, status, timeoutMs) {
+  return new PluginError('JOB_WAIT_TIMEOUT', `Timed out waiting for job ${jobId}.`, { category: 'timeout', remedy: `Retry $zcode:status ${jobId} --wait.`, details: { jobId, status, timeoutMs } });
+}
+
+/**
+ * Route one cancellation through the Rescue Lifecycle Reconciler before the
+ * existing cancellation election: the reconciler owns the durable stop intent
+ * (persist-before-control) and may already hold a terminal winner; every other
+ * bounded outcome defers remote control and settlement to the election.
+ * @param {{options:any,reconcileLifecycle:(intent:any,workspace:string,ownerSessionId:string,jobId:string,signal?:AbortSignal)=>Promise<any>,workspace:string,jobId:string,ownerSessionId:string,stopCause:string,inFlight:Map<string,Promise<any>>}} input
+ */
+async function reconcileThenElectCancel(input) {
+  const { options, reconcileLifecycle, workspace, jobId, ownerSessionId, stopCause, inFlight } = input;
+  const dataRoot = options.dataRoot ?? options.store.dataRoot;
+  if (!dataRoot) throw cancelError(jobId, 'Cancellation lock storage is unavailable.');
+  // Reconciliation is serialized inside the deduplicated, cross-process locked
+  // cancellation attempt (performCancellation invokes it under the lock): two
+  // concurrent cancels cannot both persist intents and issue remote stops
+  // around the election.
+  const elect = (/** @type {any} */ storage, /** @type {string} */ canonicalWorkspace) => cancelWithElection({ options, storage, workspace: canonicalWorkspace, jobId, ownerSessionId, stopCause, reconcileLifecycle, reconcileWorkspace: workspace });
+  let canonicalWorkspace;
+  try { canonicalWorkspace = realpathSync(resolve(workspace)); }
+  catch { const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); return elect(storage, storage.workspacePath); }
+  const key = `${canonicalWorkspace}:${jobId}`; const existing = inFlight.get(key); if (existing) return existing;
+  const attempt = resolveWorkspaceStorage({ dataRoot, workspace: canonicalWorkspace }).then((storage) => elect(storage, canonicalWorkspace));
+  inFlight.set(key, attempt); const cleanup = () => { if (inFlight.get(key) === attempt) inFlight.delete(key); }; attempt.then(cleanup, cleanup); return attempt;
+}
+
+/**
+ * Derive the public Resumability Indicator for one terminal management view
+ * from the exact durable record: the exact Host-owned binding preserved by the
+ * Task 2 cancellation semantics, an accepted ZCode session, terminal
+ * settlement, the viewing turn's permission mode equaling the binding
+ * snapshot, the exact binding still anchoring this job, and — for a cancelled
+ * winner — its confirmed durable Stop Cause. `null` marks a view the indicator
+ * does not apply to; the value is never persisted and never exposes the
+ * internal ZCode session ID.
+ * @param {any} job
+ * @param {string} [viewingPermissionMode] The current caller turn's permission mode; only an explicitly supplied mode equaling the binding snapshot proves the permission dimension, because a permission change requires fresh and an absent mode is unproven.
+ * @param {boolean} [bindingCurrent] Binding-currency evidence — the caller's active binding partition lookup proving the exact binding still anchors this job; only an explicitly supplied `true` proves it, because an advanced or unreadable binding is unproven.
+ * @returns {boolean|null}
+ */
+export function resumableJobIndicator(job, viewingPermissionMode, bindingCurrent) {
+  if (!job || job.command !== 'rescue' || job.readOnly !== false) return null;
+  if (!TERMINAL.has(job.status)) return null;
+  const acceptedSession = typeof job.zcodeSessionId === 'string';
+  const permissionMatch = viewingPermissionMode !== undefined && job.permissionSnapshot?.permissionMode === viewingPermissionMode;
+  if (job.status === 'cancelled') {
+    // Historical cancels closed their binding; only the indivisible Host-owned
+    // trio with an accepted session preserves the exact binding for a later
+    // authorized turn, and only with its confirmed stop cause AND the exact
+    // binding still anchoring this job — once a continuation advances the
+    // binding, this cancelled job is history. The authorized resume path
+    // revalidates the real binding before starting any new turn.
+    return validHostLifecycleRecord(job) && acceptedSession && permissionMatch && STOP_CAUSES.has(job.stopCause) && bindingCurrent === true;
+  }
+  // A succeeded or failed accepted turn keeps its preserved session resumable
+  // only while its exact binding is still current — proven by the caller's
+  // partition lookup showing the active binding still anchors this exact job;
+  // once a continuation advances the binding, this job is history. The
+  // authorized resume path revalidates the binding again.
+  return acceptedSession && permissionMatch && bindingCurrent === true;
+}
+
+/** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string,stopCause?:string,reconcileLifecycle?:(intent:any,workspace:string,ownerSessionId:string,jobId:string)=>Promise<any>,reconcileWorkspace?:string}} input */
 async function cancelWithElection(input) {
   if (!/^[a-f0-9]{64}$/.test(input.jobId)) throw new PluginError('JOB_ID_INVALID', 'Job identifier has an invalid format.', { category: 'validation', remedy: 'Use a job ID returned by the state store.', details: { jobId: input.jobId } });
   const attempts = createCancelAttemptStore(input.storage); let operationStarted = false;
@@ -144,12 +369,32 @@ async function cancelWithElection(input) {
   }
 }
 
-/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
+/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string,stopCause?:string,reconcileLifecycle?:(intent:any,workspace:string,ownerSessionId:string,jobId:string)=>Promise<any>,reconcileWorkspace?:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
 async function performCancellation(input, attempts, election) {
-  const job = await input.options.store.readJob(input.workspace, input.jobId);
+  const stopCause = input.stopCause ?? 'user';
+  let job = await input.options.store.readJob(input.workspace, input.jobId);
   if (job.ownerSessionId !== input.ownerSessionId) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
   if (TERMINAL.has(job.status)) return job;
+  // Fail closed on a corrupt or mismatched cancellation journal BEFORE any
+  // mutating reconciliation: a corrupt journal must never be bypassed by a
+  // stop-intent persistence or a remote stop.
   if (election.observedError) throw election.observedError;
+  if (typeof input.reconcileLifecycle === 'function') {
+    // Serialized under the cancellation lock: the Reconciler persists the
+    // durable stop intent (persist-before-control) and may already hold a
+    // terminal winner; a settled winner is authoritative and skips the
+    // election's own transitions. The record is re-read afterwards because
+    // reconciliation may have persisted the intent this election must replay.
+    const outcome = await input.reconcileLifecycle({ kind: 'stop', cause: stopCause }, input.reconcileWorkspace ?? input.workspace, input.ownerSessionId, input.jobId);
+    if (outcome?.kind === 'settled-terminal') {
+      const settled = await input.options.store.readJob(input.workspace, input.jobId).catch(() => null);
+      if (settled && TERMINAL.has(settled.status)) return settled;
+    }
+    if (outcome !== null && outcome !== undefined) {
+      job = await input.options.store.readJob(input.workspace, input.jobId);
+      if (TERMINAL.has(job.status)) return job;
+    }
+  }
   const current = await attempts.read(job.id, input.ownerSessionId); let attempt;
   if (current?.status === 'failed-pending-release') return failedOutcome(current);
   if (current?.status === 'failed' && completedDuringAcquisition(election.observed, current)) return failedOutcome(current);
@@ -162,8 +407,8 @@ async function performCancellation(input, attempts, election) {
       invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
     let cancelled;
     try { cancelled = rollback
-      ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })
-      : await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+      ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) })
+      : await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) }); }
     catch (error) { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
@@ -171,16 +416,45 @@ async function performCancellation(input, attempts, election) {
   if (job.status === 'cancelling' && attempt.status === 'finalize-pending' && persistedTurnBoundary(job)) {
     let cancelled;
     try {
-      cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+      cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(job, stopCause) });
     } catch (error) {
       try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
       catch (finalizeFailure) { throw finalizeError(job.id, finalizeFailure); }
     }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
-  const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
+  const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', { ...(job.lastCancelError ? { lastCancelError: null } : {}), ...hostOwnedStopIntentPatch(job, stopCause) }) : job;
   const observedStop = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling);
   if (observedStop?.kind === 'stale') return observedStop.job;
+  // Pre-stop read (retry passes only): when this election did NOT just
+  // transition the job — it was already cancelling with a persisted stop
+  // intent from an earlier reconciliation pass — a turn that already reached
+  // a terminal outcome BEFORE this stop keeps its own semantics instead of
+  // being misclassified as caused by the stop. An unreadable or expired read
+  // never blocks the exact stop.
+  const retainedRetryStop = job.status === 'cancelling' && validStopIntent(cancelling.stopIntent);
+  if (retainedRetryStop && cancelling.zcodeSessionId && input.options.readSession) {
+    try {
+      // Bounded: a stalled or gate-held read must never block the exact stop,
+      // and the timer is cleared as soon as the read settles so a fast read
+      // never keeps the process alive for the full second.
+      const preStopSchedule = input.options.setTimeout ?? globalThis.setTimeout;
+      const preStopCancel = input.options.clearTimeout ?? globalThis.clearTimeout;
+      const preStopSnapshot = await new Promise((resolvePre) => {
+        const preStopTimeout = preStopSchedule(() => resolvePre(undefined), 1_000);
+        Promise.resolve().then(() => input.options.readSession(cancelling.zcodeSessionId)).then(resolvePre, () => resolvePre(undefined)).finally(() => preStopCancel(preStopTimeout));
+      });
+      const preStopBoundary = persistedTurnBoundary(cancelling);
+      const preStopClassification = preStopBoundary ? classifyCurrentTurnSnapshot(preStopSnapshot, preStopBoundary) : null;
+      // Only a PRE-EXISTING engine failure diverts: natural success keeps the
+      // existing stop-then-observe path (a stop on a completed turn is a no-op
+      // and the observation publishes the authoritative result).
+      if (preStopClassification?.kind === 'failed') {
+        return recordCancelledAttempt(input, attempts, attempt, await input.options.store.finishJob(input.workspace, job.id, ['cancelling'], 'failed', {
+          error: { message: 'ZCode reported a terminal error before the stop could be attempted.' }, exitCode: 1 }));
+      }
+    } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+  }
   try {
     if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
     const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling, observedStop?.guard);
@@ -188,10 +462,36 @@ async function performCancellation(input, attempts, election) {
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
     const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
-    await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'running', { lastCancelError: message });
+    // An unresolved Host-owned stop keeps its cancelling status and persisted
+    // stop intent — the same retainUnresolvedEndedStop discipline as the
+    // SessionEnd settlement — so the reconciler and owner recovery retry the
+    // durable intent instead of observing a running record forever. Only
+    // legacy records without a persisted intent roll back to running to record
+    // lastCancelError as their bounded retry evidence.
+    const retainedCancelling = validStopIntent(cancelling.stopIntent);
+    if (retainedCancelling) {
+      // The retained cancelling record keeps its persisted stop intent AND
+      // gains the bounded public retry diagnostic — Status surfaces why the
+      // stop is unresolved without rolling the intent back to running. A
+      // concurrent terminalization wins: the raced durable winner is
+      // authoritative over this stale cancelling snapshot.
+      const diagnostic = await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelling', { lastCancelError: message })
+        .catch(async (/** @type {any} */ transitionError) => {
+          if (transitionError instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION'].includes(transitionError.code)) {
+            return await input.options.store.readJob(input.workspace, job.id);
+          }
+          throw transitionError;
+        })
+        .catch(() => undefined);
+      if (diagnostic !== undefined && TERMINAL.has(diagnostic.status)) return diagnostic;
+    } else {
+      await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'running', { lastCancelError: message });
+    }
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'failed-pending-release', message);
     await input.options.afterRollbackBeforeSettle?.();
-    return { failedAttempt: attempt.attemptId, message, cause: error };
+    return retainedCancelling
+      ? { failedAttempt: attempt.attemptId, message, cause: error, retainedCancelling: true }
+      : { failedAttempt: attempt.attemptId, message, cause: error };
   }
   const boundary = persistedTurnBoundary(cancelling);
   if (!boundary && job.command === 'rescue' && job.readOnly === false) return cancellationUncertain(input, attempts, attempt, cancelling,
@@ -212,7 +512,7 @@ async function performCancellation(input, attempts, election) {
     }
   }
   let cancelled;
-  try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
+  try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) }); }
   catch (error) {
     try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     catch (finalizeFailure) {
@@ -274,7 +574,11 @@ async function cancellationUncertain(input, attempts, attempt, job, error) {
   if (winner && TERMINAL.has(winner.status)) return winner;
   await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'failed-pending-release', message);
   await input.options.afterRollbackBeforeSettle?.();
-  return { failedAttempt: attempt.attemptId, message, cause: error };
+  // A cancelling record carrying a persisted stop intent keeps its durable
+  // authorization across the uncertain settlement, so the public rejection
+  // must report the retained cancelling state — never "remains running".
+  return { failedAttempt: attempt.attemptId, message, cause: error,
+    ...(winner?.status === 'cancelling' && validStopIntent(winner.stopIntent) ? { retainedCancelling: true } : {}) };
 }
 
 /** @param {unknown} value */
@@ -321,6 +625,13 @@ function cancelledWinnerInput(input) {
 async function settleCancellationOutcome(input, attempts, outcome) {
   if (!outcome?.failedAttempt) return outcome;
   await attempts.update(input.jobId, input.ownerSessionId, outcome.failedAttempt, 'failed', outcome.message);
+  if (outcome.retainedCancelling) {
+    throw new PluginError('JOB_CANCEL_FAILED', `Could not cancel job ${input.jobId}: ${outcome.message}`, {
+      category: 'runtime',
+      remedy: `The job remains cancelling with its persisted stop intent; run $zcode:status ${input.jobId} --wait to reconcile the stop.`,
+      ...(outcome.cause ? { cause: outcome.cause } : {}),
+    });
+  }
   throw cancelError(input.jobId, outcome.message, outcome.cause);
 }
 

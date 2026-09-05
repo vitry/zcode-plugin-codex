@@ -11,6 +11,8 @@ import {
   createRescueBindingAuthority,
   createRescueBindingPartition,
   createRescueBinding,
+  EXECUTION_OWNERS,
+  HOST_PLACEMENTS,
   parseRescueBinding,
   parseRescueBindingAuthority,
   parseRescueBindingPartition,
@@ -19,7 +21,11 @@ import {
   RESCUE_BINDING_PARTITION_MAX_BYTES,
   rescueBindingKey,
   rescueBindingPartitionKey,
+  STOP_CAUSES,
+  validLifecycleEpoch,
+  validStopIntent,
 } from '../scripts/lib/rescue-binding.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
@@ -1974,4 +1980,142 @@ test('new-slot creation GCs only revoked tombstones and retains session-ended mi
   const retained = JSON.parse(await readFile(closedPath, 'utf8')).records;
   assert.equal(retained.some((record) => record.key === old.key), true);
   assert.equal(retained.some((record) => record.key === revoked.key), false);
+});
+
+test('stop cause and stop intent codecs accept only the exact bounded schema', () => {
+  assert.deepEqual([...STOP_CAUSES].sort(), ['host-coordination-loss', 'session-end', 'user']);
+  assert.deepEqual([...EXECUTION_OWNERS], ['host-child']);
+  assert.deepEqual([...HOST_PLACEMENTS].sort(), ['background', 'foreground']);
+  const intent = { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' };
+  assert.equal(validStopIntent(intent), true);
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  assert.equal(validLifecycleEpoch(epoch), true);
+  assert.equal(validLifecycleEpoch('a'.repeat(64)), true);
+  for (const invalid of [
+    { ...intent, version: 2 }, { ...intent, cause: 'timeout' }, { ...intent, requestedAt: '2026-09-02T00:00:00Z' },
+    { ...intent, extra: true }, { version: 1, cause: 'user' }, null, 'stop',
+  ]) assert.equal(validStopIntent(invalid), false);
+  for (const invalid of ['a'.repeat(63), 'A'.repeat(64), 'z'.repeat(64), 'not-a-digest']) {
+    assert.equal(validLifecycleEpoch(invalid), false);
+  }
+});
+
+test('confirmed new-schema cancellation preserves the exact binding', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-a');
+  await store.transitionJob(workspace, fresh.job.id, ['running'], 'cancelling', { stopIntent });
+  const cancelled = await store.finishJob(workspace, fresh.job.id, ['cancelling'], 'cancelled', { stopIntent, stopCause: 'user' });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.stopCause, 'user');
+  assert.deepEqual(cancelled.stopIntent, stopIntent);
+  const resolved = await store.resolveRescueBinding(bindingExpected(workspace, trusted));
+  assert.equal(resolved.kind, 'bound');
+  assert.equal(resolved.binding.state, 'active');
+  assert.equal(resolved.binding.currentJobId, fresh.job.id);
+  assert.equal(resolved.binding.operationId, fresh.binding.operationId);
+});
+
+test('a preserved new-schema cancelled binding remains resumable through the continuation CAS', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-b', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-b');
+  await store.transitionJob(workspace, fresh.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' } });
+  await store.finishJob(workspace, fresh.job.id, ['cancelling'], 'cancelled', { stopCause: 'session-end' });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: trusted, operationId: fresh.binding.operationId });
+  assert.equal(continuation.job.status, 'queued');
+  assert.equal(continuation.binding.state, 'active');
+  assert.equal(continuation.binding.currentJobId, continuation.job.id);
+  assert.equal(continuation.binding.anchorJobId, fresh.job.id);
+  assert.equal(continuation.binding.operationId, fresh.binding.operationId);
+  assert.equal(continuation.anchorJob.zcodeSessionId, 'zcode-session-b');
+  assert.equal((await store.readJob(workspace, fresh.job.id)).stopCause, 'session-end');
+});
+
+test('a Host-owned Rescue continuation keeps its binding resumable across repeated confirmed cancellations', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-c', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-c');
+  await store.transitionJob(workspace, fresh.job.id, ['running'], 'cancelling', { stopIntent });
+  await store.finishJob(workspace, fresh.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: trusted, operationId: fresh.binding.operationId,
+    lifecycle: { ownerLifecycleEpoch: lifecycle.ownerLifecycleEpoch, executionOwner: 'host-child' } }),
+  { code: 'RESCUE_BINDING_INVALID' });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: trusted, operationId: fresh.binding.operationId, lifecycle });
+  assert.equal(continuation.job.ownerLifecycleEpoch, lifecycle.ownerLifecycleEpoch);
+  assert.equal(continuation.job.executionOwner, 'host-child');
+  assert.equal(continuation.job.hostPlacement, 'background');
+  await makeEligible(store, workspace, continuation.job, 'zcode-session-c');
+  await store.transitionJob(workspace, continuation.job.id, ['running'], 'cancelling', { stopIntent });
+  await store.finishJob(workspace, continuation.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  const resolved = await store.resolveRescueBinding(bindingExpected(workspace, trusted));
+  assert.equal(resolved.kind, 'bound');
+  assert.equal(resolved.binding.state, 'active');
+  assert.equal(resolved.binding.currentJobId, continuation.job.id);
+  const again = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-c'),
+    executor: trusted, operationId: fresh.binding.operationId, lifecycle });
+  assert.equal(again.job.status, 'queued');
+  assert.equal(again.binding.state, 'active');
+  assert.equal(again.binding.currentJobId, again.job.id);
+});
+
+test('closure of a cancelled Host-owned Rescue binding is skipped and reported as preserved', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-d', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-d');
+  await store.transitionJob(workspace, fresh.job.id, ['running'], 'cancelling',
+    { stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } });
+  await store.finishJob(workspace, fresh.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  const outcome = await store.closeRescueBindingForCancelledJob({ workspace, parentSessionId: fresh.binding.parentSessionId, jobId: fresh.job.id });
+  assert.equal(outcome.kind, 'preserved');
+  assert.equal(outcome.binding.state, 'active');
+  assert.equal(outcome.binding.currentJobId, fresh.job.id);
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, trusted))).binding.state, 'active');
+});
+
+test('a historical cancelled record without the lifecycle trio never resumes', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const legacy = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  await makeEligible(store, workspace, legacy.job, 'zcode-legacy-session');
+  await store.transitionJob(workspace, legacy.job.id, ['running'], 'cancelling');
+  await store.finishJob(workspace, legacy.job.id, ['cancelling'], 'cancelled');
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: trusted, operationId: legacy.binding.operationId }), { code: 'RESCUE_BINDING_CLOSED' });
+});
+
+test('a queued pre-session Host-owned cancellation revokes its binding instead of stranding the child slot', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-session-e', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle });
+  const cancelled = await store.finishJob(workspace, fresh.job.id, ['queued'], 'cancelled',
+    { stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' }, stopCause: 'user' });
+  assert.equal(cancelled.status, 'cancelled');
+  await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
+  assert.equal((await store.closeRescueBindingForCancelledJob({ workspace, parentSessionId: fresh.binding.parentSessionId,
+    jobId: fresh.job.id })).kind, 'closed');
+  const replacement = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: executor(workspace, { agentId: 'replacement-child' }) });
+  assert.equal(replacement.binding.state, 'active');
 });

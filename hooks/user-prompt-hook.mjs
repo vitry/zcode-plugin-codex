@@ -6,8 +6,9 @@ import { join, resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { resolvePluginDataContext } from '../scripts/lib/plugin-data.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { RESCUE_LAUNCHER_ERROR_CONTEXT, renderRescueLauncherCommand, renderRescueUserPromptContext } from '../scripts/lib/rescue-launcher-command.mjs';
-import { fingerprintWorkspace, isOwnedSession, resolveRecordedSessionStart, unreadJobs } from './lib/hook-state.mjs';
+import { claimNotifications, finalizeNotifications, fingerprintWorkspace, isOwnedSession, reconcilePriorEpochReceipts, releaseNotifications, resolveRecordedSessionStart } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 try {
@@ -19,6 +20,26 @@ try {
   const identity = createIdentityStore({ dataRoot });
   const preparations = createRescuePreparationStore({ dataRoot });
   const session = await resolveRecordedSessionStart(dataRoot, input.cwd, input.session_id);
+  // Resume after SessionEnd: retry the pending prior-epoch reconciliation BEFORE
+  // this turn establishes new Rescue authority. Strictly local unless an existing
+  // broker answers; never lazily spawns ZCode; bounded under the hook deadline.
+  // Advisory here — an unresolved reconciliation does not fail the prompt; the
+  // writable reservation path re-checks and blocks new Rescue until it settles,
+  // while status/result/cancel remain available.
+  try {
+    await reconcilePriorEpochReceipts({
+      dataRoot,
+      sessionId: input.session_id,
+      workspace: input.cwd,
+      currentEpoch: hostLifecycleEpoch(input.session_id, session.startedAt),
+    });
+  } catch (error) {
+    // A failed reconciliation stays advisory EXCEPT when the prior epoch's
+    // workspace scope could not be persisted: beginCallerTurn would replace
+    // the ledger that still proves the linked scope, so this prompt must fail
+    // safely and retry on the next submit.
+    if (error?.code === 'PRIOR_SCOPE_UNPERSISTED') throw error;
+  }
   const begun = await identity.beginCallerTurn({
     sessionId: input.session_id,
     turnId: input.turn_id,
@@ -42,7 +63,22 @@ try {
   try { rescueLauncherCommand = renderRescueLauncherCommand(join(pluginData.runtimePluginRoot, 'skills', 'rescue', 'launcher.mjs')); }
   catch { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: RESCUE_LAUNCHER_ERROR_CONTEXT } })); process.exit(0); }
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }
-  const unread = await unreadJobs(dataRoot, input.cwd, input.session_id);
-  const context = renderRescueUserPromptContext(rescueLauncherCommand, unread);
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } }));
+  // The claim is ATOMIC (peek+mark in one lock): overlapping prompts for the
+  // same session can never duplicate the Host notice. The claim is provisional
+  // until stdout delivery is CONFIRMED — a failed delivery releases the jobs
+  // back to unread for the next prompt (delivery contract design 308-317).
+  const unread = await claimNotifications(dataRoot, input.cwd, input.session_id);
+  const delivered = await new Promise((resolve) => {
+    const context = renderRescueUserPromptContext(rescueLauncherCommand, unread);
+    const payload = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } });
+    const onError = () => { process.stdout.removeListener('error', onError); resolve(false); };
+    process.stdout.once('error', onError);
+    process.stdout.write(payload, (writeError) => { process.stdout.removeListener('error', onError); resolve(!writeError); });
+  });
+  if (unread.length > 0) {
+    try {
+      if (delivered) await finalizeNotifications(dataRoot, input.cwd, input.session_id, unread.map((job) => job.id));
+      else await releaseNotifications(dataRoot, input.cwd, input.session_id, unread.map((job) => job.id));
+    } catch { /* the next prompt retries the bookkeeping; the announcement itself already went out */ }
+  }
 } catch (error) { process.stderr.write(`ZCode prompt hook failed safely: ${error?.code ?? 'HOOK_FAILED'}\n`); process.exitCode = 1; }

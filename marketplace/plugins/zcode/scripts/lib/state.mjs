@@ -27,6 +27,9 @@ import {
   rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
   RESCUE_BINDING_PARTITION_MAX_BYTES,
+  STOP_CAUSES,
+  validHostLifecycleRecord,
+  validStopIntent,
   validateRescueBinding,
   validateRescueBindingChildAuthority,
 } from './rescue-binding.mjs';
@@ -51,6 +54,7 @@ export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
+const HOST_LIFECYCLE_FIELDS = ['executionOwner', 'hostPlacement', 'ownerLifecycleEpoch'];
 const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
 const OWNER_INDEX_VERSION = 3;
 const OWNER_BINDING_VERSION = 1;
@@ -63,12 +67,12 @@ const RESCUE_BINDING_CLOSED_GC_MS = 30 * 24 * 60 * 60_000;
 const JOB_PATCH_FIELDS = new Set([
   'beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId',
   'lastCancelError', 'model', 'promptArtifact', 'resultArtifact', 'startedAt', 'startRevision',
-  'workerLeaseId', 'zcodeSessionId',
+  'stopCause', 'stopIntent', 'workerLeaseId', 'zcodeSessionId',
 ]);
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
   ['running', new Set(['running', 'cancelling', 'succeeded', 'failed'])],
-  ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
+  ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed', 'cancelling'])],
 ]);
 
 /** @typedef {{parentSessionId:string,childAgentId:string,childAgentType:string,operationId:string,originWorkspace:string,executionWorkspace:string,bindingDigest:string,agentPathDigest?:string,agentPath?:string}} RescueMigrationProof */
@@ -101,11 +105,19 @@ export function createStateStore(options) {
 
   return {
     dataRoot,
-    /** @param {JobReservation} reservation */
-    async reserveJob(reservation) {
+    /**
+     * Reserve one generic job. `options.beforePersist` (optional) runs INSIDE
+     * the job-state lock before any record is written — the atomic epoch fence:
+     * a pending prior-epoch receipt published while this reservation waited can
+     * still reject it, so no old-epoch job can slip past SessionEnd settlement.
+     * @param {JobReservation} reservation @param {{beforePersist?:()=>void|Promise<void>}} [options]
+     */
+    async reserveJob(reservation, options = {}) {
       validateReservation(reservation);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, reservation.workspace);
       return withFileLock(storage.lockPath, async () => {
+        await beforePersist?.();
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         await ensureOwnerIndex(storage, jobs);
         return reserveJobLocked(storage, jobs, reservation);
@@ -214,15 +226,97 @@ export function createStateStore(options) {
       });
     },
 
-    /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
-     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any}} input */
-    async revalidateBoundRescueStop(input) {
-      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isDigest(input.jobId)
-        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(input.status)
-        || input.zcodeSessionId !== undefined && !isSafeIdentifier(input.zcodeSessionId)
-        || input.status !== 'queued' && input.zcodeSessionId === undefined
-        || input.workerLeaseId !== undefined && !isDigest(input.workerLeaseId)) throw invalidRescueBinding();
+    /** Prove one terminal owned Rescue job still anchors the exact active binding — the public Resumability Indicator's binding-currency evidence. The answer is a plain boolean; no binding record crosses this seam.
+     * @param {{workspace:string,ownerSessionId:string,jobId:string}} input */
+    async rescueBindingPointsAtJob(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId) || !isDigest(input.jobId)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === input.jobId);
+        return matches.length === 1 && matches[0].state === 'active';
+      });
+    },
+
+    /**
+     * Resolve the exact active binding anchoring one owned Rescue job — the
+     * standalone cancelled-resume lookup that has no executor identity to key
+     * on. Returns the private binding record for the same-process reservation
+     * CAS, or null when no active binding anchors the job.
+     * @param {{workspace:string,ownerSessionId:string,jobId:string}} input
+     */
+    async rescueBindingForJob(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId) || !isDigest(input.jobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === input.jobId && record.state === 'active');
+        return matches.length === 1 ? structuredClone(matches[0]) : null;
+      });
+    },
+
+    /**
+     * Resolve the owner's single active Rescue binding — the staleness oracle
+     * for resume selection: a candidate that this active binding does not
+     * anchor is superseded, while a partition with no active binding at all
+     * marks legacy unbound history whose resume semantics stay unchanged.
+     * Returns the private binding record, or null when no active binding exists.
+     * @param {{workspace:string,ownerSessionId:string}} input
+     */
+    async rescueActiveBindingForOwner(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.state === 'active');
+        // Multiple sibling active bindings are legitimate (a fresh start on
+        // another child does not close its siblings), but they are ambiguous
+        // as a staleness oracle: surface them explicitly so callers fail
+        // closed instead of mistaking the partition for legacy history.
+        if (matches.length > 1) return { ambiguous: true, count: matches.length };
+        return matches.length === 1 ? structuredClone(matches[0]) : null;
+      });
+    },
+
+    /**
+     * Prove whether the owner's binding partition holds any closed binding
+     * records at all — the closed-history oracle for resume selection: a
+     * partition containing closed bindings must never authorize a resume even
+     * when no active binding exists, because closed history stays closed.
+     * @param {{workspace:string,ownerSessionId:string}} input
+     */
+    async rescueOwnerPartitionHasClosedBindings(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        for (const record of snapshot.records.values()) if (record.state === 'closed') return true;
+        return false;
+      });
+    },
+
+    /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
+     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any,signal?:AbortSignal,timeoutMs?:number}} input Optional trailing lock budget. */
+    async revalidateBoundRescueStop(input) {
+      // The bounded SessionEnd wrapper threads signal/timeoutMs through this
+      // same object: they are lock options, not part of the JSON stop target,
+      // so the exact-binding validation must see an explicitly-picked target —
+      // absent fields (an undefined zcodeSessionId on a queued job, a null
+      // workerLeaseId) are normalized away rather than failing JSON pliancy.
+      const { signal, timeoutMs, ...rest } = input ?? {};
+      const target = {
+        workspace: rest.workspace, jobId: rest.jobId, ownerSessionId: rest.ownerSessionId, status: rest.status,
+        ...(rest.zcodeSessionId === undefined ? {} : { zcodeSessionId: rest.zcodeSessionId }),
+        ...(rest.workerLeaseId === undefined || rest.workerLeaseId === null ? {} : { workerLeaseId: rest.workerLeaseId }),
+        ...(rest.expected === undefined ? {} : { expected: rest.expected }),
+      };
+      if (!isPlainJsonObject(target) || !isNonEmptyString(target.workspace) || !isDigest(target.jobId)
+        || !isBoundedOwnerSessionId(target.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(target.status)
+        || target.zcodeSessionId !== undefined && !isSafeIdentifier(target.zcodeSessionId)
+        || target.status !== 'queued' && target.zcodeSessionId === undefined
+        || target.workerLeaseId !== undefined && !isDigest(target.workerLeaseId)) throw invalidRescueBinding();
+      const lockOptions = boundedLockOptions({ signal, timeoutMs });
+      const storage = await jobStorage(dataRoot, target.workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readExactBindingJob(storage, input.jobId);
         const sameTarget = job.id === input.jobId && job.ownerSessionId === input.ownerSessionId
@@ -241,15 +335,22 @@ export function createStateStore(options) {
           || Object.keys(input.expected).sort().join(',') !== 'bindingKey,bindingUpdatedAt,currentJobId,operationId,workerLeaseId'
           || JSON.stringify(input.expected) !== JSON.stringify(guard))) return { kind: 'stale', job: structuredClone(job) };
         return { kind: 'current', job: structuredClone(job), guard };
-      });
+      }, lockOptions);
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
-    async reserveFreshRescueJob(input) {
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    async reserveFreshRescueJob(input, options = {}) {
       validateRescueReservationInput(input);
       validateOptionalBindingExpectation(input);
+      const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        // Atomic epoch fence: the fail-closed pending prior-epoch receipt check
+        // runs inside the reservation's own critical section, before any
+        // binding or job record is written, so a receipt settled by SessionEnd
+        // while this reservation waited on the lock still rejects it.
+        await beforePersist?.();
         const lockIdentity = await captureStateLockIdentity(storage);
         const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode, true);
         const exactIdentity = context.identity;
@@ -261,7 +362,7 @@ export function createStateStore(options) {
         if (readOnlyPrevious !== null) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
-        const job = makeReservedJob(storage, jobs, input.reservation, 'bound');
+        const job = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle);
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
@@ -282,13 +383,19 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof}} input */
-    async reserveBoundRescueContinuation(input) {
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    async reserveBoundRescueContinuation(input, options = {}) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
       if (input.expectedCurrentJobId !== undefined && !isDigest(input.expectedCurrentJobId)) throw staleRescueBinding();
+      const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        // Atomic epoch fence (same contract as reserveFreshRescueJob): the
+        // pending prior-epoch receipt check runs inside this reservation's own
+        // critical section before the continuation record is written.
+        await beforePersist?.();
         const lockIdentity = await captureStateLockIdentity(storage);
         const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode, true);
         const resolved = await resolveBindingForResumeLocked(storage, {
@@ -307,7 +414,7 @@ export function createStateStore(options) {
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound');
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle);
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const migrating = resolved.binding.state === 'closed';
@@ -405,8 +512,8 @@ export function createStateStore(options) {
     /** Terminalize one queued recovery candidate only if its exact effective worker lease is unchanged.
      * `null` proves no claimed or private fenced lease existed at the caller's final probe.
      * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId
-     * @param {any} rollback @param {'failed'|'cancelled'} nextStatus @param {Record<string,unknown>} [patch] */
-    async finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}) {
+     * @param {any} rollback @param {'failed'|'cancelled'} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
       if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
         || rollback !== undefined && !isPlainJsonObject(rollback)
@@ -417,7 +524,7 @@ export function createStateStore(options) {
       }
       return transitionStoredJob(dataRoot, workspace, jobId, ['queued'], nextStatus, patch, true, {
         ...(rollback === undefined ? {} : { migrationRollback: rollback }),
-        publicationHook, recoveryWorkerLeaseId: expectedWorkerLeaseId,
+        publicationHook, recoveryWorkerLeaseId: expectedWorkerLeaseId, lockOptions: boundedLockOptions(options),
       });
     },
 
@@ -579,6 +686,10 @@ export function createStateStore(options) {
         if (record.state === 'closed') {
           return { kind: 'closed', binding: structuredClone(record) };
         }
+        // A confirmed Host-owned cancelled winner with an accepted ZCode session keeps its
+        // exact binding for a later authorized resume; pre-session cancellations and
+        // historical records revoke on cancellation.
+        if (resumableHostOwnedCancellation(job)) return { kind: 'preserved', binding: structuredClone(record) };
         const lockIdentity = await captureStateLockIdentity(storage);
         const binding = closeRescueBinding(record, { operationId: record.operationId, reason: 'cancel' });
         const after = bindingSnapshotWith(snapshot, binding);
@@ -715,9 +826,11 @@ export function createStateStore(options) {
      * @param {string} nextStatus
      * @param {Record<string, unknown>} [patch]
      */
-    async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number,stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] Optional bounded lock budget (defaults preserved when omitted) plus an epoch-revalidation callback: on a cancelling transition with a stop-intent patch it runs inside the state lock and may override the stop cause from fresher boundary evidence. */
+    async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
-      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false);
+      if (options?.stopCauseRevalidator !== undefined && typeof options.stopCauseRevalidator !== 'function') throw invalidRescueBinding();
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false, { lockOptions: boundedLockOptions(options), stopCauseRevalidator: options.stopCauseRevalidator });
     },
 
     /**
@@ -725,7 +838,8 @@ export function createStateStore(options) {
      * @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses
      * @param {string} nextStatus @param {Record<string,unknown>} [patch]
      */
-    async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number,stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] Optional bounded lock budget (defaults preserved when omitted) plus an epoch-revalidation callback: on a cancelling transition with a stop-intent patch it runs inside the state lock and may override the stop cause from fresher boundary evidence. */
+    async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
       if (!TERMINAL_STATUSES.has(nextStatus) || Object.hasOwn(patch, 'finishedAt')) {
         throw new PluginError('JOB_FINISH_INPUT_INVALID', 'Job finalization input is invalid.', {
@@ -733,7 +847,27 @@ export function createStateStore(options) {
           details: { jobId, nextStatus },
         });
       }
-      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true);
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true, { lockOptions: boundedLockOptions(options) });
+    },
+
+    /** One-way receipt-wins correction: under the state lock, rewrite a retained cancelling writable Rescue's persisted `host-coordination-loss` stop intent to `session-end` after its epoch receipt was published; any other status, cause, or record is returned unchanged. @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async correctCoordinationLossStopCause(workspace, jobId, options = {}) {
+      if (!isNonEmptyString(workspace) || !isDigest(jobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.command !== 'rescue' || job.readOnly !== false || job.status !== 'cancelling'
+          || !validStopIntent(job.stopIntent) || job.stopIntent.cause !== 'host-coordination-loss') return job;
+        const corrected = {
+          ...job,
+          stopIntent: { ...job.stopIntent, cause: 'session-end' },
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString(),
+        };
+        validateJobRecord(corrected, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+        await atomicWriteJson(path, corrected);
+        return corrected;
+      }, boundedLockOptions(options));
     },
 
     /** Terminalize a failed execution attempt only while the job is unclaimed or carries this attempt's exact lease.
@@ -747,8 +881,8 @@ export function createStateStore(options) {
     },
 
     /** Release and clear one exact terminal private reservation while holding the State proof lock.
-     * @param {string} workspace @param {string} jobId @param {{releaseExecutionReservation:(proof:any)=>Promise<void>}} identity */
-    async cleanupTerminalExecutionReservation(workspace, jobId, identity) {
+     * @param {string} workspace @param {string} jobId @param {{releaseExecutionReservation:(proof:any)=>Promise<void>}} identity @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async cleanupTerminalExecutionReservation(workspace, jobId, identity, options = {}) {
       if (!isNonEmptyString(workspace) || !isDigest(jobId)
         || !identity || typeof identity.releaseExecutionReservation !== 'function') throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
@@ -770,7 +904,7 @@ export function createStateStore(options) {
         cleaned.updatedAt = new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString();
         validateJobRecord(cleaned, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, cleaned); return cleaned;
-      });
+      }, boundedLockOptions(options));
     },
 
     /**
@@ -831,14 +965,16 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {string} workspace @param {string} jobId */
-    async readJob(workspace, jobId) {
+    /** @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+    async readJob(workspace, jobId, options = {}) {
+      const { signal, timeoutMs } = options ?? {};
+      const lockOptions = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, () => readJobRecord(
         jobPath(storage.jobsDirectory, jobId),
         jobId,
         storage.workspacePath,
-      ));
+      ), lockOptions);
     },
 
     /** @param {string} workspace */
@@ -851,21 +987,44 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {string} workspace @param {string} ownerSessionId */
-    async listOwnedJobs(workspace, ownerSessionId) {
+    /** @param {string} workspace @param {string} ownerSessionId
+     * @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded
+     * stage budget forwarded to the workspace job-state lock. When omitted the
+     * existing default five-second lock wait with no abort signal is preserved. */
+    async listOwnedJobs(workspace, ownerSessionId, options = {}) {
       if (!isNonEmptyString(workspace) || !isBoundedOwnerSessionId(ownerSessionId)) {
         throw new PluginError('OWNED_JOB_LIST_INPUT_INVALID', 'Owned job listing input is invalid.', {
           category: 'state',
           remedy: 'Provide one workspace and its exact bounded Codex session identifier.',
         });
       }
+      const { signal, timeoutMs } = options ?? {};
+      const lockOptions = { ...(signal === undefined ? {} : { signal }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         await ensureOwnerIndex(storage);
-        const jobs = await readOwnedJobs(storage, ownerSessionId);
+        const jobs = await readOwnedJobs(storage, ownerSessionId, signal);
         return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
           || left.id.localeCompare(right.id));
-      });
+      }, lockOptions);
+    },
+
+    /** Lock-free read-only owner listing for callers that ALREADY hold the
+     * workspace job-state lock (SessionEnd's release fence): a re-entrant
+     * listOwnedJobs would deadlock against itself. Reads are rename-atomic and
+     * fail closed on torn or invalid records.
+     * @param {string} workspace @param {string} ownerSessionId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+    async peekOwnedJobs(workspace, ownerSessionId, options = {}) {
+      if (!isNonEmptyString(workspace) || !isBoundedOwnerSessionId(ownerSessionId)) {
+        throw new PluginError('OWNED_JOB_INDEX_INVALID', 'Provide one workspace and its exact bounded Codex session identifier.', {
+          remedy: 'Provide one workspace and its exact bounded Codex session identifier.',
+        });
+      }
+      const { signal } = options ?? {};
+      const storage = await jobStorage(dataRoot, workspace);
+      const jobs = await readOwnedJobs(storage, ownerSessionId, signal);
+      return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id));
     },
   };
 }
@@ -1029,7 +1188,11 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
   });
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null}} [options] */
+/** @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
+function boundedLockOptions(options = {}) {
+  return { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
+}
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null,lockOptions?:{signal?:AbortSignal,timeoutMs?:number},stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
@@ -1041,7 +1204,21 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     const path = jobPath(storage.jobsDirectory, jobId);
     const job = await readJobRecord(path, jobId, storage.workspacePath);
-    if (Object.hasOwn(options, 'recoveryWorkerLeaseId')) {
+    // Epoch-revalidation seam (codex, Task 7): when a stop-intent patch is
+    // applied, the caller-supplied revalidator runs INSIDE the state lock and
+    // may override the stop cause from fresher boundary evidence (e.g. a
+    // SessionEnd receipt published during the coordination-loss race), so the
+    // durable cause can never lag the authoritative boundary.
+    let patchedForStop = patch;
+    const declaredStopIntent = /** @type {Record<string, unknown>} */ (patch.stopIntent);
+    if (typeof options.stopCauseRevalidator === 'function' && Object.hasOwn(patch, 'stopIntent') && nextStatus === 'cancelling') {
+      const revisedCause = await options.stopCauseRevalidator(job);
+      if (typeof revisedCause === 'string' && revisedCause !== declaredStopIntent.cause) {
+        patchedForStop = { ...patch, stopIntent: { ...declaredStopIntent, cause: revisedCause } };
+      }
+    }
+    const effectivePatch = patchedForStop;
+    if (Object.hasOwn(effectivePatch, 'recoveryWorkerLeaseId')) {
       const effectiveWorkerLeaseId = job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null;
       if (effectiveWorkerLeaseId !== options.recoveryWorkerLeaseId) throw workerLeaseConflict(jobId);
     }
@@ -1060,11 +1237,11 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
         return job;
       }
     }
-    const effectivePatch = assignFinishedAt ? {
-      ...patch,
+    const terminalEffectivePatch = assignFinishedAt ? {
+      ...patchedForStop,
       finishedAt: new Date(Math.max(Date.now(), Date.parse(job.lastActivityAt ?? job.startedAt ?? job.createdAt))).toISOString(),
-    } : patch;
-    validateJobPatch(job, nextStatus, effectivePatch, jobId);
+    } : patchedForStop;
+    validateJobPatch(job, nextStatus, terminalEffectivePatch, jobId);
     if (TERMINAL_STATUSES.has(job.status)) {
       throw new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, {
         category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status: job.status },
@@ -1080,17 +1257,17 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
         category: 'state', remedy: 'Use a transition allowed by the job state machine.', details: { from: job.status, jobId, to: nextStatus },
       });
     }
-    if (job.status === 'cancelling' && nextStatus === 'running' && !isCancellationError(effectivePatch.lastCancelError)) {
+    if (job.status === 'cancelling' && nextStatus === 'running' && !isCancellationError(terminalEffectivePatch.lastCancelError)) {
       throw new PluginError('CANCEL_ERROR_REQUIRED', 'A failed cancellation must record lastCancelError.', {
         category: 'state', remedy: 'Include the stop failure message in lastCancelError.', details: { jobId },
       });
     }
     const updated = {
-      ...job, ...effectivePatch, id: job.id, status: nextStatus,
+      ...job, ...terminalEffectivePatch, id: job.id, status: nextStatus,
       updatedAt: new Date(Math.max(
         Date.now(), Date.parse(job.createdAt), Date.parse(job.updatedAt),
-        typeof effectivePatch.startedAt === 'string' ? Date.parse(effectivePatch.startedAt) : Number.NEGATIVE_INFINITY,
-        typeof effectivePatch.finishedAt === 'string' ? Date.parse(effectivePatch.finishedAt) : Number.NEGATIVE_INFINITY,
+        typeof terminalEffectivePatch.startedAt === 'string' ? Date.parse(terminalEffectivePatch.startedAt) : Number.NEGATIVE_INFINITY,
+        typeof terminalEffectivePatch.finishedAt === 'string' ? Date.parse(terminalEffectivePatch.finishedAt) : Number.NEGATIVE_INFINITY,
       )).toISOString(),
       workspace: job.workspace,
     };
@@ -1123,17 +1300,20 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       && queuedClassification?.bindingState !== 'revoked') {
       await restoreQueuedMigrationLocked(storage, job, migrationRollback);
       await publicationCheckpoint(options.publicationHook ?? (async () => {}), 'rollback:terminal');
-    } else if (nextStatus === 'cancelled' && job.command === 'rescue') {
+    } else if (nextStatus === 'cancelled' && job.command === 'rescue' && !resumableHostOwnedCancellation(job)) {
       await closeCurrentRescueBindingForCancellationLocked(storage, job);
     }
     await atomicWriteJson(path, updated);
     return options.failedExecutionLeaseId === undefined ? updated : { kind: 'settled', job: updated };
-  });
+  }, options.lockOptions ?? {});
 }
 
-/** Close the exact current operation before publishing its cancelled job. A crash between
- * these writes is fail-closed: the operation is revoked while the job remains retryably
- * cancelling. @param {any} storage @param {any} job */
+/** Close the exact current operation before publishing its cancelled job — the historical
+ * behavior for records that lack the indivisible Host-owned lifecycle trio or an accepted
+ * ZCode session; a record carrying both instead preserves its exact binding across confirmed
+ * cancellation for a later authorized resume. A crash between these writes is fail-closed:
+ * the operation is revoked while the job remains retryably cancelling.
+ * @param {any} storage @param {any} job */
 async function closeCurrentRescueBindingForCancellationLocked(storage, job) {
   const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
   const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
@@ -1195,8 +1375,8 @@ async function reserveJobLocked(storage, jobs, reservation) {
   return job;
 }
 
-/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] */
-function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound') {
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [lifecycle] */
+function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound', lifecycle = undefined) {
   validateReservation(reservation);
   if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
     throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
@@ -1210,6 +1390,7 @@ function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'un
     command: reservation.command, readOnly: reservation.readOnly,
     permissionSnapshot: reservation.permissionSnapshot,
     ...(reservation.command === 'rescue' && reservation.readOnly === false ? { rescueReservationKind } : {}),
+    ...(lifecycle === undefined ? {} : lifecycle),
     ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
     status: 'queued', createdAt: timestamp, updatedAt: timestamp,
   };
@@ -1825,6 +2006,53 @@ function isRestoredActiveContinuationBinding(record, prior) {
 /** @param {unknown} value */
 function validRescueReservationKind(value) { return value === 'bound' || value === 'unbound'; }
 
+/** The optional reservation input for either Rescue route carries the indivisible Host-owned execution trio exactly, or nothing. @param {any} lifecycle */
+function validateHostLifecycleInput(lifecycle) {
+  if (lifecycle === undefined) return undefined;
+  if (!isPlainJsonObject(lifecycle) || Object.keys(lifecycle).sort().join('\0') !== [...HOST_LIFECYCLE_FIELDS].sort().join('\0')
+    || !validHostLifecycleRecord(lifecycle)) throw invalidRescueBinding();
+  return { ownerLifecycleEpoch: lifecycle.ownerLifecycleEpoch, executionOwner: lifecycle.executionOwner, hostPlacement: lifecycle.hostPlacement };
+}
+
+/**
+ * Validate the optional in-lock reservation gate. Production callers pass one
+ * fail-closed function (the atomic epoch fence); the option never reaches the
+ * persisted record.
+ * @param {{beforePersist?:()=>void|Promise<void>}} [options]
+ * @returns {(() => void|Promise<void>)|undefined}
+ */
+function validateBeforePersistOption(options = {}) {
+  if (options === undefined) return undefined;
+  if (typeof options !== 'object' || options === null || Array.isArray(options)
+    || Object.getPrototypeOf(options) !== Object.prototype) {
+    throw new TypeError('beforePersist reservation options accept one optional function');
+  }
+  if (Object.keys(options).some((key) => key !== 'beforePersist')
+    || (options.beforePersist !== undefined && typeof options.beforePersist !== 'function')) {
+    throw new TypeError('beforePersist reservation options accept one optional function');
+  }
+  return options.beforePersist;
+}
+
+/** The indivisible Host-owned trio marks the writable Rescue records whose confirmed cancellation preserves the exact binding. @param {any} job */
+function hasHostOwnedLifecycle(job) {
+  return HOST_LIFECYCLE_FIELDS.every((field) => field in job) && job.command === 'rescue' && job.readOnly === false
+    && validHostLifecycleRecord(job);
+}
+
+/** A confirmed cancelled Host-owned winner preserves its exact binding only where its ZCode session was accepted; a queued pre-session cancellation is not resumable and revokes exactly like the historical path. @param {any} job */
+export function resumableHostOwnedCancellation(job) {
+  return hasHostOwnedLifecycle(job) && typeof job.zcodeSessionId === 'string';
+}
+
+/** A proven missing job — distinct from corruption, permission, unsafe-path, or
+ * lock-contention uncertainty. Session settlement may discharge an obligation
+ * only on this signal; every other read failure must keep the obligation pending.
+ * @param {unknown} error */
+export function isJobNotFound(error) {
+  return error instanceof PluginError && error.code === 'JOB_NOT_FOUND';
+}
+
 /** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
 async function resolveBindingJobsLocked(storage, binding) {
   const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
@@ -2031,6 +2259,7 @@ function validateRescueReservationInput(input) {
     || input.workspace !== input.reservation.workspace
     || !['zcode-rescue', 'default'].includes(input.executor.agentType)
     || input.workspace !== input.executor.workspace || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
+  validateHostLifecycleInput(input.lifecycle);
   reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
 }
 
@@ -2122,15 +2351,18 @@ function validAgentPath(value) {
   return isCanonicalCodexAgentPath(value);
 }
 
-/** @param {any} job @param {string} parentSessionId @param {string} workspace */
+/** A Host-owned anchor may also be a confirmed cancelled winner whose accepted session stays resumable.
+ * @param {any} job @param {string} parentSessionId @param {string} workspace */
 function validateAnchorJob(job, parentSessionId, workspace) {
   if (!job || job.workspace !== workspace || job.ownerSessionId !== parentSessionId || job.command !== 'rescue'
-    || typeof job.zcodeSessionId !== 'string' || !['running', 'succeeded', 'failed'].includes(job.status)) throw invalidRescueBinding();
+    || typeof job.zcodeSessionId !== 'string'
+    || !['running', 'succeeded', 'failed'].includes(job.status) && !(job.status === 'cancelled' && resumableHostOwnedCancellation(job))) throw invalidRescueBinding();
 }
-/** @param {any} job @param {string} parentSessionId @param {string} workspace */
+/** A Host-owned current job may also be a confirmed cancelled winner whose exact binding remains resumable.
+ * @param {any} job @param {string} parentSessionId @param {string} workspace */
 function validateCurrentJob(job, parentSessionId, workspace) {
   if (!job || job.workspace !== workspace || job.ownerSessionId !== parentSessionId || job.command !== 'rescue'
-    || job.status === 'cancelled') throw invalidRescueBinding();
+    || job.status === 'cancelled' && !resumableHostOwnedCancellation(job)) throw invalidRescueBinding();
 }
 function invalidRescueBinding() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function notRunnableRescueBinding() { return new PluginError('RESCUE_BINDING_NOT_RUNNABLE', 'The queued Rescue reservation was never advanced to its runnable binding.', { category: 'state', remedy: 'Terminalize the interrupted reservation and retry from the persisted child operation.' }); }
@@ -2253,7 +2485,8 @@ async function readRescueReservationEvidence(storage, job) {
 }
 
 /** @param {any} storage @param {string} ownerSessionId */
-async function readOwnedJobs(storage, ownerSessionId) {
+/** @param {any} storage @param {string} ownerSessionId @param {AbortSignal|undefined} signal */
+async function readOwnedJobs(storage, ownerSessionId, signal = undefined) {
   const directory = ownerBindingDirectory(storage.ownerIndexDirectory, ownerSessionId);
   let entries;
   try {
@@ -2270,6 +2503,10 @@ async function readOwnedJobs(storage, ownerSessionId) {
   }
   const jobs = [];
   for (const entry of canonical) {
+    // The lock budget only gates acquisition: a 10k-entry owner index must
+    // observe the SessionEnd abort signal per entry instead of scanning past
+    // the native deadline.
+    signal?.throwIfAborted();
     const jobId = entry.name.slice(0, -'.json'.length);
     let binding;
     try {
@@ -2643,6 +2880,11 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('progressProbe' in job) || validProgressProbe(job.progressProbe))
     && (!('rescueReservationKind' in job) || job.command === 'rescue' && job.readOnly === false
       && validRescueReservationKind(job.rescueReservationKind))
+    && (!HOST_LIFECYCLE_FIELDS.some((field) => field in job) || hasHostOwnedLifecycle(job))
+    && (!('stopIntent' in job) || job.command === 'rescue' && job.readOnly === false && validStopIntent(job.stopIntent))
+    && (!('stopCause' in job) || job.status === 'cancelled' && job.command === 'rescue' && job.readOnly === false
+      && STOP_CAUSES.has(job.stopCause) && validStopIntent(job.stopIntent) && job.stopIntent.cause === job.stopCause)
+    && (!hasHostOwnedLifecycle(job) || job.status !== 'cancelled' || 'stopCause' in job)
     && (!('rescueMigrationRollback' in job) || validPersistedMigrationRollback(job.rescueMigrationRollback, job))
     && (!('rescueContinuationOrigin' in job) || validRescueContinuationOrigin(job.rescueContinuationOrigin, job))
     && (!('rescueExecutionClaim' in job) || validRescueExecutionClaim(job.rescueExecutionClaim, job))
@@ -2669,7 +2911,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('finishedAt' in job) || terminal)
     && (!('resultArtifact' in job) || job.status === 'succeeded')
     && (!('error' in job) || job.status === 'failed' || job.status === 'cancelled')
-    && (!('lastCancelError' in job) || job.status === 'running' || terminal);
+    && (!('lastCancelError' in job) || job.status === 'running' || terminal
+      || (job.status === 'cancelling' && job.command === 'rescue' && job.readOnly === false && validStopIntent(job.stopIntent)));
   const createdAt = validShape ? Date.parse(job.createdAt) : Number.NaN;
   const startedAt = validShape && 'startedAt' in job ? Date.parse(job.startedAt) : undefined;
   const finishedAt = validShape && 'finishedAt' in job ? Date.parse(job.finishedAt) : undefined;
@@ -2746,10 +2989,31 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     || (nextStatus !== 'failed' && nextStatus !== 'cancelled'))) invalidFields.push('error');
   if ('exitCode' in patch && (patch.exitCode !== null && !Number.isSafeInteger(patch.exitCode)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('exitCode');
+  const writableRescueJob = job.command === 'rescue' && job.readOnly === false;
+  const stopIntent = /** @type {any} */ ('stopIntent' in patch ? patch.stopIntent : job.stopIntent);
   if ('lastCancelError' in patch
     && !(currentStatus === 'cancelling' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
     && !(currentStatus === 'running' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
-    && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)) invalidFields.push('lastCancelError');
+    && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)
+    // A retained Host-owned stop keeps its cancelling status while persisting
+    // its bounded retry diagnostic on the same record.
+    && !(currentStatus === 'cancelling' && nextStatus === 'cancelling' && isCancellationError(patch.lastCancelError)
+      && writableRescueJob && validStopIntent(stopIntent))) invalidFields.push('lastCancelError');
+  if ('stopIntent' in patch && (!writableRescueJob || !validStopIntent(patch.stopIntent) || !ACTIVE_STATUSES.has(currentStatus)
+    // A persisted intent is the durable authorization of this stop: only its exact
+    // idempotent replay is accepted, never a later replacement.
+    || 'stopIntent' in job && !samePersistedJsonValue(job.stopIntent, patch.stopIntent))) invalidFields.push('stopIntent');
+  // A new-schema non-queued stop attempt must carry its durable authorization: the effective
+  // stop intent — persisted earlier or supplied in this patch — before entering cancelling.
+  if (writableRescueJob && hasHostOwnedLifecycle(job) && currentStatus !== 'queued' && nextStatus === 'cancelling'
+    && !validStopIntent(stopIntent)) invalidFields.push('stopIntent');
+  if ('stopCause' in patch) {
+    // A stop cause labels only a confirmed cancelled writable Rescue winner and must match
+    // the durable stop intent — the one in this patch when present, else the persisted intent.
+    const stopCause = /** @type {any} */ (patch.stopCause);
+    if (!writableRescueJob || !STOP_CAUSES.has(stopCause) || nextStatus !== 'cancelled'
+      || !validStopIntent(stopIntent) || stopIntent.cause !== stopCause) invalidFields.push('stopCause');
+  }
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   if (boundaryFields.some((field) => field in patch)
     && (currentStatus !== 'running' || nextStatus !== 'running' || 'inputId' in job

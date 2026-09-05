@@ -541,6 +541,30 @@ test('installed named and generic foreground and choice policies independently b
   }
 });
 
+test('installed Host-managed Rescue contract selects placement by complexity with one constant child command', async () => {
+  const role = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const generic = assertRescueRouteContract(skill).genericMessage.text;
+  // Both placements hand the child the same constant child command.
+  assert.equal(role.match(/invoke-prepared rescue/gu)?.length, 1);
+  assert.equal(generic.match(/invoke-prepared rescue/gu)?.length, 1);
+  // The generated Role describes the attached host-managed execution reality.
+  assert.match(role, /placement/i);
+  assert.match(role, /attached/i);
+  assert.match(role, /durable winner/i);
+  assert.doesNotMatch(role, /detached/i);
+  assert.doesNotMatch(generic, /detached/i);
+  // The public skill owns the explicit selection rules and the placement-only envelope.
+  assert.match(skill, /without asking the user another placement question/i);
+  assert.match(skill, /flag is authoritative/i);
+  assert.match(skill, /small and clearly bounded/i);
+  assert.match(skill, /multi-step, open-ended, or likely long/i);
+  assert.match(skill, /without asking for confirmation/i);
+  assert.match(skill, /`execution` is only `foreground` or `background`/);
+  assert.match(skill, /never adds task text or a private identifier/i);
+  assert.doesNotMatch(skill, /detached/i);
+});
+
 test('independent installed lifecycle validation rejects a caller-approved shell-injectable launcher', async () => {
   const named = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
   for (const launcherCommand of [
@@ -808,7 +832,9 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const executorArtifact = executorArtifacts.find((bytes) => JSON.parse(bytes).kind === 'subagent-executor');
     assert.ok(executorArtifact, 'installed hooks must persist the exact stopped executor record');
     const executor = JSON.parse(executorArtifact);
-    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.match(executor.ownerLifecycleEpochStartedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.match(executor.ownerLifecycleEpoch, /^[a-f0-9]{64}$/u);
     assert.equal(executor.kind, 'subagent-executor'); assert.equal(executor.active, false);
     assert.equal(executor.agentId, '019fe6e0-4764-7192-83ba-0b0cc2c48660'); assert.equal(executor.agentType, agentType);
     assert.equal(executor.parentSessionId, parentSessionId); assert.equal(executor.parentTurnId, 'turn-original');

@@ -14,6 +14,10 @@ export const RESCUE_BINDING_MAX_RECORDS = 1024;
 export const RESCUE_BINDING_PARTITION_MAX_BYTES = 16 * 1024 * 1024;
 export const RESCUE_BINDING_PARTITION_VERSION = 1;
 export const RESCUE_BINDING_AUTHORITY_MAX_BYTES = 16 * 1024;
+export const EXECUTION_OWNERS = new Set(['host-child']);
+export const HOST_PLACEMENTS = new Set(['foreground', 'background']);
+export const STOP_CAUSES = new Set(['user', 'session-end', 'host-coordination-loss']);
+export const STOP_INTENT_VERSION = 1;
 
 const V1_KEYS = [
   'anchorJobId', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
@@ -34,6 +38,7 @@ const ADOPTION_AUTHORITY_KEYS = [
 const CLOSE_REASONS = new Set(['cancel', 'session-ended', 'invalidated']);
 const SUPERSEDED_KEYS = ['anchorJobId', 'closedAt', 'closeReason', 'currentJobId', 'operationId'];
 const EXECUTOR_AGENT_TYPES = new Set(['zcode-rescue', 'default']);
+const STOP_INTENT_KEYS = ['cause', 'requestedAt', 'version'];
 
 /** @param {{parentSessionId:string,executorAgentId:string,workspace:string}} input */
 export function rescueBindingKey(input) {
@@ -287,6 +292,43 @@ function validateSuperseded(value) {
     seen.add(entry.operationId);
   }
   return structuredClone(value);
+}
+
+/** One durable stop decision for an exact Companion Run: exact keys, version, bounded cause, and canonical timestamp. @param {unknown} value */
+export function validStopIntent(value) {
+  const intent = /** @type {any} */ (value);
+  return plain(intent) && Object.keys(intent).sort().join('\0') === [...STOP_INTENT_KEYS].sort().join('\0')
+    && intent.version === STOP_INTENT_VERSION && STOP_CAUSES.has(intent.cause) && canonicalTimestamp(intent.requestedAt);
+}
+
+/** A Host lifecycle epoch is the exact 64-hex digest shape `hostLifecycleEpoch` publishes. @param {unknown} value */
+export function validLifecycleEpoch(value) { return digest(value); }
+
+/** The indivisible Host-owned execution trio of one new writable Rescue record. @param {any} record */
+export function validHostLifecycleRecord(record) {
+  return plain(record) && validLifecycleEpoch(record.ownerLifecycleEpoch)
+    && EXECUTION_OWNERS.has(record.executionOwner) && HOST_PLACEMENTS.has(record.hostPlacement);
+}
+
+/** The durable stop intent for one cancellation attempt: an already persisted intent replays exactly, a Host-owned record without one is minted for the requested bounded cause, and legacy records carry none. @param {any} record @param {string} cause @param {() => string} [clock] */
+export function hostOwnedCancellationIntent(record, cause, clock = () => new Date().toISOString()) {
+  if (!validHostLifecycleRecord(record)) return undefined;
+  if (validStopIntent(record.stopIntent)) return record.stopIntent;
+  if (!STOP_CAUSES.has(cause)) throw invalidBinding();
+  return { version: STOP_INTENT_VERSION, cause, requestedAt: clock() };
+}
+
+/** Extra patch fields for a stop-start transition: the exact intent — persisted or freshly minted — for a Host-owned record, nothing for legacy records. @param {any} job @param {string} stopCause */
+export function hostOwnedStopIntentPatch(job, stopCause) {
+  const stopIntent = hostOwnedCancellationIntent(job, stopCause);
+  return stopIntent === undefined ? {} : { stopIntent };
+}
+
+/** Extra patch fields for a cancelled-winner patch: nothing for legacy records, the confirmed cause for a Host-owned winner, and a freshly minted intent too when none was persisted. @param {any} job @param {string} stopCause */
+export function hostOwnedCancelledPatch(job, stopCause) {
+  const stopIntent = hostOwnedCancellationIntent(job, stopCause);
+  if (stopIntent === undefined) return {};
+  return validStopIntent(job.stopIntent) ? { stopCause: stopIntent.cause } : { stopIntent, stopCause: stopIntent.cause };
 }
 
 /** @param {unknown} value */

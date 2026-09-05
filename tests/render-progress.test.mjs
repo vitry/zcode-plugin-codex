@@ -205,6 +205,36 @@ test('legacy string terminal errors render and absent public messages are omitte
   }
 });
 
+test('terminal views expose resumable and Stop Cause without a ZCode session id', () => {
+  const cancelled = {
+    id,
+    command: 'rescue',
+    status: 'cancelled',
+    createdAt: '2026-09-02T00:00:00.000Z',
+    startedAt: '2026-09-02T00:00:01.000Z',
+    finishedAt: '2026-09-02T00:01:00.000Z',
+    lastActivityAt: '2026-09-02T00:00:59.000Z',
+    error: { message: 'stopped at the Host SessionEnd Boundary' },
+    zcodeSessionId: 'private-zcode-session',
+  };
+  const output = renderOutput({ type: 'job', job: { ...cancelled, resumable: true, stopCause: 'session-end' } });
+  assert.match(output, /Resumable: yes/);
+  assert.match(output, /Rescue hint: run \$zcode:rescue --resume to continue this session/);
+  const cancelJson = renderOutput({ type: 'job', job: { ...cancelled, resumable: true } }, { json: true });
+  assert.doesNotMatch(cancelJson, /private-zcode-session/);
+  const resultOutput = renderOutput({ result: 'resumable result', job: { ...cancelled, resumable: true } });
+  assert.match(resultOutput, /Resumable: yes/);
+  assert.match(resultOutput, /Rescue hint: run \$zcode:rescue --resume to continue this session/);
+  assert.doesNotMatch(resultOutput, /Error:/);
+  assert.match(output, /Stop cause: session-end/);
+  assert.doesNotMatch(output, /zcodeSessionId/);
+
+  const blocked = renderOutput({ type: 'job', job: { ...cancelled, resumable: false } });
+  assert.match(blocked, /Resumable: no/);
+  assert.match(renderOutput({ type: 'job', job: { ...cancelled, resumable: true, stopCause: 'host-coordination-loss' } }), /Stop cause: host-coordination-loss/);
+  assert.doesNotMatch(renderOutput({ type: 'job', job: cancelled }), /Resumable:|Stop cause:/u);
+});
+
 test('successful result rendering wins over terminal job error rendering', () => {
   assert.equal(renderOutput({
     result: 'exact successful result',
@@ -237,6 +267,20 @@ test('compact legacy and queued jobs show explicit missing progress placeholders
   assert.equal(renderOutput({
     jobs: [{ id, status: 'queued', command: 'review', owner: 'same-owner' }],
   }), `${id} queued review same-owner phase=— activity=—\n`);
+});
+
+test('JSON redaction strips internal Host lifecycle execution-ownership proof', () => {
+  const job = {
+    id, command: 'rescue', status: 'cancelled', owned: true, owner: 'same-owner',
+    ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background',
+    stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-02T00:00:00.000Z' },
+    stopCause: 'session-end', resumable: true,
+  };
+  const rendered = renderOutput({ job }, { json: true });
+  assert.doesNotMatch(rendered, /ownerLifecycleEpoch|executionOwner|hostPlacement|stopIntent/u);
+  assert.match(rendered, /"stopCause":"session-end"/u);
+  assert.match(rendered, /"resumable":true/u);
+  assert.equal(JSON.parse(rendered).job.id, id);
 });
 
 test('JSON exposes only a valid exact-owner single-job probe while every other view redacts it', () => {

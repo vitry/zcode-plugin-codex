@@ -180,6 +180,18 @@ async function retryManagedActivation(fixture) {
   assert.equal(batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'), fixture.kind === 'migration');
 }
 
+test('proving the SessionStart record never mutates absent hook state', async () => {
+  const ctx = await context();
+  const dataRoot = join(ctx.dataRoot, 'not-created-yet');
+  await assert.rejects(
+    resolveRecordedSessionStart(dataRoot, ctx.cwd, 'never-started'),
+    (error) => error?.code === 'SETUP_SESSION_UNPROVEN' && (error?.cause?.code === 'ENOENT' || error?.cause?.cause?.code === 'ENOENT'),
+  );
+  const { access } = await import('node:fs/promises');
+  assert.equal(await access(dataRoot).then(() => true, () => false), false,
+    'the epoch proof must be the read-only step before the receipt, not a state-creating one');
+});
+
 test('compact SessionStart preserves the original trusted session freshness and source', async () => {
   const ctx = await context();
   await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'startup' });
@@ -188,6 +200,25 @@ test('compact SessionStart preserves the original trusted session freshness and 
   await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'compact' });
   assert.deepEqual(await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-session'), initial);
   assert.equal(initial.source, 'startup');
+});
+
+test('compact SessionStart remains in the same epoch and creates no receipt', async () => {
+  const ctx = await context();
+  await recordSession(ctx.dataRoot, { session_id: 'compact-epoch-session', cwd: ctx.cwd, source: 'startup' });
+  const before = await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-epoch-session');
+  // An unclosed owned job would justify resume compensation, but compact stays in
+  // the same epoch and must never synthesize a boundary receipt for it.
+  const { createStateStore } = await import('../scripts/lib/state.mjs');
+  await createStateStore({ dataRoot: ctx.dataRoot }).reserveJob({
+    workspace: ctx.cwd, ownerSessionId: 'compact-epoch-session', ownerTurnId: 'compact-epoch-turn',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' },
+  });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  await recordSession(ctx.dataRoot, { session_id: 'compact-epoch-session', cwd: ctx.cwd, source: 'compact' });
+  assert.deepEqual(await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-epoch-session'), before);
+  const { createHostLifecycleStore } = await import('../scripts/lib/host-lifecycle.mjs');
+  assert.equal((await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).listPendingReceipts()).length, 0,
+    'compact must never publish a resume-compensation or session-end receipt');
 });
 
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {

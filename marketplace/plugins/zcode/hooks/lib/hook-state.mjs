@@ -7,7 +7,10 @@ import { promisify } from 'node:util';
 
 import { atomicWriteJson, ensurePrivateDirectory, readBoundedJsonFile, readJsonFile, readPrivateDirectory, withFileLock } from '../../scripts/lib/fs.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
+import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore, PERMISSION_MODES } from '../../scripts/lib/identity.mjs';
+
+const NOTIFICATION_CLAIM_LEASE_MS = 60_000;
 import { RESCUE_UNREAD_JOB_LIMIT } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 
@@ -21,7 +24,9 @@ const MAX_EXECUTOR_BYTES = 16 * 1024;
 const MAX_EXECUTOR_ROUTE_BYTES = 16 * 1024;
 const MAX_HOOK_STATE_RECORDS = 2_048;
 const FORWARDING_PENDING_LIFETIME_MS = 30_000;
-const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS_WITHOUT_EPOCH = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_KEYS_STARTED_ONLY = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
 const LEGACY_EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
 const EXECUTOR_ROUTE_KEYS = ['agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'state', 'targetWorkspace', 'updatedAt', 'version'];
 const FORWARDING_KEYS = ['active', 'agentId', 'generationId', 'kind', 'sessionId', 'targetWorkspace', 'turnId', 'updatedAt'];
@@ -74,14 +79,171 @@ export async function recordSession(dataRoot, input) {
         if (existing.kind === 'session' && existing.sessionId === input.session_id && existing.workspace === store.workspacePath
           && ['startup', 'resume', 'clear'].includes(existing.source) && Number.isFinite(Date.parse(existing.createdAt))) return;
       } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    } else if (source === 'resume') {
+      // Resume after SessionEnd: BEFORE publishing the new epoch record, atomically
+      // read the previous record under this same lock and synthesize a LOCAL
+      // resume-compensation receipt when that epoch closed with nonterminal owned
+      // jobs and no SessionEnd receipt. Strictly local — no broker, no ZCode call,
+      // no remote settlement wait — and bounded by RESUME_COMPENSATION_BUDGET_MS.
+      // A FAILED compensation leaves the previous record in place AND fails the
+      // SessionStart loudly: the epoch digest stays recoverable and the stale
+      // epoch record is never silently replaced by one that cannot compensate.
+      // The next resume re-derives the same epoch and retries.
+      const compensatedScope = await compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, input.session_id);
+      // The previous epoch's identity ledger may still be alive — SessionEnd
+      // defers its destructive cleanup under contention — and an unterminated
+      // ledger would reject this resumed session's first caller turn
+      // (IDENTITY_SESSION_MISMATCH) forever. Retry the cleanup ONCE here with
+      // the previous record's own sessionStartedAt proof: epoch-fenced, so a
+      // successor's ledger is never touched. A FAILED retry fails the
+      // SessionStart loudly: exiting successfully would leave the host running
+      // the ended epoch while its pending receipt is excluded from
+      // reconciliation as 'current'.
+      const previous = await readJsonFile(recordPath).catch(() => null);
+      if (previous?.kind === 'session' && previous.sessionId === input.session_id
+        && Number.isFinite(Date.parse(previous.createdAt))) {
+        await createIdentityStore({ dataRoot }).cleanupSession(store.workspacePath, input.session_id, {
+          sessionStartedAt: previous.createdAt,
+          timeoutMs: Math.min(750, RESUME_FENCE_BUDGET_MS),
+          signal: AbortSignal.timeout(RESUME_FENCE_BUDGET_MS),
+        });
+      }
+      // FENCE old-epoch reservations before the epoch record is replaced: while
+      // each known workspace's job lock is held, the compensation scan reruns —
+      // an old child's reservation racing this resume is discovered and
+      // compensated durably instead of losing its epoch digest forever.
+      // FENCE old-epoch reservations before AND through the epoch record
+      // replacement: every known workspace's job lock is acquired NESTED (sorted
+      // for a stable order) and stays held while the compensation scan reruns
+      // and the new record is written — an old child's reservation racing this
+      // resume is either discovered and compensated durably, or blocked until
+      // the new epoch is authoritative; it can never slip through unrecorded.
+      if (Array.isArray(compensatedScope)) {
+        const { resolveWorkspaceStorage } = await import('../../scripts/lib/workspace.mjs');
+        const fenceDeadline = Date.now() + RESUME_FENCE_BUDGET_MS;
+        const fenceSignal = AbortSignal.timeout(RESUME_FENCE_BUDGET_MS);
+        const fenceLockPaths = [];
+        for (const fenceWorkspace of compensatedScope) {
+          fenceSignal.throwIfAborted();
+          const fenceStorage = await resolveWorkspaceStorage({ dataRoot, workspace: fenceWorkspace });
+          fenceLockPaths.push(join(fenceStorage.directory, '.state.lock'));
+        }
+        fenceLockPaths.sort();
+        const writeRecordFenced = async (/** @type {number} */ index) => {
+          if (index >= fenceLockPaths.length) {
+            // Under the full fence the final scan is authoritative: any old-
+            // epoch obligation it finds gains a durable receipt, and no further
+            // old-epoch reservation can arrive while the record is replaced.
+            await compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, input.session_id, { signal: fenceSignal, timeoutMs: Math.max(1, Math.min(RESUME_COMPENSATION_BUDGET_MS, fenceDeadline - Date.now())) });
+            await atomicWriteJson(recordPath, { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, source, createdAt: new Date().toISOString() });
+            return;
+          }
+          await withFileLock(fenceLockPaths[index], async () => { await writeRecordFenced(index + 1); }, { signal: fenceSignal, timeoutMs: Math.max(1, Math.min(750, fenceDeadline - Date.now())) });
+        };
+        await writeRecordFenced(0);
+        return;
+      }
     }
     await atomicWriteJson(recordPath, { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, source, createdAt: new Date().toISOString() });
   });
 }
+
+// The whole compensation phase shares one local abort budget, mirroring the
+// SessionEnd receipt publication budget it substitutes for.
+const RESUME_COMPENSATION_BUDGET_MS = 500;
+const RESUME_FENCE_BUDGET_MS = 1_500;
+
+/**
+ * Publish one `resume-compensation` receipt for the previous lifecycle epoch when
+ * that epoch owns nonterminal jobs in the ambient workspace and has no receipt.
+ * An existing receipt — pending or settled — is recognized and left untouched
+ * (first-writer-wins publication would only merge hints, so recognition here
+ * means doing nothing). The scan reuses the exact SessionEnd obligation discovery
+ * (writable Rescue plus active read-only detached runs) so a later prompt-time
+ * reconciliation consumes exactly what this publication recorded.
+ * @param {string} dataRoot @param {any} store @param {string} recordPath @param {string} sessionId
+ */
+async function compensateUnclosedPreviousEpoch(dataRoot, store, recordPath, sessionId, options = {}) {
+  const signal = options.signal ?? AbortSignal.timeout(RESUME_COMPENSATION_BUDGET_MS);
+  const budget = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) ? options.timeoutMs : RESUME_COMPENSATION_BUDGET_MS;
+  let previous;
+  try { previous = await readJsonFile(recordPath); }
+  catch (error) { if (error?.cause?.code === 'ENOENT') return; throw error; }
+  if (previous.kind !== 'session' || previous.sessionId !== sessionId || previous.workspace !== store.workspacePath
+    || !['startup', 'resume', 'clear'].includes(previous.source) || !Number.isFinite(Date.parse(previous.createdAt))) return;
+  const lifecycle = createHostLifecycleStore({ dataRoot });
+  const epoch = hostLifecycleEpoch(sessionId, previous.createdAt);
+  const existing = await lifecycle.readReceipt(epoch);
+  if (existing !== null) {
+    // A PENDING receipt from a scope-deferred SessionEnd still needs the old
+    // ledger's linked-workspace scope recovered and merged BEFORE this resume's
+    // cleanup tombstones that ledger — otherwise the receipt can later settle
+    // after scanning only the ambient cwd while linked jobs remain active. A
+    // settled receipt is already complete and stays untouched.
+    if (existing.state === 'pending') {
+      const retainedScope = await createIdentityStore({ dataRoot }).sessionWorkspaces(store.workspacePath, sessionId).catch(() => null);
+      if (retainedScope !== null && Array.isArray(retainedScope.knownWorkspaces) && retainedScope.knownWorkspaces.length > 0) {
+        await lifecycle.publishSessionEnd({
+          sessionId, sessionStartedAt: previous.createdAt, endedAt: existing.endedAt,
+          origin: existing.origin, workspaceHints: retainedScope.knownWorkspaces,
+        }, { signal });
+      }
+    }
+    return;
+  }
+  // Loaded lazily so the SessionStart hook's static import graph stays free of
+  // the recovery/schema machinery: an install missing optional runtime assets
+  // still records sessions and renders launcher context.
+  const [{ createStateStore }, { discoverSessionEndObligations }] = await Promise.all([
+    import('../../scripts/lib/state.mjs'),
+    import('../../scripts/lib/recovery.mjs'),
+  ]);
+  // The obligation scan covers the session's FULL identity-ledger scope — the
+  // same read-only enumeration the SessionEnd hook uses — so linked-workspace
+  // jobs of the previous epoch are recorded in the receipt's durable hints and
+  // later prompt-time reconciliation covers them, not just the ambient cwd.
+  // Only a genuine NULL (no global identity state: the ambient legacy shape IS
+  // the whole scope) falls back to the ambient workspace — an unreadable or
+  // corrupt ledger propagates so recordSession defers the epoch record and the
+  // next resume retries the compensation.
+  const identityScope = await createIdentityStore({ dataRoot }).sessionWorkspaces(store.workspacePath, sessionId);
+  const knownWorkspaces = identityScope === null ? [store.workspacePath] : identityScope.knownWorkspaces;
+  const scanStore = createStateStore({ dataRoot });
+  const obligations = await discoverSessionEndObligations({
+    store: scanStore, dataRoot, knownWorkspaces, ownerSessionId: sessionId,
+    epoch: null, endedAt: null, signal, timeoutMs: budget,
+    // The resume fence re-scans while HOLDING each workspace's job lock, so the
+    // scan itself must be lock-free (re-entrant acquisition would deadlock).
+    lockFree: typeof scanStore.peekOwnedJobs === 'function',
+  });
+  if (obligations.length > 0) {
+    await lifecycle.publishSessionEnd({
+      sessionId,
+      sessionStartedAt: previous.createdAt,
+      endedAt: new Date().toISOString(),
+      origin: 'resume-compensation',
+      workspaceHints: knownWorkspaces,
+    }, { signal });
+  }
+  // The enumerated scope is returned even when nothing needed compensating: the
+  // resume fence re-scans THESE workspaces under their job locks before the
+  // epoch record is replaced, closing the scan-to-write race.
+  return knownWorkspaces;
+}
 export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId) {
-  const store = await paths(dataRoot, workspace); const id = key('session', sessionId);
+  // Strictly read-only: proving a boundary's epoch must never mutate state (no
+  // ensurePrivateDirectory mkdir/chmod), so the SessionEnd receipt can remain
+  // the boundary's FIRST durable mutation even when this hook is killed right
+  // after the proof.
+  const store = await readOnlyPaths(dataRoot, workspace); const id = key('session', sessionId);
   try {
-    const record = await readJsonFile(join(store.directory, `session-${id}.json`));
+    // An absent layout reads the would-be record path directly so the failure
+    // shape stays exactly 'record file missing' (JSON_READ_FAILED/ENOENT) for
+    // every consumer, without creating any directory.
+    const hookStateDirectory = store.existing === false
+      ? join(store.dataRootPath ?? resolve(dataRoot), 'workspaces', store.workspaceKey, 'hook-state')
+      : store.directory;
+    const record = await readJsonFile(join(hookStateDirectory, `session-${id}.json`));
     if (record.kind !== 'session' || record.sessionId !== sessionId || record.workspace !== store.workspacePath
       || !['startup', 'resume', 'clear'].includes(record.source) || !Number.isFinite(Date.parse(record.createdAt))) throw new Error('invalid session record');
     return { startedAt: record.createdAt, source: record.source };
@@ -92,9 +254,326 @@ export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId
   }
 }
 export async function isOwnedSession(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id); try { const record = await readJsonFile(join(store.directory, `session-${id}.json`)); return record.kind === 'session' && record.sessionId === input.session_id && record.workspace === store.workspacePath; } catch { return false; } }
+
+// Prompt-time reconciliation mirrors the SessionEnd settlement stage budgets:
+// one shared deadline keeps every sub-budget (receipt scan, discovery, remote
+// settlement, receipt settlement) under the native UserPromptSubmit limit, and
+// remote control uses ONLY an existing broker client — never a lazy spawn.
+const PROMPT_RECONCILIATION_BUDGET_MS = 2_000;
+const PROMPT_RECEIPT_STAGE_BUDGET_MS = 500;
+const PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS = process.platform === 'win32' ? 500 : 250;
+
+/** The prior epoch's re-proved workspace scope could not be persisted into its
+ * receipt hints: the caller must NOT replace the identity ledger (its linked
+ * scope would be lost), so the prompt fails safely and the next pass retries. */
+function priorScopeUnpersisted() {
+  return new PluginError('PRIOR_SCOPE_UNPERSISTED', 'The prior epoch workspace scope could not be recorded.', {
+    category: 'state', remedy: 'Retry the prompt; the reconciliation pass persists the scope before settlement.',
+  });
+}
+
+/**
+ * The pending host-session-end receipts of one session's PRIOR lifecycle epochs:
+ * pending receipts carry the durable compensation authority of an epoch that
+ * ended without full settlement. The current epoch (the recorded SessionStart of
+ * the resumed session) is excluded — a receipt for the live epoch is not this
+ * session's previous boundary to reconcile.
+ * @param {string} dataRoot @param {string} sessionId @param {string} workspace @param {{signal?:AbortSignal, currentEpoch?:string|null}} [options]
+ */
+export async function pendingPriorEpochReceipts(dataRoot, sessionId, workspace, options = {}) {
+  const receipts = await createHostLifecycleStore({ dataRoot }).listPendingReceipts({ signal: options.signal });
+  let current = options.currentEpoch;
+  if (current === undefined) {
+    try { current = hostLifecycleEpoch(sessionId, (await resolveRecordedSessionStart(dataRoot, workspace, sessionId)).startedAt); }
+    catch { current = null; }
+  }
+  return receipts.filter((receipt) => receipt.sessionId === sessionId && receipt.epoch !== current);
+}
+
+/** The stable fail-closed rejection every reservation-time epoch fence shares. @param {number} count */
+export function priorEpochUnsettledError(count) {
+  return new PluginError('PRIOR_EPOCH_UNSETTLED', 'A previous host lifecycle epoch of this session is still awaiting settlement.', {
+    category: 'state',
+    remedy: 'Inspect the pending reconciliation with $zcode:status or settle it with $zcode:cancel; new Rescue work is retried once the prior epoch settles.',
+    details: { pendingReceipts: count },
+  });
+}
+
+// The reservation-time fence scans receipts INSIDE the reservation's own job
+// lock, so the scan must stay bounded: a stalled read must never hold the
+// state lock. One stage-sized budget mirrors the SessionEnd receipt scan.
+export const RESERVATION_EPOCH_SCAN_BUDGET_MS = 500;
+
+/**
+ * The atomic epoch fence for one writable reservation: fail closed when this
+ * session still has any PENDING prior-epoch receipt at reservation time.
+ * Callers (the StateStore reservation seam) run this inside the workspace
+ * job-state lock, so a SessionEnd receipt published after the caller's own
+ * pre-lock checks can never interleave between the check and the job persist.
+ * The scan is strictly read-only — it never reconciles (reconciliation takes
+ * job locks) and never blocks on a lock. Fail-closed: an unreadable scan or a
+ * pending receipt throws PRIOR_EPOCH_UNSETTLED, unless the caller's own signal
+ * is already aborted, in which case it returns so the reservation's claim path
+ * raises the interruption where its interrupt semantics expect it.
+ * @param {{dataRoot:string,sessionId:string,workspace:string,ownerLifecycleEpoch?:string,signal?:AbortSignal,budgetMs?:number}} input
+ */
+export async function assertNoPendingPriorEpochReceipts(input) {
+  const budgetMs = input.budgetMs ?? RESERVATION_EPOCH_SCAN_BUDGET_MS;
+  const signal = input.signal === undefined
+    ? AbortSignal.timeout(budgetMs)
+    : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+  // Unlike the prompt-time 'prior' semantics, the reservation fence must scan
+  // ALL of the session's pending receipts INCLUDING the ending epoch's own: the
+  // genuine same-epoch boundary derives its receipt from the still-present
+  // SessionStart record, and a reservation interleaving that boundary is
+  // precisely the escape this fence exists to refuse.
+  // An already-aborted caller returns quietly ONCE here — the claim path owns
+  // the interruption: it raises it right after the claim and synchronously
+  // cancels the persisted reservation (contract-anchored by tests). Killing the
+  // process in that window leaves a QUEUED job under the live epoch, which the
+  // existing queued-stale scavenge still cancels — durable coverage, no escape.
+  // Everything AFTER this point (mid-scan cancellation, budget loss) fails
+  // closed with the stable fence error.
+  if (input.signal?.aborted === true) return;
+  let pending;
+  try { pending = await pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal, currentEpoch: null }); }
+  catch (error) {
+    if (input.signal?.aborted === true && error === input.signal.reason) throw error;
+    throw priorEpochUnsettledError(0);
+  }
+  if (pending.length > 0) throw priorEpochUnsettledError(pending.length);
+  // In-lock REVALIDATION of the epoch anchor: the recorded SessionStart the
+  // reservation was derived from must STILL be the current record. A successor
+  // SessionStart published between the caller's derivation and this locked
+  // callback re-brands pre-boundary work into the successor epoch; fail closed.
+  if (typeof input.ownerLifecycleEpoch === 'string') {
+    // The SessionStart read is unbounded internally: race it against the SAME
+    // combined fence signal so a stalled lookup cannot hold the workspace
+    // job-state lock past the advertised budget. Fail closed on race loss.
+    const current = await Promise.race([
+      resolveRecordedSessionStart(input.dataRoot, input.workspace, input.sessionId),
+      new Promise((resolve) => { if (signal.aborted) { resolve(null); return; } signal.addEventListener('abort', () => resolve(null), { once: true }); }),
+    ]).catch(() => null);
+    const currentDigest = current === null ? null : hostLifecycleEpoch(input.sessionId, current.startedAt);
+    if (currentDigest !== input.ownerLifecycleEpoch) {
+      throw new PluginError('PRIOR_EPOCH_UNSETTLED', 'The recorded SessionStart changed during the reservation, so this operation belongs to a superseded lifecycle epoch.', {
+        category: 'state',
+        remedy: 'Re-run the operation from the active session turn; pre-boundary work is never reserved under a successor epoch.',
+        details: { pendingReceipts: 0, superseded: true },
+      });
+    }
+  }
+  // A receipt for the reservation's OWN lifecycle epoch fences it in ANY state:
+  // settled means the boundary already completed (settled receipts are
+  // invisible to the pending scan above — this is the scan-to-settle race),
+  // pending means it is in progress. A legitimate post-resume reservation
+  // carries a NEW epoch that has no receipt at all.
+  const ownerEpoch = input.ownerLifecycleEpoch;
+  if (typeof ownerEpoch === 'string') {
+    // The receipt read accepts no signal of its own: race it against the SAME
+    // combined fence signal (caller signal ∪ budget), checking signal.aborted
+    // IMMEDIATELY — AbortSignal does not invoke listeners added after
+    // abortion, so a budget that expired during the preceding revalidation
+    // must fail closed here rather than hang the locked read or admit on a
+    // late null.
+    const ended = await Promise.race([
+      createHostLifecycleStore({ dataRoot: input.dataRoot }).readReceipt(ownerEpoch).then((value) => value ?? 'clean', () => 'unreadable'),
+      new Promise((resolve) => {
+        if (signal.aborted) { resolve('unreadable'); return; }
+        signal.addEventListener('abort', () => resolve('unreadable'), { once: true });
+      }),
+    ]);
+    if (ended !== 'clean') {
+      throw new PluginError('PRIOR_EPOCH_UNSETTLED', 'This operation belongs to a lifecycle epoch whose SessionEnd boundary already ran.', {
+        category: 'state',
+        remedy: 'Resume the session (a new epoch) or start fresh; work for an ended epoch is never reserved.',
+        details: { pendingReceipts: 0, endedEpoch: ended === 'unreadable' ? 'unreadable' : ended.state },
+      });
+    }
+  }
+}
+
+/**
+ * The recorded SessionStart pair for one session: {epoch, startedAt} — the pair
+ * a reservation must carry so the locked fence can revalidate the anchor under
+ * the workspace job lock.
+ * The epoch digest returned here is what the locked reservation fence
+ * revalidates: for child-authorized reservations the pair is superseded by the
+ * durable `ownerLifecycleEpoch` persisted on the executor record at
+ * SubagentStart, so a same-session resume can never re-brand pre-boundary work
+ * into the successor epoch.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId
+ */
+export async function recordedSessionStartPair(dataRoot, workspace, sessionId) {
+  const record = await resolveRecordedSessionStart(dataRoot, workspace, sessionId);
+  return { epoch: hostLifecycleEpoch(sessionId, record.startedAt), startedAt: record.startedAt };
+}
+
+/**
+ * Reconcile one session's pending prior-epoch receipts before new Rescue work:
+ * for each receipt, re-run the SessionEnd convergence across its recorded
+ * workspace hints plus the ambient workspace — discover the receipt epoch's
+ * nonterminal owned obligations, settle or durably delegate each with the same
+ * bounded budgets as the SessionEnd hook, then settle the receipt when every
+ * obligation is terminal-or-delegated (a bare legacy `cancelling` guard without
+ * a valid stop intent never settles). Remote control uses only an existing
+ * broker client. Returns the still-pending prior-epoch receipts so callers can
+ * block new writable Rescue work while reconciliation remains unresolved.
+ * @param {{dataRoot:string,sessionId:string,workspace:string,currentEpoch?:string|null,budgetMs?:number,signal?:AbortSignal}} input
+ */
+export async function reconcilePriorEpochReceipts(input) {
+  const budgetMs = input.budgetMs ?? PROMPT_RECONCILIATION_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
+  const overall = input.signal === undefined ? AbortSignal.timeout(budgetMs) : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+  const stage = (budgetMsLimit) => AbortSignal.any([overall, AbortSignal.timeout(Math.max(1, Math.min(budgetMsLimit, deadline - Date.now())))]);
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const receipts = await pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS), currentEpoch: input.currentEpoch });
+  if (receipts.length === 0) return [];
+  // The recovery, state, and existing-broker machinery loads lazily: with no
+  // pending receipts — the overwhelmingly common prompt — the hook's static
+  // graph gains nothing, and installs missing optional runtime assets keep
+  // working (reconciliation is advisory and its callers fail closed elsewhere).
+  const [{ delegateEndedStopIntent, discoverSessionEndObligations, endedObligationSettled, settleEndedReadOnlyDetachedJob, settleEndedRescueJob },
+    { createStateStore, isJobNotFound },
+    { createExistingManagedZCodeClient }] = await Promise.all([
+    import('../../scripts/lib/recovery.mjs'),
+    import('../../scripts/lib/state.mjs'),
+    import('../../scripts/lib/zcode-client.mjs'),
+  ]);
+  const lifecycle = createHostLifecycleStore({ dataRoot: input.dataRoot });
+  const store = createStateStore({ dataRoot: input.dataRoot });
+  const createClient = (workspace) => (job, derivedOwnerId) => createExistingManagedZCodeClient({
+    dataRoot: input.dataRoot, workspace, ownerId: derivedOwnerId, requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS,
+  });
+  for (const receipt of receipts) {
+    if (overall.aborted) break;
+    // Re-prove the workspace scope AT SETTLEMENT TIME: SessionEnd deliberately
+    // retains the identity ledger when it could not enumerate or persist the
+    // complete scope, so that ledger — not the receipt's possibly cwd-only
+    // hints — is the union authority for discovery. An unreadable ledger means
+    // completeness cannot be proven: the obligation work still runs over the
+    // hints, but the receipt itself is never settled this pass.
+    let scopeProvable = true;
+    let identityScope = null;
+    try { identityScope = await createIdentityStore({ dataRoot: input.dataRoot }).sessionWorkspaces(input.workspace, input.sessionId); }
+    catch { scopeProvable = false; }
+    const knownWorkspaces = [...new Set([
+      resolve(input.workspace),
+      ...receipt.workspaceHints,
+      ...(scopeProvable && identityScope !== null && identityScope.sessionStartedAt === receipt.sessionStartedAt
+        ? identityScope.knownWorkspaces : []),
+    ])];
+    let allSettled = true;
+    // Persist the re-proved union BEFORE anything else — before discovery and
+    // long before beginCallerTurn replaces the ledger: a merge that stays in
+    // memory would lose the linked scope exactly when an obligation could not
+    // settle in this pass. An idempotent merge resolves without advancing the
+    // CAS token when the hints already match; a FAILED merge throws
+    // PRIOR_SCOPE_UNPERSISTED so the caller refuses to replace the ledger.
+    let settleToken = receipt.updatedAt;
+    if (!scopeProvable) throw priorScopeUnpersisted();
+    // Hints are discovery aids, never authority (design:186): a successor
+    // ledger's workspaces must not widen this receipt's reach, so only a scope
+    // whose epoch proof matches the receipt is merged.
+    else if (identityScope !== null && identityScope.sessionStartedAt === receipt.sessionStartedAt) {
+      try {
+        const merged = await lifecycle.publishSessionEnd({
+          sessionId: input.sessionId, sessionStartedAt: receipt.sessionStartedAt,
+          endedAt: receipt.endedAt, origin: receipt.origin, workspaceHints: knownWorkspaces,
+        }, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS) });
+        if (merged) settleToken = merged.updatedAt;
+      } catch (error) {
+        if (error instanceof PluginError && error.code === 'PRIOR_SCOPE_UNPERSISTED') throw error;
+        throw priorScopeUnpersisted();
+      }
+    }
+    const obligations = await discoverSessionEndObligations({
+      store, dataRoot: input.dataRoot, knownWorkspaces, ownerSessionId: input.sessionId,
+      epoch: receipt.epoch, endedAt: receipt.endedAt, signal: overall, timeoutMs: remaining(),
+    });
+      await runBounded(obligations, 2, async (obligation) => {
+        try {
+          const outcome = obligation.readOnly
+            ? await settleEndedReadOnlyDetachedJob({
+              store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, deadlineMs: deadline,
+              lockTimeoutMs: 0, requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS,
+              timeoutMs: remaining(), signal: overall, includeSettlementEvidence: true,
+              createClient: createClient(obligation.workspace),
+            }, obligation.job.id)
+            : await settleEndedRescueJob({
+              store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, lockTimeoutMs: 0,
+              requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS, timeoutMs: remaining(),
+              signal: overall, includeSettlementEvidence: true, createClient: createClient(obligation.workspace),
+            }, obligation.job.id);
+          if (!endedObligationSettled(outcome)) throw new Error('obligation not settled');
+        } catch {
+          // A reconcile/broker failure leaves durable state uncertain: durably
+          // delegate to the exact session-end stop intent instead of claiming a
+          // terminal, then re-read to decide whether the obligation discharged.
+          if (!obligation.readOnly && !overall.aborted) {
+            try {
+              await delegateEndedStopIntent({
+                store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
+                epoch: receipt.epoch, endedAt: receipt.endedAt, signal: overall, timeoutMs: remaining(),
+              }, obligation.job.id);
+            } catch { /* delegation is best-effort; the pending receipt remains authority */ }
+          }
+          const reread = { discharged: false };
+          try {
+            reread.discharged = endedObligationSettled({ kind: null, job: await store.readJob(obligation.workspace, obligation.job.id, { signal: overall, timeoutMs: remaining() }) });
+          } catch (error) {
+            // Only a PROVEN missing job discharges the obligation; corruption or a
+            // contended read keeps the receipt pending as compensation authority.
+            reread.discharged = isJobNotFound(error);
+          }
+          if (!reread.discharged) allSettled = false;
+        }
+        if (overall.aborted) allSettled = false;
+      }, () => overall.aborted);
+    // Note: a late reservation racing this pass is closed out by Task 8's
+    // atomic reservation-side epoch fence, not by lock acquisition here — the
+    // fail-closed writable gate already blocks new Rescue while this receipt
+    // remains pending.
+    if (allSettled && scopeProvable && !overall.aborted) {
+      try { await lifecycle.settleReceipt(receipt.epoch, settleToken, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS) }); }
+      catch { /* settlement races are retried by the next reconciliation pass */ }
+    }
+  }
+  return pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS), currentEpoch: input.currentEpoch });
+}
+
+/** Run one bounded parallelism loop with a shared abort predicate, mirroring the SessionEnd hook scheduler. @param {readonly any[]} values @param {number} concurrency @param {(value:any)=>Promise<void>} operation @param {()=>boolean} [isAborted] */
+async function runBounded(values, concurrency, operation, isAborted = undefined) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (next < values.length) {
+      if (isAborted?.()) break;
+      const index = next; next += 1;
+      await operation(values[index]);
+    }
+  }));
+}
 export async function markForwarding(dataRoot, input, parentCaller, options = {}) {
+  // Strict bounded-options validation: the publication seam plus the optional
+  // shared-deadline lock budget (signal and/or timeoutMs) forwarded to EVERY
+  // withFileLock wait this publication performs. Unknown or mistyped keys are
+  // rejected instead of silently ignored.
+  if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
+    || Object.keys(options).some((option) => !['publicationSeam', 'signal', 'timeoutMs'].includes(option))
+    || options.publicationSeam !== undefined && typeof options.publicationSeam !== 'function'
+    || options.signal !== undefined && !(typeof AbortSignal === 'function' && options.signal instanceof AbortSignal)
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The forwarding publication options are invalid.');
+  }
   const publicationSeam = options.publicationSeam;
-  if (publicationSeam !== undefined && typeof publicationSeam !== 'function') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route publication seam is invalid.');
+  const lockOptions = forwardingLockOptions(options);
+  // The compensation path derives its lock budget from the SAME shared
+  // deadline: once a contended lock has consumed the whole budget, reacquiring
+  // that lock in the finally block must fail fast instead of waiting out
+  // withFileLock's five-second default past the hook's deadline.
+  const compensationDeadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
   const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const active = input.hook_event_name === 'SubagentStart';
   if (active) {
     const generationId = parentCaller?.generationId ?? null;
@@ -118,15 +597,50 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
         await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt: createdAt });
         await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route);
       }
-    });
+    }, lockOptions);
     await publicationSeam?.('after-route-pending');
-    const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt };
+    // Durable authorization-epoch evidence (codex, Task 8): capture the CURRENT
+    // session record's startedAt digest at SubagentStart, then REVALIDATE it
+    // together with the parent authority immediately before publishing the
+    // executor — a SessionEnd + same-ID resume landing in this window would
+    // otherwise re-brand a child authorized by the ended epoch. A record ABSENT
+    // (pre-lifecycle compat flow) omits the epoch: the reservation side then
+    // fails closed on its own SETUP_SESSION_UNPROVEN proof, so no re-brand
+    // window exists. A CORRUPT or transiently unreadable record propagates.
+    let cachedSessionRecord;
+    const readAuthorizedEpoch = async (/** @type {boolean} */ fresh = false) => {
+      if (fresh || cachedSessionRecord === undefined) {
+        cachedSessionRecord = await resolveRecordedSessionStart(dataRoot, origin.workspacePath, input.session_id).catch((error) => {
+          const absent = error?.cause?.cause?.code === 'ENOENT' || error?.cause?.code === 'ENOENT';
+          if (absent) return null;
+          throw error;
+        });
+      }
+      return cachedSessionRecord === null ? undefined : hostLifecycleEpoch(input.session_id, cachedSessionRecord.startedAt);
+    };
+    const readAuthorizedEpochStartedAt = () => cachedSessionRecord === null ? undefined : cachedSessionRecord.startedAt;
+    const authorizedEpoch = await readAuthorizedEpoch();
+    const authorizedEpochStartedAt = authorizedEpoch === undefined ? undefined : (await readAuthorizedEpochStartedAt());
+    const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt, ...(authorizedEpoch === undefined ? {} : { ownerLifecycleEpoch: authorizedEpoch, ownerLifecycleEpochStartedAt: authorizedEpochStartedAt }) };
     let finalState = 'failed'; let finalError = null;
     try {
       await withFileLock(target.lock, async () => {
+        // Revalidate authority + epoch TOGETHER atomically with the publish:
+        // if the parent turn's route authority vanished, or a same-ID resume
+        // replaced the captured epoch's SessionStart record, fail closed —
+        // never publish an executor whose epoch cannot be proven current.
+        // FRESH re-read of presence AND value: a resume may have replaced the
+        // SessionStart record between the initial capture and this publication —
+        // a record that appeared (was absent at capture) or changed (different
+        // epoch) both mean superseded authority; fail closed, never persist.
+        const republished = await readAuthorizedEpoch(true);
+        if (republished !== authorizedEpoch) throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart observed a session epoch change before executor publication.');
+        if (authorizedEpoch !== undefined && !await routeAuthorityExists(dataRoot, origin.workspacePath, { ...route, state: 'pending' })) {
+          throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart parent authority ended before executor publication.');
+        }
         await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor);
         await publicationSeam?.('after-executor-persisted');
-      });
+      }, lockOptions);
       await publicationSeam?.('after-executor-write');
       await withFileLock(origin.lock, async () => {
         let current;
@@ -149,12 +663,12 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
           finalState = 'active'; return;
         }
         finalState = current.state;
-      });
+      }, lockOptions);
     } catch (error) {
       finalError = error instanceof PluginError && `${error.code}`.startsWith('EXECUTOR_')
         ? error : executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', error);
     } finally {
-      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route);
+      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route, compensationDeadline === undefined ? lockOptions : deadlineLockOptions(compensationDeadline));
     }
     if (finalError !== null) throw finalError;
     return;
@@ -170,7 +684,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     const updatedAt = new Date().toISOString();
     if (route !== null && route.state !== 'stopped') { route = { ...route, state: 'stopped', updatedAt }; await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route); }
     await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId: route?.parentGenerationId ?? null, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt });
-  });
+  }, lockOptions);
   const target = route === null ? origin : await paths(dataRoot, route.targetWorkspace);
   const executorPath = join(target.directory, `executor-${key('executor', input.agent_id)}.json`);
   await withFileLock(target.lock, async () => {
@@ -180,10 +694,35 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       || !await legacyExecutorAuthorityExists(dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
     if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type
       && (route === null || executorMatchesRoute(current, route))) await atomicWriteJson(executorPath, { ...current, active: false });
-  });
+  }, lockOptions);
 }
 
-export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId) {
+/**
+ * Lock waits inside the executor lookup chain inherit a caller's bounded
+ * budget (an abort signal and/or a lock acquisition timeout) only when one is
+ * supplied; absent fields keep withFileLock's five-second default.
+ * @param {{signal?: AbortSignal, timeoutMs?: number}} [options]
+ * @returns {{signal?: AbortSignal, timeoutMs?: number}}
+ */
+function forwardingLockOptions(options = {}) {
+  return {
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  };
+}
+/**
+ * Compensation lock waits inherit the SAME shared deadline as the publication:
+ * a positive remainder yields an absolute-deadline signal and an integer lock
+ * budget, while an exhausted deadline yields an already-aborted fail-fast
+ * budget instead of withFileLock's five-second default.
+ * @param {number} deadline
+ * @returns {{signal: AbortSignal, timeoutMs: number}}
+ */
+function deadlineLockOptions(deadline) {
+  const remaining = deadline - Date.now();
+  return remaining > 0 ? { signal: AbortSignal.timeout(remaining), timeoutMs: Math.floor(remaining) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
+}
+export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   const origin = await paths(dataRoot, originWorkspace);
   return withFileLock(origin.lock, async () => {
     let route;
@@ -191,9 +730,9 @@ export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionI
     catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
     if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
     return { ...route };
-  });
+  }, lockOptions);
 }
-async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId) {
+async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   let origin; try { origin = await readOnlyPaths(dataRoot, originWorkspace); } catch (cause) { throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause); }
   if (!origin.existing) throw executorError('EXECUTOR_ROUTE_NOT_FOUND', 'No exact trusted executor route matches this child.');
   return withFileLock(origin.lock, async () => {
@@ -202,7 +741,7 @@ async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, session
     catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
     if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
     return { ...route };
-  }, { createLayout: false }).catch((cause) => {
+  }, { createLayout: false, ...lockOptions }).catch((cause) => {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause);
   });
@@ -210,12 +749,12 @@ async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, session
 export async function resolveForwardingExecutor(dataRoot, workspace, agentId, options = {}) {
   const probe = await probeForwardingExecutor(dataRoot, workspace, agentId, options, false);
   if (probe.kind === 'absent') throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
-  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false);
+  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false, forwardingLockOptions(options));
 }
 export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, options = {}) {
   const probe = await probeForwardingExecutor(dataRoot, ambientWorkspace, agentId, options, true);
   if (probe.kind === 'selected') {
-    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true);
+    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true, forwardingLockOptions(options));
     return { executor, executionWorkspace: probe.store.workspacePath };
   }
   if (!probe.store.existing) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
@@ -241,7 +780,7 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
       if (options.durableProvenance === true || routes[0].state !== 'active') throw executorError('EXECUTOR_STATE_MISMATCH', 'The private executor route is not active.');
     }
     return { ...routes[0] };
-  }, { createLayout: false }); } catch (cause) {
+  }, { createLayout: false, ...forwardingLockOptions(options) }); } catch (cause) {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route store is invalid.', cause);
   }
@@ -258,9 +797,11 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
 }
 export async function resolveRoutedStoppedForwardingExecutor(dataRoot, originWorkspace, agentId, options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
-    || Object.keys(options).some((option) => !['continuation', 'durableProvenance', 'now'].includes(option))
+    || Object.keys(options).some((option) => !['continuation', 'durableProvenance', 'now', 'signal', 'timeoutMs'].includes(option))
     || options.continuation !== undefined && typeof options.continuation !== 'boolean'
-    || options.durableProvenance !== undefined && typeof options.durableProvenance !== 'boolean') {
+    || options.durableProvenance !== undefined && typeof options.durableProvenance !== 'boolean'
+    || options.signal !== undefined && !(typeof AbortSignal === 'function' && options.signal instanceof AbortSignal)
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The stopped executor lookup options are invalid.');
   }
   return resolveRoutedForwardingExecutor(dataRoot, originWorkspace, agentId, {
@@ -318,21 +859,21 @@ async function probeForwardingExecutor(dataRoot, workspace, agentId, options, ro
     }
     if (candidates.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'The parent turn does not have exactly one active Rescue executor.');
     return selected;
-  }, routed ? { createLayout: false } : undefined); } catch (cause) {
+  }, { ...(routed ? { createLayout: false } : {}), ...forwardingLockOptions(options) }); } catch (cause) {
     if (!routed) throw cause;
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause);
   }
   return selected === null ? { kind: 'absent', store } : { kind: 'selected', store, executor: selected };
 }
-async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly) {
+async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly, lockOptions = {}) {
   if (isLegacyExecutorRecord(selected, store.workspacePath)) {
     if (!await legacyExecutorAuthorityExists(dataRoot, store.workspacePath, selected)) throw executorError('EXECUTOR_ROUTE_INVALID', 'Legacy executor routing is unavailable while lifecycle authority exists.');
     return selected;
   }
   const route = readOnly
-    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId)
-    : await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId);
+    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId, lockOptions)
+    : await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId, lockOptions);
   if (!executorMatchesRoute(selected, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match this executor.');
   if (selected.active && route.state !== 'active' || !selected.active && route.state !== 'stopped') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route state does not match this executor.');
   return selected;
@@ -368,11 +909,30 @@ export async function isForwarding(dataRoot, input, options = {}) {
     return validExecutorRecord(executor, target.workspacePath) && executor.active === true && executorMatchesRoute(executor, snapshot.route);
   } catch { return false; }
 }
-export async function cleanupSession(dataRoot, workspace, sessionId) {
+export async function cleanupSession(dataRoot, workspace, sessionId, options = {}) {
   const store = await paths(dataRoot, workspace);
+  const lockOptions = { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
+  // Epoch fence: when the caller proves the ending boundary, a session record
+  // Epoch fence: when the caller proves the ending boundary, any record written
+  // AT OR AFTER it belongs to a resumed successor reusing the session id. The
+  // successor's SessionStart marker only exists in its own workspace, so each
+  // record's own write timestamp is the per-workspace durable succession
+  // evidence — deleting such a record would break the successor's authorization
+  // and its own receipt publication. The comparison is '>=' on purpose:
+  // RFC3339 millisecond precision makes an exactly-equal timestamp possible in
+  // the concurrent resume race.
+  const provenEndedAt = typeof options.endedAt === 'string' && Number.isFinite(Date.parse(options.endedAt)) ? Date.parse(options.endedAt) : null;
+  /** A record's own durable write time, when it carries one. @param {any} record @returns {number|null} */
+  const recordWriteTime = (record) => {
+    const value = record?.createdAt ?? record?.updatedAt;
+    return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+  };
   await withFileLock(store.lock, async () => {
     let entries; try { entries = await readPrivateDirectory(store.directory, store.directory, MAX_HOOK_STATE_RECORDS); } catch (error) { throw executorError('HOOK_STATE_CAPACITY', 'Private hook state exceeds its cleanup bound.', error); }
     for (const entry of entries) {
+      // The lock budget only gates acquisition: the sweep itself must observe
+      // the SessionEnd deadline so cleanup cannot outlive the shared budget.
+      options.signal?.throwIfAborted();
       if (!entry.isFile()) continue;
       if (!/^(?:session|forward|route|executor|notified)-[a-f0-9]{64}\.json$/u.test(entry.name)) {
         if (entry.name.startsWith('executor-') && entry.name.endsWith('.json')) await unlink(join(store.directory, entry.name)).catch(() => {});
@@ -383,19 +943,144 @@ export async function cleanupSession(dataRoot, workspace, sessionId) {
         const record = entry.name.startsWith('executor-')
           ? await readBoundedExecutor(path)
           : entry.name.startsWith('route-') ? await readExecutorRoute(path, store.directory) : await readBoundedJsonFile(store.directory, path, MAX_EXECUTOR_ROUTE_BYTES);
+        if (provenEndedAt !== null) {
+          const writtenAt = recordWriteTime(record);
+          if (writtenAt !== null && writtenAt >= provenEndedAt) continue;
+        }
         if (record.sessionId === sessionId || (['subagent-executor', 'executor-route'].includes(record.kind) && record.parentSessionId === sessionId)) await unlink(path);
       } catch (error) {
         if (entry.name.startsWith('executor-')) await unlink(path).catch(() => {});
         else throw executorError('HOOK_STATE_INVALID', 'Private hook state is invalid during exact session cleanup.', error);
       }
     }
+  }, lockOptions);
+}
+/**
+ * Record one job as delivery-acknowledged for its owner session: the next
+ * unreadJobs pass will no longer surface it as an unread notification.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string} jobId
+ */
+export async function markJobNotified(dataRoot, workspace, sessionId, jobId) {
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [] };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    seen.add(jobId);
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() });
   });
 }
-export async function unreadJobs(dataRoot, workspace, sessionId) { const store = await paths(dataRoot, workspace); const jobs = join(store.directory, '..', 'jobs'); let names = []; try { names = await readdir(jobs); } catch { return []; } return withFileLock(store.lock, async () => { const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`); let marker = { kind: 'notifications', sessionId, jobIds: [] }; try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []); const found = []; for (const name of names.slice(0, 500)) { if (!name.endsWith('.json')) continue; try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ } } const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT); for (const job of selected) seen.add(job.id); await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() }); return selected; }); }
+
+export async function peekUnreadJobs(dataRoot, workspace, sessionId) {
+  const store = await paths(dataRoot, workspace);
+  const jobs = join(store.directory, '..', 'jobs');
+  let names = []; try { names = await readdir(jobs); } catch { return []; }
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  let seen = new Set();
+  try { const marker = await readJsonFile(markerPath); if (Array.isArray(marker.jobIds)) seen = new Set(marker.jobIds); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+  const found = [];
+  for (const name of names.slice(0, 500)) {
+    if (!name.endsWith('.json')) continue;
+    try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ }
+  }
+  return found.slice(-RESCUE_UNREAD_JOB_LIMIT);
+}
+
+export async function claimNotifications(dataRoot, workspace, sessionId) {
+  const store = await paths(dataRoot, workspace);
+  const jobs = join(store.directory, '..', 'jobs');
+  let names = []; try { names = await readdir(jobs); } catch { return []; }
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  return withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const notified = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    const claimed = { ...(marker.claimed ?? {}) };
+    // Abandoned claims expire: a process that died between claim and
+    // finalize/release must not suppress the notice forever. The lease window
+    // is far longer than any legitimate delivery flush.
+    const now = Date.now();
+    for (const id of Object.keys(claimed)) if (now - Date.parse(claimed[id]) > NOTIFICATION_CLAIM_LEASE_MS) delete claimed[id];
+    const found = [];
+    for (const name of names.slice(0, 500)) {
+      if (!name.endsWith('.json')) continue;
+      try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !notified.has(job.id) && !(job.id in claimed)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ }
+    }
+    const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT);
+    for (const job of selected) { notified.delete(job.id); claimed[job.id] = new Date().toISOString(); }
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...notified].slice(-500), claimed, updatedAt: new Date().toISOString() });
+    return selected;
+  });
+}
+
+/**
+ * Atomically claim ONE specific terminal job for live delivery (used by the
+ * companion's own completion path so a concurrent prompt can never double-
+ * announce it). Returns true when this caller won the claim.
+ * @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string} jobId
+ */
+export async function claimNotificationForJob(dataRoot, workspace, sessionId, jobId) {
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  return withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const notified = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    const claimed = { ...(marker.claimed ?? {}) };
+    if (notified.has(jobId)) return false;
+    if (claimed[jobId] !== undefined && Date.now() - Date.parse(claimed[jobId]) <= NOTIFICATION_CLAIM_LEASE_MS) return false;
+    claimed[jobId] = new Date().toISOString();
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...notified].slice(-500), claimed, updatedAt: new Date().toISOString() });
+    return true;
+  });
+}
+
+/** Finalize claimed notifications after confirmed Host delivery: they move to the notified list and never re-announce. @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string[]} jobIds */
+export async function finalizeNotifications(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const finalized = new Set([...(Array.isArray(marker.jobIds) ? marker.jobIds : []), ...jobIds]);
+    const claimed = { ...(marker.claimed ?? {}) };
+    for (const jobId of jobIds) delete claimed[jobId];
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...finalized].slice(-500), claimed, updatedAt: new Date().toISOString() });
+  });
+}
+
+/** Release claimed notifications whose delivery failed: they return to unread so the next prompt re-announces them. @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string[]} jobIds */
+export async function releaseNotifications(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [], claimed: {} };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const claimed = { ...(marker.claimed ?? {}) };
+    for (const jobId of jobIds) delete claimed[jobId];
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...(Array.isArray(marker.jobIds) ? marker.jobIds : [])].slice(-500), claimed, updatedAt: new Date().toISOString() });
+  });
+}
+
+export async function markJobsNotified(dataRoot, workspace, sessionId, jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return;
+  const store = await paths(dataRoot, workspace);
+  const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`);
+  await withFileLock(store.lock, async () => {
+    let marker = { kind: 'notifications', sessionId, jobIds: [] };
+    try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []);
+    for (const jobId of jobIds) seen.add(jobId);
+    await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() });
+  });
+}
 export async function writeGateRun(dataRoot, workspace, record) { const store = await paths(dataRoot, workspace); const directory = join(store.directory, '..', 'gate-runs'); await ensurePrivateDirectory(directory); const id = key(record.sessionId, record.turnId, record.before, record.after); const path = join(directory, `${id}.json`); return withFileLock(join(directory, '.lock'), async () => { try { return { duplicate: true, path, record: await readJsonFile(path) }; } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } await atomicWriteJson(path, record); return { duplicate: false, path, record }; }); }
 export async function finishGateRun(path, record) { await atomicWriteJson(path, record); }
 function validExecutorRecord(record, workspace) { return isCurrentExecutorRecord(record, workspace) || isLegacyExecutorRecord(record, workspace); }
-function isCurrentExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
+function isCurrentExecutorRecord(record, workspace) { if (!record || typeof record !== 'object' || Array.isArray(record)) return false; const keys = Object.keys(record).sort().join('\0'); const epochShapes = [[...EXECUTOR_KEYS].sort().join('\0'), [...EXECUTOR_KEYS_WITHOUT_EPOCH].sort().join('\0'), [...EXECUTOR_KEYS_STARTED_ONLY].sort().join('\0')]; const epochCoherent = ((record.ownerLifecycleEpoch === undefined && record.ownerLifecycleEpochStartedAt === undefined) || (typeof record.ownerLifecycleEpoch === 'string' && /^[a-f0-9]{64}$/u.test(record.ownerLifecycleEpoch) && canonicalTimestamp(record.ownerLifecycleEpochStartedAt) && record.ownerLifecycleEpoch === hostLifecycleEpoch(record.parentSessionId, record.ownerLifecycleEpochStartedAt)));  return epochShapes.includes(keys) && epochCoherent && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
 function isLegacyExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...LEGACY_EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
 function validExecutorRoute(record, originWorkspace, input) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_ROUTE_KEYS].sort().join('\0') && record.version === 1 && record.kind === 'executor-route' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && record.originWorkspace === originWorkspace && boundedWorkspace(record.targetWorkspace) && ['pending', 'active', 'stopped'].includes(record.state) && canonicalTimestamp(record.createdAt) && canonicalTimestamp(record.updatedAt) && Date.parse(record.updatedAt) >= Date.parse(record.createdAt) && (input === undefined || record.parentSessionId === input.session_id && record.childTurnId === input.turn_id && record.agentId === input.agent_id && record.agentType === input.agent_type); }
 function executorMatchesRoute(executor, route) { return executor.agentId === route.agentId && executor.agentType === route.agentType && executor.parentSessionId === route.parentSessionId && executor.parentGenerationId === route.parentGenerationId && executor.parentTurnId === route.parentTurnId && executor.parentPermissionMode === route.parentPermissionMode && executor.childTurnId === route.childTurnId && executor.originWorkspace === route.originWorkspace && executor.workspace === route.targetWorkspace && executor.createdAt === route.createdAt; }
@@ -405,13 +1090,13 @@ async function legacyExecutorAuthorityExists(dataRoot, workspace, executor, requ
 function routePath(store, sessionId, childTurnId) { return join(store.directory, `route-${key('executor-route', sessionId, childTurnId)}.json`); }
 async function readBoundedExecutor(path, requirePrivatePermissions = false) { return readBoundedJsonFile(dirname(path), path, MAX_EXECUTOR_BYTES, { requirePrivatePermissions }); }
 async function readExecutorRoute(path, privateRoot, requirePrivatePermissions = false) { return readBoundedJsonFile(privateRoot, path, MAX_EXECUTOR_ROUTE_BYTES, { requirePrivatePermissions }); }
-async function deactivateExactExecutor(target, agentId, route) {
+async function deactivateExactExecutor(target, agentId, route, lockOptions = {}) {
   try {
     await withFileLock(target.lock, async () => {
       const path = join(target.directory, `executor-${key('executor', agentId)}.json`); let current;
       try { current = await readBoundedExecutor(path); } catch { return; }
       if (validExecutorRecord(current, target.workspacePath) && executorMatchesRoute(current, route) && current.active) await atomicWriteJson(path, { ...current, active: false });
-    });
+    }, lockOptions);
   } catch { /* compensation is best-effort and must not replace the fixed finalization error */ }
 }
 function boundedIdentifier(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; }); }

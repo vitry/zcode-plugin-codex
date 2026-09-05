@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { planRescueActivation, validateRescueRouteDirective } from '../scripts/lib/rescue-route-planner.mjs';
+import { planRescueActivation, resolveStoppedRescueChild, validateRescueRouteDirective } from '../scripts/lib/rescue-route-planner.mjs';
 import { rescueBindingKey } from '../scripts/lib/rescue-binding.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 
@@ -885,4 +885,123 @@ test('route directives accept only exact bounded task-free keys', () => {
     { version: 2, action: 'spawn', taskName: 'zcode_rescue_task' },
     { version: 1, action: 'followup', target: '/root/zcode_rescue_task' }, null,
   ]) assert.throws(() => validateRescueRouteDirective(invalid), { code: 'RESCUE_ROUTE_INVALID' });
+});
+
+// --- Task 7: the stopped Rescue child's exact Host-owned writable job resolver ---
+
+const EPOCH = 'a'.repeat(64);
+
+async function routeStore(input) {
+  const { createStateStore } = await import('../scripts/lib/state.mjs');
+  return createStateStore({ dataRoot: input.dataRoot });
+}
+
+async function runningRescueJob(store, workspace, { ownerSessionId = 'parent-1', epoch = EPOCH, placement = 'foreground', agentId = 'child-1' } = {}) {
+  const reserved = await store.reserveFreshRescueJob({
+    workspace,
+    reservation: { workspace, ownerSessionId, ownerTurnId: 'turn-new', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: ownerSessionId, parentTurnId: 'turn-new', agentId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
+  });
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  let running = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: `zs-${agentId}`, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: `input-${agentId}`, startRevision: 1, beforeMessageIds: [] });
+  return running;
+}
+
+function stoppedRescueChildInput(input, overrides = {}) {
+  return { childAgentId: 'child-1', dataRoot: input.dataRoot, workspace: input.caller.workspace, parentSessionId: 'parent-1', ...overrides };
+}
+
+test('resolveStoppedRescueChild selects the exact running Host-owned writable Rescue job for the stopped child', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const running = await runningRescueJob(store, input.caller.workspace);
+  const resolved = await resolveStoppedRescueChild(stoppedRescueChildInput(input));
+  assert.equal(resolved?.id, running.id);
+  assert.equal(resolved?.hostPlacement, 'foreground');
+  assert.equal(resolved?.ownerLifecycleEpoch, EPOCH);
+  assert.equal(resolved?.executionOwner, 'host-child');
+});
+
+test('resolveStoppedRescueChild never selects read-only Rescue or non-Rescue jobs', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  await store.reserveJob({ workspace: input.caller.workspace, ownerSessionId: 'parent-1', ownerTurnId: 'turn-new', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.reserveJob({ workspace: input.caller.workspace, ownerSessionId: 'parent-1', ownerTurnId: 'turn-new', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  assert.equal(await resolveStoppedRescueChild(stoppedRescueChildInput(input)), null);
+});
+
+test('resolveStoppedRescueChild never selects a legacy writable Rescue without the Host lifecycle trio', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const legacy = await store.reserveJob({ workspace: input.caller.workspace, ownerSessionId: 'parent-1', ownerTurnId: 'turn-new', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const claimed = await store.claimJobWorkerForExecution(input.caller.workspace, legacy.id, { childPid: 999_999_999, workerLeaseId: legacy.id });
+  await store.transitionJob(input.caller.workspace, legacy.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-legacy', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  assert.equal(await resolveStoppedRescueChild(stoppedRescueChildInput(input)), null);
+});
+
+test('resolveStoppedRescueChild never selects a terminal Host-owned job', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const running = await runningRescueJob(store, input.caller.workspace);
+  await store.finishJob(input.caller.workspace, running.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(await resolveStoppedRescueChild(stoppedRescueChildInput(input)), null);
+});
+
+test('resolveStoppedRescueChild returns null for a sibling child agent whose binding does not own the live job', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const running = await runningRescueJob(store, input.caller.workspace, { agentId: 'child-a' });
+  // Child B's SubagentStop in the same workspace must never inherit child A's
+  // live job: the parent's binding partition is the durable ownership proof.
+  assert.equal(await resolveStoppedRescueChild(stoppedRescueChildInput(input, { childAgentId: 'child-b' })), null);
+  const exact = await resolveStoppedRescueChild(stoppedRescueChildInput(input, { childAgentId: 'child-a' }));
+  assert.equal(exact?.id, running.id);
+  assert.equal(exact?.hostPlacement, 'foreground');
+});
+
+test('resolveStoppedRescueChild returns null when no binding record claims the selected job', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const running = await runningRescueJob(store, input.caller.workspace, { agentId: 'child-a' });
+  const { resolveWorkspaceStorage } = await import('../scripts/lib/workspace.mjs');
+  const { readdir, rm } = await import('node:fs/promises');
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.caller.workspace });
+  const partition = (await readdir(storage.directory)).find((entry) => entry.startsWith('rescue-binding-session-'));
+  await rm(join(storage.directory, partition));
+  assert.equal(await resolveStoppedRescueChild(stoppedRescueChildInput(input, { childAgentId: 'child-a' })), null);
+  assert.equal((await store.readJob(input.caller.workspace, running.id)).status, 'running');
+});
+
+test('resolveStoppedRescueChild requires its exact bounded input shape', async () => {
+  const input = await context();
+  for (const invalid of [
+    stoppedRescueChildInput(input, { parentSessionId: '' }),
+    stoppedRescueChildInput(input, { parentSessionId: 'bad\nid' }),
+    stoppedRescueChildInput(input, { workspace: '' }),
+    stoppedRescueChildInput(input, { dataRoot: '' }),
+    stoppedRescueChildInput(input, { childAgentId: '' }),
+    stoppedRescueChildInput(input, { childAgentId: 5 }),
+    stoppedRescueChildInput(input, { extra: true }),
+    stoppedRescueChildInput(input, { signal: 'abort' }),
+    stoppedRescueChildInput(input, { timeoutMs: -1 }),
+    stoppedRescueChildInput(input, { timeoutMs: 1.5 }),
+    null,
+  ]) await assert.rejects(resolveStoppedRescueChild(invalid), { code: 'RESCUE_ROUTE_INVALID' });
+});
+
+test('resolveStoppedRescueChild threads its bounded listing budget and abort signal through', async () => {
+  const input = await context();
+  const store = await routeStore(input);
+  const running = await runningRescueJob(store, input.caller.workspace);
+  const resolved = await resolveStoppedRescueChild(stoppedRescueChildInput(input, { signal: AbortSignal.timeout(1_000), timeoutMs: 1_000 }));
+  assert.equal(resolved?.id, running.id);
+  const aborted = AbortSignal.abort(new Error('budget spent'));
+  await assert.rejects(
+    resolveStoppedRescueChild(stoppedRescueChildInput(input, { signal: aborted, timeoutMs: 1_000 })),
+    (error) => error === aborted.reason,
+  );
 });

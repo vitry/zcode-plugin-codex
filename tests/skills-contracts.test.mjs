@@ -149,7 +149,7 @@ test('public skills enforce authorization and do not expose removed flags', () =
   }
 });
 
-test('review skills are read-only and Rescue is foreground by default', () => {
+test('review skills are read-only and Rescue placement is complexity-inferred', () => {
   for (const name of ['review', 'adversarial-review']) {
     const source = skill(name);
     assert.match(source, /always read-only/i);
@@ -157,7 +157,8 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   }
   const source = skill('rescue');
   assertRescueLauncherGate(source);
-  assert.match(source, /defaults? to foreground/i);
+  assert.match(source, /task complexity decides/);
+  assert.match(source, /an explicit `?--wait`? or `?--background`? flag is authoritative/);
   assert.match(source, /role-status rescue/);
   assertRescueNamingContract(source);
   assertRescueSpawnContracts(source);

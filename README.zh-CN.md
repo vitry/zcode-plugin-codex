@@ -29,7 +29,7 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 |---|---|
 | `$zcode:review [--wait \| --background] [--base <ref>] [--scope auto\|working-tree\|branch]` | 始终只读的代码审查。 |
 | `$zcode:adversarial-review [--wait \| --background] [--base <git-ref>] [--scope auto\|working-tree\|branch] [review focus...]` | 只读地挑战实现假设、取舍与隐蔽失败。 |
-| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | 委派调查或修改，默认前台。 |
+| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | 委派调查或修改；无标志时按任务复杂度推断 placement，显式 `--wait` 或 `--background` 始终权威。 |
 | `$zcode:transfer [--source <codex-thread-id>]` | 把可见 Codex 对话导入可恢复的 ZCode 会话。 |
 | `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]` | 查看持久任务；等待默认 240 秒。 |
 | `$zcode:result [job-id]` | 不提供 ID 时，读取当前工作区中由当前 Codex 会话拥有的最新已结束 outcome；仍支持精确 job ID。成功 job 返回精确存储的 result artifact，失败或取消 job 返回有界的已存储 outcome 或失败报告。 |
@@ -54,7 +54,7 @@ Rescue 会区分对话的 origin workspace 与 execution workspace。Root 在同
 
 `source-session-unproven` 对该 Rescue 路由是终态：应使用活动受管 lifecycle context 中的 launcher，但不要从未证明的 source checkout 运行 `$zcode:setup`、prepare、follow up 或 spawn。launcher error 由 shell-unsafe 安装路径触发时同样是终态，并给出固定的重新安装 remedy；请把插件重新安装到 shell-safe 路径，再从新的受管父 turn 重试。两种情况都不授权 fallback launcher 或自动重定向。
 
-Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适用的入口；Root 也可以根据完整业务目标主动选择 Rescue。这就是自动路由，不提供 `--auto` 选项。显式 `--fresh` 或 `--resume` 始终权威；明确的主动续做会在 child 启动前物化为 resume，明确的独立工作会物化为 fresh。
+Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适用的入口；Root 也可以根据完整业务目标主动选择 Rescue。这就是自动路由，不提供 `--auto` 选项。显式 `--fresh` 或 `--resume` 始终权威；明确的主动续做会在 child 启动前物化为 resume，明确的独立工作会物化为 fresh。没有显式标志时，placement 按任务复杂度推断：小而边界清晰的任务放在前台，多步、开放或可能耗时的任务会宣布为后台 placement；显式 `--wait` 与 `--background` 始终权威，优先于该推断，Root 也不会额外追问 placement。
 
 `--resume` 仍是无参数的公开选择：它不接受 child、session、job、binding、operation 或 handle 参数。对于精确续做，Root 私下保留成功 `spawn_agent` 调用返回的精确 `task_name`，作为该 operation 不变的 canonical agent path。Root 发送 private version-3 preparation，其中只以 `continuationTarget: {"agentPath":"/root/..."}` 携带该 path；插件在精确 parent 的持久 child graph 内部解析 host child ID。canonical path 是只收窄选择的 selector，不是 authority：完整 child-ID/path binding、原始 session、permission 与 canonical workspace 验证仍全部是强制要求。存在多个合格 sibling 时，精确 version-3 selector 只解析该 canonical agent path 上的 sibling，并且只恢复该 sibling 的完整 binding 与原始 ZCode session。targetless/null 兼容路由仅在唯一 complete binding 合格时允许。private envelope version 2 的 child ID/path 对只保留对已创建 preparation 的读取兼容；新流程绝不发出它。不带 target 且存在多个可用 binding 的 resume 仍属歧义并 fail closed；插件绝不排序或替换 sibling。
 
@@ -84,7 +84,11 @@ ZCode 支持时，child 会订阅 online conversation progress，并用结构化
 
 仅在这个被选中的 Rescue 子 agent 内，精确去除首尾空白后的 `zcode status`、`$zcode:status` 和 `/zcode:status` 才会检查只绑定到该子 agent 的 job。这个 bound status sidecar 不接受 job ID 或选项，不能选择其他 job，也绝不会启动或替换原始前台执行。上表中的公开 `$zcode:status` 仍用于普通 durable job 的 owner-scoped 控制。
 
-后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
+后台 Rescue 由 host 托管且 session-bound：显式 `--background` 让 Rescue child 作为同一个 companion run 保持挂靠在所属 Codex host 上，新 Rescue 不再启动 detached worker。child 会持续观察 ZCode turn 直到持久终态，先写入 result artifact，再在 host session 仍活跃时送达一条简洁的完成通知；完整输出仍通过 `$zcode:result` 获取。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
+
+每个 session-bound run 都始终处于所属 session 的授权之下。`$zcode:status` 与 `$zcode:result` 会暴露 `resumable`：当已停止、失败或已取消 job 的精确 binding 仍可恢复时为 true；确认的取消会携带其 Stop Cause：`user`、`session-end` 或 `host-coordination-loss`。中断尚未被证明时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效；在停止结算前已自然完成的运行保持 `succeeded`。
+
+历史 detached Rescue job 仍保留完整的持久操作面：原 owner 依旧可以通过 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel` 检查、等待、取消并收敛这些任务（含 PromptSubmit 回退），而新 Rescue 绝不再启动 detached 路径。升级绝不批量取消历史任务，也绝不把它们收编为新的 host child 或重新启动 detached worker。
 
 Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。默认 CI 会分别重放经过净化的 0.147 captured rollout，独立覆盖具名 Role 和 generic fallback，包括 yielded 前台执行及同一 child 的 choice continuation。带认证的 live 测试仍只记录 Codex 实际选择的一条路由；它不会声称一次 live turn 同时执行了两条路由。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再按[手动卸载与残留状态清理指南](docs/manual-uninstall.md)审查并移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
 
@@ -113,7 +117,7 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 ## 任务、Transfer 与 review gate
 
-`SessionEnd` 表示 runtime ownership 消失。它只保留无活动 current attempt 的精确已完成 binding，以及精确 v1/v2 `closed/session-ended` candidate 作为可恢复状态。远端取消得到确认后，它可以只关闭该精确 active operation；未确认的 stop 会保留 writable guard。任何 bound `session/stop` 之前，过期 stop 的最终 guard 会重新检查 owner、可取消 job、binding operation/generation/current job 和 worker lease；过期 loser 不发送 stop，也不关闭 binding。
+`SessionEnd` 表示 runtime ownership 消失。结束 hook 会先持久化一条私有、按 epoch 划分的 session-end receipt，然后才进行任何清理或远端控制，因此即使 hook 被杀死，边界决策也已经落盘。随后的 settlement 会停止 session-bound 的前台与后台运行，并保留以下可恢复状态：无活动 current attempt 的精确已完成 binding、精确 v1/v2 `closed/session-ended` candidate，以及 stop 在新 schema 下被边界确认的精确 active binding——其原始 ZCode session 保持可恢复，供日后经过授权的 resume 使用；不确定状态保持持久。稍后的 `SessionStart(source=resume)` 会识别 pending receipt——当前一个 epoch 结束时没有 receipt，则本地记录一条 `resume-compensation` receipt——并在下一次 prompt、status、result、cancel 或 writable 预留之前重试 reconciliation；旧 epoch 留下的 receipt 绝不会停止 resume 后的新 job。远端取消得到确认后，它可以只关闭该精确 active operation；未确认的 stop 会保留 writable guard。任何 bound `session/stop` 之前，过期 stop 的最终 guard 会重新检查 owner、可取消 job、binding operation/generation/current job 和 worker lease；过期 loser 不发送 stop，也不关闭 binding。
 
 每次运行都会先建立持久、带 owner 的 job。已安装插件的状态保存在 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库或插件缓存。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
 
@@ -142,9 +146,9 @@ Log: <absolute-private-path>
 
 只有精确 owner 的详细 status 会暴露私有路径。紧凑列表、外部 `--all` 投影、同级 sibling session、绑定的 Rescue status sidecar、Root relay 和终态通知都不会暴露 `logFile` 或日志路径。status 语法仍为 `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`：不提供 `--log` 选项或日志读取命令。日志沿用现有持久保留策略，在卸载或选择性 runtime 清理后仍保留；没有日志轮转、过期、裁剪、逐日志删除、导出或搜索功能。仅在删除已证明属于本插件的工作区数据时才删除这些日志。
 
-后台任务有独立生命周期：启动它的前台命令或 Codex turn 结束时，后台任务不会自动取消。用 `$zcode:status <job-id>` 查看，用 `$zcode:cancel <job-id>` 显式取消；ownership 仍只属于预留该 job 的 Codex session。
+后台任务有独立生命周期：启动它的前台命令或 Codex turn 结束时，后台任务不会自动取消。但所属 Codex session 结束时不同：`SessionEnd` 会停止 session-bound 的后台 Rescue 并做持久结算，同时也会发现并结算活动中的 detached 只读 Review 或 Adversarial Review 运行，因此只读后台工作同样不会在登出后继续存在。用 `$zcode:status <job-id>` 查看，用 `$zcode:cancel <job-id>` 显式取消；ownership 仍只属于预留该 job 的 Codex session。
 
-在支持的前台路径上，插件会在安全协议边界处理 `SIGINT` 和 `SIGTERM`。ZCode session 尚未建立时，中断会取消排队中的预留；精确持久化的 ZCode session ID 一旦存在，插件只会对该 session 发送 `session/stop`。停止得到确认后，job 会持久标记为 cancelled；如果 `session/stop` 失败或超时，job 会保持 running，并通过 status 暴露取消错误，以便重试取消。这是刻意限定的 session 级边界：插件不声称停止或杀死 ZCode 或嵌套工具创建的任意 detached grandchildren。
+在支持的前台路径上，插件会在安全协议边界处理 `SIGINT` 和 `SIGTERM`。ZCode session 尚未建立时，中断会取消排队中的预留；精确持久化的 ZCode session ID 一旦存在，插件只会对该 session 发送 `session/stop`。停止得到确认后，job 会持久标记为 cancelled；如果 `session/stop` 失败或超时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效，取消错误仍通过 status 暴露，由后续成功的停止或 reconciliation 结算该中断。这是刻意限定的 session 级边界：插件不声称停止或杀死 ZCode 或嵌套工具创建的任意 detached grandchildren。
 
 Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺序排列、用户可见的 user/assistant 文本；不转移隐藏推理、工具状态、permission 或 job ownership。
 
@@ -160,7 +164,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 - `plugin-data-root-added`：setup 只把稳定数据目录加入 Codex 配置，尚未写入插件状态；重启 Codex 后再次运行 setup。
 
-macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前必须在 CLI model provider 可用且 Codex 已认证并有额度的机器上运行完整严格命令：`ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualification-required`。`ZCODE_REAL_MODEL` 仅保留为 deprecated 别名；两个变量都有非空值时，只有去除首尾空白后的值完全相同才继续，否则资格检查会以冲突 fail closed。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified runtime 结果转为非零失败；作用域 `tui-evidence-not-exposed` 观测不是 runtime 资格结果，也从不声称 UI 已通过资格。未知执行错误也会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前必须在 CLI model provider 可用且 Codex 已认证并有额度的机器上运行完整严格命令：`ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualification-required`。`ZCODE_REAL_MODEL` 仅保留为 deprecated 别名；两个变量都有非空值时，只有去除首尾空白后的值完全相同才继续，否则资格检查会以冲突 fail closed。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified runtime 结果转为非零失败；作用域 `tui-evidence-not-exposed` 观测不是 runtime 资格结果，也从不声称 UI 已通过资格。未知执行错误也会让测试失败。当上述环境变量开启时，资格套件直接调用 `SessionEnd` hook 入口，并在该 hook 边界上驱动 resume/compensation 流程：session-end receipt 写入与恢复会话在新 Rescue 授权之前识别 pending settlement 都在该边界得到验证；它并不执行真实的 host 登出。证明 host 客户端自身会在优雅登出时触发 `SessionEnd` 仍是尚未完成的手动 release gate，发布前必须用真实凭据验证；这个 logout 边界保持显式 opt-in，普通 CI 绝不运行。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 

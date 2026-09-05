@@ -33,6 +33,8 @@ Background workers remain capability-bound, but production Node creates,
 transports, starts, and reaps them without a Codex subagent or model seeing the
 capability.
 
+This background-worker ownership paragraph is superseded for new normal Rescue runs by [ADR 0018](0018-use-host-managed-session-bound-execution.md). Historical detached jobs retain compatibility and reconciliation requirements, but the normal session-bound background path is owned by the Codex Host Rescue Child.
+
 For native Rescue subagents on qualified Codex 0.147, shell commands observe the
 child thread ID in `CODEX_THREAD_ID`, not the parent ID. `SubagentStart` records
 that child `agent_id` together with its parent session, child turn, Role,
