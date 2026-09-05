@@ -556,8 +556,24 @@ async function runBounded(values, concurrency, operation, isAborted = undefined)
   }));
 }
 export async function markForwarding(dataRoot, input, parentCaller, options = {}) {
+  // Strict bounded-options validation: the publication seam plus the optional
+  // shared-deadline lock budget (signal and/or timeoutMs) forwarded to EVERY
+  // withFileLock wait this publication performs. Unknown or mistyped keys are
+  // rejected instead of silently ignored.
+  if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
+    || Object.keys(options).some((option) => !['publicationSeam', 'signal', 'timeoutMs'].includes(option))
+    || options.publicationSeam !== undefined && typeof options.publicationSeam !== 'function'
+    || options.signal !== undefined && !(typeof AbortSignal === 'function' && options.signal instanceof AbortSignal)
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The forwarding publication options are invalid.');
+  }
   const publicationSeam = options.publicationSeam;
-  if (publicationSeam !== undefined && typeof publicationSeam !== 'function') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route publication seam is invalid.');
+  const lockOptions = forwardingLockOptions(options);
+  // The compensation path derives its lock budget from the SAME shared
+  // deadline: once a contended lock has consumed the whole budget, reacquiring
+  // that lock in the finally block must fail fast instead of waiting out
+  // withFileLock's five-second default past the hook's deadline.
+  const compensationDeadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
   const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const active = input.hook_event_name === 'SubagentStart';
   if (active) {
     const generationId = parentCaller?.generationId ?? null;
@@ -581,7 +597,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
         await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt: createdAt });
         await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route);
       }
-    });
+    }, lockOptions);
     await publicationSeam?.('after-route-pending');
     // Durable authorization-epoch evidence (codex, Task 8): capture the CURRENT
     // session record's startedAt digest at SubagentStart, then REVALIDATE it
@@ -624,7 +640,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
         }
         await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor);
         await publicationSeam?.('after-executor-persisted');
-      });
+      }, lockOptions);
       await publicationSeam?.('after-executor-write');
       await withFileLock(origin.lock, async () => {
         let current;
@@ -647,12 +663,12 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
           finalState = 'active'; return;
         }
         finalState = current.state;
-      });
+      }, lockOptions);
     } catch (error) {
       finalError = error instanceof PluginError && `${error.code}`.startsWith('EXECUTOR_')
         ? error : executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', error);
     } finally {
-      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route);
+      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route, compensationDeadline === undefined ? lockOptions : deadlineLockOptions(compensationDeadline));
     }
     if (finalError !== null) throw finalError;
     return;
@@ -668,7 +684,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     const updatedAt = new Date().toISOString();
     if (route !== null && route.state !== 'stopped') { route = { ...route, state: 'stopped', updatedAt }; await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route); }
     await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId: route?.parentGenerationId ?? null, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt });
-  });
+  }, lockOptions);
   const target = route === null ? origin : await paths(dataRoot, route.targetWorkspace);
   const executorPath = join(target.directory, `executor-${key('executor', input.agent_id)}.json`);
   await withFileLock(target.lock, async () => {
@@ -678,10 +694,35 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       || !await legacyExecutorAuthorityExists(dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
     if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type
       && (route === null || executorMatchesRoute(current, route))) await atomicWriteJson(executorPath, { ...current, active: false });
-  });
+  }, lockOptions);
 }
 
-export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId) {
+/**
+ * Lock waits inside the executor lookup chain inherit a caller's bounded
+ * budget (an abort signal and/or a lock acquisition timeout) only when one is
+ * supplied; absent fields keep withFileLock's five-second default.
+ * @param {{signal?: AbortSignal, timeoutMs?: number}} [options]
+ * @returns {{signal?: AbortSignal, timeoutMs?: number}}
+ */
+function forwardingLockOptions(options = {}) {
+  return {
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  };
+}
+/**
+ * Compensation lock waits inherit the SAME shared deadline as the publication:
+ * a positive remainder yields an absolute-deadline signal and an integer lock
+ * budget, while an exhausted deadline yields an already-aborted fail-fast
+ * budget instead of withFileLock's five-second default.
+ * @param {number} deadline
+ * @returns {{signal: AbortSignal, timeoutMs: number}}
+ */
+function deadlineLockOptions(deadline) {
+  const remaining = deadline - Date.now();
+  return remaining > 0 ? { signal: AbortSignal.timeout(remaining), timeoutMs: Math.floor(remaining) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
+}
+export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   const origin = await paths(dataRoot, originWorkspace);
   return withFileLock(origin.lock, async () => {
     let route;
@@ -689,9 +730,9 @@ export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionI
     catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
     if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
     return { ...route };
-  });
+  }, lockOptions);
 }
-async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId) {
+async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   let origin; try { origin = await readOnlyPaths(dataRoot, originWorkspace); } catch (cause) { throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause); }
   if (!origin.existing) throw executorError('EXECUTOR_ROUTE_NOT_FOUND', 'No exact trusted executor route matches this child.');
   return withFileLock(origin.lock, async () => {
@@ -700,7 +741,7 @@ async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, session
     catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
     if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
     return { ...route };
-  }, { createLayout: false }).catch((cause) => {
+  }, { createLayout: false, ...lockOptions }).catch((cause) => {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause);
   });
@@ -708,12 +749,12 @@ async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, session
 export async function resolveForwardingExecutor(dataRoot, workspace, agentId, options = {}) {
   const probe = await probeForwardingExecutor(dataRoot, workspace, agentId, options, false);
   if (probe.kind === 'absent') throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
-  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false);
+  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false, forwardingLockOptions(options));
 }
 export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, options = {}) {
   const probe = await probeForwardingExecutor(dataRoot, ambientWorkspace, agentId, options, true);
   if (probe.kind === 'selected') {
-    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true);
+    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true, forwardingLockOptions(options));
     return { executor, executionWorkspace: probe.store.workspacePath };
   }
   if (!probe.store.existing) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
@@ -739,7 +780,7 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
       if (options.durableProvenance === true || routes[0].state !== 'active') throw executorError('EXECUTOR_STATE_MISMATCH', 'The private executor route is not active.');
     }
     return { ...routes[0] };
-  }, { createLayout: false }); } catch (cause) {
+  }, { createLayout: false, ...forwardingLockOptions(options) }); } catch (cause) {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route store is invalid.', cause);
   }
@@ -756,9 +797,11 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
 }
 export async function resolveRoutedStoppedForwardingExecutor(dataRoot, originWorkspace, agentId, options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
-    || Object.keys(options).some((option) => !['continuation', 'durableProvenance', 'now'].includes(option))
+    || Object.keys(options).some((option) => !['continuation', 'durableProvenance', 'now', 'signal', 'timeoutMs'].includes(option))
     || options.continuation !== undefined && typeof options.continuation !== 'boolean'
-    || options.durableProvenance !== undefined && typeof options.durableProvenance !== 'boolean') {
+    || options.durableProvenance !== undefined && typeof options.durableProvenance !== 'boolean'
+    || options.signal !== undefined && !(typeof AbortSignal === 'function' && options.signal instanceof AbortSignal)
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The stopped executor lookup options are invalid.');
   }
   return resolveRoutedForwardingExecutor(dataRoot, originWorkspace, agentId, {
@@ -816,21 +859,21 @@ async function probeForwardingExecutor(dataRoot, workspace, agentId, options, ro
     }
     if (candidates.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'The parent turn does not have exactly one active Rescue executor.');
     return selected;
-  }, routed ? { createLayout: false } : undefined); } catch (cause) {
+  }, { ...(routed ? { createLayout: false } : {}), ...forwardingLockOptions(options) }); } catch (cause) {
     if (!routed) throw cause;
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause);
   }
   return selected === null ? { kind: 'absent', store } : { kind: 'selected', store, executor: selected };
 }
-async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly) {
+async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly, lockOptions = {}) {
   if (isLegacyExecutorRecord(selected, store.workspacePath)) {
     if (!await legacyExecutorAuthorityExists(dataRoot, store.workspacePath, selected)) throw executorError('EXECUTOR_ROUTE_INVALID', 'Legacy executor routing is unavailable while lifecycle authority exists.');
     return selected;
   }
   const route = readOnly
-    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId)
-    : await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId);
+    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId, lockOptions)
+    : await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId, lockOptions);
   if (!executorMatchesRoute(selected, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match this executor.');
   if (selected.active && route.state !== 'active' || !selected.active && route.state !== 'stopped') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route state does not match this executor.');
   return selected;
@@ -1047,13 +1090,13 @@ async function legacyExecutorAuthorityExists(dataRoot, workspace, executor, requ
 function routePath(store, sessionId, childTurnId) { return join(store.directory, `route-${key('executor-route', sessionId, childTurnId)}.json`); }
 async function readBoundedExecutor(path, requirePrivatePermissions = false) { return readBoundedJsonFile(dirname(path), path, MAX_EXECUTOR_BYTES, { requirePrivatePermissions }); }
 async function readExecutorRoute(path, privateRoot, requirePrivatePermissions = false) { return readBoundedJsonFile(privateRoot, path, MAX_EXECUTOR_ROUTE_BYTES, { requirePrivatePermissions }); }
-async function deactivateExactExecutor(target, agentId, route) {
+async function deactivateExactExecutor(target, agentId, route, lockOptions = {}) {
   try {
     await withFileLock(target.lock, async () => {
       const path = join(target.directory, `executor-${key('executor', agentId)}.json`); let current;
       try { current = await readBoundedExecutor(path); } catch { return; }
       if (validExecutorRecord(current, target.workspacePath) && executorMatchesRoute(current, route) && current.active) await atomicWriteJson(path, { ...current, active: false });
-    });
+    }, lockOptions);
   } catch { /* compensation is best-effort and must not replace the fixed finalization error */ }
 }
 function boundedIdentifier(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; }); }

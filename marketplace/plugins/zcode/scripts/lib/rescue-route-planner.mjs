@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { resolveRoutedStoppedForwardingExecutor } from '../../hooks/lib/hook-state.mjs';
 import { listCodexThreadSpawnChildren, sanitizeCodexThreadSpawnChild } from './codex-app-server.mjs';
 import { PluginError } from './errors.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
-import { rescueBindingAuthorityView, rescueBindingKey, validateRescueBinding } from './rescue-binding.mjs';
+import { rescueBindingAuthorityView, rescueBindingKey, rescueBindingPartitionKey, readRescueBindingPartitionFile, validateRescueBinding, validHostLifecycleRecord } from './rescue-binding.mjs';
+import { TERMINAL } from './recovery.mjs';
 import { createStateStore } from './state.mjs';
+import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const BASE_TASK_NAME = 'zcode_rescue_task';
 const BASE_AGENT_PATH = `/root/${BASE_TASK_NAME}`;
@@ -16,6 +19,8 @@ const MAX_DIRECTIVE_BYTES = 2048;
 const TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
 const STOPPED_PROOF_KEYS = Object.freeze(['executionWorkspace', 'executor']);
+const STOPPED_CHILD_KEYS = Object.freeze(['childAgentId', 'dataRoot', 'parentSessionId', 'workspace']);
+const STOPPED_CHILD_OPTIONAL_KEYS = Object.freeze(['signal', 'timeoutMs']);
 const EXECUTOR_KEYS = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
 const EXECUTOR_KEYS_WITHOUT_EPOCH = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
 const EXECUTOR_KEYS_STARTED_ONLY = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'ownerLifecycleEpochStartedAt', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
@@ -111,6 +116,71 @@ export async function planRescueActivation(input) {
   }
   if (resume || ineligibleCandidate) throw plannerError('RESCUE_BINDING_INVALID');
   return spawnPlan(hostChildren);
+}
+
+/**
+ * Resolve the exact Host-owned writable Rescue job one stopped Rescue child
+ * owns: the parent's single active (nonterminal) writable Rescue record in the
+ * child's execution workspace, exactly as the StateStore's WRITABLE_JOB_EXISTS
+ * invariant admits at most one. The parent's durable binding partition must
+ * bind that job to this exact child agent — a sibling child's stop selects
+ * nothing. Read-only Rescue, detached non-Rescue runs, terminal jobs, and
+ * legacy records without the Host lifecycle trio are never selected — they
+ * have no Host child coordination to reconcile. More than one active writable
+ * Rescue is durable corruption, never a selection.
+ * @param {any} input
+ * @returns {Promise<any | null>}
+ */
+export async function resolveStoppedRescueChild(input) {
+  if (!plain(input) || !validStoppedChildInput(input)) throw plannerError('RESCUE_ROUTE_INVALID');
+  const listed = await createStateStore({ dataRoot: input.dataRoot }).listOwnedJobs(input.workspace, input.parentSessionId, {
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+  });
+  const active = listed.filter((/** @type {any} */ job) => job.command === 'rescue' && job.readOnly === false
+    && !TERMINAL.has(job.status));
+  if (active.length === 0) return null;
+  if (active.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
+  const job = active[0];
+  if (!validHostLifecycleRecord(job) || !(await stoppedChildOwnsJob(input, job))) return null;
+  return job;
+}
+
+/** @param {any} input */
+function validStoppedChildInput(input) {
+  return Object.keys(input).every((key) => STOPPED_CHILD_KEYS.includes(key) || STOPPED_CHILD_OPTIONAL_KEYS.includes(key))
+    && STOPPED_CHILD_KEYS.every((key) => key in input)
+    && typeof input.dataRoot === 'string' && input.dataRoot.length > 0
+    && boundedIdentifier(input.childAgentId) && boundedIdentifier(input.parentSessionId)
+    && boundedWorkspace(input.workspace)
+    && (input.signal === undefined || input.signal instanceof AbortSignal)
+    && (input.timeoutMs === undefined || typeof input.timeoutMs === 'number' && Number.isSafeInteger(input.timeoutMs) && input.timeoutMs >= 0);
+}
+
+/**
+ * Prove the selected job belongs to exactly this stopped child through the
+ * parent's durable binding partition: its record must name the job as
+ * currentJobId and this child's agent ID as its child authority. An absent,
+ * unreadable, or foreign-owned match selects nothing — the advisory caller
+ * defers, so a sibling child's stop can never inherit the one live run.
+ * @param {any} input @param {any} job
+ * @returns {Promise<boolean>}
+ */
+async function stoppedChildOwnsJob(input, job) {
+  let storage;
+  try { storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace }); }
+  catch { return false; }
+  const expected = { parentSessionId: input.parentSessionId, workspace: storage.workspacePath };
+  let partition;
+  try {
+    partition = await readRescueBindingPartitionFile(
+      storage.directory,
+      join(storage.directory, `rescue-binding-session-${rescueBindingPartitionKey(expected)}.json`),
+      expected,
+    );
+  } catch { return false; }
+  const record = partition.records.find((/** @type {any} */ candidate) => candidate.currentJobId === job.id);
+  return record !== undefined && rescueBindingAuthorityView(record).childAgentId === input.childAgentId;
 }
 
 /** Preserve the exact planner-selected binding CAS when its joined jobs are available. @param {string} executorAgentId @param {string} agentPath @param {any} resolved */

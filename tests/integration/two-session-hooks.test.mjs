@@ -260,14 +260,16 @@ async function hostOwnedRunningJob(fixture, { workspace, ownerSessionId, epoch, 
 }
 
 // Record a SessionStart and pin its createdAt to a deterministic value so the
-// receipt epoch is reproducible; returns the epoch and canonical paths.
-async function recordSessionStartEpoch(ctx, sessionId) {
+// receipt epoch is reproducible; returns the epoch and canonical paths. An
+// optional cwd records the session in a non-ambient workspace (a linked rescue
+// execution workspace).
+async function recordSessionStartEpoch(ctx, sessionId, cwd = ctx.workspace) {
   await mkdir(ctx.dataRoot, { recursive: true });
-  const canonicalWorkspace = await realpath(ctx.workspace);
+  const canonicalWorkspace = await realpath(cwd);
   const dataRootPath = await realpath(ctx.dataRoot);
   const startedAt = new Date(Date.now() - 60_000).toISOString();
-  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: sessionId, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' });
-  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: cwd });
   const recordPath = join(storage.directory, 'hook-state', `session-${createHash('sha256').update(JSON.stringify(['session', sessionId])).digest('hex')}.json`);
   await writeFile(recordPath, `${JSON.stringify({ kind: 'session', sessionId, workspace: storage.workspacePath, source: 'startup', createdAt: startedAt })}\n`);
   return { epoch: hostLifecycleEpoch(sessionId, startedAt), canonicalWorkspace, dataRootPath };
@@ -899,5 +901,150 @@ test('a SessionEnd receipt published inside the job-state lock window fences the
   const jobs = await store.listJobs(canonicalWorkspace);
   assert.deepEqual(jobs.map((/** @type {any} */ job) => job.id).sort(), [guard.id], 'the fenced reservation never persisted a job record');
   assert.equal((await store.readJob(canonicalWorkspace, guard.id)).status, 'cancelling', 'the guard keeps its durable uncertainty');
+});
+
+// --- Task 7: SubagentStop Rescue child coordination-loss policy ---
+
+/** Run the REAL SubagentStart then SubagentStop hooks for one stopped Rescue child. */
+async function runSubagentHooks(ctx, { sessionId, cwd, turn, child }) {
+  await hook(ctx, 'subagent-hook.mjs', { session_id: sessionId, turn_id: `${turn}-child`, cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: child, agent_type: 'zcode-rescue' });
+  await hook(ctx, 'subagent-hook.mjs', { session_id: sessionId, turn_id: `${turn}-child`, cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: child, agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null });
+}
+
+/** The caller turn + running Host-owned Rescue + real Subagent hooks for one placement. */
+async function lossScenario(t, placement, sessionId) {
+  const ctx = await fixture(t);
+  let cwd = ctx.workspace;
+  if (placement === 'background') {
+    const backgroundDir = join(ctx.workspace, '..', `${sessionId}-workspace`);
+    await mkdir(backgroundDir, { recursive: true });
+    cwd = await realpath(backgroundDir);
+  }
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, sessionId, cwd);
+  await beginRescueTurn(ctx, sessionId, canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: sessionId, epoch, agent: `${sessionId}-child`, remote: `zs-${sessionId}`, placement });
+  return { ctx, store, job, epoch, canonicalWorkspace, sessionId, child: `${sessionId}-child` };
+}
+
+/** The real UserPromptSubmit caller turn, then the execution-workspace claim the companion's prepare step would make before SubagentStart. */
+async function beginRescueTurn(ctx, sessionId, workspace) {
+  await hook(ctx, 'user-prompt-hook.mjs', { session_id: sessionId, turn_id: 'turn', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'run a rescue' });
+  await createIdentityStore({ dataRoot: ctx.dataRoot }).resolveActiveTurn({ sessionId, workspace, workspaceBinding: 'claim' });
+}
+
+test('SubagentStop stops a foreground Host-owned Rescue but not a live-session background Rescue', async (t) => {
+  const foreground = await lossScenario(t, 'foreground', 'loss-fg-owner');
+  await runSubagentHooks(foreground.ctx, { sessionId: foreground.sessionId, cwd: foreground.canonicalWorkspace, turn: 'turn', child: foreground.child });
+  const fgStored = await foreground.store.readJob(foreground.canonicalWorkspace, foreground.job.id);
+  assert.ok(['cancelling', 'cancelled', 'failed'].includes(fgStored.status), `the foreground coordination loss must settle or delegate (was ${fgStored.status})`);
+  assert.equal(fgStored.stopIntent?.cause, 'host-coordination-loss', 'the exact foreground coordination-loss stop intent is the durable evidence');
+
+  const background = await lossScenario(t, 'background', 'loss-bg-owner');
+  await runSubagentHooks(background.ctx, { sessionId: background.sessionId, cwd: background.canonicalWorkspace, turn: 'turn', child: background.child });
+  const bgStored = await background.store.readJob(background.canonicalWorkspace, background.job.id);
+  assert.equal(bgStored.status, 'running', 'a live-session background Rescue is never stopped by its child loss');
+  assert.equal(bgStored.stopIntent, undefined, 'no stop intent is persisted for the observed background Rescue');
+});
+
+test('SubagentStop selects a matching-epoch receipt session-end stop over coordination loss, background placement included', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'receipt-fg-owner');
+  await beginRescueTurn(ctx, 'receipt-fg-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'receipt-fg-owner', epoch, agent: 'receipt-fg-child', remote: 'zs-receipt-fg', placement: 'foreground' });
+  const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, canonicalWorkspace, 'receipt-fg-owner')).startedAt;
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  await lifecycle.publishSessionEnd({ sessionId: 'receipt-fg-owner', sessionStartedAt: startedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(250) });
+  await runSubagentHooks(ctx, { sessionId: 'receipt-fg-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'receipt-fg-child' });
+  const fgStored = await store.readJob(canonicalWorkspace, job.id);
+  assert.ok(['cancelling', 'cancelled', 'failed'].includes(fgStored.status), `the matching receipt settles or delegates the foreground job (was ${fgStored.status})`);
+  assert.equal(fgStored.stopIntent?.cause, 'session-end', 'a matching-epoch receipt always selects the session-end stop, never coordination loss');
+
+  const backgroundDir = join(ctx.workspace, '..', 'receipt-bg-workspace');
+  await mkdir(backgroundDir, { recursive: true });
+  const bgWorkspace = await realpath(backgroundDir);
+  const bg = await recordSessionStartEpoch(ctx, 'receipt-bg-owner', bgWorkspace);
+  await beginRescueTurn(ctx, 'receipt-bg-owner', bgWorkspace);
+  const bgJob = await hostOwnedRunningJob(ctx, { workspace: bg.canonicalWorkspace, ownerSessionId: 'receipt-bg-owner', epoch: bg.epoch, agent: 'receipt-bg-child', remote: 'zs-receipt-bg', placement: 'background' });
+  const bgStartedAt = (await resolveRecordedSessionStart(ctx.dataRoot, bgWorkspace, 'receipt-bg-owner')).startedAt;
+  await lifecycle.publishSessionEnd({ sessionId: 'receipt-bg-owner', sessionStartedAt: bgStartedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [bgWorkspace] }, { signal: AbortSignal.timeout(250) });
+  await runSubagentHooks(ctx, { sessionId: 'receipt-bg-owner', cwd: bgWorkspace, turn: 'turn', child: 'receipt-bg-child' });
+  const bgStored = await bgJob.store.readJob(bg.canonicalWorkspace, bgJob.job.id);
+  assert.ok(['cancelling', 'cancelled', 'failed'].includes(bgStored.status), `a matching receipt stops even a background Rescue (was ${bgStored.status})`);
+  assert.equal(bgStored.stopIntent?.cause, 'session-end');
+});
+
+test('an old receipt grants SubagentStop no session-end authority over the coordination-loss policy', async (t) => {
+  const ctx = await fixture(t);
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  // A background Rescue plus a receipt for a SUPERSEDED (non-matching) epoch of
+  // the same session: the old receipt selects no stop, so the background Rescue
+  // keeps running through its child's SubagentStop.
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'old-receipt-owner');
+  await beginRescueTurn(ctx, 'old-receipt-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'old-receipt-owner', epoch, agent: 'old-receipt-child', remote: 'zs-old-receipt', placement: 'background' });
+  await lifecycle.publishSessionEnd({ sessionId: 'old-receipt-owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(250) });
+  await runSubagentHooks(ctx, { sessionId: 'old-receipt-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'old-receipt-child' });
+  const bgStored = await store.readJob(canonicalWorkspace, job.id);
+  assert.equal(bgStored.status, 'running', 'an old receipt never authorizes a stop over the background Rescue');
+  assert.equal(bgStored.stopIntent, undefined);
+  assert.equal(await lifecycle.readReceipt(epoch), null, 'the job epoch itself has no receipt — only the superseded one exists');
+});
+
+test('a foreground Rescue still stops for host-coordination-loss when only an older-epoch receipt exists', async (t) => {
+  const ctx = await fixture(t);
+  const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'older-fg-owner');
+  await beginRescueTurn(ctx, 'older-fg-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'older-fg-owner', epoch, agent: 'older-fg-child', remote: 'zs-older-fg', placement: 'foreground' });
+  // The only receipt is for a SUPERSEDED epoch of the same session: it grants no
+  // session-end authority, so the foreground placement keeps its coordination-loss.
+  await lifecycle.publishSessionEnd({ sessionId: 'older-fg-owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(250) });
+  await runSubagentHooks(ctx, { sessionId: 'older-fg-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'older-fg-child' });
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.ok(['cancelling', 'cancelled', 'failed'].includes(stored.status), `the foreground coordination loss settles or delegates despite the older receipt (was ${stored.status})`);
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss', 'the coordination-loss cause is the durable evidence');
+});
+
+test('SubagentStop coordination loss with unavailable control retains the cancelling guard, never archives', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'retain-fg-owner');
+  await beginRescueTurn(ctx, 'retain-fg-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'retain-fg-owner', epoch, agent: 'retain-fg-child', remote: 'zs-retain-fg', placement: 'foreground' });
+  // No broker exists in this fixture, so the hook's existing-broker client is
+  // unavailable (null identity / disconnected) — the exact unconfirmed-control
+  // shape Design 259 forbids archiving on.
+  await runSubagentHooks(ctx, { sessionId: 'retain-fg-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'retain-fg-child' });
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.equal(stored.status, 'cancelling', `unconfirmed control must retain the durable guard (was ${stored.status})`);
+  assert.notEqual(stored.status, 'failed', 'the coordination-loss path must never mark the accepted job failed while the remote turn is unconfirmed');
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss', 'the coordination-loss cause stays the durable evidence');
+  await assert.rejects(store.reserveJob({ workspace: canonicalWorkspace, ownerSessionId: 'next-owner', ownerTurnId: 'next-turn',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the retained writable guard still excludes new writable work');
+});
+
+test("a sibling Rescue child's SubagentStop never settles the live job owned by the other child", async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'sibling-owner');
+  await beginRescueTurn(ctx, 'sibling-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'sibling-owner', epoch, agent: 'sibling-child-a', remote: 'zs-sibling-a', placement: 'foreground' });
+  // Child A's foreground rescue is mid-flight; child B starts (its own
+  // reservation would fail with WRITABLE_JOB_EXISTS), exits, and its
+  // SubagentStop fires — it must never inherit A's live run.
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'sibling-owner', turn_id: 'turn-child-b', cwd: canonicalWorkspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'sibling-child-b', agent_type: 'zcode-rescue' });
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'sibling-owner', turn_id: 'turn-child-b', cwd: canonicalWorkspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'sibling-child-b', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null });
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running', "child B's stop must never inherit child A's live run");
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).stopIntent, undefined, 'no stop intent is persisted by the sibling stop');
+});
+
+test('a non-Rescue agent_type SubagentStop is a quiet no-op', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'quiet-owner');
+  await beginRescueTurn(ctx, 'quiet-owner', canonicalWorkspace);
+  const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'quiet-owner', epoch, agent: 'quiet-child', remote: 'zs-quiet', placement: 'foreground' });
+  const stopped = await child(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, input: { session_id: 'quiet-owner', turn_id: 'turn-child', cwd: canonicalWorkspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'quiet-child', agent_type: 'explorer', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
+  assert.equal(stopped.code, 0, `the hook still exits zero: ${stopped.stderr}`);
+  assert.equal(stopped.stderr, '', 'a non-Rescue agent_type stop must not emit settlement noise');
+  assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running', 'the live foreground Rescue is untouched');
 });
 

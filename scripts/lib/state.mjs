@@ -826,10 +826,11 @@ export function createStateStore(options) {
      * @param {string} nextStatus
      * @param {Record<string, unknown>} [patch]
      */
-    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget (defaults preserved when omitted). */
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number,stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] Optional bounded lock budget (defaults preserved when omitted) plus an epoch-revalidation callback: on a cancelling transition with a stop-intent patch it runs inside the state lock and may override the stop cause from fresher boundary evidence. */
     async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
-      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false, { lockOptions: boundedLockOptions(options) });
+      if (options?.stopCauseRevalidator !== undefined && typeof options.stopCauseRevalidator !== 'function') throw invalidRescueBinding();
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false, { lockOptions: boundedLockOptions(options), stopCauseRevalidator: options.stopCauseRevalidator });
     },
 
     /**
@@ -837,7 +838,7 @@ export function createStateStore(options) {
      * @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses
      * @param {string} nextStatus @param {Record<string,unknown>} [patch]
      */
-    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget (defaults preserved when omitted). */
+    /** @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number,stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] Optional bounded lock budget (defaults preserved when omitted) plus an epoch-revalidation callback: on a cancelling transition with a stop-intent patch it runs inside the state lock and may override the stop cause from fresher boundary evidence. */
     async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
       if (!TERMINAL_STATUSES.has(nextStatus) || Object.hasOwn(patch, 'finishedAt')) {
@@ -847,6 +848,26 @@ export function createStateStore(options) {
         });
       }
       return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true, { lockOptions: boundedLockOptions(options) });
+    },
+
+    /** One-way receipt-wins correction: under the state lock, rewrite a retained cancelling writable Rescue's persisted `host-coordination-loss` stop intent to `session-end` after its epoch receipt was published; any other status, cause, or record is returned unchanged. @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    async correctCoordinationLossStopCause(workspace, jobId, options = {}) {
+      if (!isNonEmptyString(workspace) || !isDigest(jobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.command !== 'rescue' || job.readOnly !== false || job.status !== 'cancelling'
+          || !validStopIntent(job.stopIntent) || job.stopIntent.cause !== 'host-coordination-loss') return job;
+        const corrected = {
+          ...job,
+          stopIntent: { ...job.stopIntent, cause: 'session-end' },
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString(),
+        };
+        validateJobRecord(corrected, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+        await atomicWriteJson(path, corrected);
+        return corrected;
+      }, boundedLockOptions(options));
     },
 
     /** Terminalize a failed execution attempt only while the job is unclaimed or carries this attempt's exact lease.
@@ -1171,7 +1192,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
 function boundedLockOptions(options = {}) {
   return { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
 }
-/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null,lockOptions?:{signal?:AbortSignal,timeoutMs?:number}}} [options] */
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null,lockOptions?:{signal?:AbortSignal,timeoutMs?:number},stopCauseRevalidator?:(job:Record<string,unknown>)=>string|Promise<string>}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
@@ -1183,7 +1204,21 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     const path = jobPath(storage.jobsDirectory, jobId);
     const job = await readJobRecord(path, jobId, storage.workspacePath);
-    if (Object.hasOwn(options, 'recoveryWorkerLeaseId')) {
+    // Epoch-revalidation seam (codex, Task 7): when a stop-intent patch is
+    // applied, the caller-supplied revalidator runs INSIDE the state lock and
+    // may override the stop cause from fresher boundary evidence (e.g. a
+    // SessionEnd receipt published during the coordination-loss race), so the
+    // durable cause can never lag the authoritative boundary.
+    let patchedForStop = patch;
+    const declaredStopIntent = /** @type {Record<string, unknown>} */ (patch.stopIntent);
+    if (typeof options.stopCauseRevalidator === 'function' && Object.hasOwn(patch, 'stopIntent') && nextStatus === 'cancelling') {
+      const revisedCause = await options.stopCauseRevalidator(job);
+      if (typeof revisedCause === 'string' && revisedCause !== declaredStopIntent.cause) {
+        patchedForStop = { ...patch, stopIntent: { ...declaredStopIntent, cause: revisedCause } };
+      }
+    }
+    const effectivePatch = patchedForStop;
+    if (Object.hasOwn(effectivePatch, 'recoveryWorkerLeaseId')) {
       const effectiveWorkerLeaseId = job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null;
       if (effectiveWorkerLeaseId !== options.recoveryWorkerLeaseId) throw workerLeaseConflict(jobId);
     }
@@ -1202,11 +1237,11 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
         return job;
       }
     }
-    const effectivePatch = assignFinishedAt ? {
-      ...patch,
+    const terminalEffectivePatch = assignFinishedAt ? {
+      ...patchedForStop,
       finishedAt: new Date(Math.max(Date.now(), Date.parse(job.lastActivityAt ?? job.startedAt ?? job.createdAt))).toISOString(),
-    } : patch;
-    validateJobPatch(job, nextStatus, effectivePatch, jobId);
+    } : patchedForStop;
+    validateJobPatch(job, nextStatus, terminalEffectivePatch, jobId);
     if (TERMINAL_STATUSES.has(job.status)) {
       throw new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, {
         category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status: job.status },
@@ -1222,13 +1257,13 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
         category: 'state', remedy: 'Use a transition allowed by the job state machine.', details: { from: job.status, jobId, to: nextStatus },
       });
     }
-    if (job.status === 'cancelling' && nextStatus === 'running' && !isCancellationError(effectivePatch.lastCancelError)) {
+    if (job.status === 'cancelling' && nextStatus === 'running' && !isCancellationError(terminalEffectivePatch.lastCancelError)) {
       throw new PluginError('CANCEL_ERROR_REQUIRED', 'A failed cancellation must record lastCancelError.', {
         category: 'state', remedy: 'Include the stop failure message in lastCancelError.', details: { jobId },
       });
     }
     const updated = {
-      ...job, ...effectivePatch, id: job.id, status: nextStatus,
+      ...job, ...terminalEffectivePatch, id: job.id, status: nextStatus,
       updatedAt: new Date(Math.max(
         Date.now(), Date.parse(job.createdAt), Date.parse(job.updatedAt),
         typeof effectivePatch.startedAt === 'string' ? Date.parse(effectivePatch.startedAt) : Number.NEGATIVE_INFINITY,

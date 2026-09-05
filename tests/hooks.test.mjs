@@ -11,13 +11,14 @@ import test from 'node:test';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRecordedSessionStart, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
@@ -535,6 +536,21 @@ test('subagent hook marks forwarding suppression without changing parent permiss
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
 });
 
+test('subagent hook runs its forwarding flow when invoked through a symlinked plugin path', async (t) => {
+  const { cwd, data, env } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'symlink-parent', turnId: 'symlink-parent-turn', workspace: cwd, permissionMode: 'acceptEdits', prompt: 'linked install' });
+  const linkDirectory = await mkdtemp(join(tmpdir(), 'zpc-linked-plugin-'));
+  t.after(() => rm(linkDirectory, { recursive: true, force: true }));
+  const linkedHook = join(linkDirectory, 'subagent-hook.mjs');
+  await symlink(join(root, 'hooks', 'subagent-hook.mjs'), linkedHook);
+  const input = { session_id: 'symlink-parent', turn_id: 'symlink-child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'symlink-child', agent_type: 'zcode-rescue' };
+  const linked = await runHook(linkedHook, input, env, { absolute: true });
+  assert.equal(linked.code, 0, linked.stderr);
+  assert.match(linked.json?.hookSpecificOutput?.additionalContext ?? '', /forwarding subagent/i, 'a symlinked invocation path must still run the forwarding hook flow');
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'symlink-child')).parentSessionId, 'symlink-parent', 'the symlinked invocation must durably record SubagentStart forwarding');
+});
+
 test('origin cwd routes a bound worktree child and exact replacement stop without scanning', async (t) => {
   const { cwd: origin, data, env } = await workspace();
   const target = await addLinkedWorktree(origin, 'origin-cwd-child-route');
@@ -630,6 +646,127 @@ test('stopped routed executor wrapper fails closed on active, Role, route, and t
     await writeFile(fixture.routePath, JSON.stringify({ ...route, targetWorkspace: fixture.origin }), { mode: 0o600 });
   }, 'EXECUTOR_ROUTE_INVALID');
   await assert.rejects(resolveRoutedStoppedForwardingExecutor('data', 'origin', 'child', { unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  for (const options of [{ timeoutMs: -1 }, { timeoutMs: 1.5 }, { timeoutMs: Number.NaN }, { signal: 'now' }, { signal: null, timeoutMs: 0 }, { signal: new AbortController().signal, timeoutMs: Number.MAX_SAFE_INTEGER + 1 }]) {
+    await assert.rejects(resolveRoutedStoppedForwardingExecutor('data', 'origin', 'child', options), { code: 'EXECUTOR_ROUTE_INVALID' });
+  }
+});
+
+test('stopped routed executor lookup fails closed on its own bounded lock budget', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'bounded-stopped-routed');
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now(); let caught;
+  try { await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { timeoutMs: 200 }); } catch (error) { caught = error; }
+  assert.equal(caught?.cause?.code, 'LOCK_TIMEOUT', 'the bounded stopped lookup must fail closed on its own lock budget');
+  assert.ok(Date.now() - started < 2_000, `a bounded stopped lookup must fail closed on its own budget instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  const stopped = await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { signal: AbortSignal.timeout(10_000), timeoutMs: 5_000 });
+  assert.equal(stopped.executor.active, false);
+  assert.equal(stopped.executionWorkspace, await realpath(fixture.target));
+});
+
+test('stopped routed executor lookup keeps the default lock budget when no options are passed', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'default-stopped-routed');
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now(); let caught;
+  try { await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id); } catch (error) { caught = error; }
+  assert.equal(caught?.cause?.code, 'LOCK_TIMEOUT', 'without options the stopped lookup must still run the lock to its default budget');
+  assert.ok(Date.now() - started >= 4_000, `without options the stopped lookup must keep the five-second default lock budget (took ${Date.now() - started}ms)`);
+});
+
+test('markForwarding fails bounded under lock contention with a caller-supplied budget', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'bounded-mark-forwarding');
+  // A lock-holder child owns the origin hook-state lock (the route-write phase
+  // markForwarding must acquire first on SubagentStop).
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const started = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 750 }),
+    { code: 'LOCK_TIMEOUT' },
+  );
+  assert.ok(Date.now() - started < 4_000, `markForwarding must fail within its caller budget instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  // The deadline signal is honored too: a short signal-only budget fails bounded.
+  const signalStarted = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { signal: AbortSignal.timeout(150) }),
+    (error) => error?.name === 'TimeoutError',
+  );
+  assert.ok(Date.now() - signalStarted < 4_000, `the signal-only budget must also fail bounded (took ${Date.now() - signalStarted}ms)`);
+  // Validation stays strict: only the known option keys are admitted.
+  await assert.rejects(markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 1.5 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // After the holder releases, the same publication completes with a normal budget.
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 5_000 });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped');
+});
+
+test('SubagentStart compensation inherits the shared deadline when the target lock stays contended', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'deadline-compensation');
+  // A sibling child of the same parent turn publishes through the same target
+  // lock while a holder child keeps that lock contended past the whole shared
+  // deadline: the target acquisition consumes the budget, and the finally
+  // compensation must fail fast on the SAME deadline instead of waiting out
+  // withFileLock's five-second default past the hook's deadline.
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.targetDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const budget = 600;
+  const start = { ...fixture.start, turn_id: `${fixture.start.turn_id}-deadline`, agent_id: `${fixture.start.agent_id}-deadline` };
+  const started = Date.now();
+  await assert.rejects(
+    markForwarding(fixture.data, start, fixture.caller, { signal: AbortSignal.timeout(budget), timeoutMs: budget }),
+    { code: 'EXECUTOR_ROUTE_INVALID' },
+  );
+  assert.ok(Date.now() - started < 4_000, `the SubagentStart compensation must inherit the shared deadline instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  // After the holder releases, the same publication completes with a normal budget.
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  const retry = { ...fixture.start, turn_id: `${fixture.start.turn_id}-deadline-retry`, agent_id: `${fixture.start.agent_id}-deadline-retry` };
+  await markForwarding(fixture.data, retry, fixture.caller, { timeoutMs: 5_000 });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, retry.session_id, retry.turn_id)).state, 'active');
+});
+
+test('an elapsed shared deadline defers SubagentStop rescue settlement instead of manufacturing fresh stage windows', async (t) => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  // The full foreground coordination-loss scenario: one stopped Rescue child
+  // (route + executor) owning one Host-owned RUNNING writable job, so any
+  // post-deadline stage window would let the settlement mutate durable state.
+  const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await recordSession(data, { session_id: 'deadline-loss-owner', cwd, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: 'deadline-loss-owner', turnId: 'deadline-loss-parent-turn', workspace: cwd, permissionMode: 'acceptEdits', prompt: 'deadline loss', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'deadline-loss-owner', workspace: cwd, workspaceBinding: 'claim' });
+  const start = { session_id: 'deadline-loss-owner', turn_id: 'deadline-loss-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'deadline-loss-child', agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' });
+  const epoch = hostLifecycleEpoch('deadline-loss-owner', (await resolveRecordedSessionStart(data, cwd, 'deadline-loss-owner')).startedAt);
+  const store = createStateStore({ dataRoot: data });
+  const reserved = await store.reserveFreshRescueJob({
+    workspace: cwd,
+    reservation: { workspace: cwd, ownerSessionId: 'deadline-loss-owner', ownerTurnId: 'deadline-loss-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } },
+    executor: { parentSessionId: 'deadline-loss-owner', parentTurnId: 'deadline-loss-parent-turn', agentId: 'deadline-loss-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: cwd, parentPermissionMode: 'acceptEdits' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' },
+  });
+  const claimed = await store.claimJobWorkerForExecution(cwd, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  let running = await store.transitionJob(cwd, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-deadline-loss', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  running = await store.transitionJob(cwd, running.id, ['running'], 'running', { inputId: 'input-deadline-loss-child', startRevision: 1, beforeMessageIds: [] });
+  // Capture the hook's advisory stderr: the written deferral notice is the
+  // elapsed-deadline contract's observable.
+  const stderrChunks = []; const originalStderrWrite = process.stderr.write;
+  process.stderr.write = (/** @type {any} */ chunk) => { stderrChunks.push(String(chunk)); return true; };
+  t.after(() => { process.stderr.write = originalStderrWrite; });
+  const { settleStoppedRescueChild } = await import('../hooks/subagent-hook.mjs');
+  const stop = { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null };
+  // The forwarding publication already consumed the whole shared budget: the
+  // settlement boundary is reached with the deadline already in the past, and
+  // it must defer — no stage may start, mutate, or read past that deadline.
+  await assert.doesNotReject(settleStoppedRescueChild({ dataRoot: data, input: stop, deadline: Date.now() - 1 }));
+  assert.ok(stderrChunks.some((chunk) => chunk.includes('ZCode SubagentStop rescue settlement deferred: DEADLINE_ELAPSED')), `an elapsed deadline must defer instead of running stages (stderr: ${JSON.stringify(stderrChunks)})`);
+  const stored = await store.readJob(cwd, running.id);
+  assert.equal(stored.status, 'running', `no settlement stage may mutate the job after the deadline (was ${stored.status})`);
+  assert.equal(stored.stopIntent, undefined, 'no stop intent may be persisted after the deadline');
 });
 
 test('direct executor resolver preserves workspace and lock infrastructure errors', async (t) => {

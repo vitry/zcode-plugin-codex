@@ -1223,13 +1223,13 @@ test('SessionEnd settlement retains cancelling when the control channel is unava
   await cleanupRecoveryFixture(fixture);
 });
 
-async function hostOwnedRunningRescueInWorkspace(fixture, workspace, { session, input, agent, epoch }) {
+async function hostOwnedRunningRescueInWorkspace(fixture, workspace, { session, input, agent, epoch, placement = 'background' }) {
   const store = createStateStore({ dataRoot: fixture.dataRoot });
   const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
     ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
     executor: { parentSessionId: 'owner', parentTurnId: 'turn', agentId: agent, agentType: 'zcode-rescue',
       agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
-    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' } });
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement } });
   const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
   await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(),
     zcodeSessionId: session, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
@@ -1331,6 +1331,190 @@ test('SessionEnd settlement retains the durable cancelling intent for a host-own
   assert.equal(outcome.job.stopIntent.cause, 'session-end', 'the durable session-end stop intent is the delegation evidence');
   assert.equal(endedObligationSettled(outcome), true, 'a persisted unresolved stop intent discharges the receipt without claiming stopped');
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling');
+  await cleanupRecoveryFixture(fixture);
+});
+
+const unavailableControlClient = async () => {
+  throw new PluginError('ZCODE_DISCONNECTED', 'the existing broker is unreachable', { category: 'runtime', remedy: 'Restart.' });
+};
+
+test('coordination-loss settlement with unavailable control retains the cancelling guard instead of archiving', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-retain', input: 'input-cl-retain', agent: 'cl-retain-child', epoch: EPOCH, placement: 'foreground' });
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard', 'unconfirmed control must retain the durable guard');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelling', 'coordination-loss settlement never marks the job failed while the remote turn is unconfirmed');
+  assert.notEqual(stored.status, 'failed', 'releasing the writable exclusion on unconfirmed control is forbidden');
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss', 'the coordination-loss cause stays the durable evidence');
+  await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'next',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the retained guard still excludes new writable work');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('without the retain option the unavailable-executor settlement keeps its archival semantics', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-archive', input: 'input-cl-archive', agent: 'cl-archive-child', epoch: EPOCH, placement: 'foreground' });
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(outcome.kind, 'terminal', 'the default (SessionEnd) settlement still archives the proven-free worker');
+  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** A store view that publishes the matching-epoch receipt after its SECOND readJob of the job, so the receipt lands between the settlement path's initial evidence read and the serialized persist. */
+function receiptPublishedMidRaceStore(store, lifecycle, workspace, jobId, receiptInput) {
+  let reads = 0;
+  return {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (readWorkspace === workspace && readJobId === jobId && ++reads === 2) {
+        await lifecycle.publishSessionEnd(receiptInput, { signal: AbortSignal.timeout(250) });
+      }
+      return current;
+    },
+  };
+}
+
+test('coordination-loss settlement rechecks the epoch receipt before persisting and switches to session-end', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-receipt-race', input: 'input-receipt-race', agent: 'receipt-race-child', epoch: EPOCH, placement: 'foreground' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  assert.equal(await lifecycle.readReceipt(EPOCH), null, 'no receipt exists at the initial read');
+  const racedStore = receiptPublishedMidRaceStore(store, lifecycle, workspace, job.id, {
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  });
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store: racedStore, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    revalidateReceiptBeforeStop: true,
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(['retained-writable-guard', 'settled-terminal'].includes(outcome.kind), true, `the settlement stays bounded (was ${outcome.kind})`);
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelling', 'the retained guard keeps its durable cancelling status');
+  assert.equal(stored.stopIntent?.cause, 'session-end', 'a receipt published before the persist must win the cause over coordination loss');
+  assert.equal((await lifecycle.readReceipt(EPOCH)).state, 'pending', 'the racing receipt stays pending for its own SessionEnd reconciliation');
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** A store view that publishes the matching-epoch receipt only AFTER the settlement's durable job write: the first read observing the persisted `cancelling` record is strictly later than the in-lock revalidator's receipt read, so the publication lands in exactly the window the revalidator cannot close. */
+function receiptPublishedAfterWriteStore(store, lifecycle, workspace, jobId, receiptInput) {
+  let published = false;
+  return {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (readWorkspace === workspace && readJobId === jobId && !published && current.status === 'cancelling') {
+        published = true;
+        await lifecycle.publishSessionEnd(receiptInput, { signal: AbortSignal.timeout(250) });
+      }
+      return current;
+    },
+  };
+}
+
+test('the next reconciliation corrects a coordination-loss cause that outran the receipt publication', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-backstop', input: 'input-cl-backstop', agent: 'cl-backstop-child', epoch: EPOCH, placement: 'foreground' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  assert.equal(await lifecycle.readReceipt(EPOCH), null, 'no receipt exists before the settlement');
+  const racedStore = receiptPublishedAfterWriteStore(store, lifecycle, workspace, job.id, {
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  });
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store: racedStore, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    revalidateReceiptBeforeStop: true,
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard');
+  const raced = await store.readJob(workspace, job.id);
+  assert.equal(raced.stopIntent?.cause, 'host-coordination-loss', 'the revalidator read null, so the escaped race persisted coordination-loss');
+  assert.equal((await lifecycle.readReceipt(EPOCH)).state, 'pending', 'the receipt published after the write is durably pending');
+  // The later matching-receipt reconciliation (SessionEnd stage 5 / prompt-time
+  // prior-epoch reconciliation) must correct the durable cause before discharge.
+  const reconciliation = await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(['retained-writable-guard', 'settled-terminal'].includes(reconciliation.kind), true, `the reconciliation stays bounded (was ${reconciliation.kind})`);
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelling', 'the corrected guard keeps its durable cancelling status');
+  assert.equal(stored.stopIntent?.cause, 'session-end', 'the matching receipt wins over the persisted coordination-loss cause');
+  assert.equal(endedObligationSettled(reconciliation), true, 'the corrected guard discharges the receipt without claiming stopped');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('receipt discharge corrects a retained coordination-loss intent one way and never rewrites other causes', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  await mkdir(join(fixture.root, 'workspace-b'));
+  const workspaceB = await realpath(join(fixture.root, 'workspace-b'));
+  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostOwnedStopIntentPatch } = await import('../scripts/lib/rescue-binding.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { delegateEndedStopIntent, settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const coordinationLoss = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-discharge', input: 'input-cl-discharge', agent: 'cl-discharge-child', epoch: EPOCH, placement: 'foreground' });
+  const clCurrent = await coordinationLoss.store.readJob(workspace, coordinationLoss.job.id);
+  await coordinationLoss.store.transitionJob(workspace, coordinationLoss.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(clCurrent, 'host-coordination-loss'));
+  const userStopped = await hostOwnedRunningRescueInWorkspace(fixture, workspaceB, { session: 'zs-user-discharge', input: 'input-user-discharge', agent: 'user-discharge-child', epoch: EPOCH, placement: 'foreground' });
+  const userCurrent = await userStopped.store.readJob(workspaceB, userStopped.job.id);
+  await userStopped.store.transitionJob(workspaceB, userStopped.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(userCurrent, 'user'));
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  await lifecycle.publishSessionEnd({
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace, workspaceB],
+  }, { signal: AbortSignal.timeout(250) });
+  const delegated = await delegateEndedStopIntent({ store: coordinationLoss.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: EPOCH }, coordinationLoss.job.id);
+  assert.equal(delegated.status, 'cancelling', 'discharge never claims a stopped terminal');
+  assert.equal(delegated.stopIntent.cause, 'session-end', 'the matching pending receipt corrects the coordination-loss cause at discharge');
+  assert.equal((await coordinationLoss.store.readJob(workspace, coordinationLoss.job.id)).stopIntent.cause, 'session-end');
+  const untouched = await delegateEndedStopIntent({ store: userStopped.store, dataRoot: fixture.dataRoot, workspace: workspaceB, ownerSessionId: 'owner', epoch: EPOCH }, userStopped.job.id);
+  assert.equal(untouched.stopIntent.cause, 'user', 'a cause other than coordination-loss is never rewritten');
+  // One-way: a later coordination-loss settlement pass over the corrected guard never downgrades it.
+  await settleEndedRescueJob({ store: coordinationLoss.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, coordinationLoss.job.id);
+  assert.equal((await coordinationLoss.store.readJob(workspace, coordinationLoss.job.id)).stopIntent.cause, 'session-end',
+    'a corrected session-end cause is never rewritten back to coordination-loss');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('coordination-loss settlement keeps its cause when the recheck still finds no receipt', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-recheck-clean', input: 'input-cl-recheck-clean', agent: 'cl-recheck-clean-child', epoch: EPOCH, placement: 'foreground' });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    revalidateReceiptBeforeStop: true,
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelling');
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss', 'an absent receipt never rewrites the coordination-loss cause');
+  assert.equal(await lifecycle.readReceipt(EPOCH), null);
   await cleanupRecoveryFixture(fixture);
 });
 

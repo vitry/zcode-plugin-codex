@@ -1,5 +1,6 @@
 import { PluginError } from './errors.mjs';
 import { createIdentityStore } from './identity.mjs';
+import { createHostLifecycleStore } from './host-lifecycle.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { realpath } from 'node:fs/promises';
@@ -14,7 +15,8 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
-const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+/** The single closed set of terminal job statuses, shared with the Rescue route planner. */
+export const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const REMOTE_ACTIVE = new Set(['running', 'waiting']);
 // Evidence projection (endedRemoteEvidence) treats paused as attributable
 // activity so a persisted stop can be retried against a paused turn; the
@@ -250,8 +252,16 @@ export async function activeForeignEpochWorkspaces(input) {
  * counterpart to settleEndedOwnerWritableJob: it targets the exact job id rather
  * than re-deriving the workspace's latest writable job, and it fails closed for
  * a Host-owned record whose owning epoch no longer matches the receipt epoch so
- * a stale obligation can never stop a post-resume run.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean}} input
+ * a stale obligation can never stop a post-resume run. The default settlement
+ * intent is stop(session-end) against matching-receipt evidence; a SubagentStop
+ * coordination-loss caller may instead pass its own bounded `intent`
+ * ({kind:'stop',cause}|{kind:'observe'}) and `sessionEndReceiptEvidence`
+ * ('matching'|'older') so the Reconciler's own policy governs the pass. That
+ * caller may also pass `unavailableOutcome: 'retain'` so an unavailable control
+ * channel RETAINS the durable cancelling guard instead of archiving the job —
+ * coordination loss must never release the writable exclusion while the remote
+ * turn is unconfirmed.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean,intent?:any,sessionEndReceiptEvidence?:('matching'|'older'),unavailableOutcome?:('retain'),revalidateReceiptBeforeStop?:boolean}} input
  * @param {string} jobId
  */
 export async function settleEndedRescueJob(input, jobId) {
@@ -489,7 +499,10 @@ export async function delegateEndedStopIntent(input, jobId) {
   }
   if (TERMINAL.has(current.status)) return current;
   if (current.status === 'cancelling') {
-    if (validStopIntent(current.stopIntent)) return current;
+    // An already delegated record is returned as the discharge evidence, but a
+    // coordination-loss intent that outran its epoch's receipt publication is
+    // corrected to session-end first: the matching receipt owns the boundary.
+    if (validStopIntent(current.stopIntent)) return correctReceiptWinningStopCause(input, current);
     const patch = hostOwnedStopIntentPatch(current, 'session-end');
     // A legacy record carries no stop intent; leaving it as the durable cancelling
     // guard matches the pre-receipt settle path exactly.
@@ -727,6 +740,11 @@ async function cancelledConflictWinner(input, job, error) {
  * @param {any} input @param {any} current
  */
 async function settleEndedRescueThroughReconciler(input, current) {
+  // Receipt-wins backstop FIRST: an intent persisted before a racing receipt
+  // publication keeps the durable coordination-loss cause until this pass
+  // corrects it, and every later projection (joined stop intent, retained
+  // guard, cancelled winner's stop cause) must derive from the corrected record.
+  current = await correctReceiptWinningStopCause(input, current);
   /** @type {{job:any,client?:any,jobLog?:any,guard?:any,racedWinner?:any}} */
   const context = { job: current };
   // A queued reservation never reached a remote session, so there is no remote
@@ -790,9 +808,15 @@ async function settleEndedRescueThroughReconciler(input, current) {
         context.job = retained;
         return retained;
       },
-      settleUnavailableExecutor: (/** @type {any} */ joined, /** @type {any} */ evidence) => failEndedUnavailableJob(input, joined.job, evidence.error),
+      settleUnavailableExecutor: (/** @type {any} */ joined, /** @type {any} */ evidence) => input.unavailableOutcome === 'retain'
+        // Coordination-loss callers retain on unconfirmed control: an unavailable
+        // executor never proves the remote turn ended, so the durable cancelling
+        // guard (status + stop intent + writable exclusion) must be kept exactly
+        // like any other unresolved stop — never archived as failed.
+        ? retainUnresolvedEndedStop(input, joined.job, undefined)
+        : failEndedUnavailableJob(input, joined.job, evidence.error),
     }).reconcile({
-      intent: { kind: 'stop', cause: 'session-end' },
+      intent: input.intent ?? { kind: 'stop', cause: 'session-end' },
       authority: { ownerSessionId: input.ownerSessionId },
       workspace: input.workspace,
       selector: { jobId: current.id },
@@ -822,27 +846,28 @@ function raceRecoveryControl(operation, signal) {
 /** Join the ending owner's exact job with existing ZCode control evidence. @param {any} input @param {{job:any,client?:any,jobLog?:any}} context @param {any} request */
 async function loadEndedRescueJoinedState(input, context, request) {
   if (request.selector?.jobId !== context.job.id) throw recoveryError('The ended Rescue settlement selector no longer matches.');
+  const receiptEvidence = input.sessionEndReceiptEvidence ?? 'matching';
   const job = context.job;
-  if (job.status === 'queued') return endedJoined(job, { kind: 'none' });
+  if (job.status === 'queued') return endedJoined(job, { kind: 'none' }, receiptEvidence);
   context.jobLog = await openRecoveryJobLog(input, job);
   try {
     context.client = await input.createClient(job, ownerIdForSession(job.ownerSessionId));
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
-    return endedJoined(job, unavailableOrReadableEvidence(error));
+    return endedJoined(job, unavailableOrReadableEvidence(error), receiptEvidence);
   }
   throwIfRecoveryInterrupted(input);
   if (!context.client) {
     throwIfRecoveryInterrupted(input);
-    return endedJoined(job, { kind: 'unavailable', error: unavailableOrphanError('existing-broker-missing') });
+    return endedJoined(job, { kind: 'unavailable', error: unavailableOrphanError('existing-broker-missing') }, receiptEvidence);
   }
   let snapshot;
   try { snapshot = await context.client.readSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
   catch (error) {
     throwIfRecoveryInterrupted(input, error);
-    return endedJoined(job, unavailableOrReadableEvidence(error));
+    return endedJoined(job, unavailableOrReadableEvidence(error), receiptEvidence);
   }
-  return endedJoined(job, endedRemoteEvidence(snapshot, job));
+  return endedJoined(job, endedRemoteEvidence(snapshot, job), receiptEvidence);
 }
 
 /** Map one control-channel failure onto bounded existing-executor evidence. @param {unknown} error */
@@ -859,17 +884,20 @@ export function unavailableOrReadableEvidence(error) {
  * do not reuse as generic joined-state evidence. A persisted stop intent is
  * durable authorization, NOT evidence that a stop occurred, so it never marks
  * the joined state as post-stop; within-pass stop semantics are owned by the
- * reconciler's stopExactTurn/reread sequence.
- * @param {any} job @param {any} remote
+ * reconciler's stopExactTurn/reread sequence. The receipt evidence defaults to
+ * the SessionEnd caller's matching receipt; a SubagentStop coordination-loss
+ * caller threads its own computed evidence ('matching'|'older') so the
+ * Reconciler's stop-cause policy sees exactly the authority its caller proved.
+ * @param {any} job @param {any} remote @param {('matching'|'older')} [sessionEndReceipt]
  */
-function endedJoined(job, remote) {
+function endedJoined(job, remote, sessionEndReceipt = 'matching') {
   return {
     job,
     winner: null,
     hostState: 'absent',
     hostPlacement: job.hostPlacement ?? null,
     hostOwned: validHostLifecycleRecord(job),
-    sessionEndReceipt: 'matching',
+    sessionEndReceipt,
     stopIntent: job.stopIntent ?? null,
     resumableEvidence: {
       acceptedSession: typeof job.zcodeSessionId === 'string',
@@ -920,9 +948,20 @@ async function persistEndedStopIntent(input, context, joined, cause, options) {
   if (joined.job.status === 'queued') return { kind: 'persisted', job: joined.job };
   const current = await input.store.readJob(input.workspace, joined.job.id);
   if (TERMINAL.has(current.status)) return { kind: 'conflict', winner: current };
-  if (current.status === 'cancelling') { context.job = current; return { kind: 'persisted', job: current }; }
+  if (current.status === 'cancelling') {
+    // The concurrent persist may itself have outrun a receipt publication; the
+    // correction backstop re-checks the matching receipt before replaying it.
+    context.job = await correctReceiptWinningStopCause(input, current);
+    return { kind: 'persisted', job: context.job };
+  }
   try {
-    const cancelling = await input.store.transitionJob(input.workspace, current.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(current, cause));
+    // The receipt recheck runs INSIDE the transitionJob state lock via the
+    // stopCauseRevalidator seam: SessionEnd receipt publication does not take
+    // this lock, so evaluating the cause inside the mutation is the only way
+    // to keep the durable cause from lagging the authoritative boundary.
+    const cancelling = await input.store.transitionJob(input.workspace, current.id, ['running'], 'cancelling',
+      hostOwnedStopIntentPatch(current, cause),
+      { stopCauseRevalidator: () => revalidatedStopCause(input, joined, cause) });
     context.job = cancelling;
     return { kind: 'persisted', job: cancelling };
   } catch (error) {
@@ -930,6 +969,48 @@ async function persistEndedStopIntent(input, context, joined, cause, options) {
     if (!TERMINAL.has(winner.status)) context.racedWinner = winner;
     return { kind: 'conflict', winner, resumableEvidence: racedResumableEvidence(winner) };
   }
+}
+
+/**
+ * Re-read the ending epoch's SessionEnd receipt inside the serialized mutation
+ * just before the stop intent is first persisted (opt-in via
+ * `revalidateReceiptBeforeStop`): a receipt published between the caller's
+ * initial evidence read and this persist must win the cause selection, because
+ * the later SessionEnd reconciliation preserves the FIRST persisted cause and
+ * the matching receipt would otherwise never own its own boundary. An absent or
+ * unreadable receipt keeps the caller's own cause — the exact fail-safe the
+ * initial selection used.
+ * @param {any} input @param {any} joined @param {string} cause
+ */
+async function revalidatedStopCause(input, joined, cause) {
+  if (input.revalidateReceiptBeforeStop !== true || !isDigest(joined.job?.ownerLifecycleEpoch)) return cause;
+  const receipt = await createHostLifecycleStore({ dataRoot: input.dataRoot })
+    .readReceipt(joined.job.ownerLifecycleEpoch).catch(() => null);
+  return receipt === null ? cause : 'session-end';
+}
+
+/**
+ * Post-write backstop for the receipt-publication race the in-lock revalidator
+ * cannot close (publication takes the independent receipt lock, so a receipt
+ * landing between the revalidator's read and the job write still persists
+ * `host-coordination-loss`): when a later reconciliation pass observes a
+ * retained `cancelling` guard whose persisted intent still carries the
+ * pre-publication coordination-loss cause while the matching-epoch receipt now
+ * exists durably, the cause is one-way corrected to `session-end` under the
+ * state lock before the guard is retained or discharged. Any other cause, a
+ * missing or unreadable receipt, and legacy or non-cancelling records are
+ * returned untouched; the correction never claims a stopped terminal.
+ * @param {any} input @param {any} job
+ */
+async function correctReceiptWinningStopCause(input, job) {
+  if (typeof input.store?.correctCoordinationLossStopCause !== 'function' || job?.status !== 'cancelling'
+    || !validStopIntent(job.stopIntent) || job.stopIntent.cause !== 'host-coordination-loss'
+    || !isDigest(job.ownerLifecycleEpoch)) return job;
+  const receipt = await createHostLifecycleStore({ dataRoot: input.dataRoot })
+    .readReceipt(job.ownerLifecycleEpoch).catch(() => null);
+  if (receipt === null) return job;
+  return input.store.correctCoordinationLossStopCause(input.workspace, job.id,
+    { ...(input.signal === undefined ? {} : { signal: input.signal }), ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) });
 }
 
 /** Refreshed post-race evidence for a raced winner: staleness was proven by an exact binding/job/generation mismatch, so the binding is not current for the stale caller's job. @param {any} winner */

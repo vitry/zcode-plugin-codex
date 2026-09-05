@@ -445,6 +445,42 @@ test('stop cause accompanies only a confirmed cancelled winner matching its stop
   await store.finishJob(workspace, shaped.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
 });
 
+test('coordination-loss stop cause correction is a one-way cancelling-guard upgrade', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const coordinationLossIntent = { version: 1, cause: 'host-coordination-loss', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const retained = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, retained.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session' });
+  await store.transitionJob(workspace, retained.job.id, ['running'], 'cancelling', { stopIntent: coordinationLossIntent });
+  const corrected = await store.correctCoordinationLossStopCause(workspace, retained.job.id, { timeoutMs: 250 });
+  assert.equal(corrected.status, 'cancelling', 'the correction keeps the durable cancelling guard');
+  assert.deepEqual(corrected.stopIntent, { ...coordinationLossIntent, cause: 'session-end' });
+  assert.equal((await store.readJob(workspace, retained.job.id)).stopIntent.cause, 'session-end');
+  // The upgrade is one-way: a corrected or foreign cause is returned unchanged.
+  const again = await store.correctCoordinationLossStopCause(workspace, retained.job.id);
+  assert.deepEqual(again.stopIntent, { ...coordinationLossIntent, cause: 'session-end' });
+  const terminal = await store.finishJob(workspace, retained.job.id, ['cancelling'], 'cancelled', { stopCause: 'session-end' });
+  assert.deepEqual(await store.correctCoordinationLossStopCause(workspace, retained.job.id), terminal,
+    'a terminal record is returned untouched');
+  assert.equal(terminal.stopCause, 'session-end');
+  for (const item of /** @type {any[]} */ ([
+    { agentId: 'user-cause', intent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' } },
+    { agentId: 'legacy-record', legacy: true },
+  ])) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+      executor: { ...legacyExecutor(workspace), agentId: item.agentId }, ...(item.legacy ? {} : { lifecycle }) });
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `session-${item.agentId}` });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling',
+      item.intent === undefined ? {} : { stopIntent: item.intent });
+    const untouched = await store.correctCoordinationLossStopCause(workspace, reserved.job.id);
+    assert.equal(untouched.stopIntent?.cause, item.intent?.cause, 'only the coordination-loss cause is upgraded');
+    await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled',
+      item.intent === undefined ? {} : { stopCause: item.intent.cause });
+  }
+});
+
 test('persisted Host-owned Rescue lifecycle and stop cause fields are schema-validated before use', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
