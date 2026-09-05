@@ -5096,6 +5096,42 @@ test('a detached background resume of a cancelled winner keeps legacy ownership 
   assert.equal(validHostLifecycleRecord(continuation), true);
 });
 
+test('run-reserved-job refuses to detach a Host-owned Rescue record', async () => {
+  // Post-upgrade invariant: the detached `run-reserved-job` worker path is
+  // retained only for historical detached reservations and read-only commands.
+  // A record carrying the host-managed lifecycle trio executes attached under
+  // the Host child — even a perfectly sealed historical-style spec plus a
+  // valid capability must never pull it back into detached execution.
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-host-owned-detach', agentId: 'host-owned-detach-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-host-owned-detach', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor, lifecycle: { ownerLifecycleEpoch: '9'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' } });
+  const capability = await context.identity.createExecutionCapability({ jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+    permissionSnapshot: reserved.job.permissionSnapshot });
+  const specRecord = resealJobSpecForTest(reserved.job, { command: 'rescue', focus: 'host-owned detach attempt', task: 'host-owned detach attempt' }, capability);
+  await store.publishJobSpecCommitment(workspace, reserved.job.id, specRecord.commitment);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), specRecord);
+  await assert.rejects(runCompanion(['run-reserved-job', reserved.job.id], {
+    cwd: workspace, env: context.env, authorization: { executionCapability: capability, jobId: reserved.job.id },
+    dependencies: {
+      startBackgroundWorker: async () => { throw new Error('a Host-owned record must never launch a detached worker'); },
+      createManagedZCodeClient: async () => { throw new Error('a detached hijack must not reach ZCode'); },
+    },
+  }), (error) => error instanceof PluginError && error.code === 'RESCUE_DETACHED_EXECUTION_FORBIDDEN');
+  const retained = await store.readJob(workspace, reserved.job.id);
+  assert.equal(retained.status, 'queued', 'the Host-owned reservation stays queued for its attached execution');
+  assert.equal(validHostLifecycleRecord(retained), true, 'the lifecycle trio is not rewritten by the refused worker');
+  const digest = createHash('sha256').update(capability).digest('hex');
+  const capabilityRecord = JSON.parse(await readFile(join(storage.directory, 'identity', 'capabilities', `${digest}.json`), 'utf8'));
+  assert.equal(capabilityRecord.consumedAt, null, 'the refusal precedes any capability consumption');
+  const spec = JSON.parse(await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'));
+  assert.equal(spec.jobId, reserved.job.id, 'the sealed spec is left untouched for diagnostics');
+});
+
 test('historical cancelled records stay closed and never become resume candidates', async () => {
   const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
   const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-legacy-cancelled', agentId: 'legacy-cancelled-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };
@@ -5113,6 +5149,71 @@ test('historical cancelled records stay closed and never become resume candidate
   assert.notEqual(rejected.code, 0);
   assert.equal(rejected.json.error.code, 'RESUME_CANDIDATE_NOT_FOUND');
   assert.equal(resumableJobIndicator(await store.readJob(context.workspace, reserved.job.id), 'workspace-write', true), false, 'a historical cancelled record fails the indicator even with every evidence dimension supplied');
+});
+
+test('upgrade does not adopt cancel or relaunch a historical detached Rescue', async () => {
+  // The pre-upgrade detached model: a child-authorized bound Rescue WITHOUT the
+  // Host lifecycle trio, sealed for a detached `run-reserved-job` worker, whose
+  // worker ran, was cancelled by its owner, and whose binding closed `cancel`.
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-historical-detached', agentId: 'historical-detached-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-historical-detached', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor });
+  assert.equal(validHostLifecycleRecord(reserved.job), false, 'the historical record carries no Host lifecycle trio');
+  const capability = await context.identity.createExecutionCapability({ jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+    permissionSnapshot: reserved.job.permissionSnapshot });
+  const specRecord = resealJobSpecForTest(reserved.job, { command: 'rescue', focus: 'historical detached task', task: 'historical detached task' }, capability);
+  await store.publishJobSpecCommitment(workspace, reserved.job.id, specRecord.commitment);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), specRecord);
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 424_252, workerLeaseId: reserved.job.id }, undefined, { sealedCommitment: specRecord.commitment });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-historical-detached', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-historical-detached', startRevision: 1, beforeMessageIds: [] });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling');
+  await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null });
+  const closed = await store.closeRescueBindingForCancelledJob({ workspace, parentSessionId: 'codex-session', jobId: reserved.job.id });
+  assert.equal(closed.kind, 'closed'); assert.equal(closed.binding.closeReason, 'cancel');
+  const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+  const partitionPath = join(storage.directory, partitionName);
+  const jobPath = join(storage.directory, 'jobs', `${reserved.job.id}.json`);
+  const [partitionBefore, jobBefore] = await Promise.all([readFile(partitionPath), readFile(jobPath)]);
+
+  // The upgraded owner's first management command runs the owner reconciliation
+  // over the historical record: it must neither adopt the record into a Host
+  // child, relaunch a detached worker, inspect or stop a remote turn, nor
+  // rewrite the closed `cancel` binding.
+  const effects = { workers: 0, clients: 0, existingClients: 0 };
+  const dependencies = {
+    startBackgroundWorker: async () => { effects.workers += 1; throw new Error('upgrade must never relaunch a historical detached worker'); },
+    createManagedZCodeClient: async () => { effects.clients += 1; throw new Error('a terminal historical record must not be inspected remotely'); },
+    createExistingManagedZCodeClient: async () => { effects.existingClients += 1; throw new Error('a terminal historical record must not be inspected remotely'); },
+  };
+  const status = await runCompanion(['status', reserved.job.id], { cwd: workspace, env: context.env, caller: caller('codex-session'), dependencies });
+  assert.equal(status.job.status, 'cancelled', 'the original owner keeps reading the historical status');
+  assert.equal(status.job.resumable, false, 'a historical closed/cancel record never advertises resumability');
+  assert.deepEqual(effects, { workers: 0, clients: 0, existingClients: 0 });
+  const result = await runCompanion(['result', reserved.job.id], { cwd: workspace, env: context.env, caller: caller('codex-session'), dependencies });
+  assert.equal(result.job.status, 'cancelled', 'the original owner keeps reading the historical result view');
+  assert.deepEqual(effects, { workers: 0, clients: 0, existingClients: 0 });
+  assert.deepEqual(await readFile(jobPath), jobBefore, 'the historical job record is not rewritten during the upgrade reconciliation');
+  assert.deepEqual(await readFile(partitionPath), partitionBefore, 'the closed cancel binding is not rewritten or reopened');
+  const historical = await store.readJob(workspace, reserved.job.id);
+  assert.equal(historical.executionOwner, undefined); assert.equal(historical.ownerLifecycleEpoch, undefined);
+  // The sealed detached job spec and its capability stay exactly where the
+  // historical worker left them: no installation step scans or rewrites them.
+  const spec = JSON.parse(await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'));
+  assert.equal(spec.version, 2); assert.equal(spec.jobId, reserved.job.id);
+  assert.doesNotMatch(JSON.stringify(status), new RegExp(capability), 'the private capability never reaches a management view');
+  // Historical `closed/cancel` remains closed after upgrade: the exact legacy
+  // binding cannot be resolved for resume, and no closed cancellation is
+  // inferred to have meant pause.
+  await assert.rejects(store.resolveRescueBindingForResume({ workspace, parentSessionId: 'codex-session', executorAgentId: 'historical-detached-child', permissionMode: 'workspace-write' }), { code: 'RESCUE_BINDING_CLOSED' });
+  await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId: 'codex-session', executorAgentId: 'historical-detached-child' }), { code: 'RESCUE_BINDING_CLOSED' });
+  await assert.rejects(runCompanion(['rescue', '--resume', 'retry the historical detached cancel'], { cwd: workspace, env: context.env, caller: caller('codex-session'), dependencies }), (error) => error instanceof PluginError && error.code === 'RESUME_CANDIDATE_NOT_FOUND');
+  assert.deepEqual(effects, { workers: 0, clients: 0, existingClients: 0 });
 });
 
 test('an unresolved Host-owned stop stays cancelling so status wait retries the stop and settles', async () => {

@@ -1316,6 +1316,39 @@ test('read-only worker termination derives its budget from the absolute SessionE
   await cleanupRecoveryFixture(fixture);
 });
 
+test('SessionEnd attempts remote stop before killing an exact read-only worker', async () => {
+  // A historical read-only detached run (Review) whose worker still holds its
+  // lease at SessionEnd: the bounded exact remote stop must be attempted FIRST
+  // and the recorded worker tree terminated only afterwards — never the other
+  // way round, and never through the writable Rescue binding interface.
+  const fixture = await context();
+  const { job, store } = await orphanJob(fixture, { turnId: 'stop-then-kill', command: 'review', readOnly: true });
+  const { settleEndedReadOnlyDetachedJob, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  const events = []; let bindingInterfaceTouched = 0;
+  const observedStore = { ...store, revalidateBoundRescueStop: async (...args) => { bindingInterfaceTouched += 1; return store.revalidateBoundRescueStop(...args); } };
+  const lease = { dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 };
+  const outcome = await withWorkerLease(lease, () => settleEndedReadOnlyDetachedJob({
+    store: observedStore, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, deadlineMs: Date.now() + 5_000, includeSettlementEvidence: true,
+    reconcileOwnership: async () => {},
+    terminateProcessTree: async (pid) => { assert.equal(pid, job.childPid); events.push('kill'); },
+    createClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
+      readSession: async () => activeCurrentTurn(job.inputId),
+      stopSession: async (sessionId) => { assert.equal(sessionId, job.zcodeSessionId); events.push('stop'); },
+      close: async () => { events.push('close'); },
+    }),
+  }, job.id));
+  assert.deepEqual(events.filter((event) => event !== 'close'), ['stop', 'kill']);
+  assert.equal(events.indexOf('stop') < events.indexOf('kill'), true, 'the remote stop precedes the exact worker-tree kill');
+  assert.equal(bindingInterfaceTouched, 0, 'read-only settlement never routes through the writable binding guard');
+  // Process death is never remote terminal proof: the still-active remote turn
+  // leaves the record unresolved for the pending receipt instead of a claimed stop.
+  assert.equal(outcome.kind, 'retained-writable-guard');
+  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+  await cleanupRecoveryFixture(fixture);
+});
+
 test('SessionEnd settlement retains the durable cancelling intent for a host-owned record whose remote stop cannot be proven', async () => {
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
   const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');

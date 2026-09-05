@@ -1492,6 +1492,12 @@ function codexAppServerOptions(env, cwd, signal) {
 async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck, dependencies, signal }) {
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
+  // The detached worker path is retained only for historical detached Rescue
+  // and read-only commands (ADR 0018). A record carrying the host-managed
+  // lifecycle trio executes attached under its Host child, so even a valid
+  // historical-style sealed spec plus capability must never pull it back into
+  // detached execution. The refusal precedes any spec read or capability use.
+  if (validHostLifecycleRecord(job)) throw new PluginError('RESCUE_DETACHED_EXECUTION_FORBIDDEN', 'A Host-owned Rescue executes attached; the detached worker path is historical only.', { category: 'authorization', remedy: 'Wait on the original Host-managed Rescue execution.' });
   const record = await readJobSpec(dataRoot, cwd, jobId);
   let spec; let loadSpecAfterClaim; let capabilityBinding; let executionAuthorization; let legacySpecDigest; let legacyReservationProof;
   if (record?.version === 2) {

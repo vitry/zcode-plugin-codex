@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "979cc45cfb892f15a936fe31e258796871a25d4b",
-  "sourceSha": "979cc45cfb892f15a936fe31e258796871a25d4b",
+  "sourceRef": "3495c3e3b81e35669363b5de743ac160862812b6",
+  "sourceSha": "3495c3e3b81e35669363b5de743ac160862812b6",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "9e7fe36d50e303cd5409b9e1981d773d4f2f1418dfb0b210dec0db4c37a82d51",
+    "sha256": "d4b13266048e9e4eb8bd2d4560b0b0cc0f73763801e0c8d827cef49298c632eb",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -743,8 +743,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 158589,
-        "sha256": "720a8b74ef9cb11cf62ded4a9658266447b1b534fa98851ebfa64e0c2c4110fc"
+        "size": 159256,
+        "sha256": "14ab9237a5f74863362a33527ab8af4d1d543c255adbe8baf3861b3c26137b59"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",
