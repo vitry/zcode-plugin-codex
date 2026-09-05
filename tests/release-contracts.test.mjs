@@ -409,6 +409,7 @@ test('release docs define automatic immutable Rescue worktree late binding', () 
   assert.match(english, /child.{0,100}(?:cannot|must not).{0,80}claim/i);
   assert.match(english, /Stop.{0,200}new prompt.{0,200}(?:revoke|replace)/is);
   assert.match(english, /SessionEnd.{0,200}runtime ownership loss.{0,240}preserv(?:e|ing).{0,160}(?:completed|session-ended).{0,160}resumable/is);
+  assert.match(english, /whose stop the boundary confirmed under the new schema.{0,160}resumable for a later authorized resume/is);
   assert.match(chinese, /origin workspace.{0,200}execution workspace/is);
   assert.match(chinese, /第一次可信的 `?prepare rescue`?.{0,200}自动绑定/is);
   assert.match(chinese, /不需要手动 handoff/i);
@@ -417,6 +418,7 @@ test('release docs define automatic immutable Rescue worktree late binding', () 
   assert.match(chinese, /child.{0,100}不能.{0,80}claim/i);
   assert.match(chinese, /Stop.{0,200}新 prompt.{0,200}(?:撤销|替换)/is);
   assert.match(chinese, /SessionEnd.{0,200}runtime ownership.{0,240}保留.{0,160}(?:已完成|session-ended).{0,160}可恢复/is);
+  assert.match(chinese, /stop 在新 schema 下被边界确认.{0,160}保持可恢复/is);
   for (const source of [security, changelog, authorityAdr, bindingAdr]) {
     assert.match(source, /origin workspace.{0,220}execution workspace/is);
     assert.match(source, /same canonical Git common[- ]dir/i);
@@ -486,6 +488,60 @@ test('release docs explain safe orphan settlement without weakening job ownershi
   assert.match(changelog, /reservation-time crash fallback/i);
   assert.match(changelog, /broker-unavailable orphan.{0,160}failed.{0,160}writable guard/i);
   assert.match(changelog, /unacknowledged stop.{0,160}reachable control channel.{0,160}guard/i);
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
+test('release docs define Host-managed session-bound Rescue', () => {
+  // Contract: `session-bound`, `resumable`, `cancelling`, `Stop Cause`, and its values are literal
+  // protocol surface, so both the English docs and the Chinese README carry the exact English
+  // tokens and the Chinese README reads naturally around them. No release doc may describe a
+  // background Rescue that is independent of its owning Codex session.
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+
+  for (const text of [english, chinese, security]) {
+    assert.match(text, /session-bound/i);
+    assert.match(text, /resumable/);
+    assert.doesNotMatch(text, /background Rescue.*independent/i);
+  }
+  for (const source of [english, chinese]) {
+    assert.match(source, /(?:placement|放置).{0,200}(?:task complexity|任务复杂度)/is);
+    assert.match(source, /(?:explicit `?--wait`? (?:and|和|与|或) `?--background`?|显式 `?--wait`? (?:和|与|或) `?--background`?).{0,120}(?:authoritative|权威)/is);
+    assert.match(source, /(?:Background Rescue is host-managed and session-bound|后台 Rescue 由 host 托管且 session-bound)/i);
+    assert.match(source, /(?:no detached plugin worker|不再启动 detached worker)/i);
+    assert.match(source, /(?:one concise completion notice|一条简洁的完成通知)/i);
+    assert.match(source, /Stop Cause/);
+    assert.match(source, /`user`.{0,80}`session-end`.{0,80}`host-coordination-loss`/is);
+    assert.match(source, /cancelling/);
+    // SessionEnd also settles an active detached read-only Review or Adversarial
+    // Review run; the background-jobs paragraph must not name only background Rescue.
+    assert.match(source, /(?:also discovers and settles an active detached read-only Review or Adversarial Review run|同时也会发现并结算活动中的 detached 只读 Review 或 Adversarial Review 运行)/);
+    assert.match(source, /receipt/);
+    assert.match(source, /resume-compensation/);
+    assert.match(source, /(?:Historical detached Rescue jobs remain|历史 detached Rescue job 仍保留)/i);
+    assert.match(source, /(?:explicitly opt-in|显式 opt-in)/i);
+    // The opt-in qualification exercises the SessionEnd hook boundary and resume/compensation flows by
+    // direct hook invocation only. Release docs must not claim that it proves a real host logout; they
+    // must record the host-level logout integration (the client dispatching SessionEnd at graceful
+    // logout) as an outstanding manual release gate verified with real credentials.
+    assert.doesNotMatch(source, /proves that a graceful logout dispatches|资格验证还会证明：优雅登出/);
+    assert.match(source, /(?:does not perform a real host logout|不执行真实的 host 登出)/i);
+    assert.match(source, /(?:outstanding manual release gate[^\n]{0,120}real credentials|尚未完成的手动 release gate[^\n]{0,60}真实凭据)/i);
+  }
+  assert.match(security, /host-managed and session-bound/i);
+  assert.match(security, /stop intent[^.]{0,160}before remote control/is);
+  assert.match(security, /epoch-scoped session-end receipt.{0,160}first durable mutation/is);
+  assert.match(security, /never authorizes stopping a new post-resume job/i);
+  assert.match(changelog, /ADR 0018/);
+  assert.match(changelog, /inferred from task complexity/i);
+  assert.match(changelog, /epoch-scoped receipt.{0,240}prior-epoch receipts/is);
+  assert.match(changelog, /Stop Cause.{0,160}`host-coordination-loss`/is);
+  assert.match(changelog, /never adopted, relaunched, or bulk-cancelled/i);
+  assert.match(changelog, /explicit opt-in release gate/i);
+  assert.doesNotMatch(changelog, /controlled logout\/SessionEnd real qualification/);
+  assert.match(changelog, /direct hook invocation[^\n]{0,200}outstanding manual release gate/is);
   assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
 });
 
@@ -669,7 +725,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(english, /parent thread/i);
   assert.match(english, /child thread/i);
   assert.match(english, /\/ps.{0,180}current(?:ly active)? thread/is);
-  assert.match(english, /background semantics remain unchanged/i);
+  assert.match(english, /Background Rescue is host-managed and session-bound/i);
   assert.match(english, /Codex 0\.147/);
   assert.match(english, /unqualified/i);
   assert.match(chinese, /writable root.{0,160}重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
@@ -678,7 +734,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(chinese, /父线程/);
   assert.match(chinese, /子线程/);
   assert.match(chinese, /\/ps.{0,180}当前(?:活动)?线程/is);
-  assert.match(chinese, /后台语义保持不变/);
+  assert.match(chinese, /后台 Rescue 由 host 托管且 session-bound/i);
   assert.match(chinese, /Codex 0\.147/);
   assert.match(chinese, /unqualified/i);
 

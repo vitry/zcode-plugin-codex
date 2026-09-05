@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "3495c3e3b81e35669363b5de743ac160862812b6",
-  "sourceSha": "3495c3e3b81e35669363b5de743ac160862812b6",
+  "sourceRef": "d22c5e15ea8feb81f2b967c5315b4157369d990f",
+  "sourceSha": "d22c5e15ea8feb81f2b967c5315b4157369d990f",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "d4b13266048e9e4eb8bd2d4560b0b0cc0f73763801e0c8d827cef49298c632eb",
+    "sha256": "f3ccb626cf2c678013cac7c3e97da23ea7952c37c81da7c9b149466a6a77dd1e",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -23,8 +23,8 @@
       },
       {
         "path": "plugins/zcode/CHANGELOG.md",
-        "size": 14574,
-        "sha256": "df471e2a36effea530c61acd57334a28fc106e2d45b8fb414089a0c3060c2440"
+        "size": 15801,
+        "sha256": "142ec92ce7396c8fa7f794a98a59076bf3a1b41e28cf078e25d7a20ac4afe434"
       },
       {
         "path": "plugins/zcode/LICENSE",
@@ -38,18 +38,18 @@
       },
       {
         "path": "plugins/zcode/README.md",
-        "size": 31871,
-        "sha256": "ff63a5ba901ce97f0ddb603b0e6abdd0ade67f756097152c6c0e109d27aa967c"
+        "size": 35190,
+        "sha256": "0d02a4c7bb0ab44b248724c46bee690bc4f89754a866110f6ebee1a3f45b6a0b"
       },
       {
         "path": "plugins/zcode/README.zh-CN.md",
-        "size": 29419,
-        "sha256": "ddd14408308f5297a3cc06bfdcbd22fb926ee36273f8707275a0afe4513abafa"
+        "size": 32554,
+        "sha256": "4bfe32410e1ebe5e4bef17dac61803ab562e9d8b77d489c25008a127db142420"
       },
       {
         "path": "plugins/zcode/SECURITY.md",
-        "size": 11847,
-        "sha256": "d1394164d470a72b36ae3337319e1610c5e112ed1d327495d722766114dfea44"
+        "size": 13095,
+        "sha256": "23a94c89f8df6a708c5f68a1b4bb5d9b3b8ed9260bd2ebe256542ed0c8a29335"
       },
       {
         "path": "plugins/zcode/agents/zcode-rescue.toml.template",
