@@ -9,8 +9,12 @@ The Codex session that receives the user's request and owns orchestration and re
 _Avoid_: Caller, frontend
 
 **Rescue Child**:
-The Codex Host child agent that invokes and supervises one Rescue interaction with the ZCode Engine.
+The Codex Host child agent that proves exact Host authority and invokes one Rescue interaction. It supervises foreground execution and background enqueue, but a true-background run may execute after the child exits.
 _Avoid_: ZCode child, engine process
+
+**Detached Rescue Runner**:
+A short-lived internal process that executes exactly one already-authorized background Rescue job. It has no independent lifecycle authority, queue, or retry policy.
+_Avoid_: Rescue Child, scheduler, background owner
 
 **ZCode Engine**:
 The external coding agent to which the Codex Host delegates review or task work.
@@ -29,8 +33,8 @@ A Companion Run for which the Codex Host keeps the initiating interaction attach
 _Avoid_: Wait mode, synchronous job
 
 **Host-managed Companion Run**:
-A Companion Run whose live execution and observation remain owned by a Codex Host Rescue Child, whether that child is placed in the foreground or background.
-_Avoid_: Plugin worker job, detached execution
+A Companion Run whose authorization and stop lifecycle remain owned by the Codex Host through exact persisted Host evidence, whether its executor is attached to a Rescue Child or is a Detached Rescue Runner.
+_Avoid_: Independently owned worker job, durable daemon task
 
 **Session-bound Background Run**:
 A Companion Run that may outlive its initiating interaction but not its owning Codex Host session. The Host SessionEnd Boundary ends its authority to continue.
@@ -87,6 +91,10 @@ _Avoid_: Host coordination loss, Codex usage limit
 **Tracked Job**:
 A persisted record of a Companion Run, including its ownership, lifecycle state, progress, and stored result.
 _Avoid_: Process, thread
+
+**Queued Rescue Acknowledgement**:
+Confirmation that a background Rescue has been durably accepted for execution. It does not guarantee that an executor has taken responsibility for the run or that execution has started.
+_Avoid_: Runner readiness confirmation, execution-start confirmation
 
 **Completion Notice**:
 A concise Codex Host message announcing a background Companion Run's authoritative terminal outcome while leaving the complete stored output to Result.
