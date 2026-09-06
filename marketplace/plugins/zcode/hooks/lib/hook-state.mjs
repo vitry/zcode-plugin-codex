@@ -568,12 +568,20 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The forwarding publication options are invalid.');
   }
   const publicationSeam = options.publicationSeam;
-  const lockOptions = forwardingLockOptions(options);
-  // The compensation path derives its lock budget from the SAME shared
-  // deadline: once a contended lock has consumed the whole budget, reacquiring
-  // that lock in the finally block must fail fast instead of waiting out
-  // withFileLock's five-second default past the hook's deadline.
-  const compensationDeadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+  // One shared deadline governs every lock wait this publication performs:
+  // each acquisition draws only the integer remainder of the caller's budget,
+  // so serialized contended waits fail bounded in total instead of each
+  // restarting the budget. An exhausted budget bounds WAITING, never a
+  // progressing publication: uncontended acquisitions and the writes between
+  // locks carry no abort of their own, so slow-but-uncontended progress (a
+  // loaded Windows runner) completes instead of being misbranded a route
+  // failure. A caller-supplied signal is still forwarded verbatim and stays
+  // honored inside every wait.
+  const budgetDeadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+  const lockOptions = () => ({
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(budgetDeadline === undefined ? {} : { timeoutMs: Math.max(0, budgetDeadline - Date.now()) }),
+  });
   const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const active = input.hook_event_name === 'SubagentStart';
   if (active) {
     const generationId = parentCaller?.generationId ?? null;
@@ -597,7 +605,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
         await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt: createdAt });
         await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route);
       }
-    }, lockOptions);
+    }, lockOptions());
     await publicationSeam?.('after-route-pending');
     // Durable authorization-epoch evidence (codex, Task 8): capture the CURRENT
     // session record's startedAt digest at SubagentStart, then REVALIDATE it
@@ -640,7 +648,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
         }
         await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor);
         await publicationSeam?.('after-executor-persisted');
-      }, lockOptions);
+      }, lockOptions());
       await publicationSeam?.('after-executor-write');
       await withFileLock(origin.lock, async () => {
         let current;
@@ -663,12 +671,12 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
           finalState = 'active'; return;
         }
         finalState = current.state;
-      }, lockOptions);
+      }, lockOptions());
     } catch (error) {
       finalError = error instanceof PluginError && `${error.code}`.startsWith('EXECUTOR_')
         ? error : executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', error);
     } finally {
-      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route, compensationDeadline === undefined ? lockOptions : deadlineLockOptions(compensationDeadline));
+      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route, budgetDeadline === undefined ? lockOptions() : deadlineLockOptions(budgetDeadline));
     }
     if (finalError !== null) throw finalError;
     return;
@@ -684,7 +692,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     const updatedAt = new Date().toISOString();
     if (route !== null && route.state !== 'stopped') { route = { ...route, state: 'stopped', updatedAt }; await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route); }
     await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId: route?.parentGenerationId ?? null, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt });
-  }, lockOptions);
+  }, lockOptions());
   const target = route === null ? origin : await paths(dataRoot, route.targetWorkspace);
   const executorPath = join(target.directory, `executor-${key('executor', input.agent_id)}.json`);
   await withFileLock(target.lock, async () => {
@@ -694,7 +702,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       || !await legacyExecutorAuthorityExists(dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
     if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type
       && (route === null || executorMatchesRoute(current, route))) await atomicWriteJson(executorPath, { ...current, active: false });
-  }, lockOptions);
+  }, lockOptions());
 }
 
 /**

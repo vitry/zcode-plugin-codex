@@ -729,6 +729,43 @@ test('SubagentStart compensation inherits the shared deadline when the target lo
   assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, retry.session_id, retry.turn_id)).state, 'active');
 });
 
+test('an expired publication budget completes an uncontended SubagentStart instead of branding it route-invalid', async () => {
+  // The round-4 Windows flake: slow-but-uncontended fs progress between the
+  // publication's lock acquisitions let the hook's absolute-deadline abort
+  // signal fire inside the finalization phase, and the conversion catch
+  // branded the whole publication EXECUTOR_ROUTE_INVALID, failing the hook.
+  // The publication budget now bounds only contended waits, so an elapsed
+  // budget cannot abort uncontended progress: the same slow publication
+  // completes with an active route and executor...
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'expired-budget-parent', turnId: 'expired-budget-parent-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: 'expired budget', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'expired-budget-parent', workspace: cwd, workspaceBinding: 'claim' });
+  const start = { session_id: 'expired-budget-parent', turn_id: 'expired-budget-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'expired-budget-child', agent_type: 'zcode-rescue' };
+  const budget = 250;
+  await markForwarding(data, start, caller, { timeoutMs: budget, publicationSeam: async (point) => { if (point === 'after-route-pending') await new Promise((resolvePromise) => setTimeout(resolvePromise, budget + 250)); } });
+  assert.equal((await resolveForwardingRoute(data, cwd, start.session_id, start.turn_id)).state, 'active');
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+  const executor = JSON.parse(await readFile(join(storage.directory, 'hook-state', (await readdir(join(storage.directory, 'hook-state'))).find((name) => name.startsWith('executor-'))), 'utf8'));
+  assert.equal(executor.active, true);
+});
+
+test('a signal-free shared budget still fails a contended SubagentStart publication bounded', async (t) => {
+  // ...while a contended wait keeps its bounded failure on the same shared
+  // integer budget, with no abort signal at all: the public conversion code
+  // stays EXECUTOR_ROUTE_INVALID and the retry completes.
+  const fixture = await routedExecutorFixture(t, 'signal-free-budget');
+  const holder = spawn(process.execPath, [sharedLockHolder, join(fixture.targetDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { holder.stdin.end(); holder.kill(); });
+  await new Promise((resolvePromise, reject) => { holder.once('error', reject); holder.stdout.once('data', resolvePromise); });
+  const start = { ...fixture.start, turn_id: `${fixture.start.turn_id}-signal-free`, agent_id: `${fixture.start.agent_id}-signal-free` };
+  const started = Date.now();
+  await assert.rejects(markForwarding(fixture.data, start, fixture.caller, { timeoutMs: 600 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  assert.ok(Date.now() - started < 4_000, `the contended publication must fail within the shared budget instead of the five-second lock default (took ${Date.now() - started}ms)`);
+  holder.stdin.end(); await new Promise((resolvePromise) => holder.once('exit', resolvePromise));
+  await markForwarding(fixture.data, start, fixture.caller, { timeoutMs: 5_000 });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, start.session_id, start.turn_id)).state, 'active');
+});
+
 test('an elapsed shared deadline defers SubagentStop rescue settlement instead of manufacturing fresh stage windows', async (t) => {
   const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
   // The full foreground coordination-loss scenario: one stopped Rescue child

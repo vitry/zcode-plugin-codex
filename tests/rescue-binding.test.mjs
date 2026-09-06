@@ -1557,7 +1557,12 @@ for (const [field, mutate] of [
 test('Rescue reservation methods require one explicit workspace matching reservation and executor', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   await assert.rejects(store.reserveFreshRescueJob({ reservation: reservation(workspace), executor: trusted }), { code: 'RESCUE_BINDING_INVALID' });
+  // A clearly mismatched binding rejects before storage resolution: the
+  // reservation cannot bind no matter whether input.workspace resolves, so a
+  // nonexistent input.workspace keeps RESCUE_BINDING_INVALID instead of the
+  // storage error.
   await assert.rejects(store.reserveFreshRescueJob({ workspace: '/different', reservation: reservation(workspace), executor: trusted }), { code: 'RESCUE_BINDING_INVALID' });
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace: '/different', reservation: reservation(workspace, 'turn-b'), executor: trusted, operationId: 'c'.repeat(64) }), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('StateStore continuation keeps the stable anchor and CAS-advances only current job', async () => {

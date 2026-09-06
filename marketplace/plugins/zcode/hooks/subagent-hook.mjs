@@ -57,15 +57,16 @@ const invokedDirectly = process.argv[1] !== undefined && pathToFileURL(canonical
 
 if (invokedDirectly) try {
   const input = await readHookInput(['SubagentStart', 'SubagentStop']); const rawEvent = input.hook_event_name; const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) }); const parentCaller = rawEvent === 'SubagentStart' ? await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: input.session_id, workspace: input.cwd, workspaceBinding: 'execution' }) : undefined;
-  // The forwarding publication shares the coordination-loss deadline so its
-  // contended hook-state lock waits can never run to the five-second default
-  // and push the native hook past its own budget: SubagentStart bounds the
-  // publication with the same budget; SubagentStop gives the settlement stage
-  // whatever remains of the one shared deadline after the route write.
+  // The forwarding publication bounds its contended hook-state lock waits
+  // with one shared integer budget so they can never run to the five-second
+  // default and push the native hook past its own budget. The budget bounds
+  // WAITING only: a budget consumed by slow-but-uncontended progress never
+  // aborts the publication, so a loaded runner cannot misbrand a progressing
+  // SubagentStart as EXECUTOR_ROUTE_INVALID. SubagentStop gives the advisory
+  // settlement stage whatever remains of the one shared deadline after the
+  // route write; an elapsed deadline there still defers instead of failing.
   const deadline = Date.now() + coordinationLossBudgetMs;
-  // A clock that somehow jumped past the deadline before publication gets an
-  // already-aborted window (fail bounded immediately), never fresh time.
-  await markForwarding(dataRoot, input, parentCaller, stageWindow(deadline) ?? { signal: AbortSignal.abort(), timeoutMs: 0 });
+  await markForwarding(dataRoot, input, parentCaller, { timeoutMs: coordinationLossBudgetMs });
   if (rawEvent === 'SubagentStop' && settlementAgentTypes.has(input.agent_type)) await settleStoppedRescueChild({ dataRoot, input, deadline }); process.stdout.write(rawEvent === 'SubagentStart' ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: 'This is a forwarding subagent. Do not run the parent Stop review gate or mint a parent caller capability.' } }) : '{}');
 }
 catch (error) { process.stderr.write(`ZCode subagent hook failed safely: ${error?.code ?? 'HOOK_FAILED'}\n`); process.exitCode = 1; }

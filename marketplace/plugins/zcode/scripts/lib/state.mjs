@@ -345,6 +345,9 @@ export function createStateStore(options) {
       validateOptionalBindingExpectation(input);
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
       const beforePersist = validateBeforePersistOption(options);
+      // A clearly mismatched binding fails before storage: the mismatch
+      // contract must not depend on input.workspace resolving.
+      rejectClearRescueWorkspaceMismatch(input);
       const storage = await jobStorage(dataRoot, input.workspace);
       // Single-resolution invariant: authorization is anchored to the
       // storage-resolved workspace, never to a second resolution of
@@ -396,6 +399,8 @@ export function createStateStore(options) {
       if (input.expectedCurrentJobId !== undefined && !isDigest(input.expectedCurrentJobId)) throw staleRescueBinding();
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
       const beforePersist = validateBeforePersistOption(options);
+      // Same pre-storage mismatch fast-fail as reserveFreshRescueJob.
+      rejectClearRescueWorkspaceMismatch(input);
       const storage = await jobStorage(dataRoot, input.workspace);
       // Same single-resolution invariant as reserveFreshRescueJob: the
       // binding identities are authorized against storage.workspacePath only.
@@ -2286,6 +2291,29 @@ function canonicalWorkspaceIdentity(value) {
     try { return realpathSync.native(value); } catch { /* fall through to the portable resolution */ }
   }
   try { return realpathSync(value); } catch { return value; }
+}
+
+/**
+ * Pre-storage mismatch fast-fail: a reservation or executor identity that
+ * clearly names another workspace rejects before `jobStorage()` runs, so a
+ * nonexistent input.workspace keeps the established RESCUE_BINDING_INVALID
+ * mismatch contract instead of surfacing WORKSPACE_RESOLVE_FAILED first —
+ * storage need not resolve to know the reservation cannot bind. The
+ * comparison is best-effort and authorizes nothing: raw equality
+ * short-circuits (already-matching spellings never touch the filesystem),
+ * then only the durable sides are canonicalized against the best-effort
+ * canonical input (native realpath, portable fallback, raw when
+ * unresolvable), so an unresolvable input whose sides match its raw spelling
+ * still proceeds to storage resolution. The success path remains anchored to
+ * the single `jobStorage()` resolution and its storage.workspacePath check
+ * below, so this pre-check can never authorize a retargeted alias.
+ * @param {any} input
+ */
+function rejectClearRescueWorkspaceMismatch(input) {
+  if (input.reservation.workspace === input.workspace && input.executor.workspace === input.workspace) return;
+  const inputIdentity = canonicalWorkspaceIdentity(input.workspace);
+  const matches = (/** @type {string} */ candidate) => candidate === input.workspace || canonicalWorkspaceIdentity(candidate) === inputIdentity;
+  if (!matches(input.reservation.workspace) || !matches(input.executor.workspace)) throw invalidRescueBinding();
 }
 
 /** @param {any} input */
