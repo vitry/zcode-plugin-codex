@@ -76,7 +76,10 @@ const JOB_PATCH_FIELDS = new Set([
   'stopCause', 'stopIntent', 'workerLeaseId', 'zcodeSessionId',
 ]);
 const TRANSITIONS = new Map([
-  ['queued', new Set(['running', 'failed', 'cancelled'])],
+  // queued → queued persists one durable stop decision on a queued record (the
+  // exact claim and every other field are preserved) so a claimed queued stop
+  // survives controller death and can never be forgotten by a later transition.
+  ['queued', new Set(['running', 'queued', 'failed', 'cancelled'])],
   ['running', new Set(['running', 'cancelling', 'succeeded', 'failed'])],
   ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed', 'cancelling'])],
 ]);
@@ -250,15 +253,16 @@ export function createStateStore(options) {
      * on. Returns the private binding record for the same-process reservation
      * CAS, or null when no active binding anchors the job.
      * @param {{workspace:string,ownerSessionId:string,jobId:string}} input
+     * @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget.
      */
-    async rescueBindingForJob(input) {
+    async rescueBindingForJob(input, options = {}) {
       if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.ownerSessionId) || !isDigest(input.jobId)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
         const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
         const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === input.jobId && record.state === 'active');
         return matches.length === 1 ? structuredClone(matches[0]) : null;
-      });
+      }, boundedLockOptions(options));
     },
 
     /**
@@ -477,16 +481,17 @@ export function createStateStore(options) {
     /**
      * Restore the exact prior active-v3 binding and retain its pre-running continuation as failed.
      * Binding restoration publishes first so an interrupted transaction is retryable and cannot
-     * leave the failed attempt authoritative.
+     * leave the failed attempt authoritative. Every locked internal (proof revalidation, binding
+     * restoration, terminal publication) runs inside the bounded acquisition.
      * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} proof
-     * @param {'failed'} nextStatus @param {Record<string,unknown>} [patch]
+     * @param {'failed'} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget.
      */
-    async finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch = {}) {
+    async finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch = {}, options = {}) {
       validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
       if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
         || nextStatus !== 'failed' || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
       return finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
-        expectedWorkerLeaseId, proof, patch, publicationHook);
+        expectedWorkerLeaseId, proof, patch, publicationHook, boundedLockOptions(options));
     },
 
     /**
@@ -775,6 +780,10 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
         let job = await readJobRecord(path, jobId, storage.workspacePath); const inspectedJob = job;
+        // A durable queued stop decision prevents every later dispatch: a claim
+        // racing it always loses, so no send can be authorized after the stop.
+        if (job.status === 'queued' && job.command === 'rescue' && job.readOnly === false
+          && validStopIntent(job.stopIntent)) throw workerLeaseConflict(jobId);
         validateJobSpecExecutionAuthorization(job, executionAuthorization, legacyRollback);
         if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId
           && validRescueExecutionClaim(job.rescueExecutionClaim, job)) return job;
@@ -871,14 +880,18 @@ export function createStateStore(options) {
       return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true, { lockOptions: boundedLockOptions(options) });
     },
 
-    /** One-way receipt-wins correction: under the state lock, rewrite a retained cancelling writable Rescue's persisted `host-coordination-loss` stop intent to `session-end` after its epoch receipt was published; any other status, cause, or record is returned unchanged. @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
+    /** One-way receipt-wins correction: under the state lock, rewrite a retained cancelling or
+     * stop-authoritative queued writable Rescue's persisted `host-coordination-loss` stop intent to
+     * `session-end` after its epoch receipt was published; any other status, cause, or record is
+     * returned unchanged. @param {string} workspace @param {string} jobId @param {{signal?:AbortSignal,timeoutMs?:number}} [options] Optional bounded lock budget. */
     async correctCoordinationLossStopCause(workspace, jobId, options = {}) {
       if (!isNonEmptyString(workspace) || !isDigest(jobId)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
         const job = await readJobRecord(path, jobId, storage.workspacePath);
-        if (job.command !== 'rescue' || job.readOnly !== false || job.status !== 'cancelling'
+        if (job.command !== 'rescue' || job.readOnly !== false
+          || !['cancelling', 'queued'].includes(job.status)
           || !validStopIntent(job.stopIntent) || job.stopIntent.cause !== 'host-coordination-loss') return job;
         const corrected = {
           ...job,
@@ -1140,9 +1153,10 @@ function invalidRescueBindingRepair() {
  * @param {string} dataRoot @param {string} workspace @param {string} jobId
  * @param {string|null} expectedWorkerLeaseId @param {any} proof
  * @param {Record<string,unknown>} patch @param {(seam:string)=>void|Promise<void>} publicationHook
+ * @param {{signal?:AbortSignal,timeoutMs?:number}} [lockOptions] Optional bounded lock budget (defaults preserved when omitted).
  */
 async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, jobId,
-  expectedWorkerLeaseId, proof, patch, publicationHook) {
+  expectedWorkerLeaseId, proof, patch, publicationHook, lockOptions = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
     const lockIdentity = await captureStateLockIdentity(storage);
@@ -1171,6 +1185,18 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
       || !sameActiveContinuationFailureProof(job.rescueContinuationOrigin, proof)
       || !validActiveContinuationFailureFence(job, expectedWorkerLeaseId, false)
       || hasActiveContinuationRunningEvidence(job)) throw invalidRescueBinding();
+    // A durable queued stop decision is winning stop authority: if one was
+    // delegated between the caller's unlocked probe and this locked re-read,
+    // the specialized rollback must never override it with a failed settlement
+    // — cancellation owns the settlement, exactly like the generic queued
+    // transition guard in transitionStoredJob. The typed conflict defers to the
+    // caller's re-selection so the guarded cancellation publication applies.
+    if (validStopIntent(job.stopIntent)) {
+      throw new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} has a durable stop intent; cancellation owns its settlement.`, {
+        category: 'state', remedy: 'Settle the job as cancelled, or rerun recovery to apply the persisted stop decision.',
+        details: { jobId },
+      });
+    }
     const effectivePatch = {
       ...patch,
       finishedAt: new Date(Math.max(Date.now(), Date.parse(job.lastActivityAt ?? job.createdAt))).toISOString(),
@@ -1207,7 +1233,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
     await publicationCheckpoint(publicationHook, 'active-continuation-rollback:terminal');
     await assertPublicationGuard(storage, lockIdentity, expectedSnapshot, prior.parentSessionId);
     return updated;
-  });
+  }, lockOptions);
 }
 
 /** @param {{signal?:AbortSignal,timeoutMs?:number}} [options] */
@@ -1240,6 +1266,19 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       }
     }
     const effectivePatch = patchedForStop;
+    // A durable queued stop decision is winning stop authority: a queued job
+    // that carries one may neither dispatch (queued→running) nor settle as
+    // failed — only cancellation (or its durable terminal winner) consumes it.
+    if (job.status === 'queued' && nextStatus !== 'queued'
+      && job.command === 'rescue' && job.readOnly === false && validStopIntent(job.stopIntent)) {
+      if (nextStatus === 'running') throw invalidRescueBinding();
+      if (nextStatus === 'failed') {
+        throw new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} has a durable stop intent; cancellation owns its settlement.`, {
+          category: 'state', remedy: 'Settle the job as cancelled, or rerun recovery to apply the persisted stop decision.',
+          details: { jobId },
+        });
+      }
+    }
     if (Object.hasOwn(options, 'recoveryWorkerLeaseId')) {
       const effectiveWorkerLeaseId = job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null;
       if (effectiveWorkerLeaseId !== options.recoveryWorkerLeaseId) throw workerLeaseConflict(jobId);
@@ -2023,13 +2062,22 @@ function samePersistedJsonValue(persisted, requested) {
   catch { return false; }
 }
 
-/** Accept either a wholly unclaimed attempt or the exact caller-owned queued execution fence. @param {any} job
+/** Accept either a wholly unclaimed attempt, the exact caller-owned queued execution fence, or the
+ * exact pre-claim fence gap where `fenceJobWorkerExecution` persisted the reservation lease but
+ * `claimJobWorkerForExecution` never copied it onto the job (no `childPid`, no `job.workerLeaseId`,
+ * no `rescueExecutionClaim`). @param {any} job
  * @param {string|null} expectedWorkerLeaseId @param {boolean} terminal */
 function validActiveContinuationFailureFence(job, expectedWorkerLeaseId, terminal) {
   const reservationLeaseId = job.rescueExecutionReservation?.workerLeaseId;
   if (expectedWorkerLeaseId === null) {
     return job.childPid === undefined && job.workerLeaseId === undefined
       && job.rescueExecutionClaim === undefined && reservationLeaseId === undefined;
+  }
+  // The exact fence gap: the reservation lease is the attempt's only durable
+  // lease evidence, and the same lease the recovery CAS compares effectively.
+  if (job.childPid === undefined && job.workerLeaseId === undefined
+    && job.rescueExecutionClaim === undefined) {
+    return reservationLeaseId === expectedWorkerLeaseId;
   }
   if (job.childPid === undefined || job.workerLeaseId !== expectedWorkerLeaseId
     || reservationLeaseId !== undefined && reservationLeaseId !== expectedWorkerLeaseId) return false;

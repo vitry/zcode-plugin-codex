@@ -69,6 +69,23 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
+/** Hold the exact production worker identity for its full lifetime. @param {{dataRoot:string,workspace:string,jobId:string,workerLeaseId:string,timeoutMs?:number}} input @param {()=>Promise<any>} operation */
+export async function withWorkerLease(input, operation) {
+  if (!isDigestValue(input.jobId) || !isDigestValue(input.workerLeaseId)) {
+    throw new PluginError('WORKER_LEASE_INVALID', 'Worker lease identity is invalid.', {
+      category: 'state', remedy: 'Hold one 64-character lease digest for one canonical job ID.',
+    });
+  }
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  return withFileLock(joinWorkerLease(storage.directory, input.jobId, input.workerLeaseId), operation, { timeoutMs: input.timeoutMs ?? 30_000 });
+}
+
+/** @param {string} directory @param {string} jobId @param {string} workerLeaseId */
+function joinWorkerLease(directory, jobId, workerLeaseId) { return `${directory}/worker-leases/${jobId}-${workerLeaseId}.lock`; }
+
+/** @param {unknown} value */
+function isDigestValue(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
+
 /** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
@@ -369,6 +386,13 @@ async function cancelWithElection(input) {
   }
 }
 
+/** Resolve the exact claimed queued worker lease from either durable location — the raw execution
+ * claim or the private execution fence published by fenceJobWorkerExecution — mirroring the
+ * effective-lease expression state.mjs's recovery CAS compares. A non-digest reservation lease is
+ * returned as-is so settlement fails closed instead of classifying corrupt authority as unclaimed.
+ * @param {any} job */
+function effectiveQueuedWorkerLeaseId(job) { return job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null; }
+
 /** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string,stopCause?:string,reconcileLifecycle?:(intent:any,workspace:string,ownerSessionId:string,jobId:string)=>Promise<any>,reconcileWorkspace?:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
 async function performCancellation(input, attempts, election) {
   const stopCause = input.stopCause ?? 'user';
@@ -401,7 +425,46 @@ async function performCancellation(input, attempts, election) {
   if (current?.status === 'active' || current?.status === 'finalize-pending') attempt = current;
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
-    if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
+    // Persist the durable stop decision BEFORE any settlement work: a claimed
+    // queued stop must survive controller death, a timed-out queued cancel can
+    // never be forgotten, and every later claim, dispatch, and failure-rollback
+    // transition must respect it. Legacy records carry no intent schema.
+    const intentPatch = hostOwnedStopIntentPatch(job, stopCause);
+    if ('stopIntent' in intentPatch && !validStopIntent(job.stopIntent)) {
+      try { job = await input.options.store.transitionJob(input.workspace, job.id, ['queued'], 'queued', intentPatch); }
+      catch (error) {
+        // A delegated different-cause intent that landed between this election's
+        // pre-lock read and the state lock owns the stop decision: a minted
+        // intent is never a replacement, so adopt the authoritative record
+        // (bounded convergence) instead of escaping with the raw patch
+        // rejection. Any other conflict still defers to the durable winner.
+        if (error instanceof PluginError && error.code === 'JOB_PATCH_INVALID') {
+          job = await input.options.store.readJob(input.workspace, job.id);
+          if (TERMINAL.has(job.status)) return job;
+        } else {
+          job = await durableCancelledWinner(cancelledWinnerInput(input), error);
+        }
+      }
+    }
+    // Claimed is decided by the EFFECTIVE lease — the exact expression state.mjs's
+    // recovery CAS compares — never the raw job.workerLeaseId alone: during the
+    // fence gap after fenceJobWorkerExecution stores
+    // rescueExecutionReservation.workerLeaseId and before claimJobWorkerForExecution
+    // copies it, a queued runner is CLAIMED (its executor is alive holding that
+    // exact lease), so the settlement must probe the reservation lease instead of
+    // falling through to the unclaimed direct finalization.
+    if (effectiveQueuedWorkerLeaseId(job) !== null) {
+      // A legacy claimed worker may still be alive without holding any lease
+      // file, so only a modern execution claim or private execution fence
+      // (whose runner holds its exact process-lifetime lease) admits a
+      // lease-probed settlement.
+      if (job.workerLeaseId !== undefined && job.rescueExecutionClaim === undefined) {
+        throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
+      }
+      const settled = await settleClaimedQueuedCancellation(input, job, stopCause);
+      if (settled.status !== 'queued') return recordCancelledAttempt(input, attempts, attempt, settled);
+      throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
+    }
     const rollback = await readQueuedRescueMigrationRollback({ dataRoot: input.options.dataRoot ?? input.options.store.dataRoot,
       workspace: input.workspace, job, store: input.options.store,
       invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
@@ -520,6 +583,40 @@ async function performCancellation(input, attempts, election) {
     }
   }
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
+}
+
+/** Settle one claimed queued cancellation only after acquiring its exact recorded claim lease free:
+ * a held lease defers to the starting runner (the persisted stop intent above keeps the durable
+ * decision pending for recovery or a retry), while a free lease proves the local orphan and
+ * publishes the cancelled winner through the recovery lease-CAS terminalization. The probed lease
+ * is the EFFECTIVE lease, so a fenced not-yet-claimed runner is settled against its reservation
+ * lease exactly as state.mjs's recovery CAS compares it.
+ * @param {any} input @param {any} job @param {string} stopCause */
+async function settleClaimedQueuedCancellation(input, job, stopCause) {
+  const current = await input.options.store.readJob(input.workspace, job.id);
+  if (current.status !== 'queued') return current;
+  const workerLeaseId = effectiveQueuedWorkerLeaseId(current);
+  if (!isDigestValue(workerLeaseId)) return current;
+  const dataRoot = input.options.dataRoot ?? input.options.store.dataRoot;
+  const rollback = await readQueuedRescueMigrationRollback({ dataRoot, workspace: input.workspace,
+    job: current, store: input.options.store,
+    invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
+  const cause = validStopIntent(current.stopIntent) ? current.stopIntent.cause : stopCause;
+  const finish = () => input.options.store.finishQueuedJobAfterRecoveryLease(input.workspace, current.id,
+    workerLeaseId, rollback, 'cancelled',
+    { exitCode: null, ...(validStopIntent(current.stopIntent) ? { stopCause: current.stopIntent.cause } : hostOwnedCancelledPatch(current, cause)) });
+  try {
+    return await withWorkerLease({ dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId, timeoutMs: 0 }, finish);
+  } catch (error) {
+    // JOB_PATCH_INVALID is the minted-patch losing a persistence race against a
+    // delegated durable intent between the pre-lock read and the state lock:
+    // bounded convergence re-reads the authoritative record instead of letting
+    // the internal code escape the cancel surface.
+    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT', 'JOB_TERMINAL', 'JOB_PATCH_INVALID'].includes(error.code)) {
+      return input.options.store.readJob(input.workspace, current.id);
+    }
+    throw error;
+  }
 }
 
 /** Keep the cancellation lock and managed client alive while the admission gap converges. @param {any} input @param {any} job @param {any} guard */

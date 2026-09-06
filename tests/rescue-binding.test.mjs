@@ -12,6 +12,7 @@ import {
   createRescueBindingPartition,
   createRescueBinding,
   EXECUTION_OWNERS,
+  hostOwnedCancelledPatch,
   HOST_PLACEMENTS,
   parseRescueBinding,
   parseRescueBindingAuthority,
@@ -1073,6 +1074,31 @@ test('active continuation failure restores the prior binding and terminalizes th
   assert.ok(Date.parse(restored.updatedAt) > Date.parse(proof.priorBinding.updatedAt));
   assert.deepEqual(await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, null, proof, 'failed', patch), failed);
   assert.equal((await store.listJobs(workspace)).some((job) => job.id === continuation.job.id && job.status === 'failed'), true);
+});
+
+test('active continuation failure never overrides a durable queued stop intent', async () => {
+  const base = await activeContinuationFailureFixture();
+  const workerLeaseId = '9'.repeat(64);
+  await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
+    { childPid: 999_999_999, workerLeaseId });
+  const delegated = { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() };
+  await base.store.transitionJob(base.workspace, base.continuation.job.id, ['queued'], 'queued', { stopIntent: delegated });
+  const patch = { error: { message: 'resume failed after delegation' }, exitCode: 1 };
+  // The locked rollback re-reads the claimed queued continuation under the state
+  // lock: a durable stop decision delegated in the window after the caller's
+  // unlocked probe is winning stop authority and must reject exactly like the
+  // generic queued guard — never publish failed over it.
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    workerLeaseId, base.proof, 'failed', patch), { code: 'JOB_STATUS_CONFLICT' });
+  const retained = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(retained.status, 'queued');
+  assert.deepEqual(retained.stopIntent, delegated);
+  // The delegated decision still converges through the guarded cancellation path.
+  const cancelled = await base.store.finishQueuedJobAfterRecoveryLease(base.workspace, base.continuation.job.id,
+    workerLeaseId, undefined, 'cancelled', { exitCode: null, stopCause: 'session-end' });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.stopCause, 'session-end');
+  assert.deepEqual(cancelled.stopIntent, delegated);
 });
 
 test('active continuation failure idempotence compares the caller patch using persisted JSON semantics', async () => {
@@ -2243,4 +2269,246 @@ test('a detached runner reservation carries its marker and private input through
     executor: trusted, operationId: fresh.binding.operationId, lifecycle, executionInput: input });
   assert.equal(continuation.job.rescueRunnerVersion, 1);
   assert.deepEqual(continuation.job.rescueExecutionInput, input);
+});
+
+function scavengeInput(base) {
+  return {
+    store: base.store, dataRoot: base.dataRoot, workspace: base.workspace,
+    reconcileOwnership: async () => { throw new Error('queued pre-start recovery needs no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued pre-start recovery needs no control client'); },
+  };
+}
+
+test('generic queued recovery restores the prior binding when a claimed orphan continuation fails pre-start', async () => {
+  const base = await activeContinuationFailureFixture();
+  const worker = { childPid: process.pid, workerLeaseId: 'e'.repeat(64) };
+  await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id, worker);
+
+  await scavengeWritableJobs(scavengeInput(base));
+
+  const failed = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.workerLeaseId, worker.workerLeaseId);
+  assert.equal(failed.rescueContinuationOrigin, undefined);
+  // The strict migration-proof lookup succeeds again: the binding current is the
+  // restored anchor A, never the failed pre-start attempt.
+  const strict = await base.store.readRescueBindingMigrationProof({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId,
+    childAgentType: base.hook.agentType, originWorkspace: base.workspace,
+    executionWorkspace: base.workspace, agentPath: base.hook.agentPath,
+    permissionMode: 'workspace-write' });
+  assert.equal(strict.kind, 'bound');
+  const resolved = await base.store.resolveRescueBindingForResume({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId,
+    executorAgentType: base.hook.agentType, executorParentTurnId: base.hook.parentTurnId,
+    executorParentPermissionMode: base.hook.parentPermissionMode, executorAgentPath: base.hook.agentPath,
+    permissionMode: 'workspace-write' });
+  assert.equal(resolved.kind, 'bound');
+  assert.equal(resolved.binding.currentJobId, base.first.job.id);
+  assert.equal(resolved.currentJob.id, base.first.job.id);
+  assert.equal(resolved.currentJob.zcodeSessionId, 'active-rollback-session');
+  // A late B claim loses against the settled attempt.
+  await assert.rejects(base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id, worker),
+    { code: 'WORKER_LEASE_CONFLICT' });
+});
+
+test('generic queued recovery retains the continuation proof across a rollback publication fault and converges on retry', async () => {
+  const base = await activeContinuationFailureFixture();
+  const worker = { childPid: process.pid, workerLeaseId: 'e'.repeat(64) };
+  await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id, worker);
+  const faulted = createStateStore({ dataRoot: base.dataRoot,
+    testOnlyPublicationHook: throwingAt('active-continuation-rollback:binding') });
+
+  // The scavenging loop retains the blocker on an injected fault, so the fault is
+  // observed only through the durable record: the proof must survive untouched.
+  await scavengeWritableJobs({ ...scavengeInput(base), store: faulted });
+  const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(queued.status, 'queued');
+  assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
+
+  await scavengeWritableJobs(scavengeInput(base));
+  const failed = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(failed.status, 'failed');
+  const strict = await base.store.readRescueBindingMigrationProof({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId,
+    childAgentType: base.hook.agentType, originWorkspace: base.workspace,
+    executionWorkspace: base.workspace, agentPath: base.hook.agentPath,
+    permissionMode: 'workspace-write' });
+  assert.equal(strict.kind, 'bound');
+});
+
+/** One active continuation B in the exact execution-fence gap: `fenceJobWorkerExecution` has
+ * published `rescueExecutionReservation.workerLeaseId` while `claimJobWorkerForExecution` has not
+ * yet copied it onto the job — no `childPid`, no `job.workerLeaseId`, no `rescueExecutionClaim`.
+ * @param {string} workerLeaseId */
+async function fencedActiveContinuationFixture(workerLeaseId) {
+  const base = await activeContinuationFailureFixture(); const job = base.continuation.job;
+  const executionReservation = { version: 1, capabilityDigest: '1'.repeat(64), reservationId: '2'.repeat(64),
+    jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: base.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  await base.store.publishJobSpecCommitment(base.workspace, job.id, '3'.repeat(64), executionReservation);
+  await base.store.bindJobExecutionReservationLease(base.workspace, job.id, {
+    capabilityDigest: executionReservation.capabilityDigest,
+    reservationId: executionReservation.reservationId, workerLeaseId,
+  });
+  const fenced = await base.store.readJob(base.workspace, job.id);
+  assert.equal(fenced.status, 'queued');
+  assert.equal(fenced.childPid, undefined, 'the fixture must model the pre-claim fence gap');
+  assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
+  assert.equal(fenced.rescueExecutionClaim, undefined, 'the fixture must model the pre-claim fence gap');
+  assert.equal(fenced.rescueExecutionReservation.workerLeaseId, workerLeaseId, 'the fixture must carry the fence lease');
+  return { ...base, workerLeaseId };
+}
+
+test('fenced active continuation failure restores the prior binding once its reservation lease is proven free', async () => {
+  const base = await fencedActiveContinuationFixture('e'.repeat(64));
+
+  await scavengeWritableJobs(scavengeInput(base));
+
+  const failed = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(failed.status, 'failed', 'a crashed fenced continuation with a free reservation lease must not stay queued');
+  assert.equal(failed.workerLeaseId, undefined, 'the fence-gap settlement invents no claim lease');
+  assert.equal(failed.rescueContinuationOrigin, undefined);
+  // The strict migration-proof lookup succeeds again: the binding current is the
+  // restored anchor A, never the failed pre-start attempt.
+  const strict = await base.store.readRescueBindingMigrationProof({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId,
+    childAgentType: base.hook.agentType, originWorkspace: base.workspace,
+    executionWorkspace: base.workspace, agentPath: base.hook.agentPath,
+    permissionMode: 'workspace-write' });
+  assert.equal(strict.kind, 'bound');
+  const resolved = await base.store.resolveRescueBindingForResume({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId,
+    executorAgentType: base.hook.agentType, executorParentTurnId: base.hook.parentTurnId,
+    executorParentPermissionMode: base.hook.parentPermissionMode, executorAgentPath: base.hook.agentPath,
+    permissionMode: 'workspace-write' });
+  assert.equal(resolved.kind, 'bound');
+  assert.equal(resolved.binding.currentJobId, base.first.job.id);
+  assert.equal(resolved.currentJob.id, base.first.job.id);
+  // A late B claim loses against the settled attempt.
+  await assert.rejects(base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id,
+    { childPid: 999_999_999, workerLeaseId: base.workerLeaseId }), { code: 'WORKER_LEASE_CONFLICT' });
+});
+
+test('a live reservation lease defers the fenced continuation failure until the fence is released', async () => {
+  const base = await fencedActiveContinuationFixture('f'.repeat(64));
+  let releaseWorker; const workerReleased = new Promise((resolve) => { releaseWorker = resolve; });
+  let fenceReached; const fenceHeld = new Promise((resolve) => { fenceReached = resolve; });
+  const holder = withWorkerLease({ dataRoot: base.dataRoot, workspace: base.workspace,
+    jobId: base.continuation.job.id, workerLeaseId: base.workerLeaseId },
+  async () => { fenceReached(); await workerReleased; });
+  await fenceHeld;
+  try {
+    // The runner still holds its exact fence lease: recovery defers and the
+    // rollback proof survives untouched, exactly like a held claim.
+    await scavengeWritableJobs(scavengeInput(base));
+    const deferred = await base.store.readJob(base.workspace, base.continuation.job.id);
+    assert.equal(deferred.status, 'queued', 'a live fence lease is never a free or unclaimed lease');
+    assert.deepEqual(deferred.rescueContinuationOrigin, base.proof);
+  } finally { releaseWorker(); await holder; }
+
+  await scavengeWritableJobs(scavengeInput(base));
+
+  const failed = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(failed.status, 'failed', 'the freed fence lease settles by the claimed rollback rules');
+  const binding = (await base.store.resolveRescueBinding({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId })).binding;
+  assert.equal(binding.currentJobId, base.first.job.id);
+});
+
+test('fenced active continuation failure rejects a reservation lease that mismatches the expected fence', async () => {
+  const base = await fencedActiveContinuationFixture('e'.repeat(64));
+  const patch = { error: { message: 'expected rejection' }, exitCode: 1 };
+  await assert.rejects(base.store.finishActiveRescueContinuationFailure(base.workspace, base.continuation.job.id,
+    'f'.repeat(64), base.proof, 'failed', patch), { code: 'RESCUE_BINDING_INVALID' });
+  const queued = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(queued.status, 'queued');
+  assert.deepEqual(queued.rescueContinuationOrigin, base.proof);
+});
+
+test('a claimed queued continuation with a durable stop intent settles cancelled and closes the operation', async () => {
+  const base = await activeContinuationFailureFixture();
+  const worker = { childPid: process.pid, workerLeaseId: 'e'.repeat(64) };
+  await base.store.claimJobWorkerForExecution(base.workspace, base.continuation.job.id, worker);
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-07T00:00:00.000Z' };
+  await base.store.transitionJob(base.workspace, base.continuation.job.id, ['queued'], 'queued', { stopIntent });
+  const claimed = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(claimed.status, 'queued');
+  assert.equal(claimed.workerLeaseId, worker.workerLeaseId);
+  assert.deepEqual(claimed.stopIntent, stopIntent);
+
+  await scavengeWritableJobs(scavengeInput(base));
+
+  const cancelled = await base.store.readJob(base.workspace, base.continuation.job.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.stopCause, 'user');
+  assert.equal(cancelled.rescueContinuationOrigin, undefined);
+  // Explicit pre-session cancel closes the current operation: the binding is
+  // never silently restored to A as if the stop were infrastructure failure.
+  await assert.rejects(base.store.resolveRescueBinding({ workspace: base.workspace,
+    parentSessionId: base.hook.parentSessionId, executorAgentId: base.hook.agentId }),
+  { code: 'RESCUE_BINDING_CLOSED' });
+});
+
+test('a queued stop intent prevents claim, dispatch, and failure settlement', async () => {
+  const { workspace, store } = await fixture();
+  const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-queued-stop-guard', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle, executionInput: { version: 1, task: 'bounded private task' } });
+  const worker = { childPid: 999_999_999, workerLeaseId: '7'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, fresh.job.id, worker);
+  const stopIntent = { version: 1, cause: 'session-end', requestedAt: '2026-09-07T00:00:00.000Z' };
+  await store.transitionJob(workspace, fresh.job.id, ['queued'], 'queued', { stopIntent });
+  // The exact idempotent replay is accepted while the claim is retained.
+  await store.transitionJob(workspace, fresh.job.id, ['queued'], 'queued', { stopIntent });
+  const queued = await store.readJob(workspace, fresh.job.id);
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.workerLeaseId, worker.workerLeaseId);
+  // A late claim may not dispatch.
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, fresh.job.id,
+    { childPid: 999_999_999, workerLeaseId: '8'.repeat(64) }), { code: 'WORKER_LEASE_CONFLICT' });
+  // Even the recorded claim holder may not advance to running.
+  await assert.rejects(store.transitionJob(workspace, fresh.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: worker.childPid, workerLeaseId: worker.workerLeaseId }),
+  { code: 'RESCUE_BINDING_INVALID' });
+  // Failure settlement may not override the durable stop authority — through the
+  // generic finish and the recovery lease-CAS terminalization alike.
+  await assert.rejects(store.finishJob(workspace, fresh.job.id, ['queued'], 'failed',
+    { error: { message: 'setup failed before a session' }, exitCode: 1 }), { code: 'JOB_STATUS_CONFLICT' });
+  await assert.rejects(store.finishQueuedJobAfterRecoveryLease(workspace, fresh.job.id, worker.workerLeaseId,
+    undefined, 'failed', { error: { message: 'orphan settlement' }, exitCode: 1 }), { code: 'JOB_STATUS_CONFLICT' });
+  // Cancellation remains the one eligible settlement and carries the intent cause.
+  const cancelled = await store.finishQueuedJobAfterRecoveryLease(workspace, fresh.job.id, worker.workerLeaseId,
+    undefined, 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(queued, 'session-end') });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.stopCause, 'session-end');
+  assert.equal('rescueExecutionInput' in cancelled, false);
+  assert.equal(cancelled.rescueRunnerVersion, 1);
+});
+
+test('a fresh pre-session failure stays non-resumable while a new child reserves fresh again', async () => {
+  const { workspace, store } = await fixture();
+  const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-fresh-presession', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle, executionInput: { version: 1, task: 'bounded private task' } });
+  await store.claimJobWorkerForExecution(workspace, fresh.job.id,
+    { childPid: process.pid, workerLeaseId: '9'.repeat(64) });
+  const failed = await store.finishJob(workspace, fresh.job.id, ['queued'], 'failed',
+    { error: { message: 'setup failed before an accepted session' }, exitCode: 1 });
+  assert.equal(failed.status, 'failed');
+  assert.equal('rescueExecutionInput' in failed, false);
+  assert.equal(failed.rescueRunnerVersion, 1);
+  // No resumable remote history exists: the exact resume route rejects the
+  // failed fresh attempt, so a later fresh operation needs a new authorized child.
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)),
+    { code: 'RESCUE_BINDING_INVALID' });
+  const replacement = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: executor(workspace, { agentId: 'replacement-child' }), lifecycle,
+    executionInput: { version: 1, task: 'bounded private task' } });
+  assert.equal(replacement.job.status, 'queued');
+  assert.equal(replacement.binding.currentJobId, replacement.job.id);
 });

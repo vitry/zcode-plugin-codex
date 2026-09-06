@@ -710,6 +710,161 @@ test('controller cancel settles a queued Host-owned migrated continuation with i
     executorAgentId: executor.agentId }), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
+/** One claimed detached-runner reservation: a marked Host-owned background Rescue whose runner
+ * claimed the job and still holds its process-lifetime lease until the holder releases it.
+ * @param {string} workspace @param {any} store @param {string} agentId */
+async function reserveClaimedRunnerRescue(workspace, store, agentId) {
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue',
+      readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'session-a', parentTurnId: 'turn-a', agentId, agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'b'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' },
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const worker = { childPid: process.pid, workerLeaseId: 'a'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, reserved.job.id, worker);
+  return { job: reserved.job, workerLeaseId: worker.workerLeaseId };
+}
+
+test('claimed queued cancellation persists its stop intent and a later controller settles cancelled', async () => {
+  const { root, workspace, store } = await setup(); const dataRoot = join(root, 'data');
+  const { job, workerLeaseId } = await reserveClaimedRunnerRescue(workspace, store, 'queued-stop-child');
+  const { withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  let leaseEntered = () => {}; const leaseAcquired = new Promise((resolve) => { leaseEntered = () => resolve(undefined); });
+  let releaseLease = () => {}; const leaseReleased = new Promise((resolve) => { releaseLease = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot, workspace, jobId: job.id, workerLeaseId },
+    async () => { leaseEntered(); await leaseReleased; });
+  const controller = createJobController({ store, dataRoot });
+  await leaseAcquired; // the settlement must observe the lease provably held, whatever the I/O scheduling
+  await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+  const queued = await store.readJob(workspace, job.id);
+  assert.equal(queued.status, 'queued', 'a held claim keeps the durable queued record');
+  assert.equal(queued.workerLeaseId, workerLeaseId, 'the exact claim is retained');
+  assert.equal(queued.stopIntent?.cause, 'user', 'the stop decision is durable before any settlement');
+  // Controller death and runner exit later: the lease goes free and a NEW
+  // controller settles the same durable decision without another send.
+  releaseLease(); await holder;
+  const winner = await createJobController({ store, dataRoot }).cancel(workspace, job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled');
+  assert.equal(winner.stopCause, 'user');
+  assert.equal(winner.stopIntent.cause, 'user');
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal('rescueExecutionInput' in settled, false);
+  assert.equal(settled.rescueRunnerVersion, 1);
+});
+
+test('claimed queued cancellation converges when a delegated intent wins the persistence race', async () => {
+  const { root, workspace, store } = await setup(); const dataRoot = join(root, 'data');
+  const { job } = await reserveClaimedRunnerRescue(workspace, store, 'delegated-stop-child');
+  let reads = 0;
+  const delegated = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (current.id === job.id && current.status === 'queued' && current.stopIntent === undefined && ++reads === 1) {
+        // The SessionEnd delegation persists a different-cause intent after the
+        // election's pre-lock read: the freshly minted controller intent may no
+        // longer replace it, and the raw patch rejection must never escape the
+        // cancel API — the authoritative record is adopted instead.
+        await store.transitionJob(readWorkspace, job.id, ['queued'], 'queued',
+          { stopIntent: { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() } });
+      }
+      return current;
+    },
+  };
+  const controller = createJobController({ store: delegated, dataRoot });
+  const winner = await controller.cancel(workspace, job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled', 'the cancel converges bounded instead of escaping JOB_PATCH_INVALID');
+  assert.equal(winner.stopCause, 'session-end', 'the delegated intent owns the durable stop cause');
+  assert.equal(winner.stopIntent.cause, 'session-end');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end');
+  assert.equal(stored.stopIntent.cause, 'session-end');
+  assert.equal('rescueExecutionInput' in stored, false);
+});
+
+/** One marked detached-runner reservation in the exact execution-fence gap: the executor has
+ * persisted `rescueExecutionReservation.workerLeaseId` but `claimJobWorkerForExecution` has not
+ * yet copied it to `job.workerLeaseId`, so the reservation carries the only durable lease.
+ * @param {string} workspace @param {any} store @param {string} agentId */
+async function reserveFencedRunnerRescue(workspace, store, agentId) {
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue',
+      readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'session-a', parentTurnId: 'turn-a', agentId, agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: 'b'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' },
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const authority = {
+    version: 1, capabilityDigest: '1'.repeat(64), reservationId: '2'.repeat(64),
+    jobId: reserved.job.id, ownerSessionId: reserved.job.ownerSessionId, workspace: reserved.job.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+  };
+  await store.publishJobSpecCommitment(workspace, reserved.job.id, '3'.repeat(64), authority);
+  const workerLeaseId = 'a'.repeat(64);
+  await store.bindJobExecutionReservationLease(workspace, reserved.job.id,
+    { capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId });
+  const fenced = await store.readJob(workspace, reserved.job.id);
+  assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
+  assert.equal(fenced.rescueExecutionReservation.workerLeaseId, workerLeaseId, 'the fixture must carry the fence lease');
+  assert.equal(fenced.rescueRunnerVersion, 1, 'the fixture must model a marked runner reservation');
+  return { job: fenced, workerLeaseId };
+}
+
+test('cancellation defers a fenced not-yet-claimed queued runner to its live reservation lease', async () => {
+  const { root, workspace, store } = await setup(); const dataRoot = join(root, 'data');
+  const { job, workerLeaseId } = await reserveFencedRunnerRescue(workspace, store, 'fence-gap-stop-child');
+  const { withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  let leaseEntered = () => {}; const leaseAcquired = new Promise((resolve) => { leaseEntered = () => resolve(undefined); });
+  let releaseLease = () => {}; const leaseReleased = new Promise((resolve) => { releaseLease = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot, workspace, jobId: job.id, workerLeaseId },
+    async () => { leaseEntered(); await leaseReleased; });
+  const controller = createJobController({ store, dataRoot });
+  await leaseAcquired; // the settlement must observe the fence lease provably held, whatever the I/O scheduling
+  await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+  const queued = await store.readJob(workspace, job.id);
+  assert.equal(queued.status, 'queued', 'a live fence lease is never an unclaimed job: the settlement defers');
+  assert.equal(queued.workerLeaseId, undefined, 'the pre-claim fence gap is retained exactly');
+  assert.equal(queued.stopIntent?.cause, 'user', 'the stop decision is durable before any settlement');
+  // Controller death and runner exit later: the fence lease goes free and a NEW
+  // controller settles the same durable decision without another send.
+  releaseLease(); await holder;
+  const winner = await createJobController({ store, dataRoot }).cancel(workspace, job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled');
+  assert.equal(winner.stopCause, 'user');
+  assert.equal(winner.stopIntent.cause, 'user');
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal('rescueExecutionInput' in settled, false);
+  assert.equal(settled.rescueRunnerVersion, 1);
+});
+
+test('cancellation settles a fenced queued runner through its free reservation lease, never the unclaimed shortcut', async () => {
+  const { root, workspace, store } = await setup(); const dataRoot = join(root, 'data');
+  const { job, workerLeaseId } = await reserveFencedRunnerRescue(workspace, store, 'fence-gap-free-child');
+  let leaseCasCalls = 0;
+  const guardedStore = {
+    ...store,
+    finishQueuedJobAfterRecoveryLease: async (/** @type {string} */ leaseWorkspace, /** @type {string} */ leaseJobId,
+      /** @type {string|null} */ expectedWorkerLeaseId, /** @type {any} */ rollback,
+      /** @type {'failed'|'cancelled'} */ nextStatus, /** @type {Record<string,unknown>|undefined} */ patch, /** @type {{signal?:AbortSignal,timeoutMs?:number}|undefined} */ options) => {
+      leaseCasCalls += 1;
+      assert.equal(expectedWorkerLeaseId, workerLeaseId, 'the exact-lease CAS must target the reservation fence lease');
+      return store.finishQueuedJobAfterRecoveryLease(leaseWorkspace, leaseJobId, expectedWorkerLeaseId, rollback, nextStatus, patch, options);
+    },
+  };
+  const controller = createJobController({ store: guardedStore, dataRoot });
+  const winner = await controller.cancel(workspace, job.id, 'session-a');
+  assert.equal(winner.status, 'cancelled', 'a proven-free fence lease settles cancelled on the first cancel');
+  assert.equal(winner.stopCause, 'user', 'the fenced job follows the claimed settlement, not the legacy grace');
+  assert.equal(winner.stopIntent.cause, 'user');
+  assert.equal(winner.workerLeaseId, undefined, 'the pre-claim fence gap is retained on the winner');
+  assert.equal(leaseCasCalls, 1, 'the settlement must publish through the exact-lease probe CAS');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal('rescueExecutionInput' in stored, false);
+});
+
 test('send admission holds the cancellation fence until the accepted boundary is durable', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'admission-fence' });
   let releaseSend = () => {}; let signalSend = () => {}; let signalFollower = () => {}; let releaseFollower = () => {};

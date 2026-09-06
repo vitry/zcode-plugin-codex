@@ -1,17 +1,15 @@
 import { PluginError } from './errors.mjs';
 import { createIdentityStore } from './identity.mjs';
 import { createHostLifecycleStore } from './host-lifecycle.mjs';
-import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
+import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock, withWorkerLease } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { realpath } from 'node:fs/promises';
-import { withFileLock } from './fs.mjs';
 import { terminateRecordedProcessTree } from './process.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { isJobNotFound } from './state.mjs';
-import { resolveWorkspaceStorage } from './workspace.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
@@ -26,12 +24,7 @@ const CONTROL_CHANNEL_UNAVAILABLE = new Set(['ZCODE_BROKER_PROTOCOL_UNAVAILABLE'
 export const LEGACY_QUEUED_STALE_MS = 5 * 60_000;
 const OPTIONAL_JOB_LOG_FENCE_MS = 250;
 
-/** Hold the exact production worker identity for its full lifetime. @param {{dataRoot:string,workspace:string,jobId:string,workerLeaseId:string,timeoutMs?:number}} input @param {()=>Promise<any>} operation */
-export async function withWorkerLease(input, operation) {
-  if (!isDigest(input.jobId) || !isDigest(input.workerLeaseId)) throw recoveryError('Worker lease identity is invalid.');
-  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
-  return withFileLock(joinWorkerLease(storage.directory, input.jobId, input.workerLeaseId), operation, { timeoutMs: input.timeoutMs ?? 30_000 });
-}
+export { withWorkerLease } from './job-control.mjs';
 
 /** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function reconcileOwnedJobs(input) {
@@ -417,6 +410,18 @@ function boundedSessionEndStore(store, signal, timeoutMs) {
       ? { finishQueuedJobAfterRecoveryLease: /** @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} rollback @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
         (workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}, methodOptions = {}) =>
           store.finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch, { ...methodOptions, ...options }) } : {}),
+    // The guarded active-continuation rollback transaction (the pre-start failure
+    // settlement's exact binding-restoration state lock) and the standalone
+    // cancelled-resume binding lookup share the same bounded budget: under state-
+    // lock contention both must fail closed at the SessionEnd stage budget instead
+    // of waiting the default five seconds or ignoring the caller's abort signal.
+    ...(typeof store.finishActiveRescueContinuationFailure === 'function'
+      ? { finishActiveRescueContinuationFailure: /** @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId @param {any} proof @param {string} nextStatus @param {Record<string,unknown>} [patch] @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
+        (workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch = {}, methodOptions = {}) =>
+          store.finishActiveRescueContinuationFailure(workspace, jobId, expectedWorkerLeaseId, proof, nextStatus, patch, { ...methodOptions, ...options }) } : {}),
+    ...(typeof store.rescueBindingForJob === 'function'
+      ? { rescueBindingForJob: /** @param {{workspace:string,ownerSessionId:string,jobId:string}} input */
+        (input) => store.rescueBindingForJob(input, options) } : {}),
     ...(typeof store.cleanupTerminalExecutionReservation === 'function'
       ? { cleanupTerminalExecutionReservation: /** @param {string} workspace @param {string} jobId @param {any} identity @param {{signal?:AbortSignal,timeoutMs?:number}} [methodOptions] */
         (workspace, jobId, identity, methodOptions = {}) =>
@@ -498,6 +503,38 @@ export async function delegateEndedStopIntent(input, jobId) {
     throw recoveryError('The delegated job belongs to another host lifecycle epoch.');
   }
   if (TERMINAL.has(current.status)) return current;
+  if (current.status === 'queued') {
+    // SessionEnd delegation for a claimed queued runner: the durable session-end
+    // stop intent persists while the exact claim is retained, so the later
+    // lease-acquiring settlement (this hook's later stage, recovery, or a retry)
+    // applies it. Claimed is decided by the EFFECTIVE lease (recoveryWorkerLease,
+    // the same resolution the settlement CAS compares): during the fence gap a
+    // queued runner whose rescueExecutionReservation.workerLeaseId is already
+    // published counts as claimed, so its stop intent persists and the runner's
+    // later claim loses to the durable decision — an unclaimed queued reservation
+    // (no effective lease) terminalizes atomically through the settle path
+    // instead, and an already-persisted decision is never replaced by a later
+    // cause — except the receipt-wins correction: a coordination-loss intent
+    // that outran its epoch's receipt publication is corrected to session-end
+    // first, exactly like the cancelling branch below.
+    if (!isDigest(recoveryWorkerLease(current))) return current;
+    if (validStopIntent(current.stopIntent)) return correctReceiptWinningStopCause(input, current);
+    const patch = hostOwnedStopIntentPatch(current, 'session-end');
+    if (!('stopIntent' in patch)) return current;
+    try {
+      return await input.store.transitionJob(input.workspace, current.id, ['queued'], 'queued', patch, lockOptions);
+    } catch (error) {
+      // A competing valid intent that landed between this delegate's read and the
+      // state lock owns the stop decision: delegation never replaces another
+      // writer's intent, so adopt the now-authoritative durable record (terminal
+      // or the queued record carrying the winning intent) instead of escaping
+      // with the raw patch rejection — the mirror of the settlement-side race.
+      if (error instanceof PluginError && error.code === 'JOB_PATCH_INVALID') {
+        return input.store.readJob(input.workspace, current.id, lockOptions);
+      }
+      throw error;
+    }
+  }
   if (current.status === 'cancelling') {
     // An already delegated record is returned as the discharge evidence, but a
     // coordination-loss intent that outran its epoch's receipt publication is
@@ -538,11 +575,32 @@ async function settleSelectedJob(input) {
     if (current.id !== input.selectedJobId || current.ownerSessionId !== input.expectedOwnerSessionId || TERMINAL.has(current.status)) return current;
     if (input.intent === 'scavenge' && (current.command !== 'rescue' || current.readOnly !== false)) return current;
     const workerLeaseId = recoveryWorkerLease(current);
-    if (current.status === 'queued') return !isDigest(workerLeaseId)
-      && (input.now ?? Date.now)() - Date.parse(current.createdAt) < LEGACY_QUEUED_STALE_MS
-      ? current : failJob(input, current, recoveryError(isDigest(workerLeaseId)
-        ? 'Claimed queued worker exited before execution started.'
-        : 'Queued reservation exceeded the conservative worker-claim grace period.'));
+    if (current.status === 'queued') {
+      // A durable stop decision outranks every queued aging policy for an
+      // UNCLAIMED record — the runner-marker aging exclusion and the legacy
+      // claim-grace window alike: claims are rejected for that record, so
+      // retaining it would block its writable binding forever with no
+      // settlement path. The receipt-wins cause correction runs first (the
+      // established queued cancellation seam), then the intent's own cause
+      // labels the guarded cancelled terminalization — an unclaimed job has
+      // no lease to acquire, so the direct transaction applies under this
+      // already-held cancellation lock, exactly like the claimed path after
+      // its lease acquisition.
+      if (!isDigest(workerLeaseId) && validStopIntent(current.stopIntent)) {
+        const corrected = await correctReceiptWinningStopCause(input, current);
+        return cancelQueuedJob(input, corrected, corrected.stopIntent.cause);
+      }
+      // New Host-owned runner jobs never fail from age alone: elapsed time is
+      // not evidence (Product Invariant 5). An unclaimed marked job stays
+      // queued indefinitely; a held claim defers to its runner, and only a
+      // proven free claim lease permits the pre-start failure below.
+      if (!isDigest(workerLeaseId) && current.rescueRunnerVersion !== undefined) return current;
+      return !isDigest(workerLeaseId)
+        && (input.now ?? Date.now)() - Date.parse(current.createdAt) < LEGACY_QUEUED_STALE_MS
+        ? current : failJob(input, current, recoveryError(isDigest(workerLeaseId)
+          ? 'Claimed queued worker exited before execution started.'
+          : 'Queued reservation exceeded the conservative worker-claim grace period.'));
+    }
     if (!isDigest(workerLeaseId) && legacyWorkerAlive(current)) return current;
     if (!isDigest(workerLeaseId)) return reconcileOrphan(input, current);
     try {
@@ -698,20 +756,74 @@ async function cancelQueuedJob(input, job, stopCause = 'host-coordination-loss')
   catch (error) { return cancelledConflictWinner(input, job, error); }
 }
 
-/** Re-read, probe the exact effective lease, then let State CAS that same lease at terminal publication. @param {any} input @param {any} job @param {'failed'|'cancelled'} nextStatus @param {any} patch */
+/** Re-read, probe the exact effective lease, then let State CAS that same lease at terminal publication.
+ * The locked re-read under the probe reselects the settlement policy from fresh evidence: a winning
+ * durable stop intent selects cancellation over any requested failure, and an active-continuation
+ * failure selects the exact guarded binding-restoration transaction — the generic queued
+ * terminalization never publishes a failed continuation attempt as authoritative.
+ * @param {any} input @param {any} job @param {'failed'|'cancelled'} nextStatus @param {any} patch */
 async function finishQueuedJobAfterLeaseProbe(input, job, nextStatus, patch) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  const workerLeaseId = recoveryWorkerLease(current); const rollback = await queuedMigrationRollback(input, current);
-  const finish = () => input.store.finishQueuedJobAfterRecoveryLease(input.workspace, current.id,
-    workerLeaseId ?? null, rollback, nextStatus, patch);
+  const workerLeaseId = recoveryWorkerLease(current);
+  const settle = async () => {
+    const latest = await input.store.readJob(input.workspace, current.id);
+    if (TERMINAL.has(latest.status) || latest.status !== 'queued') return latest;
+    const lease = recoveryWorkerLease(latest);
+    // A newer exact claim won between the probe and the locked re-read: the
+    // probed lease no longer proves this claim free, so defer to its runner.
+    if ((workerLeaseId ?? null) !== (lease ?? null)) return latest;
+    if (validStopIntent(latest.stopIntent)) {
+      // The durable decision's own cause labels the cancelled winner, trio or not.
+      const rollback = await queuedMigrationRollback(input, latest);
+      return input.store.finishQueuedJobAfterRecoveryLease(input.workspace, latest.id, lease ?? null, rollback,
+        'cancelled', { exitCode: null, stopCause: latest.stopIntent.cause });
+    }
+    if (nextStatus === 'failed' && latest.rescueContinuationOrigin?.kind === 'active-continuation') {
+      // Pre-start infrastructure failure on an active continuation restores the
+      // exact prior binding through the guarded rollback transaction — the
+      // generic queued transaction must never publish a failed attempt as
+      // authoritative while the binding still actively anchors it. The
+      // transaction reloads and revalidates the exact proof under the state
+      // lock, so the restored-binding crash intermediate (binding restored,
+      // queued proof retained) retries idempotently here. Its rejection is
+      // fallable to the existing generic policy ONLY where nothing actively
+      // anchors the failed attempt (revoked or never-advanced bindings, where
+      // generic failure cannot strand the strict lookup) — a rejection under an
+      // active anchor is integrity uncertainty and retains exclusion. The
+      // caller's bounded lock budget (signal and/or timeoutMs) threads into the
+      // transaction and the anchoring lookup so a contended state lock defers
+      // within the SessionEnd budget instead of the default five-second wait.
+      const rollbackLockOptions = {
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      };
+      const attemptRollback = () => input.store.finishActiveRescueContinuationFailure(input.workspace,
+        latest.id, lease ?? null, latest.rescueContinuationOrigin, 'failed', patch, rollbackLockOptions);
+      try { return await attemptRollback(); }
+      catch (error) {
+        const anchoring = error instanceof PluginError && error.code === 'RESCUE_BINDING_INVALID'
+          && typeof input.store.rescueBindingForJob === 'function'
+          ? await input.store.rescueBindingForJob({ workspace: input.workspace,
+            ownerSessionId: latest.ownerSessionId, jobId: latest.id }, rollbackLockOptions).catch(() => undefined)
+          : undefined;
+        if (anchoring !== null) throw error;
+        const rollback = await queuedMigrationRollback(input, latest);
+        return input.store.finishQueuedJobAfterRecoveryLease(input.workspace, latest.id,
+          lease ?? null, rollback, nextStatus, patch);
+      }
+    }
+    const rollback = await queuedMigrationRollback(input, latest);
+    return input.store.finishQueuedJobAfterRecoveryLease(input.workspace, latest.id,
+      lease ?? null, rollback, nextStatus, patch);
+  };
   try {
     return isDigest(workerLeaseId)
       ? await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace,
-        jobId: current.id, workerLeaseId, timeoutMs: 0 }, finish)
-      : await finish();
+        jobId: current.id, workerLeaseId, timeoutMs: 0 }, settle)
+      : await settle();
   } catch (error) {
-    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT'].includes(error.code)) {
+    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT', 'JOB_TERMINAL', 'JOB_STATUS_CONFLICT'].includes(error.code)) {
       return input.store.readJob(input.workspace, current.id);
     }
     throw error;
@@ -942,10 +1054,46 @@ async function retainUnresolvedEndedStop(input, job, error) {
   return retainAfterStopFailure(input, current, error);
 }
 
-/** Persist the durable stop intent before any remote control; a queued job embeds it in its terminal patch. @param {any} input @param {{job:any,racedWinner?:any}} context @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
+/** Persist the durable stop intent before any remote control; a claimed queued job keeps its exact
+ * claim while queueing the decision (survives controller death), an unclaimed queued job embeds its
+ * intent in the atomically terminalized cancelled patch. @param {any} input @param {{job:any,racedWinner?:any}} context @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
 async function persistEndedStopIntent(input, context, joined, cause, options) {
   options?.signal?.throwIfAborted();
-  if (joined.job.status === 'queued') return { kind: 'persisted', job: joined.job };
+  if (joined.job.status === 'queued') {
+    const intentPatch = hostOwnedStopIntentPatch(joined.job, cause);
+    // Claimed is decided by the EFFECTIVE lease (the recoveryWorkerLease resolution the
+    // lease-aware settlement CAS compares), never the raw job.workerLeaseId alone: during
+    // the fence gap after fenceJobWorkerExecution stores
+    // rescueExecutionReservation.workerLeaseId and before claimJobWorkerForExecution
+    // copies it, a queued runner is CLAIMED — its stop intent persists against that
+    // reservation lease (whose later acquisition blocks the claim and converges the
+    // settlement), so no execution can claim past the boundary unseen (ADR 0018).
+    if (!isDigest(recoveryWorkerLease(joined.job)) || !('stopIntent' in intentPatch)
+      || validStopIntent(joined.job.stopIntent)) return { kind: 'persisted', job: joined.job };
+    try {
+      const persisted = await input.store.transitionJob(input.workspace, joined.job.id, ['queued'], 'queued', intentPatch);
+      context.job = persisted;
+      return { kind: 'persisted', job: persisted };
+    } catch (error) {
+      // A competing valid intent (e.g. a delegated session-end decision or a
+      // concurrent user stop) that landed between the joined read and this state
+      // lock owns the stop decision: a minted intent is never a replacement, so
+      // adopt the now-authoritative durable record instead of escaping with the
+      // raw patch rejection — terminal when a winner already exists, otherwise
+      // the queued record whose intent the lease-acquisition settlement applies
+      // (the same bounded convergence as performCancellation's fallback).
+      // Any other conflict still defers to the durable winner.
+      if (error instanceof PluginError && error.code === 'JOB_PATCH_INVALID') {
+        const winner = await input.store.readJob(input.workspace, joined.job.id);
+        if (TERMINAL.has(winner.status)) return { kind: 'conflict', winner, resumableEvidence: racedResumableEvidence(winner) };
+        context.job = winner;
+        return { kind: 'persisted', job: winner };
+      }
+      const winner = await cancelledConflictWinner(input, joined.job, error);
+      if (!TERMINAL.has(winner.status)) context.racedWinner = winner;
+      return { kind: 'conflict', winner, resumableEvidence: racedResumableEvidence(winner) };
+    }
+  }
   const current = await input.store.readJob(input.workspace, joined.job.id);
   if (TERMINAL.has(current.status)) return { kind: 'conflict', winner: current };
   if (current.status === 'cancelling') {
@@ -994,16 +1142,19 @@ async function revalidatedStopCause(input, joined, cause) {
  * cannot close (publication takes the independent receipt lock, so a receipt
  * landing between the revalidator's read and the job write still persists
  * `host-coordination-loss`): when a later reconciliation pass observes a
- * retained `cancelling` guard whose persisted intent still carries the
- * pre-publication coordination-loss cause while the matching-epoch receipt now
- * exists durably, the cause is one-way corrected to `session-end` under the
- * state lock before the guard is retained or discharged. Any other cause, a
- * missing or unreadable receipt, and legacy or non-cancelling records are
- * returned untouched; the correction never claims a stopped terminal.
+ * retained `cancelling` guard — or a queued record whose durable stop decision
+ * already exists — whose persisted intent still carries the pre-publication
+ * coordination-loss cause while the matching-epoch receipt now exists durably,
+ * the cause is one-way corrected to `session-end` under the state lock before
+ * the guard is retained, discharged, or the queued settlement is selected. Any
+ * other cause, a missing or unreadable receipt, and legacy or other-status
+ * records are returned untouched; the correction never claims a stopped
+ * terminal.
  * @param {any} input @param {any} job
  */
 async function correctReceiptWinningStopCause(input, job) {
-  if (typeof input.store?.correctCoordinationLossStopCause !== 'function' || job?.status !== 'cancelling'
+  if (typeof input.store?.correctCoordinationLossStopCause !== 'function' || !job
+    || !['cancelling', 'queued'].includes(job.status)
     || !validStopIntent(job.stopIntent) || job.stopIntent.cause !== 'host-coordination-loss'
     || !isDigest(job.ownerLifecycleEpoch)) return job;
   const receipt = await createHostLifecycleStore({ dataRoot: input.dataRoot })
@@ -1217,8 +1368,6 @@ function establishedUnavailableOrphanError(error) { return unavailableOrphanErro
 function recoveryMessage(error) { return boundedCancelMessage(error instanceof Error ? error.message : 'Unknown recovery failure'); }
 /** @param {string} message */
 function recoveryError(message) { return new PluginError('JOB_RECOVERY_FAILED', message, { category: 'state', remedy: 'Inspect the durable job and its ZCode session.' }); }
-/** @param {string} directory @param {string} jobId @param {string} workerLeaseId */
-function joinWorkerLease(directory, jobId, workerLeaseId) { return `${directory}/worker-leases/${jobId}-${workerLeaseId}.lock`; }
 /** @param {unknown} value */
 function isDigest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
 /** @param {any} job */

@@ -188,7 +188,10 @@ export async function runCompanion(argv, runtime = {}) {
     if (!['running', 'cancelling'].includes(selected.status)) {
       const job = await controller.cancel(cwd, selected.id, caller.sessionId);
       if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
-      return { job };
+      // Allowlisted projection: a cancelled true-background record intentionally
+      // retains its private `rescueRunnerVersion` marker, so the raw durable
+      // record must never cross the cancel response.
+      return { job: publicReservedJob(job) };
     }
     // The control client is created lazily on first remote use, so the
     // durable stop intent is always persisted by reconciliation before any
@@ -218,7 +221,9 @@ export async function runCompanion(argv, runtime = {}) {
     try {
       const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
       if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
-      return { job };
+      // Same allowlisted projection as the queued branch: the retained private
+      // runner marker stays in the durable record only.
+      return { job: publicReservedJob(job) };
     }
     finally { await client?.close().catch(() => {}); }
   }
@@ -1812,6 +1817,34 @@ function requireAuthorization(value, keys) {
   return value;
 }
 function authorizationInputError() { return new PluginError('INTERNAL_AUTHORIZATION_INVALID', 'The internal authorization envelope is invalid.', { category: 'authorization', remedy: 'Invoke this command through its installed skill using the protected internal channel.' }); }
+/**
+ * Allowlisted fields of the same-owner `status` job projection. Every public
+ * field is enumerated explicitly — the durable record is never spread — so a
+ * private field added to the record schema stays private by default (the
+ * Rescue design rule that extending a delete-list projection is insufficient).
+ */
+const PUBLIC_JOB_FIELDS = Object.freeze([
+  'beforeMessageIds', 'codexThreadId', 'command', 'createdAt', 'effort', 'error', 'exitCode',
+  'finishedAt', 'id', 'inputId', 'lastActivityAt', 'lastCancelError', 'model', 'phase',
+  'progressPreview', 'promptArtifact', 'readOnly', 'resultArtifact', 'startRevision',
+  'startedAt', 'status', 'stopCause', 'updatedAt', 'workspace',
+]);
+/**
+ * Allowlisted fields of the reserved-job projection read by the legacy
+ * background handoff. Like every public projection it enumerates exactly the
+ * fields its consumers rely on and never spreads the private record, so the
+ * private Rescue execution input, runner marker, binding proof, and any
+ * future private record field stay private by default.
+ */
+const PUBLIC_RESERVED_JOB_FIELDS = Object.freeze([
+  'beforeMessageIds', 'childPid', 'codexThreadId', 'command', 'createdAt', 'effort', 'error',
+  'executionOwner', 'exitCode', 'finishedAt', 'hostPlacement', 'id', 'inputId',
+  'lastActivityAt', 'lastCancelError', 'logFile', 'model', 'ownerLifecycleEpoch',
+  'ownerSessionId', 'ownerTurnId', 'permissionSnapshot', 'phase', 'progressPreview',
+  'progressProbe', 'promptArtifact', 'readOnly', 'resultArtifact', 'startRevision',
+  'startedAt', 'status', 'stopCause', 'stopIntent', 'updatedAt', 'workerLeaseId',
+  'workspace', 'zcodeSessionId',
+]);
 /** @param {any} job @param {string} ownerSessionId @param {'list'|'detail'} projection @param {string} [viewingPermissionMode] @param {boolean} [bindingCurrent] */
 function publicJob(job, ownerSessionId, projection, viewingPermissionMode, bindingCurrent) {
   if (job.ownerSessionId !== ownerSessionId) {
@@ -1823,8 +1856,10 @@ function publicJob(job, ownerSessionId, projection, viewingPermissionMode, bindi
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; delete visible.ownerLifecycleEpoch; delete visible.executionOwner; delete visible.hostPlacement; delete visible.stopIntent; delete visible.zcodeSessionId; delete visible.childPid; delete visible.workerLeaseId;
-  if (projection !== 'detail') delete visible.logFile;
+  // Allowlist projection: `logFile` follows the detail projection, while
+  // `progressProbe` and the derived `resumable` indicator are added below
+  // under their own guards.
+  const visible = copyOptionalFields(job, projection === 'detail' ? [...PUBLIC_JOB_FIELDS, 'logFile'] : PUBLIC_JOB_FIELDS);
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
     if (message === null) delete visible.error; else visible.error = { message };
@@ -1843,7 +1878,7 @@ function publicJob(job, ownerSessionId, projection, viewingPermissionMode, bindi
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
+function publicReservedJob(job) { return copyOptionalFields(job, PUBLIC_RESERVED_JOB_FIELDS); }
 /** @param {any} job @param {string} [viewingPermissionMode] @param {boolean} [bindingCurrent] */
 function terminalResultJob(job, viewingPermissionMode, bindingCurrent) {
   const visible = {
@@ -1869,7 +1904,7 @@ function copyOptionalStringFields(source, fields) {
   for (const field of fields) if (typeof source[field] === 'string') result[field] = source[field];
   return result;
 }
-/** @param {Record<string,any>} source @param {string[]} fields */
+/** @param {Record<string,any>} source @param {readonly string[]} fields */
 function copyOptionalFields(source, fields) {
   const result = /** @type {Record<string,any>} */ ({});
   for (const field of fields) if (Object.hasOwn(source, field)) result[field] = source[field];

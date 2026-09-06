@@ -1649,6 +1649,13 @@ test('the SessionEnd-wrapped state seams honor the bounded lock budget and prese
     await contended(store.revalidateBoundRescueStop({ workspace, jobId: job.id, ownerSessionId: 'owner', status: 'running', zcodeSessionId: 'zs-seam', timeoutMs: 50 }));
     await contended(store.finishQueuedJobAfterRecoveryLease(workspace, job.id, null, undefined, 'failed', {}, { timeoutMs: 50 }));
     await contended(store.cleanupTerminalExecutionReservation(workspace, job.id, { releaseExecutionReservation: async () => {} }, { timeoutMs: 50 }));
+    // The guarded active-continuation rollback transaction and the standalone
+    // cancelled-resume binding lookup are SessionEnd-bounded seams too: their
+    // state-lock waits must honor the same sub-budget (the rollback's proof and
+    // binding validation all live INSIDE the bounded acquisition, so a contended
+    // call never validates anything and never waits the default five seconds).
+    await contended(store.finishActiveRescueContinuationFailure(workspace, job.id, null, undefined, 'failed', {}, { timeoutMs: 50 }));
+    await contended(store.rescueBindingForJob({ workspace, ownerSessionId: 'owner', jobId: job.id }, { timeoutMs: 50 }));
   });
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 1_500, `every bounded seam must fail closed well before the default 5s lock wait (took ${elapsed}ms)`);
@@ -1754,5 +1761,698 @@ test('SessionEnd settle treats an unreadable/corrupt job read as pending, not as
       lockTimeoutMs: 0, timeoutMs: 2_000, includeSettlementEvidence: true, createClient: async () => { throw new Error('no client'); } }, job.id),
     (error) => !isJobNotFound(error),
   );
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** One Host-owned detached-runner reservation claimed by a runner that has already exited: the
+ * recorded claim lease is free, so pre-start settlement is evidence-eligible. A foreground
+ * placement models the historical attached record and therefore carries no runner marker.
+ * @param {any} fixture @param {string} workspace @param {{agent:string,epoch:string,placement?:string,claim?:boolean}} options */
+async function hostOwnedQueuedRunnerJob(fixture, workspace, { agent, epoch, placement = 'background', claim = true }) {
+  const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
+    ownerTurnId: `turn-${agent}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'owner', parentTurnId: `turn-${agent}`, agentId: agent, agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
+    ...(placement === 'background' ? { executionInput: { version: 1, task: 'bounded private task' } } : {}) });
+  const worker = { childPid: process.pid, workerLeaseId: reserved.job.id };
+  if (claim) await store.claimJobWorkerForExecution(workspace, reserved.job.id, worker);
+  return { store, job: reserved.job, workerLeaseId: worker.workerLeaseId };
+}
+
+/** One Host-owned claimed queued ACTIVE-CONTINUATION attempt: the prior attempt succeeded, the
+ * binding advanced to this queued continuation, and a runner claim (free lease) is retained.
+ * @param {any} fixture @param {string} workspace @param {{agent:string,epoch:string}} options */
+async function hostOwnedClaimedQueuedContinuation(fixture, workspace, { agent, epoch }) {
+  const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const executor = { parentSessionId: 'owner', parentTurnId: `turn-${agent}`, agentId: agent,
+    agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const reservation = { workspace, ownerSessionId: 'owner', ownerTurnId: `turn-${agent}`, command: 'rescue',
+    readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' };
+  const first = await store.reserveFreshRescueJob({ workspace, reservation, executor, lifecycle,
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const firstWorker = { childPid: process.pid, workerLeaseId: first.job.id };
+  await store.claimJobWorkerForExecution(workspace, first.job.id, firstWorker);
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: `zs-${agent}`, ...firstWorker });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace,
+    reservation: { ...reservation, ownerTurnId: `turn-${agent}-b` }, executor, operationId: first.binding.operationId,
+    lifecycle, executionInput: { version: 1, task: 'bounded private continuation' } });
+  const worker = { childPid: process.pid, workerLeaseId: continuation.job.id };
+  await store.claimJobWorkerForExecution(workspace, continuation.job.id, worker);
+  return { store, job: continuation.job, workerLeaseId: worker.workerLeaseId,
+    proof: continuation.job.rescueContinuationOrigin };
+}
+
+test('new runner queued jobs never fail from age alone and settle only with a proven free claim', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  await mkdir(join(fixture.root, 'workspace-b'));
+  const workspaceB = await realpath(join(fixture.root, 'workspace-b'));
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const unclaimed = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'ageless-unclaimed', epoch: EPOCH, claim: false });
+  const claimed = await hostOwnedQueuedRunnerJob(fixture, workspaceB, { agent: 'ageless-claimed', epoch: EPOCH });
+  const { scavengeWritableJobs, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  const now = Date.now();
+  for (const [selected, selectedWorkspace] of [[unclaimed.job, workspace], [claimed.job, workspaceB]]) {
+    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: selectedWorkspace });
+    await atomicWriteJson(join(storage.directory, 'jobs', `${selected.id}.json`),
+      { ...(await unclaimed.store.readJob(selectedWorkspace, selected.id)), createdAt: new Date(now - 600_000).toISOString() });
+  }
+  const scavenge = (/** @type {string} */ scavengeWorkspace) => scavengeWritableJobs({ store: unclaimed.store,
+    dataRoot: fixture.dataRoot, workspace: scavengeWorkspace, now: () => now,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  // An arbitrarily old unclaimed runner job stays queued, and a held claim defers.
+  await withWorkerLease({ dataRoot: fixture.dataRoot, workspace: workspaceB, jobId: claimed.job.id,
+    workerLeaseId: claimed.workerLeaseId }, () => scavenge(workspaceB));
+  await scavenge(workspace);
+  assert.equal((await unclaimed.store.readJob(workspace, unclaimed.job.id)).status, 'queued');
+  assert.equal((await unclaimed.store.readJob(workspaceB, claimed.job.id)).status, 'queued');
+  // A proven free claim lease permits pre-start failure: input removed, marker kept.
+  await scavenge(workspaceB);
+  const failed = await unclaimed.store.readJob(workspaceB, claimed.job.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal('rescueExecutionInput' in failed, false);
+  assert.equal(failed.rescueRunnerVersion, 1);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('unclaimed queued runner jobs settle a durable stop intent as cancelled during recovery', async () => {
+  const fixture = await context();
+  await mkdir(join(fixture.root, 'workspace-b'));
+  const workspace = await realpath(fixture.workspace);
+  const workspaceB = await realpath(join(fixture.root, 'workspace-b'));
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const scavengeCase = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'unclaimed-intent-scavenge', epoch: EPOCH, claim: false });
+  const ownerCase = await hostOwnedQueuedRunnerJob(fixture, workspaceB, { agent: 'unclaimed-intent-owner', epoch: EPOCH, claim: false });
+  for (const [selectedWorkspace, caseContext] of [[workspace, scavengeCase], [workspaceB, ownerCase]]) {
+    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: selectedWorkspace });
+    await atomicWriteJson(join(storage.directory, 'jobs', `${caseContext.job.id}.json`), { ...(await caseContext.store.readJob(selectedWorkspace, caseContext.job.id)),
+      stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+    assert.equal((await caseContext.store.rescueBindingForJob({ workspace: selectedWorkspace, ownerSessionId: 'owner', jobId: caseContext.job.id }))?.state, 'active');
+  }
+  const noRemote = {
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); },
+  };
+  const { scavengeWritableJobs, reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store: scavengeCase.store, dataRoot: fixture.dataRoot, workspace, ...noRemote });
+  await reconcileOwnedJobs({ store: ownerCase.store, dataRoot: fixture.dataRoot, workspace: workspaceB, ownerSessionId: 'owner', ...noRemote });
+  for (const [selectedWorkspace, caseContext, kind] of [[workspace, scavengeCase, 'scavenge'], [workspaceB, ownerCase, 'owner-recovery']]) {
+    const settled = await caseContext.store.readJob(selectedWorkspace, caseContext.job.id);
+    assert.equal(settled.status, 'cancelled', `${kind}: the persisted stop decision must not stay queued forever`);
+    assert.equal(settled.stopCause, 'user', kind);
+    assert.equal(settled.stopIntent.cause, 'user', kind);
+    assert.equal('rescueExecutionInput' in settled, false, `${kind}: the runner input is removed with the cancelled settlement`);
+    assert.equal(settled.rescueRunnerVersion, 1, kind);
+    assert.equal(await caseContext.store.rescueBindingForJob({ workspace: selectedWorkspace, ownerSessionId: 'owner', jobId: caseContext.job.id }), null,
+      `${kind}: the cancelled settlement closes the exact operation binding`);
+  }
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an unclaimed legacy queued job settles its durable stop intent cancelled before the claim grace', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  // Foreground placement models the historical attached record: the lifecycle
+  // trio is present but there is NO runner marker, so recovery reaches this
+  // record through the legacy claim-grace branch, not the marker branch.
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'unmarked-intent-child', epoch: EPOCH, placement: 'foreground', claim: false });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  const now = Date.now();
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    createdAt: new Date(now - 60_000).toISOString(), updatedAt: new Date(now - 60_000).toISOString(),
+    stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+  assert.equal('rescueRunnerVersion' in (await store.readJob(workspace, job.id)), false, 'the fixture must model the unmarked legacy record');
+  assert.equal((await store.rescueBindingForJob({ workspace, ownerSessionId: 'owner', jobId: job.id }))?.state, 'active');
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, now: () => now,
+    reconcileOwnership: async () => { throw new Error('queued reservations need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued reservations need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the durable stop decision must not wait out the legacy claim grace');
+  assert.equal(settled.stopCause, 'user');
+  assert.equal(settled.stopIntent.cause, 'user');
+  assert.equal(await store.rescueBindingForJob({ workspace, ownerSessionId: 'owner', jobId: job.id }), null,
+    'the cancelled settlement closes the exact operation binding');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an unclaimed queued runner job settles its session-end intent cancelled when the epoch receipt matches', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'unclaimed-se-child', epoch: EPOCH, claim: false });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    stopIntent: { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() } });
+  await createHostLifecycleStore({ dataRoot: fixture.dataRoot }).publishSessionEnd({
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  }, { signal: AbortSignal.timeout(250) });
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the session-end stop decision must not stay queued forever');
+  assert.equal(settled.stopCause, 'session-end');
+  assert.equal(settled.stopIntent.cause, 'session-end');
+  assert.equal('rescueExecutionInput' in settled, false);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an unclaimed queued runner job without a stop intent still never ages into failure', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'unclaimed-ageless-child', epoch: EPOCH, claim: false });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  const now = Date.now();
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    createdAt: new Date(now - 600_000).toISOString(), updatedAt: new Date(now - 600_000).toISOString() });
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, now: () => now,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  assert.equal((await store.readJob(workspace, job.id)).status, 'queued', 'age alone never fails an unclaimed marked queued job');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a durable queued stop intent wins recovery settlement over pre-start failure', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'stop-wins-child', epoch: EPOCH });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    stopIntent: { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() } });
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'a winning stop intent must select cancellation, never failure');
+  assert.equal(settled.stopCause, 'session-end');
+  assert.equal(settled.stopIntent.cause, 'session-end');
+  assert.equal('rescueExecutionInput' in settled, false);
+  assert.equal(settled.rescueRunnerVersion, 1);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('cancellation racing infrastructure failure settles cancelled and never publishes the failure', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'cancel-race-child', epoch: EPOCH });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  let reads = 0;
+  const raced = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (current.id === job.id && current.status === 'queued' && current.stopIntent === undefined && ++reads === 2) {
+        // The cancel's durable intent lands after recovery's first read but before
+        // its locked settlement; the returned snapshot stays pre-intent on purpose.
+        await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...current,
+          stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      }
+      return current;
+    },
+  };
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store: raced, dataRoot: fixture.dataRoot, workspace,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the persisted stop decision must win the settlement race');
+  assert.equal(settled.stopCause, 'user');
+  assert.equal('rescueExecutionInput' in settled, false);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a stop intent delegated mid-race wins the active-continuation failure rollback', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedClaimedQueuedContinuation(fixture, workspace,
+    { agent: 'continuation-stop-race-child', epoch: EPOCH });
+  let reads = 0;
+  const raced = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (current.id === job.id && current.status === 'queued' && current.stopIntent === undefined && ++reads === 3) {
+        // The SessionEnd delegation lands after recovery's unlocked intent probe
+        // (the settle re-read) but before the locked rollback transaction re-reads
+        // the record under the state lock: the specialized transaction must obey
+        // the durable decision it then observes, exactly like the generic guard.
+        await store.transitionJob(readWorkspace, job.id, ['queued'], 'queued',
+          { stopIntent: { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() } });
+      }
+      return current;
+    },
+  };
+  const { failJob } = await import('../scripts/lib/recovery.mjs');
+  const input = { store: raced, dataRoot: fixture.dataRoot, workspace };
+  const escaped = await failJob(input, job, new Error('Claimed queued worker exited before execution started.'));
+  assert.equal(escaped.status, 'queued', 'a winning stop intent must never be settled as failed by the rollback');
+  assert.equal(escaped.stopIntent?.cause, 'session-end', 'the delegated intent stays authoritative');
+  const settled = await failJob(input, job, new Error('Claimed queued worker exited before execution started.'));
+  assert.equal(settled.status, 'cancelled', 'the delegated decision converges through the guarded cancellation');
+  assert.equal(settled.stopCause, 'session-end');
+  assert.equal(settled.stopIntent.cause, 'session-end');
+  assert.equal(settled.workerLeaseId, workerLeaseId, 'the exact claim is retained through the settlement');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('the active-continuation failure rollback honors a bounded SessionEnd lock budget under contention', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId, proof } = await hostOwnedClaimedQueuedContinuation(fixture, workspace,
+    { agent: 'rollback-budget-child', epoch: EPOCH });
+  const { withFileLock } = await import('../scripts/lib/fs.mjs');
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  // Contention is introduced mid-race: the holder grabs the exact workspace state
+  // lock after the free-lease probe's re-read and releases it only once the
+  // rollback attempt has concluded, so the guarded transaction must fail closed
+  // at its bounded budget instead of waiting the default five-second state lock.
+  let concludeRollback;
+  const rollbackConcluded = new Promise((resolve) => { concludeRollback = resolve; });
+  let enteredHolder;
+  const holderEntered = new Promise((resolve) => { enteredHolder = resolve; });
+  let reads = 0; let holder;
+  const contended = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (current.id === job.id && current.status === 'queued' && ++reads === 3) {
+        holder = withFileLock(join(storage.directory, '.state.lock'), async () => {
+          enteredHolder();
+          await rollbackConcluded;
+        }).catch(() => {});
+        await holderEntered;
+      }
+      return current;
+    },
+    finishActiveRescueContinuationFailure: async (/** @type {any} */ ...rollbackArgs) => {
+      try { return await store.finishActiveRescueContinuationFailure(...rollbackArgs); }
+      catch (error) { concludeRollback(); await holder; throw error; }
+      finally { concludeRollback(); }
+    },
+  };
+  const started = Date.now();
+  const { failJob } = await import('../scripts/lib/recovery.mjs');
+  const deferred = await failJob({ store: contended, dataRoot: fixture.dataRoot, workspace,
+    signal: AbortSignal.timeout(2_500), timeoutMs: 250 }, job, new Error('Claimed queued worker exited before execution started.'));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2_000, `the contended rollback must defer well before the default 5s lock wait (took ${elapsed}ms)`);
+  assert.equal(deferred.status, 'queued', 'a contended rollback defers: the claimed queued attempt stays queued for the next recovery pass');
+  assert.equal(deferred.workerLeaseId, workerLeaseId, 'the exact claim is retained through the deferred settlement');
+  assert.equal(deferred.stopIntent, undefined, 'no stop decision is fabricated by the deferred rollback');
+  await holder;
+  // The budget bounds waiting, never uncontended progress: once the lock is free,
+  // the same bounded transaction restores the exact prior binding and publishes
+  // the pre-start failure.
+  const failed = await store.finishActiveRescueContinuationFailure(workspace, job.id, workerLeaseId, proof,
+    'failed', { error: { message: 'Claimed queued worker exited before execution started.' }, exitCode: 1 }, { timeoutMs: 250 });
+  assert.equal(failed.status, 'failed');
+  assert.equal('rescueExecutionInput' in failed, false);
+  assert.equal(await store.rescueBindingForJob({ workspace, ownerSessionId: 'owner', jobId: job.id }), null,
+    'the bounded transaction restores the exact prior binding');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an already-fired SessionEnd abort aborts the active-continuation rollback before acquiring the state lock', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedClaimedQueuedContinuation(fixture, workspace,
+    { agent: 'rollback-abort-child', epoch: EPOCH });
+  const { withFileLock } = await import('../scripts/lib/fs.mjs');
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  // The state lock is held for the remainder of the test, so any acquisition
+  // attempt would wait: an already-aborted caller budget must refuse at the lock
+  // door with the original abort reason instead of acquiring or timing out.
+  let releaseHolder;
+  const release = new Promise((resolve) => { releaseHolder = resolve; });
+  let enteredHolder;
+  const holderEntered = new Promise((resolve) => { enteredHolder = resolve; });
+  let reads = 0;
+  const contended = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (current.id === job.id && current.status === 'queued' && ++reads === 3) {
+        void withFileLock(join(storage.directory, '.state.lock'), async () => {
+          enteredHolder();
+          await release;
+        }).catch(() => {});
+        await holderEntered;
+      }
+      return current;
+    },
+    finishActiveRescueContinuationFailure: async (/** @type {any} */ ...rollbackArgs) => {
+      try { return await store.finishActiveRescueContinuationFailure(...rollbackArgs); }
+      finally { releaseHolder(); }
+    },
+  };
+  const controller = new AbortController();
+  controller.abort();
+  const started = Date.now();
+  const { failJob } = await import('../scripts/lib/recovery.mjs');
+  try {
+    await assert.rejects(
+      failJob({ store: contended, dataRoot: fixture.dataRoot, workspace,
+        signal: controller.signal, timeoutMs: 250 }, job, new Error('Claimed queued worker exited before execution started.')),
+      (error) => error === controller.signal.reason,
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 2_000, `the aborted rollback must refuse promptly instead of acquiring (took ${elapsed}ms)`);
+  } finally { releaseHolder(); }
+  assert.equal((await store.readJob(workspace, job.id)).status, 'queued', 'the aborted attempt publishes nothing');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a queued claimed coordination-loss intent is corrected to session-end when its receipt exists', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'queued-cl-child', epoch: EPOCH, placement: 'foreground' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    stopIntent: { version: 1, cause: 'host-coordination-loss', requestedAt: new Date().toISOString() } });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  await lifecycle.publishSessionEnd({
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  }, { signal: AbortSignal.timeout(250) });
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true, unavailableOutcome: 'retain',
+    intent: { kind: 'stop', cause: 'host-coordination-loss' }, sessionEndReceiptEvidence: 'older',
+    createClient: unavailableControlClient }, job.id);
+  assert.equal(outcome.kind, 'confirmed-cancellation');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end', 'the matching receipt wins the durable stop cause over coordination loss');
+  assert.equal(stored.stopIntent.cause, 'session-end');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd persists a claimed queued stop intent and settles cancelled once the lease is free', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'queued-se-child', epoch: EPOCH });
+  const { settleEndedOwnerWritableJob, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  let leaseEntered = () => {}; const leaseAcquired = new Promise((resolve) => { leaseEntered = () => resolve(undefined); });
+  let releaseLease = () => {}; const leaseReleased = new Promise((resolve) => { releaseLease = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace, jobId: job.id, workerLeaseId },
+    async () => { leaseEntered(); await leaseReleased; });
+  const noClient = async () => { throw new Error('a queued reservation needs no control client'); };
+  await leaseAcquired; // the settlement must observe the lease provably held, whatever the I/O scheduling
+  const first = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace,
+    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient });
+  assert.equal(first.kind, 'retained-writable-guard', 'a held claim defers the settlement');
+  const retained = await store.readJob(workspace, job.id);
+  assert.equal(retained.status, 'queued');
+  assert.equal(retained.workerLeaseId, workerLeaseId, 'the exact claim survives the deferred stop');
+  assert.equal(retained.stopIntent?.cause, 'session-end', 'the stop decision is durable before any settlement');
+  releaseLease(); await holder;
+  const second = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace,
+    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient });
+  assert.equal(second.kind, 'confirmed-cancellation');
+  assert.equal(second.job.status, 'cancelled');
+  assert.equal(second.job.stopCause, 'session-end');
+  assert.equal('rescueExecutionInput' in second.job, false);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a competing stop intent that wins the mid-race is adopted as the durable winner, never a leaked patch rejection', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'persist-race-child', epoch: EPOCH });
+  let reads = 0;
+  const raced = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (readWorkspace === workspace && readJobId === job.id && current.status === 'queued'
+        && current.stopIntent === undefined && ++reads === 2) {
+        // A concurrent user stop's durable intent lands after the settlement's
+        // locked evidence read (the Reconciler's joined view) but before the
+        // intent persist's state-locked write; the returned snapshot stays
+        // pre-intent on purpose so the minted patch loses the race.
+        await store.transitionJob(readWorkspace, job.id, ['queued'], 'queued',
+          { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      }
+      return current;
+    },
+  };
+  const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store: raced, dataRoot: fixture.dataRoot, workspace,
+    ownerSessionId: 'owner', epoch: EPOCH, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    createClient: async () => { throw new Error('a claimed queued reservation needs no control client'); } }, job.id);
+  assert.equal(outcome.kind, 'confirmed-cancellation', 'the raced stop converges instead of escaping the settlement');
+  assert.equal(outcome.job.status, 'cancelled');
+  assert.equal(outcome.job.stopCause, 'user', 'the COMPETING intent owns the durable stop cause');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'user');
+  assert.equal(stored.stopIntent.cause, 'user', 'the winning intent is never overwritten');
+  assert.equal('rescueExecutionInput' in stored, false);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd delegation corrects a queued coordination-loss intent before returning when its receipt exists', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'delegate-cl-child', epoch: EPOCH });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    stopIntent: { version: 1, cause: 'host-coordination-loss', requestedAt: new Date().toISOString() } });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  await lifecycle.publishSessionEnd({
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  }, { signal: AbortSignal.timeout(250) });
+  const { delegateEndedStopIntent } = await import('../scripts/lib/recovery.mjs');
+  const delegated = await delegateEndedStopIntent({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: EPOCH }, job.id);
+  assert.equal(delegated.status, 'queued', 'delegation never terminalizes the claimed queued runner');
+  assert.equal(delegated.workerLeaseId, workerLeaseId, 'the exact claim is retained through the correction');
+  assert.equal(delegated.stopIntent.cause, 'session-end', 'the matching receipt corrects the coordination-loss cause before the early return');
+  assert.equal((await store.readJob(workspace, job.id)).stopIntent.cause, 'session-end', 'the correction is persisted durably');
+  // Generic recovery later terminalizes on the persisted decision: the corrected
+  // receipt-winning cause must be the durable cancelled label, not the stale one.
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  const now = Date.now();
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, now: () => now,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled');
+  assert.equal(settled.stopCause, 'session-end', 'generic recovery terminalizes on the corrected receipt-winning cause');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd delegation keeps a queued coordination-loss intent when no receipt exists', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'delegate-cl-norc-child', epoch: EPOCH });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(workspace, job.id)),
+    stopIntent: { version: 1, cause: 'host-coordination-loss', requestedAt: new Date().toISOString() } });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  assert.equal(await lifecycle.readReceipt(EPOCH), null, 'no receipt exists for the epoch');
+  const { delegateEndedStopIntent } = await import('../scripts/lib/recovery.mjs');
+  const delegated = await delegateEndedStopIntent({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: EPOCH }, job.id);
+  assert.equal(delegated.status, 'queued');
+  assert.equal(delegated.workerLeaseId, workerLeaseId, 'the exact claim is retained');
+  assert.equal(delegated.stopIntent.cause, 'host-coordination-loss', 'an absent receipt never rewrites the coordination-loss cause');
+  assert.equal((await store.readJob(workspace, job.id)).stopIntent.cause, 'host-coordination-loss');
+  // The foreground policy keeps coordination-loss: generic recovery terminalizes on it unchanged.
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  const now = Date.now();
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, now: () => now,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled');
+  assert.equal(settled.stopCause, 'host-coordination-loss', 'the pre-existing non-receipt semantics are preserved');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd delegation adopts a competing valid intent that wins its mid-race instead of leaking the patch rejection', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent: 'delegate-race-child', epoch: EPOCH });
+  let reads = 0;
+  const raced = {
+    ...store,
+    readJob: async (/** @type {string} */ readWorkspace, /** @type {string} */ readJobId, /** @type {any} */ options) => {
+      const current = await store.readJob(readWorkspace, readJobId, options);
+      if (readWorkspace === workspace && readJobId === job.id && current.status === 'queued'
+        && current.stopIntent === undefined && ++reads === 1) {
+        // A concurrent user stop's durable intent lands after the delegate's read
+        // but before its state-locked write; the returned snapshot stays
+        // pre-intent on purpose so the minted session-end patch loses the race.
+        await store.transitionJob(readWorkspace, job.id, ['queued'], 'queued',
+          { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      }
+      return current;
+    },
+  };
+  const { delegateEndedStopIntent, scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  const delegated = await delegateEndedStopIntent({ store: raced, dataRoot: fixture.dataRoot, workspace,
+    ownerSessionId: 'owner', epoch: EPOCH }, job.id);
+  assert.equal(delegated.status, 'queued', 'delegation stays bounded on the raced record');
+  assert.equal(delegated.workerLeaseId, workerLeaseId, 'the exact claim is retained through the race');
+  assert.equal(delegated.stopIntent?.cause, 'user', 'the competing intent is adopted, never replaced');
+  // The later lease-acquisition settlement applies the adopted intent.
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace,
+    reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+    createClient: async () => { throw new Error('queued runner jobs need no control client'); } });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the adopted decision converges on settlement');
+  assert.equal(settled.stopCause, 'user');
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** One Host-owned queued runner in the exact execution-fence gap: `fenceJobWorkerExecution` has
+ * published `rescueExecutionReservation.workerLeaseId` but `claimJobWorkerForExecution` has not yet
+ * copied it to `job.workerLeaseId`, so the only durable lease evidence is the reservation's.
+ * @param {any} fixture @param {string} workspace @param {{agent:string,epoch:string,lease:string}} options */
+async function hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent, epoch, lease }) {
+  const { store, job } = await hostOwnedQueuedRunnerJob(fixture, workspace, { agent, epoch, claim: false });
+  const stored = await store.readJob(workspace, job.id);
+  const authority = {
+    version: 1, capabilityDigest: '1'.repeat(64), reservationId: '2'.repeat(64),
+    jobId: stored.id, ownerSessionId: stored.ownerSessionId, workspace: stored.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+  };
+  await store.publishJobSpecCommitment(workspace, stored.id, '3'.repeat(64), authority);
+  await store.bindJobExecutionReservationLease(workspace, stored.id,
+    { capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId: lease });
+  const fenced = await store.readJob(workspace, stored.id);
+  assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
+  assert.equal(fenced.rescueExecutionReservation.workerLeaseId, lease, 'the fixture must carry the fence lease');
+  assert.equal(fenced.rescueRunnerVersion, 1, 'the fixture must model a marked runner reservation');
+  return { store, job: fenced, workerLeaseId: lease };
+}
+
+const fencedNoRemote = {
+  reconcileOwnership: async () => { throw new Error('queued runner jobs need no ownership reconciliation'); },
+  createClient: async () => { throw new Error('queued runner jobs need no control client'); },
+};
+
+test('SessionEnd delegation persists the stop intent for a fenced not-yet-claimed queued runner', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent: 'fence-gap-delegate', epoch: EPOCH, lease: '4'.repeat(64) });
+  const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
+  await lifecycle.publishSessionEnd({
+    sessionId: 'owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(),
+    origin: 'session-end-hook', workspaceHints: [workspace],
+  }, { signal: AbortSignal.timeout(250) });
+  const { delegateEndedStopIntent, scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  const delegated = await delegateEndedStopIntent({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: EPOCH }, job.id);
+  assert.equal(delegated.status, 'queued', 'the fenced reservation lease counts as claimed: delegation retains the record queued');
+  assert.equal(delegated.workerLeaseId, undefined, 'the pre-claim fence gap is retained exactly');
+  assert.equal(delegated.stopIntent?.cause, 'session-end', 'the session-end decision persists against the reservation lease');
+  // The later lease-aware settlement (which compares the same effective lease) applies the
+  // durable decision once the fence lease is proven free.
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, ...fencedNoRemote });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the fenced runner converges on the persisted decision');
+  assert.equal(settled.stopCause, 'session-end');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('SessionEnd settlement persists the stop intent for a fenced queued runner holding its live fence lease', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent: 'fence-gap-settle', epoch: EPOCH, lease: '5'.repeat(64) });
+  const { settleEndedRescueJob, scavengeWritableJobs, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  let releaseWorker; const workerReleased = new Promise((resolve) => { releaseWorker = resolve; });
+  let fenceReached; const fenceHeld = new Promise((resolve) => { fenceReached = resolve; });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace, jobId: job.id, workerLeaseId },
+    async () => { fenceReached(); await workerReleased; });
+  await fenceHeld;
+  try {
+    await settleEndedRescueJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+      epoch: EPOCH, lockTimeoutMs: 0, createClient: unavailableControlClient }, job.id);
+  } finally { releaseWorker(); await holder; }
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'queued', 'a live fence lease defers the settlement to its runner');
+  assert.equal(persisted.stopIntent?.cause, 'session-end', 'the stop intent persists during the fence gap so the runner claim loses');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace, ...fencedNoRemote });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the freed fence lease converges the durable session-end decision');
+  assert.equal(settled.stopCause, 'session-end');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('scavenge defers a fenced queued runner to its live fence lease and settles only by the claimed rules', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job, workerLeaseId } = await hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent: 'fence-gap-scavenge', epoch: EPOCH, lease: '6'.repeat(64) });
+  // A durable session-end decision already owns this record (a prior delegation pass persisted it).
+  await store.transitionJob(workspace, job.id, ['queued'], 'queued',
+    { stopIntent: { version: 1, cause: 'session-end', requestedAt: new Date().toISOString() } });
+  let terminalizations = 0;
+  const guardedStore = {
+    ...store,
+    finishQueuedJobAfterRecoveryLease: async (/** @type {any} */ ...args) => {
+      terminalizations += 1; return store.finishQueuedJobAfterRecoveryLease(...args);
+    },
+  };
+  const { scavengeWritableJobs, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  const now = Date.now();
+  let releaseWorker; const workerReleased = new Promise((resolve) => { releaseWorker = resolve; });
+  let fenceReached; const fenceHeld = new Promise((resolve) => { fenceReached = resolve; });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace, jobId: job.id, workerLeaseId },
+    async () => { fenceReached(); await workerReleased; });
+  await fenceHeld;
+  await scavengeWritableJobs({ store: guardedStore, dataRoot: fixture.dataRoot, workspace,
+    now: () => now + 10 * 60_000, ...fencedNoRemote });
+  const deferred = await store.readJob(workspace, job.id);
+  assert.equal(deferred.status, 'queued', 'a live fence lease is never a free or unclaimed lease');
+  assert.equal(deferred.stopIntent?.cause, 'session-end', 'the durable decision is retained untouched while the runner holds the fence');
+  assert.equal(terminalizations, 0, 'no unclaimed stop-intent or aging terminalization may run while the fence lease is live');
+  releaseWorker(); await holder;
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace,
+    now: () => now + 10 * 60_000, ...fencedNoRemote });
+  const settled = await store.readJob(workspace, job.id);
+  assert.equal(settled.status, 'cancelled', 'the freed fence lease settles per the claimed rules on the durable decision');
+  assert.equal(settled.stopCause, 'session-end');
+  // A fenced runner whose fence lease is proven free with no durable decision fails by the
+  // CLAIMED pre-start rule, never the unclaimed claim-grace rule.
+  const freedNoIntent = await hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent: 'fence-gap-freed', epoch: EPOCH, lease: '7'.repeat(64) });
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace,
+    now: () => now + 10 * 60_000, ...fencedNoRemote });
+  const failed = await store.readJob(workspace, freedNoIntent.job.id);
+  assert.equal(failed.status, 'failed', 'the proven-free fence lease permits the claimed pre-start failure');
+  assert.equal(failed.error?.message, 'Claimed queued worker exited before execution started.',
+    'the claimed classification, not the unclaimed grace policy, labels the failure');
   await cleanupRecoveryFixture(fixture);
 });
