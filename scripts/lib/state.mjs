@@ -1232,7 +1232,7 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       }
     }
     const effectivePatch = patchedForStop;
-    if (Object.hasOwn(effectivePatch, 'recoveryWorkerLeaseId')) {
+    if (Object.hasOwn(options, 'recoveryWorkerLeaseId')) {
       const effectiveWorkerLeaseId = job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null;
       if (effectiveWorkerLeaseId !== options.recoveryWorkerLeaseId) throw workerLeaseConflict(jobId);
     }

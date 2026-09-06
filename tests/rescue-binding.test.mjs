@@ -27,7 +27,7 @@ import {
 } from '../scripts/lib/rescue-binding.mjs';
 import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
-import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
+import { scavengeWritableJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -784,6 +784,76 @@ test('queued to running accepts only the exact worker lease that owns the execut
   const queued = await store.readJob(workspace, fresh.job.id);
   assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueExecutionClaim, claimed.rescueExecutionClaim);
   assert.equal(queued.workerLeaseId, claimed.workerLeaseId);
+});
+
+test('queued recovery rejects a stale unclaimed observation after worker claim', async () => {
+  const { workspace, store } = await fixture();
+  const first = await store.reserveFreshRescueJob({
+    workspace, reservation: reservation(workspace), executor: executor(workspace),
+  });
+  const worker = { childPid: process.pid, workerLeaseId: 'b'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, first.job.id, worker);
+  await assert.rejects(store.finishQueuedJobAfterRecoveryLease(
+    workspace, first.job.id, null, undefined, 'failed',
+    { error: { message: 'stale recovery observation' }, exitCode: 1 },
+  ), { code: 'WORKER_LEASE_CONFLICT' });
+  const current = await store.readJob(workspace, first.job.id);
+  assert.equal(current.status, 'queued');
+  assert.equal(current.workerLeaseId, worker.workerLeaseId);
+});
+
+test('queued recovery rejects a stale claimed-lease digest against a newer worker claim', async () => {
+  const { workspace, store } = await fixture();
+  const first = await store.reserveFreshRescueJob({
+    workspace, reservation: reservation(workspace), executor: executor(workspace),
+  });
+  const worker = { childPid: process.pid, workerLeaseId: 'b'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, first.job.id, worker);
+  await assert.rejects(store.finishQueuedJobAfterRecoveryLease(
+    workspace, first.job.id, 'c'.repeat(64), undefined, 'failed',
+    { error: { message: 'stale digest observation' }, exitCode: 1 },
+  ), { code: 'WORKER_LEASE_CONFLICT' });
+  const current = await store.readJob(workspace, first.job.id);
+  assert.equal(current.status, 'queued');
+  assert.equal(current.workerLeaseId, worker.workerLeaseId);
+});
+
+test('terminalized queued rescue keeps its exact-lease winner over a late claim and stale recovery', async () => {
+  const { workspace, store } = await fixture();
+  const first = await store.reserveFreshRescueJob({
+    workspace, reservation: reservation(workspace), executor: executor(workspace),
+  });
+  const worker = { childPid: process.pid, workerLeaseId: 'b'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, first.job.id, worker);
+  const failed = await store.finishQueuedJobAfterRecoveryLease(
+    workspace, first.job.id, worker.workerLeaseId, undefined, 'failed',
+    { error: { message: 'recovery won the exact lease' }, exitCode: 1 },
+  );
+  assert.equal(failed.status, 'failed');
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, first.job.id, worker),
+    { code: 'WORKER_LEASE_CONFLICT' });
+  await assert.rejects(store.finishQueuedJobAfterRecoveryLease(
+    workspace, first.job.id, null, undefined, 'failed',
+    { error: { message: 'late stale observation' }, exitCode: 1 },
+  ), { code: 'WORKER_LEASE_CONFLICT' });
+  const current = await store.readJob(workspace, first.job.id);
+  assert.equal(current.status, 'failed');
+  assert.equal(current.workerLeaseId, worker.workerLeaseId);
+});
+
+test('queued recovery settles a claimed job while holding its exact lease', async () => {
+  const { dataRoot, workspace, store } = await fixture();
+  const first = await store.reserveFreshRescueJob({
+    workspace, reservation: reservation(workspace), executor: executor(workspace),
+  });
+  const worker = { childPid: process.pid, workerLeaseId: 'b'.repeat(64) };
+  await store.claimJobWorkerForExecution(workspace, first.job.id, worker);
+  const settled = await withWorkerLease({ dataRoot, workspace, jobId: first.job.id,
+    workerLeaseId: worker.workerLeaseId }, () => store.finishQueuedJobAfterRecoveryLease(
+    workspace, first.job.id, worker.workerLeaseId, undefined, 'failed',
+    { error: { message: 'held-lease orphan settlement' }, exitCode: 1 }));
+  assert.equal(settled.status, 'failed');
+  assert.equal(settled.workerLeaseId, worker.workerLeaseId);
 });
 
 for (const omitted of ['both worker fields', 'childPid', 'workerLeaseId']) test(`queued to running requires the caller to submit ${omitted} explicitly for an execution claim`, async () => {
