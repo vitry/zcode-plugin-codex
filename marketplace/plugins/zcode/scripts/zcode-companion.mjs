@@ -63,15 +63,22 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
  * form is platform-dependent: Windows keeps 8.3 short-name components (and any
  * drive-letter casing) from the ambient environment, while POSIX children see
  * the symlink-resolved physical path. Every durable workspace identity —
- * reservations, bindings, job records — is the realpath-canonical form, so
+ * reservations, bindings, job records — is the canonical form the native
+ * realpath produces (the same resolution resolveWorkspaceStorage applies), so
  * the ambient cwd is canonicalized once at this boundary; otherwise a strict
  * workspace equality (for example the reservation's durable executor record)
- * rejects the same directory expressed in two textual forms. A failed
- * resolution keeps the raw form: workspace-scoped commands then surface their
- * own stable storage errors for an unusable cwd.
+ * rejects the same directory expressed in two textual forms. The portable JS
+ * realpathSync cannot supply that form on Windows: it rewrites only symlink
+ * components and preserves 8.3 and drive-letter text verbatim, so the native
+ * resolution is tried first. A failed resolution keeps the raw form:
+ * workspace-scoped commands then surface their own stable storage errors for
+ * an unusable cwd.
  * @returns {string}
  */
 function canonicalProcessWorkspace() {
+  if (typeof realpathSync.native === 'function') {
+    try { return realpathSync.native(process.cwd()); } catch { /* fall through to the portable resolution */ }
+  }
   try { return realpathSync(process.cwd()); } catch { return process.cwd(); }
 }
 

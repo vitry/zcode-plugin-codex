@@ -12,6 +12,7 @@ import * as transferModule from '../scripts/lib/transfer.mjs';
 import { extractImportedHistory, executeTransfer, resolveTransferSource, TRANSFER_LIMITS } from '../scripts/lib/transfer.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { withWorkerLease } from '../scripts/lib/recovery.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const source = 'codex-thread-1';
 function thread(overrides = {}) {
@@ -86,9 +87,9 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
   assert.equal(output.job.logFile, join(storage.directory, 'jobs', `${output.job.id}.log`));
-  const log = await readFile(output.job.logFile, 'utf8');
+  const log = await settledJobLog(output.job.logFile);
   assert.match(log, /Final output\nImported from Codex\n/);
-  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1, log);
   assert.doesNotMatch(log, /Assistant message/);
 });
 
@@ -159,6 +160,17 @@ test('rejects unsafe session IDs and launcher controls before persistence, rende
 
 function deferred() { let resolve = () => {}; const promise = new Promise((done) => { resolve = () => done(undefined); }); return { promise, resolve }; }
 
+/** Read a job log after its observational append queue settles: the optional-log fence abandons the bounded wait without cancelling the enqueue, so a loaded CI runner may land the block after executeTransfer resolves. @param {string} logFile @returns {Promise<string>} */
+async function settledJobLog(logFile) {
+  const deadline = Date.now() + scaleTestTimeout(5_000);
+  let contents = await readFile(logFile, 'utf8');
+  while (!contents.includes('Final output\n') && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    contents = await readFile(logFile, 'utf8');
+  }
+  return contents;
+}
+
 test('joins an in-flight successful cancellation after artifact write and does not publish success or leave an orphan', async () => {
   const context = await executionFixture(); const artifactWritten = deferred(); const releaseWriter = deferred(); const stopEntered = deferred(); const releaseStop = deferred(); let createCalls = 0; let writeCalls = 0; let transferSettled = false; let artifact = '';
   context.client.createSession = async () => { createCalls += 1; return { session: { sessionId: 'zcode-session-1' } }; };
@@ -181,7 +193,7 @@ test('joins a failed cancellation after artifact write and completes exactly onc
   const cancelling = controller.cancel(context.workspace, context.job.id, 'codex-owner'); await stopEntered.promise; releaseWriter.resolve(); await new Promise((resolve) => setTimeout(resolve, 20)); assert.equal(transferSettled, false);
   releaseStop.resolve(); await assert.rejects(cancelling, { code: 'JOB_CANCEL_FAILED' }); const output = (await transfer).value;
   assert.ok(output); assert.equal(output.job.status, 'succeeded'); assert.equal(createCalls, 1); assert.equal(writeCalls, 1); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'succeeded');
-  const log = await readFile(output.job.logFile, 'utf8'); assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.doesNotMatch(log, /Assistant message/);
+  const log = await settledJobLog(output.job.logFile); assert.equal((log.match(/Final output/g) ?? []).length, 1, log); assert.doesNotMatch(log, /Assistant message/);
 });
 
 test('artifact failure terminalization joins successful and failed cancellation attempts', async () => {
@@ -245,6 +257,6 @@ test('Transfer interruption removes a written result while a completed finalizat
     const wrapped = { ...context.store, transitionJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { const result = await context.store.transitionJob(workspace, jobId, expected, next, patch); if (next === 'succeeded') controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return result; } };
     const output = await executeTransfer({ ...context, store: wrapped, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client });
     assert.equal(output.job.status, 'succeeded'); assert.ok(output.job.resultArtifact); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'succeeded');
-    const log = await readFile(output.job.logFile, 'utf8'); assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.doesNotMatch(log, /Assistant message/);
+    const log = await settledJobLog(output.job.logFile); assert.equal((log.match(/Final output/g) ?? []).length, 1, log); assert.doesNotMatch(log, /Assistant message/);
   }
 });
