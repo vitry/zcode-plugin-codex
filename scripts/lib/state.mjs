@@ -346,6 +346,11 @@ export function createStateStore(options) {
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
       const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
+      // Single-resolution invariant: authorization is anchored to the
+      // storage-resolved workspace, never to a second resolution of
+      // input.workspace, so a mutable alias cannot retarget between the
+      // check and the directory the reservation is written under.
+      validateRescueReservationBinding(input, storage.workspacePath);
       return withFileLock(storage.lockPath, async () => {
         // Atomic epoch fence: the fail-closed pending prior-epoch receipt check
         // runs inside the reservation's own critical section, before any
@@ -392,6 +397,9 @@ export function createStateStore(options) {
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
       const beforePersist = validateBeforePersistOption(options);
       const storage = await jobStorage(dataRoot, input.workspace);
+      // Same single-resolution invariant as reserveFreshRescueJob: the
+      // binding identities are authorized against storage.workspacePath only.
+      validateRescueReservationBinding(input, storage.workspacePath);
       return withFileLock(storage.lockPath, async () => {
         // Atomic epoch fence (same contract as reserveFreshRescueJob): the
         // pending prior-epoch receipt check runs inside this reservation's own
@@ -2251,23 +2259,25 @@ function sameHookAuthority(left, right) {
 function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }
 
 /**
- * Durable workspace identity is the canonical directory, never one textual
- * form of it: a spawned companion canonicalizes its ambient cwd with the
- * native realpath (which expands Windows 8.3 components and drive-letter
- * casing), while a durable executor record may carry the same directory's
- * alias form. Reservation validation therefore compares identities, not
- * spellings: raw equality short-circuits so already-canonical inputs never
- * touch the filesystem, and only divergent texts are resolved — native first,
- * because the portable JS realpathSync rewrites just symlink components —
- * with an unresolvable path keeping its raw form. The security property is
- * unchanged: one directory in two textual forms is accepted, a genuinely
- * different directory still rejects, and a resolution failure keeps the old
- * strict behavior.
- * @param {string} left @param {string} right
+ * Authorization and storage derivation use ONE workspace resolution:
+ * `jobStorage()` canonicalizes `input.workspace` exactly once (the async
+ * native realpath in `resolveWorkspaceStorage`) and `storage.workspacePath`
+ * is the only workspace a reservation is authorized against — the
+ * caller-supplied path is never resolved a second time, so a mutable alias
+ * cannot be retargeted between authorization and storage derivation.
+ * Reservation and executor spellings are then compared against that single
+ * value: raw equality short-circuits so already-canonical inputs never
+ * touch the filesystem, and only a divergent candidate is resolved —
+ * native first, because the portable JS realpathSync rewrites just symlink
+ * components — with an unresolvable candidate keeping its raw form. The
+ * security property is unchanged: one directory in two textual forms is
+ * accepted, a genuinely different directory still rejects, and a workspace
+ * that cannot be resolved at all fails in `jobStorage` exactly as before.
+ * @param {string} storageWorkspace @param {string} candidate
  */
-function sameWorkspaceIdentity(left, right) {
-  if (left === right) return true;
-  return canonicalWorkspaceIdentity(left) === canonicalWorkspaceIdentity(right);
+function sameStorageWorkspaceIdentity(storageWorkspace, candidate) {
+  if (storageWorkspace === candidate) return true;
+  return canonicalWorkspaceIdentity(candidate) === storageWorkspace;
 }
 
 /** @param {string} value */
@@ -2285,11 +2295,25 @@ function validateRescueReservationInput(input) {
   if (input.executor === undefined || input.authority !== undefined) throw invalidRescueBinding();
   validateExecutorBindingInput(input.executor);
   if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
-    || !sameWorkspaceIdentity(input.workspace, input.reservation.workspace)
     || !['zcode-rescue', 'default'].includes(input.executor.agentType)
-    || !sameWorkspaceIdentity(input.workspace, input.executor.workspace) || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
+    || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
   validateHostLifecycleInput(input.lifecycle);
-  reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+}
+
+/**
+ * Authorize the reservation and executor workspace identities against the
+ * one storage resolution: `storageWorkspace` is `storage.workspacePath` from
+ * the `jobStorage()` call that also derives where this reservation will be
+ * written, so the directory that was authorized and the directory the
+ * reservation lands under cannot diverge. Nothing here re-resolves
+ * `input.workspace`.
+ * @param {any} input @param {string} storageWorkspace
+ */
+function validateRescueReservationBinding(input, storageWorkspace) {
+  if (!isNonEmptyString(storageWorkspace)
+    || !sameStorageWorkspaceIdentity(storageWorkspace, input.reservation.workspace)
+    || !sameStorageWorkspaceIdentity(storageWorkspace, input.executor.workspace)) throw invalidRescueBinding();
+  reservationBindingContext(input, storageWorkspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
 }
 
 /** Optional exact snapshot used only by a previously presented bound choice. @param {any} input */

@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "d56b4e723bb442ba664ea41f7c4782d539dd99fa",
-  "sourceSha": "d56b4e723bb442ba664ea41f7c4782d539dd99fa",
+  "sourceRef": "ea3410dc7d2447569b3e2fce8ac155da1e263205",
+  "sourceSha": "ea3410dc7d2447569b3e2fce8ac155da1e263205",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "e1e891320addcb8132d14704a6839ba14b706a52078f68754440633e340bb857",
+    "sha256": "a60c7453f3ed8b6ce6014f5fd05bdc724f4771cdfaef26a702369122befb5e7f",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -683,8 +683,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/state.mjs",
-        "size": 205434,
-        "sha256": "3132043a811bb48caef25253ef00e45052e4ea0e220c90e752d83620888893d5"
+        "size": 206845,
+        "sha256": "24b1c325ea24396aa6ae4dbb4408d041988134ff69d9685996a50b7405d9a7d2"
       },
       {
         "path": "plugins/zcode/scripts/lib/tool-launch.mjs",

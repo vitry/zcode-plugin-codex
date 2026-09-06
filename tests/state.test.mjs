@@ -283,7 +283,9 @@ test('a bound reservation accepts a workspace expressed through a path alias but
   // different directory still fails closed.
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const alias = join(base.root, 'workspace-alias');
-  await symlink(base.workspace, alias, 'dir');
+  // Junctions need no Developer Mode or elevation on Windows; directories
+  // do.
+  await symlink(base.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
     executor: legacyExecutor(workspace) });
   await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'alias-original-session' });
@@ -304,6 +306,57 @@ test('a bound reservation accepts a workspace expressed through a path alias but
     operationId: first.binding.operationId, expectedCurrentJobId: continuation.job.id,
     expectedAnchorJobId: first.binding.anchorJobId }), { code: 'RESCUE_BINDING_INVALID' });
   assert.deepEqual(await store.listJobs(workspace), jobsBefore, 'a genuinely different workspace never reserves the bound continuation');
+});
+
+test('rescue reservation authorization is anchored to the storage-resolved workspace', async () => {
+  // Exactly one resolution decides: jobStorage() canonicalizes input.workspace
+  // once and every identity comparison runs against that storage.workspacePath
+  // — authorization and storage derivation cannot diverge on a mutable alias.
+  // Mixed alias spellings all authorize against the same canonical directory
+  // and the durable record stays canonical, while any reservation or executor
+  // spelling that canonicalizes elsewhere fails closed without publishing.
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const alias = join(base.root, 'workspace-alias');
+  await symlink(base.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const fresh = await store.reserveFreshRescueJob({ workspace: alias,
+    reservation: rescueReservation(workspace), executor: legacyExecutor(workspace) });
+  assert.equal(fresh.job.workspace, workspace, 'the durable fresh record stays canonical');
+  assert.equal(fresh.binding.workspace, workspace, 'the binding identity is the storage-resolved workspace');
+  await startWritableRescueForTest(store, workspace, fresh.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'anchored-storage-session' });
+  await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded');
+
+  const aliasExecutor = legacyExecutor(alias);
+  const continuation = await store.reserveBoundRescueContinuation({ workspace: alias,
+    reservation: /** @type {any} */ (rescueReservation(alias, 'turn-b')), executor: aliasExecutor,
+    operationId: fresh.binding.operationId, expectedCurrentJobId: fresh.binding.currentJobId,
+    expectedAnchorJobId: fresh.binding.anchorJobId });
+  assert.equal(continuation.job.workspace, workspace, 'the durable continuation record stays canonical');
+  assert.equal(continuation.binding.workspace, workspace);
+
+  const other = join(base.root, 'workspace-other');
+  await mkdir(other);
+  const jobsBefore = await store.listJobs(workspace);
+  await assert.rejects(store.reserveFreshRescueJob({ workspace,
+    reservation: /** @type {any} */ (rescueReservation(other, 'turn-c')), executor: legacyExecutor(workspace) }), { code: 'RESCUE_BINDING_INVALID' }, 'a reservation spelling for a different directory fails closed');
+  await assert.rejects(store.reserveFreshRescueJob({ workspace,
+    reservation: rescueReservation(workspace, 'turn-c'), executor: legacyExecutor(other) }), { code: 'RESCUE_BINDING_INVALID' }, 'an executor spelling for a different directory fails closed');
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace: alias,
+    reservation: /** @type {any} */ (rescueReservation(other, 'turn-c')), executor: legacyExecutor(workspace),
+    operationId: fresh.binding.operationId, expectedCurrentJobId: continuation.binding.currentJobId,
+    expectedAnchorJobId: fresh.binding.anchorJobId }), { code: 'RESCUE_BINDING_INVALID' }, 'an alias input still rejects a reservation from a different directory');
+  assert.deepEqual(await store.listJobs(workspace), jobsBefore, 'rejections never publish');
+});
+
+test('an unresolvable rescue workspace fails in storage resolution, not authorization', async () => {
+  // The single resolution is jobStorage() itself: an input path that cannot
+  // be canonicalized never reaches a second comparison — the storage failure
+  // is the failure.
+  const base = await fixture(); const store = createStateStore({ dataRoot: base.dataRoot });
+  const missing = join(base.root, 'missing-workspace');
+  await assert.rejects(store.reserveFreshRescueJob({ workspace: missing,
+    reservation: rescueReservation(missing), executor: legacyExecutor(missing) }), { code: 'WORKSPACE_RESOLVE_FAILED' });
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace: missing,
+    reservation: rescueReservation(missing), executor: legacyExecutor(missing), operationId: 'b'.repeat(64) }), { code: 'WORKSPACE_RESOLVE_FAILED' });
 });
 
 test('failed remote resume can atomically restore the exact session-ended tombstone before failing its attempt', async () => {
