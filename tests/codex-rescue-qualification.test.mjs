@@ -6,6 +6,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition, rescueBindingAuthorityView } from '../scripts/lib/rescue-binding.mjs';
@@ -541,6 +542,8 @@ test('qualifies raw v3 origin-to-execution workspace authority and immutable gen
     kind: 'subagent-executor', agentId: childId, agentType: 'zcode-rescue', parentSessionId: parentId,
     parentGenerationId: generationId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn',
     originWorkspace: expectedWorkspace, workspace: expectedWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z',
+    ownerLifecycleEpoch: hostLifecycleEpoch(parentId, '2026-08-09T23:59:58.000Z'),
+    ownerLifecycleEpochStartedAt: '2026-08-09T23:59:58.000Z',
   })}\n`;
   input.authorityLifecycleJson = JSON.stringify([
     { phase: 'session-start', workspace: expectedWorkspace, at: '2026-08-09T23:59:58.000Z' },
@@ -2851,7 +2854,9 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
     state: 'stopped', createdAt: '2026-08-10T00:00:02.000Z', updatedAt: '2026-08-10T00:00:05.000Z' })}\n`;
   input.executorRecordBytes = `${JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: 'zcode-rescue',
     parentSessionId: parentId, parentGenerationId: generationId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits',
-    childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z' })}\n`;
+    childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z',
+    ownerLifecycleEpoch: hostLifecycleEpoch(parentId, '2026-08-09T23:59:58.000Z'),
+    ownerLifecycleEpochStartedAt: '2026-08-09T23:59:58.000Z' })}\n`;
   input.authorityLifecycleJson = JSON.stringify([
     ['session-start', originWorkspace, null, '2026-08-09T23:59:58.000Z'],
     ['user-prompt', originWorkspace, null, '2026-08-09T23:59:59.000Z'],

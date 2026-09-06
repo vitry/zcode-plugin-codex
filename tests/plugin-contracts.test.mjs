@@ -4,6 +4,9 @@ import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { parseArgs } from '../scripts/lib/args.mjs';
+import { PluginError } from '../scripts/lib/errors.mjs';
+import { classifyRescuePlacement, requiresExecutionChoice } from '../scripts/lib/invocation.mjs';
 import { createMarketplaceContentManifest } from '../scripts/build-marketplace-snapshot.mjs';
 
 const root = new URL('../', import.meta.url);
@@ -241,6 +244,43 @@ test('package test scripts do not depend on shell glob expansion', () => {
     packageJson.scripts?.['test:integration'],
     'node --test tests/integration/plugin-layout.test.mjs',
   );
+});
+
+test('Rescue infers placement without another question and flags override', () => {
+  assert.equal(classifyRescuePlacement({ explicit: 'wait', complexity: 'high' }), 'foreground');
+  assert.equal(classifyRescuePlacement({ explicit: 'background', complexity: 'low' }), 'background');
+  assert.equal(classifyRescuePlacement({ complexity: 'low' }), 'foreground');
+  assert.equal(classifyRescuePlacement({ complexity: 'open-ended' }), 'background');
+  assert.equal(classifyRescuePlacement({ complexity: 'high' }), 'background', 'multi-step or likely long work infers background');
+  assert.equal(classifyRescuePlacement({}), 'foreground', 'absent complexity evidence keeps the foreground default');
+  for (const input of [null, undefined, { explicit: 'auto' }, { explicit: 'wait', complexity: 'enormous' }, []]) {
+    assert.throws(
+      () => classifyRescuePlacement(/** @type {any} */ (input)),
+      (error) => error instanceof PluginError && error.code === 'INVOCATION_CHOICE_INVALID',
+    );
+  }
+});
+
+test('Review and Adversarial Review still ask without flags while management commands remain foreground', () => {
+  assert.equal(requiresExecutionChoice('review', ['review']), true);
+  assert.equal(requiresExecutionChoice('adversarial-review', ['adversarial-review']), true);
+  assert.equal(requiresExecutionChoice('review', ['review', '--wait']), false);
+  assert.equal(requiresExecutionChoice('adversarial-review', ['adversarial-review', '--background']), false);
+  assert.equal(requiresExecutionChoice('rescue', ['rescue', 'task']), false, 'Rescue never asks a placement question');
+  assert.deepEqual(parseArgs(['status', 'a'.repeat(64)]).options, { wait: false, timeoutMs: 240000, all: false });
+  for (const argv of [
+    ['status', 'a'.repeat(64), '--background'],
+    ['result', 'a'.repeat(64), '--background'],
+    ['cancel', 'a'.repeat(64), '--background'],
+    ['result', 'a'.repeat(64), '--wait'],
+    ['cancel', 'a'.repeat(64), '--wait'],
+  ]) {
+    assert.throws(
+      () => parseArgs(argv),
+      (error) => error instanceof PluginError && error.code === 'ARGUMENT_INVALID',
+      `${argv.join(' ')} must stay a foreground management command`,
+    );
+  }
 });
 
 test('conversation compatibility progress has no dependency capable of reading durable job logs', () => {

@@ -26,6 +26,33 @@ async function fixture() {
   return { root, workspace, dataRoot, store: createStateStore({ dataRoot }) };
 }
 
+/**
+ * A Host-owned bound Rescue: the lifecycle trio is stamped at reservation so a
+ * persisted stop intent (and its cancelling diagnostic) is schema-legal.
+ */
+async function hostOwnedJob(input, child = 'host-owned-diagnostic-child') {
+  const executor = exactExecutor(input.workspace, child);
+  const reserved = await input.store.reserveFreshRescueJob({
+    workspace: input.workspace,
+    reservation: {
+      workspace: input.workspace, ownerSessionId: executor.parentSessionId,
+      ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    },
+    executor,
+    lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' },
+  });
+  const worker = { childPid: 999_999, workerLeaseId: reserved.job.id };
+  let value = await input.store.claimJobWorkerForExecution(input.workspace, reserved.job.id, worker);
+  value = await input.store.transitionJob(input.workspace, value.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), ...worker, zcodeSessionId: `remote-${child}`,
+  });
+  value = await input.store.transitionJob(input.workspace, value.id, ['running'], 'running', {
+    inputId: `input-${child}`, startRevision: 7, beforeMessageIds: ['historical'],
+  });
+  return value;
+}
+
 async function job(input, options = {}) {
   let value = await input.store.reserveJob({
     workspace: input.workspace,
@@ -90,6 +117,7 @@ async function exactBoundJob(input, child, options = {}) {
       permissionSnapshot: { permissionMode: 'workspace-write' },
     },
     executor,
+    ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
   });
   const claimed = await input.store.claimJobWorkerForExecution(input.workspace, reserved.job.id, {
     childPid: 999_999, workerLeaseId: options.workerLeaseId ?? reserved.job.id,
@@ -323,7 +351,9 @@ test('SessionEnd retains an unattributable active snapshot without stopping', as
     stopSession: async () => { stops += 1; }, close: async () => {},
   }));
   assert.equal(settlement.kind, 'retained-writable-guard'); assert.equal(settlement.job.id, value.id);
-  assert.equal(settlement.job.status, 'running'); assert.equal(reads, 1); assert.equal(stops, 0);
+  // The durable uncertainty shape is cancelling: the persisted session-end stop
+  // authorization retains the writable guard without claiming a stop.
+  assert.equal(settlement.job.status, 'cancelling'); assert.equal(reads, 1); assert.equal(stops, 0);
 });
 
 test('SessionEnd retains the writable guard when the post-stop session read is uncertain', async () => {
@@ -337,8 +367,8 @@ test('SessionEnd retains the writable guard when the post-stop session read is u
     stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); stops += 1; },
     close: async () => {},
   }));
-  assert.equal(settlement.kind, 'retained-writable-guard'); assert.equal(settlement.job.status, 'running');
-  assert.equal(reads, 2); assert.equal(stops, 1); assert.match(settlement.job.lastCancelError, /post-stop read transport closed/);
+  assert.equal(settlement.kind, 'retained-writable-guard'); assert.equal(settlement.job.status, 'cancelling');
+  assert.equal(reads, 2); assert.equal(stops, 1); assert.equal(settlement.job.lastCancelError, undefined);
   await assert.rejects(input.store.reserveJob({
     workspace: input.workspace, ownerSessionId: 'later-owner', ownerTurnId: 'later-turn', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' },
@@ -358,7 +388,7 @@ test('SessionEnd retains an unresolved empty idle admission gap for later cohere
   ];
   const createClient = async (current) => clientFor(current, { reads: reads[phase], onStop: () => { stops += 1; } });
   const first = await settleOutcome(input, createClient);
-  assert.equal(first.kind, 'retained-writable-guard'); assert.equal(first.job.status, 'running'); assert.equal(stops, 0);
+  assert.equal(first.kind, 'retained-writable-guard'); assert.equal(first.job.status, 'cancelling'); assert.equal(stops, 0);
   phase = 1; const second = await settleOutcome(input, createClient);
   assert.equal(second.kind, 'confirmed-cancellation'); assert.equal(second.job.status, 'cancelled'); assert.equal(stops, 1);
 });
@@ -482,7 +512,7 @@ test('SessionEnd retains an unacknowledged exact active stop without claiming co
   assert.equal(settlement.kind, 'retained-writable-guard');
   assert.deepEqual(settlement.job, stored);
   assert.ok(['running', 'cancelling'].includes(stored.status));
-  assert.match(stored.lastCancelError, /stop not acknowledged/u);
+  assert.equal(stored.lastCancelError, undefined);
   assert.deepEqual(await bindingRecordBytes(input, active.executor.agentId), targetBefore);
   assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
 });
@@ -499,8 +529,11 @@ for (const code of ['ZCODE_DISCONNECTED', 'ZCODE_BROKER_PROTOCOL_UNAVAILABLE']) 
 
   assert.equal(settlement.kind, 'retained-writable-guard');
   assert.deepEqual(settlement.job, stored);
+  // This fixture reserves without the lifecycle trio, so the retained
+  // cancelling guard carries no diagnostic (the schema admits lastCancelError
+  // on cancelling records only with a persisted stop intent).
   assert.ok(['running', 'cancelling'].includes(stored.status));
-  assert.match(stored.lastCancelError, new RegExp(code, 'iu'));
+  assert.equal(stored.lastCancelError, undefined);
   assert.deepEqual(await bindingRecordBytes(input, active.executor.agentId), targetBefore);
   assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
 });
@@ -544,8 +577,10 @@ test('SessionEnd completion evidence follows a cancelled CAS winner', async () =
     finishJob: async (workspace, jobId, expected, next, patch) => {
       if (!raced && next === 'succeeded') {
         raced = true;
-        await input.store.transitionJob(workspace, jobId, ['running'], 'cancelling');
-        await input.store.finishJob(workspace, jobId, ['cancelling'], 'cancelled', { exitCode: null });
+        // The stop intent persists before publication, so the raced winner
+        // finishes from whatever nonterminal status is durable now.
+        const current = await input.store.readJob(workspace, jobId);
+        await input.store.finishJob(workspace, jobId, [current.status], 'cancelled', { exitCode: null });
         throw new PluginError('JOB_TERMINAL', 'cancelled winner', { category: 'state', remedy: 'inspect' });
       }
       return input.store.finishJob(workspace, jobId, expected, next, patch);
@@ -604,9 +639,9 @@ test('SessionEnd retains its writable job when existing client creation fails ge
   const input = await fixture(); const value = await job(input);
   await settle(input, async () => { throw new Error('local owner store cannot be read'); });
   const stored = await input.store.readJob(input.workspace, value.id);
-  assert.equal(stored.status, 'running');
-  assert.match(stored.lastCancelError, /local owner store cannot be read/);
-  assert.ok(Buffer.byteLength(stored.lastCancelError, 'utf8') <= 2_048);
+  // The unbound record's durable guard is cancelling without a diagnostic.
+  assert.equal(stored.status, 'cancelling');
+  assert.equal(stored.lastCancelError, undefined);
 });
 
 test('SessionEnd propagates native and arbitrary abort reasons before archival', async () => {
@@ -629,7 +664,9 @@ test('SessionEnd does not archive broker absence while the exact worker lease is
   const input = await fixture(); const lease = 'f'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let clients = 0;
   await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async () => { clients += 1; return null; }));
   const stored = await input.store.readJob(input.workspace, value.id);
-  assert.equal(stored.status, 'running');
+  // Broker absence is not a stop attempt: the record keeps its durable
+  // cancelling guard with no cancellation diagnostic.
+  assert.equal(stored.status, 'cancelling');
   assert.equal(stored.lastCancelError, undefined);
   assert.equal(clients, 1);
 });
@@ -638,8 +675,10 @@ test('SessionEnd does not archive broker absence without an exact worker lease',
   const input = await fixture(); const value = await job(input, { claim: false, legacy: true });
   await settle(input, async () => null);
   const stored = await input.store.readJob(input.workspace, value.id);
-  assert.equal(stored.status, 'running');
-  assert.equal(stored.lastCancelError, 'SessionEnd found no healthy existing ZCode broker identity; the orphan was archived.');
+  // The unclaimed legacy record keeps its durable cancelling guard with no
+  // diagnostic — broker absence is not a stop attempt and never archives.
+  assert.equal(stored.status, 'cancelling');
+  assert.equal(stored.lastCancelError, undefined);
 });
 
 test('SessionEnd can stop through a reachable broker while the exact worker lease is held', async () => {
@@ -666,7 +705,9 @@ test('SessionEnd propagates an abort observed by every successful client operati
       };
     });
     await assert.rejects(settlement, (error) => error === reason, phase);
-    assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'running', phase);
+    // create/read abort before any durable intent; stop/reread abort after the
+    // intent persisted, so the durable guard is cancelling for those phases.
+    assert.equal((await input.store.readJob(input.workspace, value.id)).status, phase === 'create' || phase === 'read' ? 'running' : 'cancelling', phase);
   }
 });
 
@@ -698,21 +739,23 @@ test('SessionEnd keeps jobs nonterminal when a reachable protocol read or stop i
     }));
     const stored = await input.store.readJob(input.workspace, value.id);
     assert.ok(['running', 'cancelling'].includes(stored.status), scenario);
-    assert.ok(typeof stored.lastCancelError === 'string' && stored.lastCancelError.length > 0 && stored.lastCancelError.length <= 2_048, scenario);
-    if (scenario === 'read-timeout') assert.match(stored.lastCancelError, /read timed out/i);
-    if (scenario === 'stop-failure') assert.match(stored.lastCancelError, /stop refused/i);
+    // The unbound fixture's retained guard carries no diagnostic.
+    assert.equal(stored.lastCancelError, undefined, scenario);
     assert.equal(closes, 1);
   }
 });
 
 test('SessionEnd maintenance failure never overwrites a terminal executor race', async () => {
-  const input = await fixture(); const value = await job(input); let raced = false;
+  const input = await fixture(); const value = await hostOwnedJob(input); let raced = false;
   const wrapped = {
     ...input.store,
     transitionJob: async (workspace, jobId, expected, next, patch = {}) => {
-      if (!raced && next === 'running' && patch.lastCancelError) {
+      if (!raced && next === 'cancelling' && patch.lastCancelError) {
         raced = true;
-        await input.store.transitionJob(workspace, jobId, ['running'], 'failed', { error: { message: 'executor won maintenance failure race' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+        // The durable status at maintenance time is cancelling (persisted stop
+        // intent), so the executor race terminalizes from that status.
+        const current = await input.store.readJob(workspace, jobId);
+        await input.store.finishJob(workspace, jobId, [current.status], 'failed', { error: { message: 'executor won maintenance failure race' }, exitCode: 1 });
       }
       return input.store.transitionJob(workspace, jobId, expected, next, patch);
     },
@@ -722,7 +765,10 @@ test('SessionEnd maintenance failure never overwrites a terminal executor race',
 });
 
 test('SessionEnd bounds multibyte maintenance failures by UTF-8 bytes without splitting emoji', async () => {
-  const input = await fixture(); const value = await job(input); const failure = `停止失败🚫${'诊断🚧'.repeat(1_000)}`;
+  const input = await fixture(); const failure = `停止失败🚫${'诊断🚧'.repeat(1_000)}`;
+  // Host-owned record: the retained cancelling guard carries the bounded
+  // diagnostic (lastCancelError requires a persisted stop intent).
+  const value = await hostOwnedJob(input);
   await settle(input, async (current) => clientFor(current, { stopError: new Error(failure) }));
   const stored = await input.store.readJob(input.workspace, value.id);
   assert.match(stored.lastCancelError, /^停止失败🚫诊断🚧/); assert.ok(Buffer.byteLength(stored.lastCancelError, 'utf8') <= 2_048); assert.doesNotMatch(stored.lastCancelError, /\uFFFD/);

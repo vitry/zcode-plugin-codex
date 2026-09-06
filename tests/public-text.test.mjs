@@ -4,8 +4,8 @@ import test from 'node:test';
 
 import { boundUtf8, normalizePublicText, publicErrorMessage } from '../scripts/lib/public-text.mjs';
 
-const ENGLISH_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | Delegate investigation or edits; foreground by default. |';
-const CHINESE_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | 委派调查或修改，默认前台。 |';
+const ENGLISH_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | Delegate investigation or edits; placement is inferred from task complexity, and explicit `--wait` or `--background` remains authoritative. |';
+const CHINESE_RESCUE_COMMAND = '| `$zcode:rescue [--background \\| --wait] [--resume \\| --fresh] [--model <provider/model\\|alias>] [--effort none\\|minimal\\|low\\|medium\\|high\\|xhigh] <task...>` | 委派调查或修改；无标志时按任务复杂度推断 placement，显式 `--wait` 或 `--background` 始终权威。 |';
 
 /** @param {string} source */
 function assertNoPublicRescueSelector(source) {

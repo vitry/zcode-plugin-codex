@@ -360,21 +360,32 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
       ));
     },
 
-    /** @param {any} input */
-    async cleanupSession(input) {
+    /** @param {any} input @param {{signal?:AbortSignal,timeoutMs?:number,endedAt?:string}} [options] Optional bounded lock budget plus the ending boundary: preparations created after `endedAt` belong to a resumed successor epoch and survive cleanup. */
+    async cleanupSession(input, options = {}) {
       validateSessionInput(input);
       const storage = await preparationStorage(dataRoot, input.workspace);
-      await cleanupMatching(storage, (record) => record.sessionId === input.sessionId);
+      const lockOptions = { ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) };
+      // Epoch fence: when the caller proves the ending boundary, preparations
+      // created AT OR AFTER that boundary belong to a resumed successor reusing
+      // the session id and must survive this cleanup (RFC3339 millisecond
+      // equality is possible in the concurrent resume race, so only records
+      // strictly BEFORE the boundary are this epoch's).
+      const provenEndedAt = typeof options.endedAt === 'string' && Number.isFinite(Date.parse(options.endedAt)) ? Date.parse(options.endedAt) : null;
+      await cleanupMatching(storage, (record) => record.sessionId === input.sessionId
+        && (provenEndedAt === null || (Number.isFinite(Date.parse(record.createdAt)) && Date.parse(record.createdAt) < provenEndedAt)), lockOptions);
     },
   };
 }
 
-/** @param {any} storage @param {(record:any)=>boolean} predicate */
-async function cleanupMatching(storage, predicate) {
+/** @param {any} storage @param {(record:any)=>boolean} predicate @param {{signal?:AbortSignal,timeoutMs?:number}} [lockOptions] */
+async function cleanupMatching(storage, predicate, lockOptions = {}) {
   await withPreparationLock(storage, async () => {
     const names = await boundedRecordNames(storage);
     const targets = [];
     for (const name of names) {
+      // The lock budget only gates acquisition: the scan itself must observe
+      // the SessionEnd deadline so cleanup cannot outlive the shared budget.
+      lockOptions.signal?.throwIfAborted();
       const key = name.slice(0, -5);
       const path = join(storage.directory, name);
       let record;
@@ -386,7 +397,7 @@ async function cleanupMatching(storage, predicate) {
       if (predicate(record)) targets.push(path);
     }
     for (const path of targets) await unlinkPreparedRecord(storage, path);
-  });
+  }, lockOptions);
 }
 
 /** @param {any} storage */

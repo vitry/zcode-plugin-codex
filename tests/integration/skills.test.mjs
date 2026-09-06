@@ -20,6 +20,7 @@ import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { writeWorkspaceModelConfig } from '../../scripts/lib/workspace-config.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from '../fixtures/pr39-origin-route-compatibility.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
@@ -134,7 +135,15 @@ function persistedCodexChild({ id, parentThreadId, agentPath, cwd, agentRole = '
   };
 }
 
+/** Record the parent session's SessionStart once, exactly as the real lifecycle hook
+ * does before any Rescue child can run; the recorded start proves the epoch. @param {any} ctx @param {string} sessionId */
+async function recordParentSession(ctx, sessionId) {
+  try { await resolveRecordedSessionStart(ctx.dataRoot, ctx.workspace, sessionId); return; } catch { /* not recorded yet */ }
+  await recordSession(ctx.dataRoot, { cwd: ctx.workspace, session_id: sessionId, source: 'startup' });
+}
+
 async function prepareRescue(ctx, parentSessionId, envelope, childId) {
+  await recordParentSession(ctx, parentSessionId);
   const stopped = childId !== undefined && ctx.stoppedChildren.has(childId);
   const dependencies = stopped ? { planRescueActivation: async () => ({
     activation: { kind: 'reactivate', executorAgentId: childId, agentPathDigest: baseAgentPathDigest },
@@ -350,6 +359,9 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
     sessionId: 'linked-parent', turnId: 'linked-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
     prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
   });
+  // The real SessionStart hook runs in the ORIGIN workspace and records the
+  // epoch start there; the child later executes in the linked worktree.
+  await recordParentSession(ctx, 'linked-parent');
   assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
     cwd: canonicalTarget,
     env: { ...ctx.env, CODEX_THREAD_ID: 'linked-parent' },
@@ -408,6 +420,7 @@ test('origin cwd choice resume consumes and executes only in the linked worktree
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `choice-${choice}.jsonl`); await writeFile(record, '');
     const parentId = `route-choice-${choice}-parent`; const childId = `route-choice-${choice}-child`; const childTurnId = `route-choice-${choice}-child-turn`;
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} seed`, options: { execution: 'foreground', resume: 'fresh' } });
     await startRescueChild(ctx, parentId, childId, childTurnId);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
@@ -440,6 +453,7 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `${routeName}-stopped.jsonl`); await writeFile(record, '');
     const parentId = `${routeName}-stopped-parent`; const childId = `${routeName}-stopped-child`; const childTurnId = `${routeName}-stopped-child-turn`;
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} first`, options: { execution: 'foreground', resume: 'fresh' } });
     await startRescueChild(ctx, parentId, childId, childTurnId, agentType);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
@@ -512,6 +526,9 @@ test('origin status preserves malformed executor route vocabulary without leakin
 test('PR #39 frozen choice bytes consume once and keep the fixed resume transition in target', async (t) => {
   for (const choice of ['resume']) {
     const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'choice'); const store = createStateStore({ dataRoot: ctx.dataRoot });
+    // The frozen manifest predates lifecycle records: the upgraded SessionStart
+    // hook would have recorded the epoch start in the ORIGIN workspace.
+    await recordSession(ctx.dataRoot, { cwd: ctx.workspace, session_id: scenario.sessionId, source: 'startup' });
     const record = join(ctx.directory, `pr39-choice-${choice}-zcode.jsonl`); await writeFile(record, '');
     const pending = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(pending);
     const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
@@ -556,6 +573,9 @@ test('PR #39 frozen choice bytes consume once and keep the fixed resume transiti
 
 test('PR #39 frozen stopped continuation consumes generation two and resumes its target session', async (t) => {
   const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'stopped'); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  // The frozen manifest predates lifecycle records: the upgraded SessionStart
+  // hook would have recorded the epoch start in the ORIGIN workspace.
+  await recordSession(ctx.dataRoot, { cwd: ctx.workspace, session_id: scenario.sessionId, source: 'startup' });
   const record = join(ctx.directory, 'pr39-stopped-zcode.jsonl'); await writeFile(record, '');
   const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
   const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
@@ -1856,7 +1876,7 @@ test('direct background invocation keeps capabilities private and production own
   ctx.preserveEvidence = false;
 });
 
-test('named and generic Rescue children receive only queued background output while production workers remain controllable', async (t) => {
+test('named and generic Rescue children run background work attached while historical workers remain controllable', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA });
   const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached'); const record = join(ctx.directory, 'background-zcode.jsonl');
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
@@ -1867,36 +1887,42 @@ test('named and generic Rescue children receive only queued background output wh
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
     try {
-      const launched = await invokePreparedRescue(ctx, parentId, childId, `${route} native child`, { execution: 'background', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' });
-      assert.equal(launched.code, 0, launched.stderr || launched.stdout);
-      const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
-      assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
-      let job = await store.readJob(ctx.workspace, jobId);
+      // Background Rescue executes ATTACHED in this same child (ADR 0018): the
+      // child keeps observing the run through its completion gate and returns
+      // only after the durable terminal winner exists.
+      const launchedPromise = invokePreparedRescue(ctx, parentId, childId, `${route} native child`, { execution: 'background', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' });
       await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the fake peer did not reach its exact post-ack completion gate');
-      assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
-      assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
-      assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
-
-      assert.equal(job.status, 'running', `the ${route} child must be able to exit after fd4 acknowledgement while its detached worker continues`);
-      assert.equal(await workerLeaseAvailable(ctx, job), false, `the ${route} worker must still hold its exact lease after fd4 acknowledgement`);
-      const status = await publicInvoke(ctx, ['status', jobId], callerContext);
-      assert.equal(status.code, 0, status.stderr); assert.equal(status.json.job.status, 'running');
-      assert.doesNotMatch(`${status.stdout}${status.stderr}${status.internal}`, /executionCapability|callerContext|privateInvocation/);
-
+      const [job] = await findNewJobs(store, ctx.workspace, baselineJobIds);
+      assert.ok(job, `the ${route} child must reserve exactly one job`);
+      assert.equal(job.executionOwner, 'host-child');
+      assert.equal(job.hostPlacement, 'background');
       if (control === 'cancel') {
-        const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
-        const cancelJob = await store.readJob(ctx.workspace, jobId); const callsAtCancel = await readFile(record, 'utf8').catch((error) => `record-read:${error?.code}`); const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
-        const brokerFiles = await readFile(join(storage.directory, 'broker', 'identity.json'), 'utf8').catch((error) => `identity-read:${error?.code}`);
-        const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel, brokerFiles });
+        const cancelled = await publicInvoke(ctx, ['cancel', job.id], callerContext);
+        const cancelJob = await store.readJob(ctx.workspace, job.id); const callsAtCancel = await readFile(record, 'utf8').catch((error) => `record-read:${error?.code}`);
+        const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel });
         assert.equal(cancelled.code, 0, cancelEvidence); assert.equal(cancelled.json.job.status, 'cancelled');
-        await waitForExactJobCleanup(ctx, store, jobId, undefined, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
+        // The attached child observes the exact remote stop like any foreground
+        // run: the interrupted turn surfaces the stop, while the durable winner
+        // stays the cancelled settlement published by the cancel election.
+        const launched = await launchedPromise;
+        assert.notEqual(launched.code, 0, `${launched.stderr}${launched.stdout}`);
+        assert.match(`${launched.stdout}${launched.stderr}`, /ZCODE_SESSION_STOPPED/u);
+        assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
+        assert.equal(launched.internal, '');
+        assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+        await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
         const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
         assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
       } else {
         await writeFile(gate, 'release');
-        const waited = await publicInvoke(ctx, ['status', jobId, '--wait', '--timeout-ms', '5000'], callerContext);
+        const launched = await launchedPromise;
+        assert.equal(launched.code, 0, `${launched.stderr}${launched.stdout}`);
+        assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
+        assert.equal(launched.internal, '');
+        assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+        const waited = await publicInvoke(ctx, ['status', job.id, '--wait', '--timeout-ms', '5000'], callerContext);
         assert.equal(waited.code, 0, waited.stderr); assert.equal(waited.json.job.status, 'succeeded');
-        const result = await publicInvoke(ctx, ['result', jobId], callerContext);
+        const result = await publicInvoke(ctx, ['result', job.id], callerContext);
         assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
         assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
       }

@@ -8,6 +8,7 @@ import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, revalidateBoundRescueStop, withJobCancellationLock } from './job-control.mjs';
+import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord } from './rescue-binding.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
@@ -280,24 +281,42 @@ export async function executeJob(input) {
       /* Otherwise recovery owns the durable running job and retained result artifact. */
     }
     else if (!resumeFailureSettlementRejected && isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
-      if (current.status === 'queued' && sessionId) {
+      // A background Host-owned placement keeps its remote turn alive on child
+      // loss: no branch below stops it — only a matching SessionEnd receipt
+      // authorizes stopping background work (design lines 261-265).
+      if (backgroundInterruptRetainsTurn(job)) {
+        /* retain the durable record and the remote turn for reconciliation */
+      } else if (current.status === 'queued' && sessionId) {
         let stopped = false;
         const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
         if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
-        if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
+        if (stopped) {
+          // Publish the stop intent and its cause ATOMICALLY with the queued
+          // cancellation — a synthetic stopCause without a persisted stopIntent
+          // fails the Host-owned schema and strands the guard. The fields are
+          // writable-Rescue-only: read-only Review/Adversarial jobs keep the
+          // bare cancellation patch they always had.
+          const hostOwned = validHostLifecycleRecord(job);
+          const stopCause = job.stopIntent?.cause ?? hostInterruptStopCause();
+          const stopIntent = job.stopIntent ?? { version: 1, cause: stopCause, requestedAt: new Date().toISOString() };
+          const patch = hostOwned ? { exitCode: null, stopIntent, stopCause } : { exitCode: null };
+          try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', patch); } catch (finalizeError) { primaryError = finalizeError; }
+        }
       } else if (current.status === 'running' && !sendAttempted && sessionId) {
         try {
           await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
             const candidate = await input.store.readJob(workspace, job.id);
             if (candidate.status !== 'running' || candidate.zcodeSessionId !== sessionId) return;
+            if (backgroundInterruptRetainsTurn(candidate)) return; /* child loss alone never stops a background turn */
             const finalStop = await revalidateBoundRescueStop(input.store, workspace, candidate, observedBoundStop?.guard, sessionId);
             if (finalStop?.kind === 'stale') return;
             await client.stopSession(sessionId);
-            await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling');
-            await input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
+            const stopCause = candidate.stopIntent?.cause ?? hostInterruptStopCause();
+            const cancelling = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(candidate, stopCause));
+            await input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) });
           });
         } catch { /* retain the writable guard when the known no-send session cannot be stopped */ }
-      } else {
+      } else if (backgroundInterruptRetainsTurn(job) === false) {
         let cancellationPublicationApplied = false;
         const cancellation = createJobController({
           store: input.store, dataRoot,
@@ -314,7 +333,9 @@ export async function executeJob(input) {
             return publication.job;
           },
         });
-        const cancellationWinner = await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => null);
+        // An unrequested interruption of this attached foreground companion is
+        // host coordination loss — only an explicit Cancel may record `user`.
+        const cancellationWinner = await cancellation.cancel(workspace, job.id, job.ownerSessionId, job.stopIntent?.cause ?? hostInterruptStopCause()).catch(() => null);
         if (cancellationWinner?.status === 'succeeded' && cancellationWinner.resultArtifact) {
           try {
             output = { job: cancellationWinner, result: await readResultArtifact({ dataRoot, workspace, artifact: cancellationWinner.resultArtifact }) };
@@ -427,22 +448,29 @@ async function settleRemoteInterruption({ input, job, workspace, dataRoot }) {
   return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
     let current = await input.store.readJob(workspace, job.id);
     if (['cancelled', 'failed', 'succeeded'].includes(current.status)) return current;
+    // A background Host-owned placement retains its turn on child loss: the
+    // durable record is left for reconciliation (only SessionEnd stops it).
+    if (backgroundInterruptRetainsTurn(job)) return current;
     if (current.status === 'queued') return settleInterruptedFinish(input.store, workspace, job.id, ['queued']);
     if (current.status === 'running') {
-      try { current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null }); }
+      // An unrequested remote interruption is NOT a user cancellation: label
+      // it host-coordination-loss — the bounded cause for an interruption the
+      // caller did not request — so the durable record never carries invented
+      // user authority.
+      try { current = await input.store.transitionJob(workspace, job.id, ['running'], 'cancelling', { lastCancelError: null, ...hostOwnedStopIntentPatch(current, current.stopIntent?.cause ?? hostInterruptStopCause()) }); }
       catch (error) {
         const winner = await input.store.readJob(workspace, job.id).catch(() => null);
         if (winner && winner.status !== 'running') current = winner; else throw error;
       }
     }
-    if (current.status === 'cancelling') return settleInterruptedFinish(input.store, workspace, job.id, ['cancelling']);
+    if (current.status === 'cancelling') return settleInterruptedFinish(input.store, workspace, job.id, ['cancelling'], hostOwnedCancelledPatch(current, current.stopIntent?.cause ?? hostInterruptStopCause()));
     return current;
   });
 }
 
 /** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expected */
-async function settleInterruptedFinish(store, workspace, jobId, expected) {
-  try { return await store.finishJob(workspace, jobId, expected, 'cancelled', { exitCode: null }); }
+async function settleInterruptedFinish(store, workspace, jobId, expected, hostOwnedPatch = {}) {
+  try { return await store.finishJob(workspace, jobId, expected, 'cancelled', { exitCode: null, ...hostOwnedPatch }); }
   catch (error) {
     const winner = await store.readJob(workspace, jobId).catch(() => null);
     if (winner?.status === 'cancelled') return winner;
@@ -620,6 +648,28 @@ function validResponse(response) { return response && typeof response === 'objec
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
 /** @param {unknown} error */
 function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
+
+/**
+ * Whether one interruption observed by this attached companion authorizes
+ * stopping the remote turn: a Host-owned BACKGROUND placement was interrupted
+ * by Host child loss, which does NOT authorize a stop — only a genuine
+ * matching SessionEnd receipt does (design lines 261-265). The caller keeps
+ * the durable record untouched so reconciliation can settle it later.
+ * @param {any} job
+ */
+function backgroundInterruptRetainsTurn(job) {
+  return job.hostPlacement === 'background' && validHostLifecycleRecord(job);
+}
+
+/**
+ * The bounded stop cause for an interruption that DOES authorize a stop on a
+ * non-background placement: an unrequested interruption of this attached
+ * companion is Host coordination loss — only an explicit Cancel command may
+ * record the user cause (design lines 255-269).
+ */
+function hostInterruptStopCause() {
+  return 'host-coordination-loss';
+}
 /** @param {unknown} error */
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */

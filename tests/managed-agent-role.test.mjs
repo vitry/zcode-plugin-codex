@@ -164,7 +164,7 @@ test('owned previous Role bytes require one upgrade before exact continuation Ro
   const generationContract = 'Within the same still-active parent turn, that parent may prepare exactly one proactive `resume` generation and follow up this same stopped child with the exact initial assignment. Each generation remains one-shot and the companion validates the required executor and exact bound ZCode session before work starts.';
   const previousCurrentTemplate = currentTemplate.replace(`${generationContract}\n`, '');
   assert.notEqual(previousCurrentTemplate, currentTemplate, 'the lifecycle Role must add the same-parent generation contract');
-  assert.equal(createHash('sha256').update(previousCurrentTemplate).digest('hex'), '220ea41b3de03f363cc919012426433d2f437f3e70739fa6120ea8bd769c927f');
+  assert.equal(createHash('sha256').update(previousCurrentTemplate).digest('hex'), '7deb7d6a575c92e21a4fb093efc4a73f126e0a24adab3e3ae9dfcb102819110d');
   const addedContract = [
     'The same exact prepared assignment is valid for either the initial turn or a stopped same-child prepared continuation selected by the parent. The one-command-per-turn rule applies to both. The assignment alone does not prove the sender or binding: run only its mapped companion command, which validates the exact executor and private binding before work starts.',
     'Reject every non-exact assignment, arbitrary message, nested Rescue request, and independent repository work without running a command.',
@@ -172,7 +172,7 @@ test('owned previous Role bytes require one upgrade before exact continuation Ro
   const previousTemplate = previousCurrentTemplate.replace(`${addedContract}\n\n`, '')
     .replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', 'node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs"');
   assert.notEqual(previousTemplate, currentTemplate, 'the Task 3 Role must add an exact prepared-continuation contract');
-  assert.equal(createHash('sha256').update(previousTemplate).digest('hex'), 'efc7f28226dcbab083fa99bea581debc0a16d5251b026b72b3392d59e3991aac');
+  assert.equal(createHash('sha256').update(previousTemplate).digest('hex'), 'a8a25a593e15c9f0be93393fb89b69a6a62996079361d57aa63b8139cb2e9265');
   const previousBytes = Buffer.from(previousTemplate.replaceAll('{{PLUGIN_ROOT}}', JSON.stringify(ctx.pluginRoot).slice(1, -1)));
   await writeOwnedReceipt(ctx, { schemaVersion: '1.0.0', roleBytes: previousBytes });
   const config = configState({ role: roleConfig(ctx.paths.rolePath) });

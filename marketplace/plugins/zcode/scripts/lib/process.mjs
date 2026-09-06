@@ -129,6 +129,97 @@ export async function drainExitedProcessStreams(streams, timeoutMs = POST_EXIT_D
   if (result === 'deadline') for (const stream of pending) stream.destroy();
 }
 
+/**
+ * Terminate a RECORDED detached worker process tree by its group-leader pid.
+ * Detached workers are their own process group, so the group is signalled first
+ * and the bare pid is the fallback. A missing or already-exited tree — leader
+ * or group — is a no-op. This is only local process cleanup — it is NOT remote
+ * terminal proof, so callers must re-read durable state to elect a winner.
+ * Bounded by `graceMs` and per-invocation `timeoutMs`; the optional `signal`
+ * only accelerates the POSIX grace wait into an immediate group SIGKILL and
+ * never gates the kill itself.
+ * @param {number} pid @param {{ graceMs?: number, signal?: AbortSignal, timeoutMs?: number }} [options]
+ * @returns {Promise<boolean>} true when a live tree was signalled, false when absent.
+ */
+export async function terminateRecordedProcessTree(pid, options = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  const graceMs = Number.isSafeInteger(options.graceMs) && /** @type {number} */ (options.graceMs) >= 0 ? /** @type {number} */ (options.graceMs) : 200;
+  const alive = () => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'; }
+  };
+  // The recorded tree survives its leader when a descendant ignored the signal:
+  // the group must be probed too, or such a tree would be declared gone here.
+  const groupAlive = () => {
+    try { process.kill(-pid, 0); return true; }
+    catch (error) { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'; }
+  };
+  if (!alive() && !groupAlive()) return false;
+  // Windows has no process-group negative-pid addressing: the full recorded
+  // tree (worker plus descendants) terminates through taskkill /T (ADR 0007).
+  // Each taskkill invocation is hard-bounded by timeoutMs alone — the caller's
+  // remote-control signal must never gate LOCAL cleanup, or an expired remote
+  // budget would abort the kill and leave the detached worker running.
+  if (process.platform === 'win32') {
+    // ONE shared local deadline spans both taskkill invocations and the grace
+    // interval: whichever stage stalls, the whole sequence stays inside its own
+    // budget and can never push a SessionEnd hook past the native deadline.
+    const totalMs = Number.isSafeInteger(options.timeoutMs) && /** @type {number} */ (options.timeoutMs) >= 0 ? /** @type {number} */ (options.timeoutMs) : 1_000;
+    const deadline = Date.now() + totalMs;
+    const remaining = () => Math.max(0, deadline - Date.now());
+    await boundedProcessKill('taskkill', ['/PID', String(pid), '/T'], { timeoutMs: remaining() });
+    // The grace timer stays REFERENCED: with no other referenced handles an
+    // unref'ed timer lets Node exit before the forced-kill fallback runs.
+    if (graceMs > 0 && remaining() > 0) await new Promise((resolve) => { setTimeout(resolve, Math.min(graceMs, remaining())); });
+    if (alive() && remaining() > 0) await boundedProcessKill('taskkill', ['/PID', String(pid), '/T', '/F'], { timeoutMs: remaining() });
+    return true;
+  }
+  const signalGroup = (/** @type {NodeJS.Signals} */ signal) => {
+    for (const target of [-pid, pid]) { try { process.kill(target, signal); return; } catch { /* try next, then gone */ } }
+  };
+  signalGroup('SIGTERM');
+  // The POSIX grace wait shares the caller's termination budget with the rest
+  // of the sequence (mirroring the Windows branch): a SessionEnd passing its
+  // remaining deadline never waits longer than that budget before escalating.
+  const totalMs = Number.isSafeInteger(options.timeoutMs) && /** @type {number} */ (options.timeoutMs) >= 0 ? /** @type {number} */ (options.timeoutMs) : 1_000;
+  const deadline = Date.now() + totalMs;
+  const remainingGrace = Math.min(graceMs, Math.max(0, deadline - Date.now()));
+  if (remainingGrace > 0) {
+    let timer;
+    const wait = new Promise((resolve) => { timer = setTimeout(() => resolve(false), remainingGrace); });
+    const abortSignal = options.signal;
+    const aborted = abortSignal ? new Promise((resolve) => { if (abortSignal.aborted) resolve('aborted'); else abortSignal.addEventListener('abort', () => resolve('aborted'), { once: true }); }) : new Promise(() => {});
+    const raced = await Promise.race([wait, aborted]);
+    clearTimeout(timer);
+    if (raced === 'aborted') { signalGroup('SIGKILL'); return true; }
+  }
+  if (alive() || groupAlive()) signalGroup('SIGKILL');
+  return true;
+}
+
+/** Run one external termination command hard-bounded by `timeoutMs` (default
+ * 1000ms): a stalled tool is killed and abandoned instead of being awaited
+ * indefinitely. The command is deliberately NOT bound to any caller abort
+ * signal — local process cleanup must complete even when the remote-control
+ * budget that triggered it is already spent. Exported for contract tests;
+ * production callers reach it through terminateRecordedProcessTree.
+ * @param {string} command @param {readonly string[]} args @param {{timeoutMs?:number}} [options]
+ * @returns {Promise<void>} */
+export async function boundedProcessKill(command, args, options = {}) {
+  const timeoutMs = Number.isSafeInteger(options.timeoutMs) && /** @type {number} */ (options.timeoutMs) >= 0 ? /** @type {number} */ (options.timeoutMs) : 1_000;
+  const child = spawn(command, args, { shell: false, windowsHide: true, stdio: 'ignore' });
+  // The killed-on-timeout tool must never hold this process's event loop open:
+  // unref it so a hung taskkill cannot extend a SessionEnd hook's lifetime.
+  child.unref?.();
+  await new Promise((/** @type {(value?:undefined)=>void} */ resolve) => {
+    /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
+    const finish = () => { clearTimeout(timer); resolve(); };
+    timer = setTimeout(() => { try { child.kill(); } catch { /* already gone */ } finish(); }, timeoutMs);
+    child.once('exit', finish);
+    child.once('error', finish);
+  });
+}
+
 /** @param {import('node:child_process').ChildProcess} child @param {{ graceMs?: number }} [options] */
 export async function terminateProcess(child, options = {}) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
