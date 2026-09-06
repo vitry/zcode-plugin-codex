@@ -729,6 +729,26 @@ test('SubagentStart compensation inherits the shared deadline when the target lo
   assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, retry.session_id, retry.turn_id)).state, 'active');
 });
 
+test('a huge validated publication budget stays a safe lock wait instead of overflowing into LOCK_OPTIONS_INVALID', async (t) => {
+  // A timeoutMs this function's own validation admits (any safe integer >= 0)
+  // must not overflow when combined with the clock: with a stored absolute
+  // deadline, Date.now() + a huge budget rounds past Number.MAX_SAFE_INTEGER,
+  // and the deadline subtraction then yields the unsafe sentinel 2^53 (the
+  // subtraction must land in the same clock millisecond and on a rounding-
+  // aligned start), which withFileLock rejects as LOCK_OPTIONS_INVALID.
+  // Pin Date.now to a rounding-aligned millisecond so that window is
+  // deterministic: deriving the remainder from elapsed time keeps every wait
+  // a safe integer within [0, timeoutMs] and the publication completes.
+  const fixedNow = Date.now() - (Date.now() % 4);
+  const fixture = await routedExecutorFixture(t, 'huge-budget-forwarding');
+  const start = { ...fixture.start, turn_id: `${fixture.start.turn_id}-huge`, agent_id: `${fixture.start.agent_id}-huge` };
+  t.mock.method(Date, 'now', () => fixedNow);
+  await markForwarding(fixture.data, start, fixture.caller, { timeoutMs: Number.MAX_SAFE_INTEGER });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, start.session_id, start.turn_id)).state, 'active');
+  await markForwarding(fixture.data, { ...start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: Number.MAX_SAFE_INTEGER });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, start.session_id, start.turn_id)).state, 'stopped');
+});
+
 test('an expired publication budget completes an uncontended SubagentStart instead of branding it route-invalid', async () => {
   // The round-4 Windows flake: slow-but-uncontended fs progress between the
   // publication's lock acquisitions let the hook's absolute-deadline abort

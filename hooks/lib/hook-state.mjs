@@ -568,20 +568,30 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The forwarding publication options are invalid.');
   }
   const publicationSeam = options.publicationSeam;
-  // One shared deadline governs every lock wait this publication performs:
+  // One shared budget governs every lock wait this publication performs:
   // each acquisition draws only the integer remainder of the caller's budget,
   // so serialized contended waits fail bounded in total instead of each
-  // restarting the budget. An exhausted budget bounds WAITING, never a
-  // progressing publication: uncontended acquisitions and the writes between
-  // locks carry no abort of their own, so slow-but-uncontended progress (a
-  // loaded Windows runner) completes instead of being misbranded a route
-  // failure. A caller-supplied signal is still forwarded verbatim and stays
-  // honored inside every wait.
-  const budgetDeadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
-  const lockOptions = () => ({
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    ...(budgetDeadline === undefined ? {} : { timeoutMs: Math.max(0, budgetDeadline - Date.now()) }),
-  });
+  // restarting the budget. The remainder derives from ELAPSED time
+  // (budget − (now − start)) instead of a stored absolute deadline: a
+  // Date.now() + huge-budget sum rounds past Number.MAX_SAFE_INTEGER, and the
+  // deadline subtraction then yields the unsafe sentinel 2^53 (depending on
+  // clock rounding), which withFileLock rejects as LOCK_OPTIONS_INVALID even
+  // though this function's own validation admitted the budget. Derived from
+  // elapsed time, every remainder stays a safe integer within [0, timeoutMs].
+  // An exhausted budget bounds WAITING, never a progressing publication:
+  // uncontended acquisitions and the writes between locks carry no abort of
+  // their own, so slow-but-uncontended progress (a loaded Windows runner)
+  // completes instead of being misbranded a route failure. A caller-supplied
+  // signal is still forwarded verbatim and stays honored inside every wait.
+  const budgetStartedAtMs = options.timeoutMs === undefined ? undefined : Date.now();
+  const budgetRemainingMs = () => options.timeoutMs === undefined ? undefined : Math.max(0, options.timeoutMs - (Date.now() - budgetStartedAtMs));
+  const lockOptions = () => {
+    const remaining = budgetRemainingMs();
+    return {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(remaining === undefined ? {} : { timeoutMs: remaining }),
+    };
+  };
   const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const active = input.hook_event_name === 'SubagentStart';
   if (active) {
     const generationId = parentCaller?.generationId ?? null;
@@ -676,7 +686,10 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       finalError = error instanceof PluginError && `${error.code}`.startsWith('EXECUTOR_')
         ? error : executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', error);
     } finally {
-      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route, budgetDeadline === undefined ? lockOptions() : deadlineLockOptions(budgetDeadline));
+      if (finalState !== 'active') {
+        const remaining = budgetRemainingMs();
+        await deactivateExactExecutor(target, input.agent_id, route, remaining === undefined ? lockOptions() : deadlineLockOptions(remaining));
+      }
     }
     if (finalError !== null) throw finalError;
     return;
@@ -719,16 +732,17 @@ function forwardingLockOptions(options = {}) {
   };
 }
 /**
- * Compensation lock waits inherit the SAME shared deadline as the publication:
- * a positive remainder yields an absolute-deadline signal and an integer lock
- * budget, while an exhausted deadline yields an already-aborted fail-fast
- * budget instead of withFileLock's five-second default.
- * @param {number} deadline
+ * Compensation lock waits inherit the SAME shared budget as the publication:
+ * a positive remainder yields a budget-bounded abort signal and an integer
+ * lock budget, while an exhausted remainder yields an already-aborted
+ * fail-fast budget instead of withFileLock's five-second default. The
+ * remainder arrives pre-derived from elapsed time (never from an absolute
+ * deadline), so it stays a safe integer within [0, timeoutMs].
+ * @param {number} remainingMs
  * @returns {{signal: AbortSignal, timeoutMs: number}}
  */
-function deadlineLockOptions(deadline) {
-  const remaining = deadline - Date.now();
-  return remaining > 0 ? { signal: AbortSignal.timeout(remaining), timeoutMs: Math.floor(remaining) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
+function deadlineLockOptions(remainingMs) {
+  return remainingMs > 0 ? { signal: AbortSignal.timeout(remainingMs), timeoutMs: Math.floor(remainingMs) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
 }
 export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   const origin = await paths(dataRoot, originWorkspace);
