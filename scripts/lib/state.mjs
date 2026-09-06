@@ -40,6 +40,11 @@ import {
   MAX_PROGRESS_PREVIEW_ENTRIES,
   PROGRESS_PHASES,
 } from './progress.mjs';
+import {
+  EFFORT_LEVELS,
+  RESCUE_RUNNER_VERSION,
+  validateRescueExecutionInput,
+} from './rescue-execution-input.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 export const JOB_STATUSES = Object.freeze([
@@ -51,7 +56,7 @@ export const JOB_STATUSES = Object.freeze([
   'cancelled',
 ]);
 export const JOB_COMMANDS = Object.freeze(['review', 'adversarial-review', 'rescue', 'transfer']);
-export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+export { EFFORT_LEVELS };
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
@@ -339,11 +344,12 @@ export function createStateStore(options) {
       }, lockOptions);
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string},executionInput?:unknown}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
     async reserveFreshRescueJob(input, options = {}) {
       validateRescueReservationInput(input);
       validateOptionalBindingExpectation(input);
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const executionInput = hostOwnedExecutionInput(input.executionInput, lifecycle, input.reservation);
       const beforePersist = validateBeforePersistOption(options);
       // A clearly mismatched binding fails before storage: the mismatch
       // contract must not depend on input.workspace resolving.
@@ -371,7 +377,7 @@ export function createStateStore(options) {
         if (readOnlyPrevious !== null) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
-        const job = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle);
+        const job = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput);
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
@@ -392,12 +398,13 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string,expectedBindingKey?:string,expectedBindingUpdatedAt?:string,expectedResumeSessionId?:string,migrationProof?:RescueMigrationProof,lifecycle?:{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string},executionInput?:unknown}} input @param {{beforePersist?:()=>void|Promise<void>}} [options] */
     async reserveBoundRescueContinuation(input, options = {}) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
       if (input.expectedCurrentJobId !== undefined && !isDigest(input.expectedCurrentJobId)) throw staleRescueBinding();
       const lifecycle = validateHostLifecycleInput(input.lifecycle);
+      const executionInput = hostOwnedExecutionInput(input.executionInput, lifecycle, input.reservation);
       const beforePersist = validateBeforePersistOption(options);
       // Same pre-storage mismatch fast-fail as reserveFreshRescueJob.
       rejectClearRescueWorkspaceMismatch(input);
@@ -428,7 +435,7 @@ export function createStateStore(options) {
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle);
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput);
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const migrating = resolved.binding.state === 'closed';
@@ -1177,6 +1184,7 @@ async function finishActiveRescueContinuationFailureLocked(dataRoot, workspace, 
     };
     delete updated.rescueContinuationOrigin;
     delete updated.rescueExecutionClaim;
+    delete updated.rescueExecutionInput;
     delete updated.rescueJobSpecCommitment;
     delete updated.rescueLegacyJobSpecProof;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
@@ -1306,6 +1314,9 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     if (migrationRollback && nextStatus !== 'queued') delete updated.rescueMigrationRollback;
     if (nextStatus !== 'queued') delete updated.rescueContinuationOrigin;
     if (nextStatus !== 'queued') delete updated.rescueExecutionClaim;
+    // The private execution input is deleted atomically with the same transition
+    // whenever queued becomes running or terminal, including specialized rollback.
+    if (nextStatus !== 'queued') delete updated.rescueExecutionInput;
     if (nextStatus !== 'queued') delete updated.rescueJobSpecCommitment;
     if (nextStatus !== 'queued') delete updated.rescueLegacyJobSpecProof;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
@@ -1389,8 +1400,8 @@ async function reserveJobLocked(storage, jobs, reservation) {
   return job;
 }
 
-/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [lifecycle] */
-function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound', lifecycle = undefined) {
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [lifecycle] @param {Record<string,string>} [executionInput] @returns {any} */
+function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound', lifecycle = undefined, executionInput = undefined) {
   validateReservation(reservation);
   if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
     throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
@@ -1405,9 +1416,26 @@ function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'un
     permissionSnapshot: reservation.permissionSnapshot,
     ...(reservation.command === 'rescue' && reservation.readOnly === false ? { rescueReservationKind } : {}),
     ...(lifecycle === undefined ? {} : lifecycle),
+    ...(executionInput === undefined ? {} : { rescueRunnerVersion: RESCUE_RUNNER_VERSION, rescueExecutionInput: executionInput }),
     ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
     status: 'queued', createdAt: timestamp, updatedAt: timestamp,
   };
+}
+
+/**
+ * Only valid Host-owned background reservations accept the private detached-runner
+ * execution input: it rides the initial job JSON of the SAME locked reservation
+ * publication, and it never attaches to a foreground, legacy, or incomplete
+ * lifecycle record. The validated closed copy is stored; nothing is persisted in
+ * a second write.
+ * @param {unknown} value @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}|undefined} lifecycle @param {JobReservation} reservation @returns {Record<string,string>|undefined}
+ */
+function hostOwnedExecutionInput(value, lifecycle, reservation) {
+  if (value === undefined) return undefined;
+  if (lifecycle === undefined || lifecycle.hostPlacement !== 'background'
+    || lifecycle.executionOwner !== 'host-child'
+    || reservation.command !== 'rescue' || reservation.readOnly !== false) throw invalidRescueBinding();
+  return validateRescueExecutionInput(value);
 }
 
 /** @param {any} storage @param {any} job @param {any} binding @param {any} options */
@@ -2052,6 +2080,15 @@ function validateBeforePersistOption(options = {}) {
 function hasHostOwnedLifecycle(job) {
   return HOST_LIFECYCLE_FIELDS.every((field) => field in job) && job.command === 'rescue' && job.readOnly === false
     && validHostLifecycleRecord(job);
+}
+
+/**
+ * A stored private execution input must equal a freshly validated closed copy.
+ * Any stored drift — unknown key, wrong type, oversized value — is corruption,
+ * never a historical job to reclassify.
+ * @param {unknown} value */
+function sameStoredRescueExecutionInput(value) {
+  try { return isDeepStrictEqual(validateRescueExecutionInput(value), value); } catch { return false; }
 }
 
 /** A confirmed cancelled Host-owned winner preserves its exact binding only where its ZCode session was accepted; a queued pre-session cancellation is not resumable and revokes exactly like the historical path. @param {any} job */
@@ -2973,7 +3010,19 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('rescueJobSpecCommitment' in job) || job.status === 'queued' && isDigest(job.rescueJobSpecCommitment))
     && (!('rescueLegacyJobSpecProof' in job) || validLegacyJobSpecProof(job.rescueLegacyJobSpecProof, job))
     && !('rescueJobSpecCommitment' in job && 'rescueLegacyJobSpecProof' in job)
-    && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job);
+    && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job)
+    // The detached-runner format marker is immutable evidence: exactly the known
+    // version, only on complete Host-owned writable Rescue records with background
+    // placement, retained through queued/running/terminal. Unknown versions fail closed.
+    && (!('rescueRunnerVersion' in job) || job.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+      && job.command === 'rescue' && job.readOnly === false && hasHostOwnedLifecycle(job)
+      && job.hostPlacement === 'background')
+    // The private execution input exists only beside its marker and only while
+    // the record is queued; a marked queued record without it is corruption that
+    // must fail execution, never a historical job to reclassify.
+    && (!('rescueExecutionInput' in job) || job.status === 'queued' && 'rescueRunnerVersion' in job
+      && sameStoredRescueExecutionInput(job.rescueExecutionInput))
+    && (!('rescueRunnerVersion' in job) || job.status !== 'queued' || 'rescueExecutionInput' in job);
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
   const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)

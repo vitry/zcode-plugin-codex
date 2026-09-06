@@ -4956,6 +4956,102 @@ test('status and result JSON views never expose internal Host lifecycle executio
   assert.equal(resultView.json.job.stopCause, 'session-end', 'the public Stop Cause survives while the internal stop intent is stripped');
 });
 
+test('status projections are allowlists and never expose unexpected private record fields', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-allowlist-projection', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.finishJob(context.workspace, reserved.id, ['queued'], 'failed', { error: { message: 'allowlist probe failure' }, exitCode: 1 });
+  // A hypothetical private field persisted by a later record schema, written
+  // through the same durable record file the reader loads.
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const jobRecordPath = join(storage.directory, 'jobs', `${reserved.id}.json`);
+  const record = JSON.parse(await readFile(jobRecordPath, 'utf8'));
+  record.futurePrivateField = 'PRIVATE_FUTURE_FIELD_MARKER';
+  await atomicWriteJson(jobRecordPath, record);
+  const status = await companion(context, ['status', reserved.id]);
+  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
+  assert.equal(Object.hasOwn(status.json.job, 'futurePrivateField'), false, 'the public status detail must never carry an unenumerated record field');
+  assert.equal(JSON.stringify(status.json).includes('PRIVATE_FUTURE_FIELD_MARKER'), false);
+  const all = await companion(context, ['status', '--all']);
+  assert.equal(all.code, 0, `${all.stderr}${all.stdout}`);
+  assert.equal(JSON.stringify(all.json).includes('PRIVATE_FUTURE_FIELD_MARKER'), false);
+});
+
+test('cancel responses are allowlists and never expose the persisted rescue runner input', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const lifecycle = { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' };
+  const executor = (/** @type {string} */ tag) => ({ parentSessionId: 'codex-session', parentTurnId: `turn-cancel-projection-${tag}`, agentId: `cancel-projection-child-${tag}`, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' });
+  const reservation = (/** @type {string} */ turnId) => ({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: turnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const runnerInput = { version: 1, task: 'PRIVATE_RUNNER_TASK cancel-projection' };
+  // The enumerated cancel-job shape: the same allowlist the reserved-job
+  // projection publishes, so a marked record's private fields (runner marker,
+  // execution input, reservation/claim/commitment evidence) stay private.
+  const cancelJobPublicFields = [
+    'beforeMessageIds', 'childPid', 'codexThreadId', 'command', 'createdAt', 'effort', 'error',
+    'executionOwner', 'exitCode', 'finishedAt', 'hostPlacement', 'id', 'inputId',
+    'lastActivityAt', 'lastCancelError', 'logFile', 'model', 'ownerLifecycleEpoch',
+    'ownerSessionId', 'ownerTurnId', 'permissionSnapshot', 'phase', 'progressPreview',
+    'progressProbe', 'promptArtifact', 'readOnly', 'resultArtifact', 'startRevision',
+    'startedAt', 'status', 'stopCause', 'stopIntent', 'updatedAt', 'workerLeaseId',
+    'workspace', 'zcodeSessionId',
+  ];
+  const assertAllowlistedCancelResponse = (/** @type {any} */ cancelled, /** @type {string} */ label) => {
+    assert.equal(cancelled.job.status, 'cancelled', `${label}: the cancel must settle`);
+    for (const field of ['rescueRunnerVersion', 'rescueExecutionInput', 'rescueReservationKind', 'rescueExecutionClaim', 'rescueExecutionReservation', 'rescueJobSpecCommitment', 'rescueLegacyJobSpecProof']) {
+      assert.equal(Object.hasOwn(cancelled.job, field), false, `${label}: the cancel job object must not carry ${field}`);
+    }
+    for (const key of Object.keys(cancelled.job)) {
+      assert.equal(cancelJobPublicFields.includes(key), true, `${label}: unexpected cancel response field ${key}`);
+    }
+    const serialized = JSON.stringify(cancelled);
+    assert.equal(serialized.includes('PRIVATE_RUNNER_TASK'), false, `${label}: the serialized cancel response must never carry the private runner task`);
+    assert.equal(serialized.includes('rescueRunnerVersion'), false, `${label}: the serialized cancel response must never carry the runner marker`);
+    assert.equal(serialized.includes('rescueExecutionInput'), false, `${label}: the serialized cancel response must never carry the execution input`);
+  };
+
+  // Queued branch: a marked true-background job cancels before any runner
+  // claim; StateStore removes the execution input and intentionally retains
+  // the runner marker through terminal, so the response must be projected.
+  const queued = (await store.reserveFreshRescueJob({
+    workspace: context.workspace, reservation: reservation('turn-cancel-projection'), executor: executor('queued'), lifecycle, executionInput: runnerInput,
+  })).job;
+  assert.equal(queued.rescueRunnerVersion, 1);
+  assert.equal(queued.rescueExecutionInput.task, runnerInput.task);
+  const queuedCancel = await runCompanion(['cancel', queued.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-cancel-queued', permissionMode: 'workspace-write' } });
+  assertAllowlistedCancelResponse(queuedCancel, 'queued cancel');
+
+  // Running branch: a marked true-background job with an accepted session is
+  // cancelled through the control client; the retained marker must still never
+  // cross the cancel response.
+  const running = (await store.reserveFreshRescueJob({
+    workspace: context.workspace, reservation: reservation('turn-cancel-running-projection'), executor: executor('running'), lifecycle, executionInput: runnerInput,
+  })).job;
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, running.id, { childPid: 424_252, workerLeaseId: running.id });
+  await store.transitionJob(context.workspace, running.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-projection', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(context.workspace, running.id, ['running'], 'running', { inputId: 'input-cancel-projection', startRevision: 1, beforeMessageIds: [] });
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async () => {
+      let stopped = false;
+      return {
+        listSessions: async () => ({ sessions: [{ sessionId: 'zs-cancel-projection' }] }),
+        readSession: async () => stopped
+          ? { projection: { status: 'idle' }, runtime: { stateRevision: 4 }, messages: [
+            { info: { role: 'user', messageId: 'input-cancel-projection', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+            { info: { role: 'assistant', messageId: 'assistant-cancel-projection', parentMessageId: 'input-cancel-projection', finish: 'aborted', time: { completed: 4 }, semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'interrupted' }] },
+          ] }
+          : { projection: { status: 'running' }, runtime: { stateRevision: 3 }, messages: [
+            { info: { role: 'user', messageId: 'input-cancel-projection', synthetic: false, semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' } }, parts: [{ type: 'text', text: 'accepted task' }] },
+          ] },
+        stopSession: async () => { stopped = true; },
+        close: async () => {},
+      };
+    },
+  };
+  const runningCancel = await runCompanion(['cancel', running.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-cancel-running', permissionMode: 'workspace-write' }, dependencies });
+  assertAllowlistedCancelResponse(runningCancel, 'running cancel');
+  assert.equal((await store.readJob(context.workspace, running.id)).rescueRunnerVersion, 1, 'the runner marker stays retained through terminal state in the durable record');
+});
+
 test('successful Result views are allowlisted and lose resumability once the exact binding advances', async () => {
   const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
   const executor = { parentSessionId: 'codex-session', parentTurnId: 'turn-succeeded-projection', agentId: 'succeeded-projection-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: context.workspace, parentPermissionMode: 'workspace-write' };

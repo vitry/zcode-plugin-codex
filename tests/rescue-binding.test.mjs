@@ -25,6 +25,7 @@ import {
   validLifecycleEpoch,
   validStopIntent,
 } from '../scripts/lib/rescue-binding.mjs';
+import { PluginError } from '../scripts/lib/errors.mjs';
 import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
@@ -2193,4 +2194,53 @@ test('a queued pre-session Host-owned cancellation revokes its binding instead o
   const replacement = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'),
     executor: executor(workspace, { agentId: 'replacement-child' }) });
   assert.equal(replacement.binding.state, 'active');
+});
+
+test('a marked queued job without its execution input fails execution instead of adopting legacy handling', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-runner-drained', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle, executionInput: { version: 1, task: 'bounded private task' } });
+  assert.equal(fresh.job.rescueRunnerVersion, 1);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${fresh.job.id}.json`);
+  const record = JSON.parse(await readFile(path, 'utf8'));
+  delete record.rescueExecutionInput;
+  await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+  // A drained marked record is corruption: claiming it must fail closed, never
+  // downgrade the job to a legacy reservation that historical handling could adopt.
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, fresh.job.id, { childPid: 999_999_999, workerLeaseId: fresh.job.id }),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  await assert.rejects(store.inspectJobWorkerExecution(workspace, fresh.job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  await assert.rejects(store.transitionJob(workspace, fresh.job.id, ['queued'], 'running'),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  // The durable record is untouched by every rejected attempt.
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), record);
+});
+
+test('a detached runner reservation carries its marker and private input through claim and drops only the input at running', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const lifecycle = { ownerLifecycleEpoch: hostLifecycleEpoch('host-runner-claim', '2026-09-02T00:00:00.000Z'),
+    executionOwner: 'host-child', hostPlacement: 'background' };
+  const input = { version: 1, task: 'bounded private task', effort: 'low' };
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
+    executor: trusted, lifecycle, executionInput: input });
+  const claimed = await store.claimJobWorkerForExecution(workspace, fresh.job.id, { childPid: 999_999_999, workerLeaseId: fresh.job.id });
+  assert.equal(claimed.status, 'queued');
+  assert.equal(claimed.rescueRunnerVersion, 1);
+  assert.deepEqual(claimed.rescueExecutionInput, input);
+  const running = await store.transitionJob(workspace, fresh.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'runner-claim-session', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  assert.equal(running.rescueRunnerVersion, 1);
+  assert.equal('rescueExecutionInput' in running, false);
+  const terminal = await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(terminal.rescueRunnerVersion, 1);
+  assert.equal('rescueExecutionInput' in terminal, false);
+  // The exact continuation of a marked run is still resumable after terminal input removal.
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: trusted, operationId: fresh.binding.operationId, lifecycle, executionInput: input });
+  assert.equal(continuation.job.rescueRunnerVersion, 1);
+  assert.deepEqual(continuation.job.rescueExecutionInput, input);
 });
