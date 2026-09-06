@@ -1424,7 +1424,8 @@ function receiptPublishedMidRaceStore(store, lifecycle, workspace, jobId, receip
 
 test('coordination-loss settlement rechecks the epoch receipt before persisting and switches to session-end', async () => {
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
-  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
   const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
   const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-receipt-race', input: 'input-receipt-race', agent: 'receipt-race-child', epoch: EPOCH, placement: 'foreground' });
   const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
@@ -1465,7 +1466,8 @@ function receiptPublishedAfterWriteStore(store, lifecycle, workspace, jobId, rec
 
 test('the next reconciliation corrects a coordination-loss cause that outran the receipt publication', async () => {
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
-  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
   const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
   const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-backstop', input: 'input-cl-backstop', agent: 'cl-backstop-child', epoch: EPOCH, placement: 'foreground' });
   const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });
@@ -1501,7 +1503,8 @@ test('receipt discharge corrects a retained coordination-loss intent one way and
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
   await mkdir(join(fixture.root, 'workspace-b'));
   const workspaceB = await realpath(join(fixture.root, 'workspace-b'));
-  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
   const { hostOwnedStopIntentPatch } = await import('../scripts/lib/rescue-binding.mjs');
   const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
   const { delegateEndedStopIntent, settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
@@ -1534,7 +1537,8 @@ test('receipt discharge corrects a retained coordination-loss intent one way and
 
 test('coordination-loss settlement keeps its cause when the recheck still finds no receipt', async () => {
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
-  const { createHostLifecycleStore, hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
   const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
   const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-cl-recheck-clean', input: 'input-cl-recheck-clean', agent: 'cl-recheck-clean-child', epoch: EPOCH, placement: 'foreground' });
   const lifecycle = createHostLifecycleStore({ dataRoot: fixture.dataRoot });

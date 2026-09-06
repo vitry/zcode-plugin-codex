@@ -5047,7 +5047,11 @@ test('resume selects a cancelled Host-owned winner only through the full durable
   assert.equal(preserved.kind, 'preserved', 'a Host-owned cancelled winner with an accepted session preserves its exact binding');
   await recordSession(context.dataRoot, { cwd: context.workspace, session_id: 'codex-session', source: 'resume' });
 
-  const resumed = await companion(context, ['rescue', '--resume', 'continue the cancelled operation']);
+  // The session being resumed never existed in any fake ZCode process, so
+  // this is a cold resume: on Windows the broker keeps the fake CLI's cwd
+  // outside the workspace (the launch cwd holds the directory open), so the
+  // fixture must name the workspace explicitly for the resume snapshot.
+  const resumed = await companion(context, ['rescue', '--resume', 'continue the cancelled operation'], { FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) });
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   assert.equal(resumed.json.job.status, 'succeeded');
   assert.equal(resumed.json.job.zcodeSessionId, 'zs-resume-cancelled');
@@ -5085,7 +5089,7 @@ test('a detached background resume of a cancelled winner keeps legacy ownership 
   await store.closeRescueBindingForCancelledJob({ workspace: context.workspace, parentSessionId: 'codex-session', jobId: reserved.job.id });
   await recordSession(context.dataRoot, { cwd: context.workspace, session_id: 'codex-session', source: 'resume' });
 
-  const background = await companion(context, ['rescue', '--resume', '--background', 'continue detached']);
+  const background = await companion(context, ['rescue', '--resume', '--background', 'continue detached'], { FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) });
   assert.equal(background.code, 0, `${background.stderr}${background.stdout}`);
   const continuation = await store.readJob(context.workspace, background.json.job.id);
   // The continuation stays under Host ownership regardless of the execution

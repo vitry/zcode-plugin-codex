@@ -7,8 +7,8 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { withFileLock } from '../scripts/lib/fs.mjs';
-import { RECEIPT_ABORT_BUDGET_MS, RECEIPT_SCAN_ABORT_BUDGET_MS, createHostLifecycleStore, hostLifecycleEpoch, raceAbort, raceAbortHeldWrite } from '../scripts/lib/host-lifecycle.mjs';
-import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
+import { RECEIPT_ABORT_BUDGET_MS, hostLifecycleEpoch, raceAbort, raceAbortHeldWrite } from '../scripts/lib/host-lifecycle.mjs';
+import { createHostLifecycleStore, scaledAbortBudget, scaledScanBudget } from './helpers/host-lifecycle-store.mjs';
 
 const START = '2026-09-02T00:00:00.000Z';
 const END = '2026-09-02T02:00:00.000Z';
@@ -19,15 +19,11 @@ const RECEIPTS_CEILING = 4_096;
 
 // Continuous-integration runners — particularly Windows Defender-scanned
 // file systems under parallel test load — routinely exceed the production
-// 500 ms per-operation and 5 s ceiling-scan budgets on cold caches. The
-// store's test-only budget seams scale those bounds with the suite's timeout
-// multiplier (ZCODE_TEST_TIMEOUT_MULTIPLIER) without touching the production
-// deadlines the deadline-behavior tests below still exercise at their exact
-// production values.
-/** @returns {number} */
-const scaledAbortBudget = () => scaleTestTimeout(RECEIPT_ABORT_BUDGET_MS);
-/** @returns {number} */
-const scaledScanBudget = () => scaleTestTimeout(RECEIPT_SCAN_ABORT_BUDGET_MS);
+// 500 ms per-operation and 5 s ceiling-scan budgets on cold caches. Every
+// store below therefore gets the scaled budget seams by default through the
+// shared helper; the deadline-behavior tests that must observe the exact
+// production bound pin testOnlyAbortBudgetMs to RECEIPT_ABORT_BUDGET_MS
+// explicitly.
 
 /** @param {number} [initialTimeMs] */
 async function fixture(initialTimeMs = Date.parse('2026-09-02T04:00:00.000Z')) {
@@ -414,7 +410,9 @@ test('persisted receipts with non-canonical hints are rejected as corrupt', asyn
 
 test('a clean caller signal still receives the bounded local abort budget', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  // Pinned to the exact production bound: this test observes the production
+  // local budget itself, so the default scaled seam must not widen it.
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: RECEIPT_ABORT_BUDGET_MS, testOnlyScanBudgetMs: 5_000 });
   const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const receiptsRoot = dirname(receipt.path);
   const lockDirectory = (await readdir(receiptsRoot, { withFileTypes: true }))
@@ -434,7 +432,9 @@ test('a clean caller signal still receives the bounded local abort budget', asyn
 
 test('settlement honors a caller-supplied abort signal during lock contention', async () => {
   const fixtureState = await fixture();
-  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  // Pinned to the exact production bound: the assertion reads "well inside
+  // the local 500ms budget", so the default scaled seam must not widen it.
+  const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: RECEIPT_ABORT_BUDGET_MS, testOnlyScanBudgetMs: 5_000 });
   const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const lockDirectory = (await readdir(dirname(receipt.path), { withFileTypes: true }))
     .find((entry) => entry.isDirectory() && entry.name.endsWith('.lock'));

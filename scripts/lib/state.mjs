@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -2249,6 +2250,34 @@ function sameHookAuthority(left, right) {
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
 function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }
 
+/**
+ * Durable workspace identity is the canonical directory, never one textual
+ * form of it: a spawned companion canonicalizes its ambient cwd with the
+ * native realpath (which expands Windows 8.3 components and drive-letter
+ * casing), while a durable executor record may carry the same directory's
+ * alias form. Reservation validation therefore compares identities, not
+ * spellings: raw equality short-circuits so already-canonical inputs never
+ * touch the filesystem, and only divergent texts are resolved — native first,
+ * because the portable JS realpathSync rewrites just symlink components —
+ * with an unresolvable path keeping its raw form. The security property is
+ * unchanged: one directory in two textual forms is accepted, a genuinely
+ * different directory still rejects, and a resolution failure keeps the old
+ * strict behavior.
+ * @param {string} left @param {string} right
+ */
+function sameWorkspaceIdentity(left, right) {
+  if (left === right) return true;
+  return canonicalWorkspaceIdentity(left) === canonicalWorkspaceIdentity(right);
+}
+
+/** @param {string} value */
+function canonicalWorkspaceIdentity(value) {
+  if (typeof realpathSync.native === 'function') {
+    try { return realpathSync.native(value); } catch { /* fall through to the portable resolution */ }
+  }
+  try { return realpathSync(value); } catch { return value; }
+}
+
 /** @param {any} input */
 function validateRescueReservationInput(input) {
   if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isPlainJsonObject(input.reservation)) throw invalidRescueBinding();
@@ -2256,9 +2285,9 @@ function validateRescueReservationInput(input) {
   if (input.executor === undefined || input.authority !== undefined) throw invalidRescueBinding();
   validateExecutorBindingInput(input.executor);
   if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
-    || input.workspace !== input.reservation.workspace
+    || !sameWorkspaceIdentity(input.workspace, input.reservation.workspace)
     || !['zcode-rescue', 'default'].includes(input.executor.agentType)
-    || input.workspace !== input.executor.workspace || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
+    || !sameWorkspaceIdentity(input.workspace, input.executor.workspace) || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
   validateHostLifecycleInput(input.lifecycle);
   reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
 }

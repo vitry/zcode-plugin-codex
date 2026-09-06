@@ -216,7 +216,7 @@ test('compact SessionStart remains in the same epoch and creates no receipt', as
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
   await recordSession(ctx.dataRoot, { session_id: 'compact-epoch-session', cwd: ctx.cwd, source: 'compact' });
   assert.deepEqual(await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-epoch-session'), before);
-  const { createHostLifecycleStore } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { createHostLifecycleStore } = await import('./helpers/host-lifecycle-store.mjs');
   assert.equal((await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).listPendingReceipts()).length, 0,
     'compact must never publish a resume-compensation or session-end receipt');
 });

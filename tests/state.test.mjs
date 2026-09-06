@@ -29,10 +29,11 @@ import { createRequire } from 'node:module';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
-import { createHostLifecycleStore, hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
+import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import { createHostLifecycleStore } from './helpers/host-lifecycle-store.mjs';
 import { assertNoPendingPriorEpochReceipts, recordSession, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const require = createRequire(import.meta.url);
@@ -270,6 +271,39 @@ test('bound continuation reservation rejects a planner-selected original session
     expectedBindingUpdatedAt: first.binding.updatedAt, expectedResumeSessionId: 'different-session',
   }), { code: 'RESCUE_BINDING_STALE' });
   assert.deepEqual(await store.listJobs(workspace), jobsBefore);
+});
+
+test('a bound reservation accepts a workspace expressed through a path alias but rejects a different directory', async () => {
+  // Durable identity is the canonical directory, not one textual form of it:
+  // a spawned companion canonicalizes its ambient cwd with the native
+  // realpath, which can expand Windows 8.3 components, while the durable
+  // executor record was written under the canonical form — and on POSIX the
+  // equivalent alias is a symlinked parent. The reservation must compare
+  // canonical identities, so the alias form is accepted while a genuinely
+  // different directory still fails closed.
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const alias = join(base.root, 'workspace-alias');
+  await symlink(base.workspace, alias, 'dir');
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace) });
+  await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'alias-original-session' });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const aliasReservation = /** @type {any} */ (rescueReservation(alias, 'turn-b'));
+  const continuation = await store.reserveBoundRescueContinuation({ workspace: alias,
+    reservation: aliasReservation, executor: legacyExecutor(workspace),
+    operationId: first.binding.operationId, expectedCurrentJobId: first.binding.currentJobId,
+    expectedAnchorJobId: first.binding.anchorJobId });
+  assert.equal(continuation.job.workspace, workspace, 'the durable continuation record stays canonical');
+  assert.notEqual(continuation.job.id, first.job.id);
+
+  const other = join(base.root, 'workspace-other');
+  await mkdir(other);
+  const jobsBefore = await store.listJobs(workspace);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace: other,
+    reservation: /** @type {any} */ (rescueReservation(other, 'turn-c')), executor: legacyExecutor(workspace),
+    operationId: first.binding.operationId, expectedCurrentJobId: continuation.job.id,
+    expectedAnchorJobId: first.binding.anchorJobId }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await store.listJobs(workspace), jobsBefore, 'a genuinely different workspace never reserves the bound continuation');
 });
 
 test('failed remote resume can atomically restore the exact session-ended tombstone before failing its attempt', async () => {

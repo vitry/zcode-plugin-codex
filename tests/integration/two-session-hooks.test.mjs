@@ -11,11 +11,12 @@ import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { withFileLock } from '../../scripts/lib/fs.mjs';
-import { createHostLifecycleStore, hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
+import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
+import { createHostLifecycleStore } from '../helpers/host-lifecycle-store.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
