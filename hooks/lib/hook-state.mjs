@@ -320,8 +320,8 @@ export const RESERVATION_EPOCH_SCAN_BUDGET_MS = 500;
 export async function assertNoPendingPriorEpochReceipts(input) {
   const budgetMs = input.budgetMs ?? RESERVATION_EPOCH_SCAN_BUDGET_MS;
   const signal = input.signal === undefined
-    ? AbortSignal.timeout(budgetMs)
-    : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+    ? AbortSignal.timeout(Math.min(budgetMs, MAX_ABORT_SIGNAL_TIMEOUT_MS))
+    : AbortSignal.any([input.signal, AbortSignal.timeout(Math.min(budgetMs, MAX_ABORT_SIGNAL_TIMEOUT_MS))]);
   // Unlike the prompt-time 'prior' semantics, the reservation fence must scan
   // ALL of the session's pending receipts INCLUDING the ending epoch's own: the
   // genuine same-epoch boundary derives its receipt from the still-present
@@ -424,7 +424,7 @@ export async function recordedSessionStartPair(dataRoot, workspace, sessionId) {
 export async function reconcilePriorEpochReceipts(input) {
   const budgetMs = input.budgetMs ?? PROMPT_RECONCILIATION_BUDGET_MS;
   const deadline = Date.now() + budgetMs;
-  const overall = input.signal === undefined ? AbortSignal.timeout(budgetMs) : AbortSignal.any([input.signal, AbortSignal.timeout(budgetMs)]);
+  const overall = input.signal === undefined ? AbortSignal.timeout(Math.min(budgetMs, MAX_ABORT_SIGNAL_TIMEOUT_MS)) : AbortSignal.any([input.signal, AbortSignal.timeout(Math.min(budgetMs, MAX_ABORT_SIGNAL_TIMEOUT_MS))]);
   const stage = (budgetMsLimit) => AbortSignal.any([overall, AbortSignal.timeout(Math.max(1, Math.min(budgetMsLimit, deadline - Date.now())))]);
   const remaining = () => Math.max(0, deadline - Date.now());
   const receipts = await pendingPriorEpochReceipts(input.dataRoot, input.sessionId, input.workspace, { signal: stage(PROMPT_RECEIPT_STAGE_BUDGET_MS), currentEpoch: input.currentEpoch });
@@ -742,8 +742,20 @@ function forwardingLockOptions(options = {}) {
  * @returns {{signal: AbortSignal, timeoutMs: number}}
  */
 function deadlineLockOptions(remainingMs) {
-  return remainingMs > 0 ? { signal: AbortSignal.timeout(remainingMs), timeoutMs: Math.floor(remainingMs) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
+  return remainingMs > 0 ? { signal: AbortSignal.timeout(Math.min(remainingMs, MAX_ABORT_SIGNAL_TIMEOUT_MS)), timeoutMs: Math.floor(remainingMs) } : { signal: AbortSignal.abort(), timeoutMs: 0 };
 }
+// AbortSignal.timeout derived from a caller-supplied budget must never crash
+// or insta-fire on a validated huge budget (markForwarding admits any safe
+// integer >= 0). Node rejects delays above 2^32 - 1 with ERR_OUT_OF_RANGE —
+// thrown from the compensation `finally` it would skip deactivateExactExecutor
+// and mask the controlled publication error — and its internal timer is a
+// SIGNED 32-bit millisecond count, so any accepted delay above 2^31 - 1 is
+// silently clamped to 1ms (TimeoutOverflowWarning) and aborts immediately,
+// which the best-effort compensation would swallow as a fail-fast wait. Clamp
+// to the largest delay Node honors as a real duration (~24.8 days): every
+// production and test budget is far below it, so only the crash-at-huge-values
+// case changes.
+const MAX_ABORT_SIGNAL_TIMEOUT_MS = 2 ** 31 - 1;
 export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId, lockOptions = {}) {
   const origin = await paths(dataRoot, originWorkspace);
   return withFileLock(origin.lock, async () => {

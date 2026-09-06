@@ -749,6 +749,33 @@ test('a huge validated publication budget stays a safe lock wait instead of over
   assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, start.session_id, start.turn_id)).state, 'stopped');
 });
 
+test('a huge validated publication budget still compensates after a finalization failure instead of throwing ERR_OUT_OF_RANGE', async (t) => {
+  // The compensation lock budget derives its abort signal from the remaining
+  // shared budget with AbortSignal.timeout(remainingMs). Node rejects delays
+  // above 2^32 - 1 with ERR_OUT_OF_RANGE, so a validated huge budget
+  // (Number.MAX_SAFE_INTEGER is admitted) whose remainder is still huge made
+  // the compensation `finally` itself throw the instant the executor had
+  // persisted: the controlled publication error was masked and
+  // deactivateExactExecutor never ran, leaving the executor active. The
+  // remainder is now clamped to Node's effective maximum, so the failure
+  // surfaces as the controlled EXECUTOR_ROUTE_INVALID and the compensation
+  // still deactivates the persisted executor.
+  const fixture = await routedExecutorFixture(t, 'huge-budget-compensation');
+  const start = { ...fixture.start, turn_id: `${fixture.start.turn_id}-huge-fail`, agent_id: `${fixture.start.agent_id}-huge-fail` };
+  await assert.rejects(
+    markForwarding(fixture.data, start, fixture.caller, {
+      timeoutMs: Number.MAX_SAFE_INTEGER,
+      publicationSeam: async (point) => { if (point === 'after-executor-write') throw new Error('finalization failed after the executor persisted'); },
+    }),
+    { code: 'EXECUTOR_ROUTE_INVALID' },
+  );
+  const executorRecords = [];
+  for (const name of await readdir(fixture.targetDirectory)) {
+    if (name.startsWith('executor-') && name.endsWith('.json')) executorRecords.push(JSON.parse(await readFile(join(fixture.targetDirectory, name), 'utf8')));
+  }
+  assert.equal(executorRecords.find((record) => record.agentId === start.agent_id)?.active, false);
+});
+
 test('an expired publication budget completes an uncontended SubagentStart instead of branding it route-invalid', async () => {
   // The round-4 Windows flake: slow-but-uncontended fs progress between the
   // publication's lock acquisitions let the hook's absolute-deadline abort
