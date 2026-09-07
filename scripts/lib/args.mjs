@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { RESCUE_RUNNER_SUBCOMMAND } from './rescue-runner.mjs';
 
 const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup', 'role-status']);
 const SCOPES = new Set(['auto', 'working-tree', 'branch']);
@@ -9,8 +10,9 @@ const JOB_ID = /^[a-f0-9]{64}$/;
 export function parseArgs(argv) {
   if (!Array.isArray(argv) || argv.some((value) => typeof value !== 'string') || argv.length === 0) throw argumentError('A supported command is required.');
   const [command, ...tokens] = argv;
-  if (!PUBLIC_COMMANDS.has(command) && command !== 'run-reserved-job') throw argumentError(`Unknown command: ${command}`);
+  if (!PUBLIC_COMMANDS.has(command) && command !== 'run-reserved-job' && command !== RESCUE_RUNNER_SUBCOMMAND) throw argumentError(`Unknown command: ${command}`);
   if (command === 'run-reserved-job') return parsePrivate(tokens);
+  if (command === RESCUE_RUNNER_SUBCOMMAND) return parseHostRescueRunner(tokens);
   /** @type {any} */
   const parsed = command === 'review' || command === 'adversarial-review'
     ? parseReview(command, tokens)
@@ -135,6 +137,21 @@ function parsePrivate(tokens) {
   parseTokens(tokens, { boolean: {}, scalar: {}, positionals });
   if (positionals.length !== 1 || !JOB_ID.test(positionals[0])) throw argumentError('Private execution requires one job ID.');
   return { command: 'run-reserved-job', options, positionals };
+}
+
+/**
+ * The private Host-runner selector accepts EXACTLY one job digest and no
+ * options: the detached runner resolves every execution parameter from the
+ * exact stored job, so no task, owner, permission, epoch, or resume override
+ * can ever cross argv.
+ * @param {string[]} tokens
+ */
+function parseHostRescueRunner(tokens) {
+  /** @type {any} */ const options = {};
+  /** @type {string[]} */ const positionals = [];
+  parseTokens(tokens, { boolean: {}, scalar: {}, positionals });
+  if (positionals.length !== 1 || !JOB_ID.test(positionals[0])) throw argumentError('The Host Rescue runner requires exactly one job ID.');
+  return { command: RESCUE_RUNNER_SUBCOMMAND, options, positionals };
 }
 
 /** @param {string[]} tokens @param {{boolean:Record<string,(value?:string)=>void>,scalar:Record<string,(value:string)=>void>,positionals:string[]}} target */

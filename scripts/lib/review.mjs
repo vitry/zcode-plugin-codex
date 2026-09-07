@@ -42,7 +42,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryConfig?:(model:{providerId:string,modelId:string}|undefined)=>Promise<any>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeRpcSucceeded?:()=>void,onRunningPersisted?:()=>void,onResumeFailure?:(error:unknown)=>Promise<any>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,resolveRuntimeRecoveryConfig?:(model:{providerId:string,modelId:string}|undefined)=>Promise<any>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeRpcSucceeded?:()=>void,onRunningPersisted?:()=>void,onResumeFailure?:(error:unknown)=>Promise<any>,childPid?:number,workerLeaseId?:string,sendAdmissionGate?:(job:any)=>Promise<void>,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -53,6 +53,7 @@ export async function executeJob(input) {
   let sendAdmissionUnknown = false;
   let admissionBoundaryUnpublished = false;
   let admissionTargetStale = false;
+  let admissionLifecycleRejected = false;
   /** @type {any} */
   let reporter;
   /** @type {any} */ let conversationObserver;
@@ -192,6 +193,18 @@ export async function executeJob(input) {
       if (admissionStop?.kind === 'stale') {
         admissionTargetStale = true;
         throw statusPublicationError(job.id, admissionStop.job?.status ?? 'stale', ['running']);
+      }
+      // The final send admission seam: the caller's lifecycle fence (the Host
+      // runner's receipt/current-epoch admission) runs here, inside this
+      // cancellation lock, immediately before the send. A SessionEnd receipt
+      // published any time after the claim — pending or settled — or a
+      // superseded lifecycle epoch still blocks the first writable turn, fail
+      // closed. Rejection keeps the existing fail-closed send-admission
+      // behavior: the running publication and its Writable Guard are retained
+      // for the boundary owner, and no send is attempted.
+      if (input.sendAdmissionGate !== undefined) {
+        try { await input.sendAdmissionGate(current); }
+        catch (error) { admissionLifecycleRejected = true; throw error; }
       }
       input.signal?.throwIfAborted();
       conversationObserver.waitForTurnTerminal();
@@ -344,7 +357,7 @@ export async function executeJob(input) {
         }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
-      let canFail = !sendAdmissionUnknown && !admissionBoundaryUnpublished && !admissionTargetStale;
+      let canFail = !sendAdmissionUnknown && !admissionBoundaryUnpublished && !admissionTargetStale && !admissionLifecycleRejected;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven && !admissionBoundaryUnpublished) {
         try {
           const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);

@@ -13,6 +13,7 @@ import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
+import { isSafeIdentifier } from './lib/identifier.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
@@ -31,6 +32,8 @@ import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
+import { RESCUE_RUNNER_SUBCOMMAND } from './lib/rescue-runner.mjs';
+import { RESCUE_RUNNER_VERSION, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
 import { createStateStore, resumableHostOwnedCancellation, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -124,6 +127,10 @@ export async function runCompanion(argv, runtime = {}) {
   const identity = createIdentityStore({ dataRoot });
   const store = (runtime.dependencies?.createStateStore ?? createStateStore)({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
+  // The private Host-runner entry never reaches the fd3 authorization reader
+  // or the caller-context path: the exact job record is the only authority it
+  // needs, and the canonical workspace/data root come from the runtime config.
+  if (parsed.command === RESCUE_RUNNER_SUBCOMMAND) return runHostRescueJob({ parsed, cwd, env, dataRoot, store, dependencies: runtime.dependencies, signal: runtime.signal });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
   const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (/** @type {any} */ job, ownerId) => {
     runtime.signal?.throwIfAborted();
@@ -1569,6 +1576,127 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
+/**
+ * Private Host-runner entry (`run-host-rescue-job <digest>`): execute exactly
+ * one already-reserved Host-owned background Rescue job through the SAME
+ * worker-lease/claim and shared `executeReserved` execution path as attached
+ * execution, so the job's stop intent, fencing, and CAS guards apply
+ * automatically. The canonical workspace and installed data root are resolved
+ * by the ordinary runtime configuration — never CLI options — and the exact
+ * stored job carries every execution parameter. The runner is placement, not
+ * authority: foreground, legacy, malformed, terminal, and non-background
+ * records are rejected before any claim, the task never crosses argv or
+ * model-visible output, and the detached process exits only after the shared
+ * path has published a terminal winner or completed its retained-error
+ * cleanup.
+ * @param {any} input
+ */
+async function runHostRescueJob({ parsed, cwd, env, dataRoot, store, dependencies, signal }) {
+  const { job, executionInput } = await readRunnableHostRescueJob(store, cwd, parsed.positionals[0]);
+  const spec = await hostRescueRunnerSpec(store, cwd, job, executionInput);
+  // Lifecycle admission reuses the reservation's own epoch evidence: the owner
+  // session's recorded SessionStart lives at the ORIGIN workspace the binding
+  // authority persisted beside the runner marker, not at this linked execution
+  // workspace. Execution (cwd, job storage) stays exactly where it is.
+  const admissionGate = hostRescueRunnerAdmissionGate({ dataRoot, workspace: job.rescueOriginWorkspace ?? cwd, job });
+  try {
+    return await executeWithWorkerLease({ cwd, env, dataRoot, store, job, spec, dependencies, signal, admissionGate });
+  } catch (error) {
+    // The detached exit code carries no lifecycle truth: once the exact job is
+    // durably terminal the ledger owns the outcome and the runner exits
+    // successfully. A retained (nonterminal) uncertainty rethrows so the
+    // bounded failure still surfaces instead of silently exiting.
+    const settled = await store.readJob(cwd, job.id).catch(() => null);
+    if (settled === null || !MANAGEMENT_TERMINAL_STATUSES.has(settled.status)) throw error;
+    return undefined;
+  }
+}
+
+/**
+ * The bounded lifecycle admission fence of the private Host-runner entry. It
+ * reuses the CURRENT epoch/receipt resolution machinery verbatim — the same
+ * `assertNoPendingPriorEpochReceipts` fence the reservation's locked critical
+ * section runs — against the reserved owner and the persisted origin workspace
+ * (the job's `rescueOriginWorkspace`, persisted by the reservation authority
+ * from the executor record's origin workspace and falling back to the runner
+ * cwd only for records that predate the provenance field):
+ * the session's pending prior-epoch receipt scan, the recorded-SessionStart
+ * anchor revalidation, and the job's own `ownerLifecycleEpoch` receipt read in
+ * ANY state (pending or settled). It therefore REJECTS dispatch when a matching
+ * SessionEnd receipt exists, when the epoch was superseded by a successor
+ * SessionStart, and fail closed whenever the authority evidence is unreadable;
+ * a durable stop intent and stale binding/generation/claim staleness stay
+ * enforced by the state layer this fence runs inside. The fence never requires
+ * a live Rescue Child or a current-turn capability (persisted exact child proof
+ * survives normal background child exit), never consults SubagentStop (not
+ * background stop authority), and never blocks on a worker lease. It is
+ * callable (a) at claim time, under the claim's own state lock, and (b)
+ * immediately before the final remote send, under the cancellation lock.
+ * @param {{dataRoot:string, workspace:string, job:any}} input
+ * @returns {() => Promise<void>}
+ */
+function hostRescueRunnerAdmissionGate({ dataRoot, workspace, job }) {
+  const sessionId = job.ownerSessionId; const ownerLifecycleEpoch = job.ownerLifecycleEpoch;
+  return async () => {
+    await assertNoPendingPriorEpochReceipts({ dataRoot, sessionId, workspace, ownerLifecycleEpoch });
+  };
+}
+
+/**
+ * Read and fully validate the one exact queued Host-owned background runner
+ * job: `rescueRunnerVersion` 1, a complete Host-owned background lifecycle
+ * trio, and a stored `rescueExecutionInput` revalidated against the closed
+ * schema. Everything else fails closed with a bounded error and no partial
+ * state.
+ * @param {any} store @param {string} cwd @param {string} jobId
+ */
+async function readRunnableHostRescueJob(store, cwd, jobId) {
+  const job = await store.readJob(cwd, jobId);
+  if (job.command !== 'rescue' || job.readOnly !== false
+    || job.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
+    || !validHostLifecycleRecord(job) || job.hostPlacement !== 'background'
+    || job.executionOwner !== 'host-child') throw hostRescueRunnerJobRejected('format');
+  if (job.status !== 'queued') throw hostRescueRunnerJobRejected('status');
+  // The durable record reader already enforces the stored shape; this second
+  // closed-schema validation is the execution-boundary gate.
+  const executionInput = validateRescueExecutionInput(job.rescueExecutionInput);
+  return { job, executionInput };
+}
+
+/**
+ * Derive the execution spec from the validated private input plus the exact
+ * stored continuation proof: a fresh reservation stays fresh, and a
+ * continuation resumes the exact anchor job's accepted session. There is no
+ * latest-session or latest-job lookup anywhere on this path.
+ * @param {any} store @param {string} cwd @param {any} job @param {Record<string,string>} executionInput
+ */
+async function hostRescueRunnerSpec(store, cwd, job, executionInput) {
+  const base = { command: 'rescue', task: executionInput.task,
+    ...(executionInput.model === undefined ? {} : { model: executionInput.model }),
+    ...(executionInput.effort === undefined ? {} : { effort: executionInput.effort }) };
+  const prior = job.rescueContinuationOrigin?.priorBinding ?? job.rescueMigrationRollback?.priorBinding;
+  if (prior === undefined) {
+    // Only legacy-shaped origins lack a prior binding, and none of them can
+    // ever carry the runner marker; a marked record with one is corruption.
+    if (job.rescueContinuationOrigin !== undefined || job.rescueMigrationRollback !== undefined) throw hostRescueRunnerJobRejected('format');
+    return normalizeSpec(base);
+  }
+  const candidateJobId = prior.anchorJobId;
+  if (typeof candidateJobId !== 'string' || !/^[a-f0-9]{64}$/u.test(candidateJobId)) throw hostRescueRunnerJobRejected('format');
+  const anchor = await store.readJob(cwd, candidateJobId);
+  if (typeof anchor?.zcodeSessionId !== 'string' || !isSafeIdentifier(anchor.zcodeSessionId)) throw hostRescueRunnerJobRejected('format');
+  return normalizeSpec({ ...base, resumeSessionId: anchor.zcodeSessionId, candidateJobId });
+}
+
+/** @param {'format'|'status'} reason */
+function hostRescueRunnerJobRejected(reason) {
+  return new PluginError('RESCUE_RUNNER_JOB_NOT_EXECUTABLE', 'The selected Rescue job is not a queued Host-owned background runner job.', {
+    category: 'authorization',
+    remedy: 'Public knowledge of a job ID is not execution authorization; start a new background Rescue from the active parent turn.',
+    details: { reason },
+  });
+}
+
 /** @param {any} context */
 async function executeWithWorkerLease(context) {
   let migrationRollback; let markerlessMigration = false;
@@ -1593,6 +1721,7 @@ async function executeWithWorkerLease(context) {
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
     let job; let spec = context.spec;
     let capabilityCommitted = context.executionCapability === undefined;
+    let admissionRejected = false;
     try {
       await context.dependencies?.testOnlyBeforeExecutionClaim?.();
       let executionInspection;
@@ -1613,7 +1742,11 @@ async function executeWithWorkerLease(context) {
         migrationRollback, executionAuthorization);
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
-        executionAuthorization, executionInspection);
+        executionAuthorization, executionInspection,
+        ...(context.admissionGate === undefined ? [] : [{ admissionGate: async (/** @type {any} */ claimed) => {
+          try { await context.admissionGate(claimed); }
+          catch (error) { admissionRejected = true; throw error; }
+        } }]));
       await context.dependencies?.testOnlyAfterStateClaimBeforeCapabilityCommit?.();
       if (context.executionCapability !== undefined) {
         await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected,
@@ -1623,7 +1756,12 @@ async function executeWithWorkerLease(context) {
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
-      const reconciliation = await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
+      // An admission rejection is a lifecycle boundary decision, not a failed
+      // execution attempt: the job stays queued (or already terminal under the
+      // boundary's own settlement) and the receipt/stop-intent convergence
+      // belongs to the boundary owner, so the claim-failure settlement must
+      // never relabel it failed.
+      const reconciliation = admissionRejected ? undefined : await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => undefined);
       if (!capabilityCommitted && context.executionCapability !== undefined && reconciliation?.kind === 'settled') {
@@ -1692,7 +1830,7 @@ async function executeReserved(context) {
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
     executeJobEntered = true;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; }, onRunningPersisted: () => { runningPersisted = true; }, ...(finishResumeFailure ? { onResumeFailure: convergeResumeFailure } : {}) });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, resolveRuntimeRecoveryConfig: (model) => readZCodeCliRuntimeModel({ env, ...(model ? { model } : {}) }), effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, ...(context.admissionGate === undefined ? {} : { sendAdmissionGate: context.admissionGate }), onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeRpcSucceeded: () => { resumeRpcSucceeded = true; }, onRunningPersisted: () => { runningPersisted = true; }, ...(finishResumeFailure ? { onResumeFailure: convergeResumeFailure } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
     const executionError = error instanceof ResumeFailureSettlementError ? error.executionError : error;
@@ -2121,13 +2259,16 @@ export async function deliverCompletionNotice(output, rendered, dependencies = {
 }
 
 export async function runCompanionCli(argv = process.argv.slice(2)) {
-  /** @type {any} */ let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  /** @type {any} */ let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const rescueRunner = entry === RESCUE_RUNNER_SUBCOMMAND; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const boundStatusDirect = argv.length === 2 && entry === 'invoke-status' && argv[1] === 'rescue';
   const rescueDirect = direct && argv[1] === 'rescue';
-  const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
+  // The detached runner is a background process: it must never read the fd3
+  // authorization envelope, install foreground signal handling, or publish a
+  // protected internal response — its selector is dispatched first.
+  const signalController = !setup && !worker && !rescueRunner ? createForegroundSignalController({ process }) : null;
   try {
-    const authorization = setup || roleStatus || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
-    const foregroundProgress = worker ? {} : {
+    const authorization = setup || roleStatus || direct || rescueRunner ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
+    const foregroundProgress = worker || rescueRunner ? {} : {
       ...(entry === 'prepare' ? { input: process.stdin, preparationTransport: { writeReady: (/** @type {string} */ line) => process.stdout.write(line) } } : {}),
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       ...(rescueDirect ? { progressRelayWriter: (/** @type {{sequence:number,phase:string,code:string,observedAt:string}} */ record) => process.stderr.write(serializeRescueProgressRelay(record)) } : {}),
@@ -2135,8 +2276,8 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
       ...(signalController ? { signal: signalController.signal } : {}),
     };
     output = direct ? await runDirectInvocation(argv, foregroundProgress) : await runCompanion(argv, { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
-    if (!setup && !roleStatus && !direct && !worker) await writeInternalResponse(output);
-    if (!worker) {
+    if (!setup && !roleStatus && !direct && !rescueRunner && !worker) await writeInternalResponse(output);
+    if (!worker && !rescueRunner) {
       const rendered = renderOutput(output);
       if (/** @type {any} */ (output)?.type === 'background-terminal' && /** @type {any} */ (output)?.job?.id && /** @type {any} */ (output)?.noticeTarget) {
         // OWNERSHIP-AWARE single-notice delivery (design 308-317): the durable
@@ -2157,7 +2298,7 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
       if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = !['setup', 'role-status', 'prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry) && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = !['setup', 'role-status', 'prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry) && !rescueRunner && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
   }
   finally { signalController?.cleanup(); }
 }

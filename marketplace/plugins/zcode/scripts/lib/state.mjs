@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, unlink } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { PluginError } from './errors.mjs';
@@ -111,6 +111,9 @@ export function createStateStore(options) {
     || options.testOnlyBindingPartitionMaxBytes < 1 || options.testOnlyBindingPartitionMaxBytes > RESCUE_BINDING_PARTITION_MAX_BYTES)) throw new TypeError('testOnlyBindingPartitionMaxBytes must be a positive bounded integer');
   const publicationHook = options.testOnlyPublicationHook ?? (async () => {});
   const bindingPartitionMaxBytes = options.testOnlyBindingPartitionMaxBytes ?? RESCUE_BINDING_PARTITION_MAX_BYTES;
+  // Captured at factory scope so the claim method's own optional arguments can
+  // never shadow the deterministic test-only write seam.
+  const executionClaimWriteOptions = options.testOnlyExecutionClaimWriteOptions;
 
   return {
     dataRoot,
@@ -381,7 +384,8 @@ export function createStateStore(options) {
         if (readOnlyPrevious !== null) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
-        const job = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput);
+        const job = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput,
+          reservationOriginWorkspace(input.executor));
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
@@ -439,7 +443,8 @@ export function createStateStore(options) {
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput);
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound', lifecycle, executionInput,
+          reservationOriginWorkspace(input.executor));
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const migrating = resolved.binding.state === 'closed';
@@ -767,15 +772,23 @@ export function createStateStore(options) {
     /**
      * Atomically validates one queued execution's current Rescue authority and claims its worker.
      * The private claim is the linearization point: a later binding close cannot retroactively
-     * revoke this attempt, while a close that wins first prevents the claim.
+     * revoke this attempt, while a close that wins first prevents the claim. The optional
+     * admission gate runs INSIDE this locked claim after the durable stop-intent check, so a
+     * caller-owned lifecycle fence (the Host-runner receipt/current-epoch admission) observes
+     * the exact record at the claim seam: a SessionEnd receipt published after reservation but
+     * before dispatch rejects the claim before any claim publication, fail closed.
      * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker
      * @param {any} [legacyRollback] @param {any} [executionAuthorization] @param {string} [expectedInspection]
+     * @param {{admissionGate?:(job:Record<string,unknown>)=>Promise<void>}} [options]
      */
-    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback, executionAuthorization, expectedInspection) {
+    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback, executionAuthorization, expectedInspection, options = {}) {
       validateWorkerClaimInput(workspace, jobId, worker);
       if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
         || !validExecutionAuthorization(executionAuthorization)
-        || expectedInspection !== undefined && !isDigest(expectedInspection)) throw invalidRescueBinding();
+        || expectedInspection !== undefined && !isDigest(expectedInspection)
+        || typeof options !== 'object' || options === null || Array.isArray(options)
+        || Object.getPrototypeOf(options) !== Object.prototype
+        || options.admissionGate !== undefined && typeof options.admissionGate !== 'function') throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
@@ -784,6 +797,10 @@ export function createStateStore(options) {
         // racing it always loses, so no send can be authorized after the stop.
         if (job.status === 'queued' && job.command === 'rescue' && job.readOnly === false
           && validStopIntent(job.stopIntent)) throw workerLeaseConflict(jobId);
+        // The caller's lifecycle admission fence runs here — inside the state
+        // lock, after the stop-intent check, and before any claim write — so the
+        // receipt/current-epoch decision is atomic with the claim itself.
+        await options.admissionGate?.(job);
         validateJobSpecExecutionAuthorization(job, executionAuthorization, legacyRollback);
         if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId
           && validRescueExecutionClaim(job.rescueExecutionClaim, job)) return job;
@@ -810,7 +827,7 @@ export function createStateStore(options) {
         const claimed = { ...job, ...worker, ...(rescueExecutionClaim ? { rescueExecutionClaim } : {}),
           updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
         validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
-        await atomicWriteJson(path, claimed, options.testOnlyExecutionClaimWriteOptions);
+        await atomicWriteJson(path, claimed, executionClaimWriteOptions);
         return claimed;
       });
     },
@@ -1439,8 +1456,8 @@ async function reserveJobLocked(storage, jobs, reservation) {
   return job;
 }
 
-/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [lifecycle] @param {Record<string,string>} [executionInput] @returns {any} */
-function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound', lifecycle = undefined, executionInput = undefined) {
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}} [lifecycle] @param {Record<string,string>} [executionInput] @param {string} [originWorkspace] @returns {any} */
+function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound', lifecycle = undefined, executionInput = undefined, originWorkspace = undefined) {
   validateReservation(reservation);
   if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
     throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
@@ -1456,9 +1473,36 @@ function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'un
     ...(reservation.command === 'rescue' && reservation.readOnly === false ? { rescueReservationKind } : {}),
     ...(lifecycle === undefined ? {} : lifecycle),
     ...(executionInput === undefined ? {} : { rescueRunnerVersion: RESCUE_RUNNER_VERSION, rescueExecutionInput: executionInput }),
+    ...(originWorkspace === undefined ? {} : { rescueOriginWorkspace: originWorkspace }),
     ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
     status: 'queued', createdAt: timestamp, updatedAt: timestamp,
   };
+}
+
+/**
+ * The origin-workspace provenance of one child-authorized reservation: the
+ * executor authority's `originWorkspace` — the parent session's workspace whose
+ * recorded SessionStart defines the lifecycle epoch this reservation derives
+ * from, even when the child executes in a linked execution workspace. Executed
+ * detached, the runner has no in-memory executor record, so this provenance is
+ * persisted on the initial job JSON and the runner's lifecycle admission fence
+ * resolves its epoch/receipt evidence against it. Same-workspace executor
+ * records without the provenance field keep historical job JSON
+ * byte-compatible, and a malformed value fails closed: provenance is either
+ * exact or absent, never approximate.
+ * @param {any} executor @returns {string|undefined}
+ */
+function reservationOriginWorkspace(executor) {
+  const origin = executor?.originWorkspace;
+  if (origin === undefined) return undefined;
+  if (!validCanonicalWorkspacePath(origin)) throw invalidRescueBinding();
+  return origin;
+}
+
+/** An absolute, normalized, bounded workspace path with no control characters. @param {unknown} value */
+function validCanonicalWorkspacePath(value) {
+  return typeof value === 'string' && isAbsolute(value) && normalize(value) === value
+    && Buffer.byteLength(value) <= 4096 && !/[\0\r\n]/u.test(value);
 }
 
 /**
@@ -3070,7 +3114,12 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     // must fail execution, never a historical job to reclassify.
     && (!('rescueExecutionInput' in job) || job.status === 'queued' && 'rescueRunnerVersion' in job
       && sameStoredRescueExecutionInput(job.rescueExecutionInput))
-    && (!('rescueRunnerVersion' in job) || job.status !== 'queued' || 'rescueExecutionInput' in job);
+    && (!('rescueRunnerVersion' in job) || job.status !== 'queued' || 'rescueExecutionInput' in job)
+    // The persisted origin-workspace provenance of a child-authorized
+    // reservation is reservation-immutable: it exists only on complete
+    // Host-owned records and is always the exact canonical parent workspace.
+    && (!('rescueOriginWorkspace' in job) || hasHostOwnedLifecycle(job)
+      && validCanonicalWorkspacePath(job.rescueOriginWorkspace));
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
   const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)
@@ -3192,6 +3241,9 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     if (!writableRescueJob || !STOP_CAUSES.has(stopCause) || nextStatus !== 'cancelled'
       || !validStopIntent(stopIntent) || stopIntent.cause !== stopCause) invalidFields.push('stopCause');
   }
+  // The origin-workspace provenance is written only by the reservation's own
+  // initial job JSON — no transition may add, change, or remove it.
+  if ('rescueOriginWorkspace' in patch) invalidFields.push('rescueOriginWorkspace');
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   if (boundaryFields.some((field) => field in patch)
     && (currentStatus !== 'running' || nextStatus !== 'running' || 'inputId' in job
