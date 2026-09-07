@@ -6,9 +6,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
+import { terminateRecordedProcessTree } from './process.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
+import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -86,7 +88,151 @@ function joinWorkerLease(directory, jobId, workerLeaseId) { return `${directory}
 /** @param {unknown} value */
 function isDigestValue(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
 
-/** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/**
+ * Terminate the exact recorded worker tree ONLY while its worker lease is still
+ * HELD: an acquirable (free) lease means the worker already exited and released,
+ * and the OS may have reused its pid — signaling it could kill an unrelated
+ * process group. A LOCK_TIMEOUT proves a live holder still owns the lease, so
+ * the recorded pid is still that worker. Records without a digest lease never
+ * signal.
+ * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number})=>Promise<unknown>} terminateProcessTree
+ */
+export async function terminateLeasedProcessTree(input, job, terminateProcessTree) {
+  if (!isDigestValue(job.workerLeaseId) || !Number.isSafeInteger(job.childPid) || job.childPid <= 0) return;
+  try {
+    await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => {
+      // The lease was FREE — the recorded worker already released it, so the
+      // recorded pid is no longer proven to be that worker. Never signal it.
+      return undefined;
+    });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') {
+      // A live holder still owns the lease: the recorded pid is still that
+      // worker's group leader — the exact recorded tree, safe to terminate.
+      // Local termination runs inside the caller's ABSOLUTE deadline when one
+      // is proven (the stale initial remote timeout would grant a fresh budget
+      // after the shared budget is already spent), capped at 750ms; when the
+      // deadline is already spent, the kill is skipped and the pending receipt
+      // remains the compensation authority. The remote-control signal never
+      // gates this local kill.
+      const absoluteDeadlineMs = typeof input.deadlineMs === 'number' && Number.isFinite(input.deadlineMs)
+        ? input.deadlineMs - Date.now()
+        : (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : 1_000);
+      const terminationBudgetMs = Math.min(absoluteDeadlineMs, 750);
+      if (terminationBudgetMs <= 0) return;
+      // Re-probe once immediately before signaling: the first LOCK_TIMEOUT may
+      // predate a scheduling gap in which the worker released its lease, exited,
+      // and its pid was reused — signaling then could hit an unrelated process.
+      // A second zero-timeout contention observation keeps the identity proof as
+      // close to the kill as the lease protocol allows. This two-probe window is
+      // the existing BEST-EFFORT identity policy, not an atomic OS process handle:
+      // a probe-to-signal race remains by design, and a free lease is never
+      // signaled.
+      try {
+        await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => undefined);
+        return;
+      } catch (reprobeError) {
+        if (!(reprobeError instanceof PluginError && reprobeError.code === 'LOCK_TIMEOUT')) throw reprobeError;
+      }
+      await terminateProcessTree(job.childPid, { timeoutMs: terminationBudgetMs });
+      // The lease is process-lifetime: it frees when the terminated executor is
+      // reaped. Wait (bounded by the same absolute deadline, polling ONLY the
+      // lease lock — never a state or cancellation lock) so a lease-acquiring
+      // settlement in the same pass converges instead of deferring to a retry.
+      const releaseDeadlineMs = typeof input.deadlineMs === 'number' && Number.isFinite(input.deadlineMs)
+        ? input.deadlineMs - Date.now()
+        : 300;
+      await waitForWorkerLeaseRelease(input, job, releaseDeadlineMs);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Poll the exact worker lease (zero-timeout acquisitions) until it releases or
+ * the bounded local budget expires. Each acquisition is immediately released,
+ * so this never blocks a live holder beyond one probe and never waits on
+ * anything but the lease lock. The poll delay honors the controller's
+ * injectable `setTimeout`/`clearTimeout` (falling back to the globals) so
+ * tests drive it deterministically like every other wait loop.
+ * @param {any} input @param {any} job @param {number} budgetMs
+ */
+async function waitForWorkerLeaseRelease(input, job, budgetMs) {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs <= 0) return;
+  const scheduleTimeout = input.setTimeout ?? globalThis.setTimeout;
+  const cancelTimeout = input.clearTimeout ?? globalThis.clearTimeout;
+  const deadline = Date.now() + Math.min(budgetMs, 750);
+  for (;;) {
+    let held = true;
+    try {
+      await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => { held = false; });
+    } catch (error) {
+      if (!(error instanceof PluginError && error.code === 'LOCK_TIMEOUT')) throw error;
+    }
+    if (!held) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await new Promise((resolve) => {
+      /** @type {any} */ let pollTimer;
+      pollTimer = scheduleTimeout(() => { cancelTimeout(pollTimer); resolve(undefined); }, Math.min(25, remaining));
+    });
+  }
+}
+
+/**
+ * Guarded local termination of one MARKED detached Rescue runner. The cleanup
+ * selection's exact identity must survive revalidation: the runner-format
+ * marker, this owner's writable Rescue job, the owner/epoch the caller settled
+ * for, and the unchanged executor PID + worker-lease claim — plus (inside the
+ * shared lease primitive) two nonblocking held-lease probes immediately around
+ * the signal. A free lease is never signaled, and an unmarked attached
+ * companion is NEVER targeted with detached process-group termination. The
+ * bounded local budget derives from the absolute `deadlineMs` only: a remote
+ * abort spends neither this duty nor the caller's locks. Every failure mode
+ * (unreadable record, identity mismatch, contended read) fails closed as
+ * non-termination; the durable cancelling/queued-stop evidence re-arms the
+ * duty for the next bounded pass. This mutates no job state: the marker/PID/
+ * lease stay preserved until the executor itself releases them.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void}} input
+ * @param {any} selection the durable record this cleanup was selected for
+ * @param {(pid:number,options:{timeoutMs?:number})=>Promise<unknown>} [terminateProcessTree]
+ * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'}>}
+ */
+export async function terminateMarkedRunnerTree(input, selection, terminateProcessTree = terminateRecordedProcessTree) {
+  // Marker requirement FIRST: absence means an attached/legacy record, whose
+  // process group may be the caller's own — never a termination target here.
+  if (!isPlainRecord(selection) || selection.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
+    || selection.command !== 'rescue' || selection.readOnly !== false) return { kind: 'unmarked' };
+  if (!isDigestValue(selection.workerLeaseId) || !Number.isSafeInteger(selection.childPid) || selection.childPid <= 0) return { kind: 'unproven' };
+  const remainingMs = Number.isSafeInteger(input.deadlineMs) && Number.isFinite(input.deadlineMs)
+    ? Math.max(0, /** @type {number} */ (input.deadlineMs) - Date.now())
+    : (Number.isSafeInteger(input.timeoutMs) && /** @type {number} */ (input.timeoutMs) >= 0 ? /** @type {number} */ (input.timeoutMs) : 1_000);
+  if (remainingMs <= 0) return { kind: 'budget-expired' };
+  // Identity revalidation reads the LATEST durable record under a bounded lock
+  // budget but never under the (possibly expired) remote-control signal: an
+  // unreadable or contended read fails closed without signaling.
+  let current = null;
+  try { current = await input.store.readJob(input.workspace, selection.id, { timeoutMs: Math.min(remainingMs, 500) }); }
+  catch { return { kind: 'not-proven' }; }
+  if (!isPlainRecord(current) || current.id !== selection.id
+    || current.ownerSessionId !== input.ownerSessionId
+    || current.command !== 'rescue' || current.readOnly !== false
+    || current.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
+    // Exact claim: the recorded executor PID + lease pair must be unchanged.
+    || current.childPid !== selection.childPid || current.workerLeaseId !== selection.workerLeaseId
+    || (typeof input.epoch === 'string' && current.ownerLifecycleEpoch !== input.epoch)
+    || (typeof selection.ownerLifecycleEpoch === 'string' && current.ownerLifecycleEpoch !== selection.ownerLifecycleEpoch)) {
+    return { kind: 'not-proven' };
+  }
+  await terminateLeasedProcessTree({ ...input, deadlineMs: input.deadlineMs, timeoutMs: remainingMs }, current, terminateProcessTree);
+  return { kind: 'settled' };
+}
+
+/** @param {unknown} value */
+function isPlainRecord(value) { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+
+/** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,terminateProcessTree?:(pid:number,options:{timeoutMs?:number})=>Promise<unknown>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   if (options.reconcile !== undefined && typeof options.reconcile !== 'function') throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'The lifecycle reconciliation seam must be a function.', { category: 'validation', remedy: 'Provide the Rescue Lifecycle Reconciler bound to one exact workspace owner.' });
@@ -524,6 +670,10 @@ async function performCancellation(input, attempts, election) {
     if (revalidated?.kind === 'stale') return revalidated.job;
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
+    // A failed remote stop never skips the marked-runner local termination duty;
+    // the retained cancelling guard below keeps the remote uncertainty durable
+    // for the next bounded pass (local death never upgrades remote state).
+    await terminateCancellationRunner(input, cancelling);
     const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
     // An unresolved Host-owned stop keeps its cancelling status and persisted
     // stop intent — the same retainUnresolvedEndedStop discipline as the
@@ -556,6 +706,11 @@ async function performCancellation(input, attempts, election) {
       ? { failedAttempt: attempt.attemptId, message, cause: error, retainedCancelling: true }
       : { failedAttempt: attempt.attemptId, message, cause: error };
   }
+  // Remote stop acknowledged: the marked detached runner is terminated now that
+  // the exact remote-control exit is durable, before the settlement re-read
+  // elects the winner. The helper is a guarded no-op for unmarked records and
+  // never signals a free-lease pid.
+  await terminateCancellationRunner(input, cancelling);
   const boundary = persistedTurnBoundary(cancelling);
   if (!boundary && job.command === 'rescue' && job.readOnly === false) return cancellationUncertain(input, attempts, attempt, cancelling,
     new Error('ZCode cancellation cannot be proven before the accepted turn boundary is durable.'));
@@ -598,6 +753,19 @@ async function settleClaimedQueuedCancellation(input, job, stopCause) {
   const workerLeaseId = effectiveQueuedWorkerLeaseId(current);
   if (!isDigestValue(workerLeaseId)) return current;
   const dataRoot = input.options.dataRoot ?? input.options.store.dataRoot;
+  // A claimed queued MARKED runner may be wedged before it ever observes the
+  // durable stop decision: terminate the identity-proven tree first (marker +
+  // exact owner/epoch/job/claim + two nonblocking held-lease probes; a free
+  // lease is never signaled and the unmarked attached companion is never a
+  // process-group target), so the lease-acquiring settlement below can win the
+  // released claim as cancelled — queued stopIntent -> kill -> acquire lease ->
+  // cancelled. An unmarked legacy claim keeps the existing defer-to-starting-
+  // worker behavior exactly.
+  if (current.rescueRunnerVersion === RESCUE_RUNNER_VERSION) {
+    await terminateMarkedRunnerTree({ store: input.options.store, dataRoot, workspace: input.workspace,
+      ownerSessionId: input.ownerSessionId, epoch: current.ownerLifecycleEpoch },
+    current, input.options.terminateProcessTree).catch(() => undefined);
+  }
   const rollback = await readQueuedRescueMigrationRollback({ dataRoot, workspace: input.workspace,
     job: current, store: input.options.store,
     invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
@@ -617,6 +785,27 @@ async function settleClaimedQueuedCancellation(input, job, stopCause) {
     }
     throw error;
   }
+}
+
+/**
+ * Perform the cancellation election's marked-runner cleanup duty on a remote-
+ * control exit. Failures are swallowed: the durable cancelling record (with its
+ * persisted stop intent) re-arms the same duty for owner recovery, reservation
+ * scavenging, and a later reconciliation pass — no separate cleanup ledger.
+ * @param {any} input @param {any} cancelling
+ */
+async function terminateCancellationRunner(input, cancelling) {
+  try {
+    return await terminateMarkedRunnerTree({
+      store: input.options.store,
+      dataRoot: input.options.dataRoot ?? input.options.store.dataRoot,
+      workspace: input.workspace,
+      ownerSessionId: input.ownerSessionId,
+      epoch: cancelling.ownerLifecycleEpoch,
+      ...(typeof input.options.setTimeout === 'function' ? { setTimeout: input.options.setTimeout } : {}),
+      ...(typeof input.options.clearTimeout === 'function' ? { clearTimeout: input.options.clearTimeout } : {}),
+    }, cancelling, input.options.terminateProcessTree);
+  } catch { return { kind: 'not-proven' }; }
 }
 
 /** Keep the cancellation lock and managed client alive while the admission gap converges. @param {any} input @param {any} job @param {any} guard */

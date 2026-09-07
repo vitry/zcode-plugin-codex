@@ -16,6 +16,7 @@ import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { cleanupSession, resolveRecordedSessionStart } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
+import { remoteRemainingBudgetFor, sessionEndBudgetMs } from './lib/session-end-budget.mjs';
 
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 const ownerReleaseRequestTimeoutMs = process.platform === 'win32' ? 1_000 : 500;
@@ -25,10 +26,14 @@ const ownerReleaseMaximumBudgetMs = 1_800;
 // single budget: its per-stage cap is min(cap, remaining), so the phase budgets
 // (500 + 600 + 1750 + 1400 + 500 = 4750ms) never sum against the deadline; the
 // deadline is the only hard stop, leaving >= 250ms before the native limit.
-const sessionEndBudgetMs = 2_750;
+// sessionEndBudgetMs, the remote stage's per-stage cap, and the marked-runner
+// local-termination RESERVE live in ./lib/session-end-budget.mjs: the remote
+// stage caps at (hookDeadline − reserve), so a remote timeout or unavailable
+// abort can never starve the independent remaining local cleanup budget (the
+// cleanup helper bounds itself by the absolute hookDeadline, never by the
+// remote signal).
 const receiptPublicationBudgetMs = 500;
 const identityCleanupBudgetMs = 600;
-const remoteSettlementBudgetMs = 1_750;
 const ownerReleaseBudgetMs = 1_400;
 const receiptSettlementBudgetMs = 500;
 
@@ -160,6 +165,7 @@ try {
           : await settleEndedRescueJob({
             store, dataRoot, workspace: obligation.workspace, ownerSessionId,
             epoch: receipt?.epoch ?? null, endedAt: receipt?.endedAt ?? null,
+            deadlineMs: hookDeadline,
             lockTimeoutMs: 0, requestTimeoutMs: existingBrokerRequestTimeoutMs,
             timeoutMs: remoteRemainingBudget(),
             signal: remoteController.signal, includeSettlementEvidence: true,
@@ -268,7 +274,7 @@ try {
     let fenceClean = true;
     try {
       const late = await discoverSessionEndObligations({
-        store, knownWorkspaces, ownerSessionId,
+        store, dataRoot, knownWorkspaces, ownerSessionId,
         epoch: receipt.epoch, endedAt: receipt.endedAt,
         signal: AbortSignal.timeout(Math.max(1, Math.min(250, hookDeadline - Date.now()))),
         timeoutMs: Math.max(1, Math.min(250, hookDeadline - Date.now())),
@@ -361,7 +367,7 @@ try {
 }
 
 function remoteRemainingBudget() {
-  return Math.max(0, Math.min(remoteSettlementBudgetMs, hookDeadline - Date.now()));
+  return remoteRemainingBudgetFor(hookDeadline, Date.now());
 }
 function ownerRemainingBudget() {
   return Math.max(0, Math.min(ownerReleaseBudgetMs, hookDeadline - Date.now()));

@@ -1049,3 +1049,90 @@ test('a non-Rescue agent_type SubagentStop is a quiet no-op', async (t) => {
   assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running', 'the live foreground Rescue is untouched');
 });
 
+
+// --- Task 7: reconciler-owned local runner termination at real hooks -------
+
+/** One claimed (optionally MARKED) Host-owned Rescue whose lease is held by a
+ * REAL detached lease-holding child recorded as the executor pid. */
+async function hostOwnedRunnerJob(ctx, { workspace, ownerSessionId, epoch, agent, remote, turn = 'turn',
+  placement, marked, status = 'running', holderLeaseId }) {
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const reservation = { workspace, ownerSessionId, ownerTurnId: turn, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'acceptEdits' } };
+  const executor = { parentSessionId: ownerSessionId, parentTurnId: turn, agentId: agent, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'acceptEdits' };
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation, executor, lifecycle,
+    ...(marked ? { executionInput: { version: 1, task: 'bounded private task' } } : {}) });
+  const workerLeaseId = holderLeaseId ?? reserved.job.id;
+  // A detached, self-grouped child that holds the lease with an explicitly
+  // referenced keep-alive timer, so "alive" and "holding" are one observable
+  // state: only an authorized process-tree termination can end it.
+  const moduleUrl = new URL('../../scripts/lib/recovery.mjs', import.meta.url).href;
+  const holder = `const { withWorkerLease } = await import(${JSON.stringify(moduleUrl)}); setInterval(() => {}, 1 << 30);`
+    + ` await withWorkerLease({ dataRoot: ${JSON.stringify(ctx.dataRoot)}, workspace: ${JSON.stringify(workspace)}, jobId: ${JSON.stringify(reserved.job.id)}, workerLeaseId: ${JSON.stringify(workerLeaseId)} }, () => new Promise(() => {}));`;
+  const worker = spawn(process.execPath, ['--input-type=module', '-e', holder], { detached: true, stdio: 'ignore' });
+  await new Promise((resolve) => worker.once('spawn', resolve));
+  worker.unref();
+  await waitFor(() => leaseLockHeld(ctx.dataRoot, workspace, reserved.job.id, workerLeaseId), 'the detached runner must acquire its worker lease');
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: worker.pid, workerLeaseId });
+  if (status === 'queued') return { store, job: claimed, workerLeaseId, holderPid: worker.pid };
+  let running = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: remote, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: `input-${agent}`, startRevision: 1, beforeMessageIds: [] });
+  return { store, job: running, workerLeaseId, holderPid: worker.pid };
+}
+
+test('SessionEnd terminates a claimed-queued marked runner tree and settles its receipt cancelled', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'runner-queue-owner');
+  const { store, job, holderPid } = await hostOwnedRunnerJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'runner-queue-owner', epoch, agent: 'runner-queue-child', remote: 'zs-runner-queue', placement: 'background', marked: true, status: 'queued' });
+  t.after(() => { try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the pass */ } });
+  assert.equal(isPidAlive(holderPid), true, 'the runner is alive before SessionEnd');
+  const started = Date.now();
+  const ended = await readHookSessionEnd(ctx, 'runner-queue-owner');
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3_000, `the bounded SessionEnd must stay within the native budget (took ${elapsed}ms)`);
+  assert.equal(ended.code, 0, ended.stderr);
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.equal(stored.status, 'cancelled', 'queued stopIntent -> kill -> acquire lease -> cancelled through the real hook');
+  assert.equal(stored.stopCause, 'session-end');
+  assert.equal('rescueExecutionInput' in stored, false);
+  assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists on the terminal record');
+  await waitFor(() => !isPidAlive(holderPid), 'the authorized stop must terminate the exact runner process tree');
+  assert.equal(await leaseLockHeld(ctx.dataRoot, canonicalWorkspace, job.id, job.id), false, 'the executor released its lease');
+  const receipt = await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).readReceipt(epoch);
+  assert.equal(receipt?.state, 'settled', 'the settled terminal obligation discharges the receipt');
+});
+
+test('SubagentStop without a receipt performs no process kill on a marked background runner', async (t) => {
+  const ctx = await fixture(t);
+  const backgroundDir = join(ctx.workspace, '..', 'loss-bg-runner-workspace');
+  await mkdir(backgroundDir, { recursive: true });
+  const cwd = await realpath(backgroundDir);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'loss-bg-runner', cwd);
+  await beginRescueTurn(ctx, 'loss-bg-runner', canonicalWorkspace);
+  const { store, job, holderPid, workerLeaseId } = await hostOwnedRunnerJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'loss-bg-runner', epoch, agent: 'loss-bg-runner-child', remote: 'zs-loss-bg-runner', placement: 'background', marked: true });
+  t.after(() => { try { process.kill(-holderPid, 'SIGKILL'); } catch { /* gone */ } });
+  await runSubagentHooks(ctx, { sessionId: 'loss-bg-runner', cwd: canonicalWorkspace, turn: 'turn', child: 'loss-bg-runner-child' });
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.equal(stored.status, 'running', 'a receipt-less SubagentStop never stops the background runner');
+  assert.equal(stored.stopIntent, undefined, 'no stop decision is durable for the observed background runner');
+  assert.equal(isPidAlive(holderPid), true, 'SubagentStop without a receipt performs no process kill');
+  assert.equal(await leaseLockHeld(ctx.dataRoot, canonicalWorkspace, job.id, workerLeaseId), true, 'the runner still owns its lease');
+});
+
+test('foreground coordination loss still stops its Rescue yet never signals an unmarked attached worker', async (t) => {
+  const ctx = await fixture(t);
+  const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'loss-fg-attach-owner');
+  await beginRescueTurn(ctx, 'loss-fg-attach-owner', canonicalWorkspace);
+  // UNMARKED (attached companion shape) foreground Rescue whose recorded worker
+  // is a real lease-holding process: the stop decision must persist while the
+  // detached process-group termination never targets the unmarked record.
+  const { store, job, holderPid, workerLeaseId } = await hostOwnedRunnerJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'loss-fg-attach-owner', epoch, agent: 'loss-fg-attach-child', remote: 'zs-loss-fg-attach', placement: 'foreground', marked: false });
+  t.after(() => { try { process.kill(-holderPid, 'SIGKILL'); } catch { /* gone */ } });
+  await runSubagentHooks(ctx, { sessionId: 'loss-fg-attach-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'loss-fg-attach-child' });
+  const stored = await store.readJob(canonicalWorkspace, job.id);
+  assert.ok(['cancelling', 'cancelled', 'failed'].includes(stored.status), `foreground coordination loss continues to stop (was ${stored.status})`);
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss', 'the coordination-loss decision is durable');
+  assert.equal(isPidAlive(holderPid), true, 'an unmarked attached record is never a detached process-group termination target');
+  assert.equal(await leaseLockHeld(ctx.dataRoot, canonicalWorkspace, job.id, workerLeaseId), true, 'the unmarked worker keeps its lease');
+});

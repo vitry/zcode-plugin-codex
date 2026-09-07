@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
-import { reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
+import { endedObligationSettled, reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
 import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -248,6 +248,8 @@ async function settleOutcome(input, createClient, ownerSessionId = 'owner-a') {
     store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
     ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient, signal: input.signal,
     includeSettlementEvidence: true,
+    ...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
+    ...(input.terminateProcessTree === undefined ? {} : { terminateProcessTree: input.terminateProcessTree }),
   });
 }
 
@@ -691,12 +693,12 @@ test('SessionEnd can stop through a reachable broker while the exact worker leas
   assert.equal(stops, 1);
 });
 
-test('SessionEnd propagates an abort observed by every successful client operation', async () => {
+test('SessionEnd propagates an abort before the durable decision and ends in the retained guard after it', async () => {
   for (const phase of ['create', 'read', 'stop', 'reread']) {
     const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input); const reason = Object.freeze({ phase });
     const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
     let reads = 0;
-    const settlement = settle(input, async (current) => {
+    const settlement = settleOutcome(input, async (current) => {
       abortAfter('create');
       return {
         readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return activeTurn(current.inputId, reads === 1 ? 'running' : 'paused'); },
@@ -704,10 +706,24 @@ test('SessionEnd propagates an abort observed by every successful client operati
         close: async () => {},
       };
     });
-    await assert.rejects(settlement, (error) => error === reason, phase);
-    // create/read abort before any durable intent; stop/reread abort after the
-    // intent persisted, so the durable guard is cancelling for those phases.
-    assert.equal((await input.store.readJob(input.workspace, value.id)).status, phase === 'create' || phase === 'read' ? 'running' : 'cancelling', phase);
+    if (phase === 'create' || phase === 'read') {
+      // An abort that outruns the durable stop decision propagates exactly: no
+      // authorized convergence exists yet, the record stays running, and the
+      // pending receipt remains the compensation authority.
+      await assert.rejects(settlement, (error) => error === reason, phase);
+      assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'running', phase);
+      continue;
+    }
+    // Task 7 joined order: once the durable decision exists, an expired
+    // remote-control budget never escapes as a throw — the pass ends in the
+    // retained guard ("remote timeout -> remaining local cleanup budget ->
+    // unresolved guard"), the local cleanup keeps its own independent
+    // remaining budget, and uncertainty never becomes a terminal claim.
+    const outcome = await settlement;
+    assert.equal(outcome.kind, 'retained-writable-guard', phase);
+    assert.equal(endedObligationSettled(outcome), false, `${phase}: a bare legacy cancelling guard without a durable intent never discharges the receipt`);
+    assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelling', phase);
+    assert.ok(!['cancelled', 'failed', 'succeeded'].includes((await input.store.readJob(input.workspace, value.id)).status), `${phase}: the expired budget never upgrades uncertainty to a terminal winner`);
   }
 });
 
@@ -967,4 +983,100 @@ test('competing SessionEnd and orphan recovery elect exactly one terminal settle
     const stored = await input.store.readJob(input.workspace, value.id);
     assert.equal(stops, 1, `iteration ${iteration}`); assert.equal(recoveryClients, 0, `iteration ${iteration}`); assert.equal(ended.status, 'cancelled'); assert.equal(recovered[0].status, 'cancelled'); assert.deepEqual(stored, ended);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Task 7: queued stop receipts stay pending until settled, a marked queued
+// stop converges intent -> kill -> acquire lease -> cancelled, and a delegated
+// cancelling job keeps blocking writable admission even after its receipt
+// discharges.
+// ---------------------------------------------------------------------------
+
+/** One claimed queued MARKED detached-runner Host-owned Rescue. */
+async function markedQueuedRunner(input, agent, childPid = 999_999_999) {
+  const executor = exactExecutor(input.workspace, agent);
+  const reserved = await input.store.reserveFreshRescueJob({
+    workspace: input.workspace,
+    reservation: { workspace: input.workspace, ownerSessionId: executor.parentSessionId,
+      ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor,
+    lifecycle: { ownerLifecycleEpoch: 'b'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' },
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const worker = { childPid, workerLeaseId: 'f'.repeat(64) };
+  const claimed = await input.store.claimJobWorkerForExecution(input.workspace, reserved.job.id, worker);
+  return { job: claimed, workerLeaseId: worker.workerLeaseId };
+}
+
+test('a marked queued stop converges kill -> lease -> cancelled and stays pending until settled', async () => {
+  const input = await fixture();
+  const { job, workerLeaseId } = await markedQueuedRunner(input, 'pending-queue-child');
+  /** @type {number[]} */ const kills = [];
+  const terminate = async (/** @type {number} */ pid) => { kills.push(pid); };
+  const noClient = async () => { throw new Error('a queued reservation has no remote session'); };
+  const first = await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId },
+    () => settleOutcome({ ...input, terminateProcessTree: terminate }, noClient));
+  assert.deepEqual(kills, [999_999_999], 'the durable queued stop intent drives the identity-proven local termination');
+  assert.equal(first.kind, 'retained-writable-guard', 'the settlement defers while the wedge is still holding its lease');
+  const queued = await input.store.readJob(input.workspace, job.id);
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.stopIntent?.cause, 'session-end');
+  assert.equal(endedObligationSettled(first), false, 'a queued stop intent does not discharge a receipt: it stays pending until settled');
+  const second = await settleOutcome({ ...input, terminateProcessTree: terminate }, noClient);
+  assert.equal(second.kind, 'confirmed-cancellation');
+  assert.equal(second.job.status, 'cancelled');
+  assert.equal(second.job.stopCause, 'session-end');
+  assert.deepEqual(kills, [999_999_999], 'the free lease on the retry pass is never signaled again (PID-reuse guard)');
+  assert.equal(endedObligationSettled(second), true, 'only the settled terminal discharges the receipt');
+  const released = await input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'other-owner', ownerTurnId: 'x', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
+  assert.equal(released.status, 'queued', 'the settled cancelled terminal releases the writable exclusion');
+});
+
+test('a delegated cancelling marked job discharges its receipt yet keeps blocking writable admission', async () => {
+  const input = await fixture();
+  const value = await hostOwnedJob(input, 'delegated-cancelling-child');
+  const { hostOwnedStopIntentPatch } = await import('../scripts/lib/rescue-binding.mjs');
+  const current = await input.store.readJob(input.workspace, value.id);
+  const cancelling = await input.store.transitionJob(input.workspace, value.id, ['running'], 'cancelling',
+    hostOwnedStopIntentPatch(current, 'session-end'));
+  const discharged = { kind: 'retained-writable-guard', job: cancelling };
+  assert.equal(endedObligationSettled(discharged), true,
+    'a cancelling job with the exact durable stop intent discharges the receipt without claiming stopped');
+  await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'next-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'receipt discharge never releases the writable guard: admission stays blocked until authoritative settlement');
+});
+
+// ---------------------------------------------------------------------------
+// The SessionEnd remote stage must never draw from the final slice of the
+// shared hook deadline: remoteRemainingBudgetFor pins the cap at
+// (deadline − 750ms local-termination reserve − now), so a remote stage that
+// spends its ENTIRE capped budget still leaves exactly the reserve for the
+// marked-runner local termination and the remaining cleanup. The expectations
+// below are literal constants on purpose — deriving them from the imported
+// constants would let a reserve regression pass silently.
+// ---------------------------------------------------------------------------
+
+test('the remote stage budget caps at the deadline minus the 750ms local-termination reserve', async () => {
+  const { remoteRemainingBudgetFor } = await import('../hooks/lib/session-end-budget.mjs');
+  const start = 3_000_000;
+  const deadline = start + 2_750; // sessionEndBudgetMs
+  // Early passes are capped by the remote stage budget alone (1750ms): the
+  // reserve is not yet binding while fewer than 250ms have been spent.
+  assert.equal(remoteRemainingBudgetFor(deadline, start), 1_750);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 250), 1_750);
+  // From 250ms of spent budget onward the reserve binds: the cap equals
+  // (deadline − 750 − now), never the plain remaining deadline.
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 251), 1_749);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_000), 1_000);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_999), 1);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 2_000), 0);
+  // A remote stage that hangs until its cap fires ends exactly at
+  // (deadline − 750) and leaves EXACTLY the 750ms reserve for cleanup.
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline - 750), 0);
+  assert.equal(deadline - (deadline - 750), 750);
+  // A deadline that is already spent clamps at zero — never a negative budget.
+  assert.equal(remoteRemainingBudgetFor(deadline - 5_000, start), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline + 1), 0);
 });

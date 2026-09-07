@@ -9,6 +9,14 @@ import { HOST_PLACEMENTS, STOP_CAUSES } from './rescue-binding.mjs';
  * pure orchestrator over injected internal adapters: it never touches the
  * filesystem, the broker, or the store itself, and it never turns an uncertain
  * stop into a terminal claim or releases a writable guard on elapsed time.
+ *
+ * Stop-settled passes additionally own the marked detached-runner cleanup
+ * order: the exact remote stop/reread first, then the optional
+ * `terminateMarkedRunner` seam (identity revalidation plus bounded local
+ * termination inside the two nonblocking lease probes owned by the adapter
+ * implementation), then the lease-acquiring terminal election or the retained
+ * guard. Callers that never supply the seam (attached foreground management)
+ * keep the pre-Task-7 settlement exactly.
  */
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -26,7 +34,9 @@ const ADAPTER_NAMES = Object.freeze([
 ]);
 
 /**
- * @param {any} adapters Internal lifecycle adapters; extra non-adapter properties are ignored.
+ * @param {any} adapters Internal lifecycle adapters. `terminateMarkedRunner` is
+ * an optional cleanup seam (validated as a function when supplied); every
+ * other adapter is required. Extra non-adapter properties are ignored.
  * @returns {{ reconcile: (request: any) => Promise<any> }}
  */
 export function createRescueLifecycleReconciler(adapters) {
@@ -47,8 +57,15 @@ async function reconcile(adapters, request) {
   const joined = await adapters.loadJoinedState(request);
   request.signal?.throwIfAborted();
   validateJoinedState(joined);
-  if (joined.winner) return racedOutcome(joined.winner, joined);
   const cause = stopCauseFor(joined, request.intent);
+  if (joined.winner) {
+    // A terminal record may still carry a marked runner whose process-lifetime
+    // lease is held while the executor finalizes its exit. On an authorized
+    // stop pass the terminal early return never drops that cleanup duty; a
+    // mere view (observation without stop authority) performs no process kill.
+    if (cause !== null) await runRunnerCleanup(adapters, joined, { done: false });
+    return racedOutcome(joined.winner, joined);
+  }
   if (cause !== null) return stopAndSettle(adapters, joined, cause, request.signal);
   if (joined.job?.status === 'cancelling' && joined.stopIntent) {
     return stopAndSettle(adapters, joined, joined.stopIntent.cause, request.signal);
@@ -78,10 +95,15 @@ function stopCauseFor(joined, intent) {
 /**
  * Own the stop mutation order: persist the durable stop intent first, then
  * revalidate the exact generation, then stop and reread the exact remote turn
- * through the cancellation election. Natural success wins the race, an
+ * through the cancellation election, terminating the marked detached runner
+ * after the remote-control exit (and before the lease-acquiring terminal
+ * election), then elect the winner. Natural success wins the race, an
  * acknowledged stop with coherent interruption or failure evidence publishes
  * the cancelled winner with its Stop Cause, and every uncertain outcome keeps
- * the writable guard without a terminal claim.
+ * the writable guard without a terminal claim. Once the durable decision
+ * exists, an expired remote-control budget never skips the local cleanup duty
+ * or escapes as a throw: the pass ends in the retained guard so the adapter
+ * consumes only its own remaining local budget.
  * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal]
  */
 async function stopAndSettle(adapters, joined, cause, signal) {
@@ -92,16 +114,36 @@ async function stopAndSettle(adapters, joined, cause, signal) {
     if (persisted?.kind !== 'persisted' || !isPlainObject(persisted.job)) throw invalidStopIntentPersistence();
     joined = { ...joined, job: persisted.job, stopIntent: persisted.job.stopIntent ?? null };
   }
-  signal?.throwIfAborted();
-  if (joined.job?.status === 'queued') {
-    const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause) }, { signal });
-    return publishedOutcome(winner, joined);
+  // The durable stop decision now exists: everything after it is the settled
+  // convergence, whose aborts end in the retained guard (never a lost cleanup
+  // duty and never a terminal claim on uncertainty).
+  const runnerCleanup = { done: false };
+  try {
+    signal?.throwIfAborted();
+    if (joined.job?.status === 'queued') {
+      // A claimed queued runner holds its exact process-lifetime lease: the
+      // lease-acquiring settlement can only win after the marked runner is
+      // terminated, so bounded local termination precedes the cancelled
+      // publication (queued stopIntent -> kill -> acquire lease -> cancelled).
+      // An unclaimed or unmarked record makes the adapter seam a guarded no-op.
+      await runRunnerCleanup(adapters, joined, runnerCleanup);
+      const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause) }, { signal });
+      return publishedOutcome(winner, joined);
+    }
+    // Persist-before-control: a Host-owned record may reach remote control only
+    // through its durable stop intent; legacy records authorize through their
+    // durable cancelling transition instead.
+    if (joined.hostOwned !== false && !joined.stopIntent) throw invalidStopIntentPersistence();
+    return await settleRemoteEvidence(adapters, joined, cause, signal, undefined, runnerCleanup);
+  } catch (error) {
+    // Only a genuine budget/caller abort that outran the durable decision
+    // converges here: the local cleanup keeps its independent remaining budget
+    // (the adapter must not gate the kill on this expired signal), and the
+    // unresolved remote state stays a retained guard for the next bounded pass.
+    if (signal?.aborted !== true || error !== signal.reason) throw error;
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return { kind: 'unresolved-stop', status: joined.job?.status };
   }
-  // Persist-before-control: a Host-owned record may reach remote control only
-  // through its durable stop intent; legacy records authorize through their
-  // durable cancelling transition instead.
-  if (joined.hostOwned !== false && !joined.stopIntent) throw invalidStopIntentPersistence();
-  return settleRemoteEvidence(adapters, joined, cause, signal);
 }
 
 /**
@@ -111,20 +153,39 @@ async function stopAndSettle(adapters, joined, cause, signal) {
  * cause — while attributable active evidence proceeds to the exact remote stop
  * and reread. Anything unreadable, unavailable, or non-attributable retains
  * the guard; an unavailable executor is archived only when the adapter can
- * safely prove its absence.
- * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard]
+ * safely prove its absence. Every remote-control exit performs the optional
+ * marked-runner cleanup: before the decision when the decision itself depends
+ * on the post-kill lease state or is caused by this stop (unavailable,
+ * unreadable, retained uncertainty, stop-caused cancellation), and after the
+ * publication for a natural durable winner (which still never excuses
+ * skipping a still-held marked runner lease). The pass that attempts no remote
+ * control (evidence `none`) defers the duty to the pass that does.
+ * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard] @param {{done: boolean}} [runnerCleanup]
  */
-async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined) {
+async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true }) {
   signal?.throwIfAborted();
   const remote = joined.remote;
+  // No remote control was attempted on this pass: neither terminate nor
+  // publish — the durable stop intent already recorded owns the boundary and a
+  // later pass joins the real remote evidence.
   if (!remote || remote.kind === 'none') return retainedOutcome(adapters, joined, undefined, signal);
   if (remote.kind === 'unavailable') {
+    // Remote-control exit (channel failure): terminate the marked runner first
+    // so the executor-absence decision sees the post-cleanup lease state —
+    // archival still requires the adapter to prove the lease free.
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
     const settled = await adapters.settleUnavailableExecutor(joined, { error: remote.error }, { signal });
     return settledOutcome(settled, joined);
   }
-  if (remote.kind === 'unreadable') return retainedOutcome(adapters, joined, remote.error, signal);
+  if (remote.kind === 'unreadable') {
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return retainedOutcome(adapters, joined, remote.error, signal);
+  }
   if (remote.classification === 'succeeded') {
+    // Natural success: the durable winner first, then the residual local
+    // cleanup duty for a still-held marked runner lease.
     const winner = await adapters.publishWinner(joined, { status: 'succeeded', classification: 'succeeded', snapshot: remote.snapshot }, { signal });
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
     return publishedOutcome(winner, joined);
   }
   if (remote.classification === 'failed' && guard === undefined) {
@@ -134,20 +195,47 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // acknowledged stop remains the cancelled race winner below.
     const winner = await adapters.publishWinner(joined, { status: 'failed', classification: 'failed', snapshot: remote.snapshot,
       message: 'ZCode reported a terminal error before the stop could be attempted.' }, { signal });
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
     return publishedOutcome(winner, joined);
   }
   if (remote.classification === 'interrupted' || remote.classification === 'failed') {
-    const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), classification: remote.classification, snapshot: remote.snapshot }, { signal });
+    const publish = () => adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), classification: remote.classification, snapshot: remote.snapshot }, { signal });
+    if (guard === undefined && remote.classification === 'interrupted') {
+      // First-level interrupted evidence precedes any stop attempt: publish the
+      // settlement this evidence already supports, then run the cleanup duty.
+      const winner = await publish();
+      await runRunnerCleanup(adapters, joined, runnerCleanup);
+      return publishedOutcome(winner, joined);
+    }
+    // A stop-caused race winner settles through the lease-aware publication,
+    // which re-reads the exact record after the local termination: the winner
+    // or the retained guard decides from post-cleanup evidence.
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    const winner = await publish();
     return publishedOutcome(winner, joined);
   }
-  if (!(remote.active && remote.attributable)) return retainedOutcome(adapters, joined, undefined, signal);
-  if (guard !== undefined) return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+  if (!(remote.active && remote.attributable)) {
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return retainedOutcome(adapters, joined, undefined, signal);
+  }
+  if (guard !== undefined) {
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+  }
   const revalidated = await adapters.revalidateGeneration(joined, { signal });
-  if (revalidated?.kind === 'stale') return racedOutcome(revalidated.winner, { ...joined, resumableEvidence: refreshedEvidence(revalidated) });
+  if (revalidated?.kind === 'stale') {
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return racedOutcome(revalidated.winner, { ...joined, resumableEvidence: refreshedEvidence(revalidated) });
+  }
   signal?.throwIfAborted();
   const stopping = { ...joined, job: revalidated?.job ?? joined.job };
   const stop = await adapters.stopExactTurn(stopping, { signal, guard: revalidated?.guard });
-  if (!stop?.acknowledged) return retainedOutcome(adapters, stopping, stop?.error, signal);
+  if (!stop?.acknowledged) {
+    // A failed stop never skips the local termination duty; the retained guard
+    // keeps the remote uncertainty durable for the next bounded pass.
+    await runRunnerCleanup(adapters, stopping, runnerCleanup);
+    return retainedOutcome(adapters, stopping, stop?.error, signal);
+  }
   if (isPlainObject(stop.preExistingTerminal)) {
     // A terminal outcome observed by the adapter BEFORE issuing the stop keeps
     // its own semantics: natural success publishes its result; an engine
@@ -157,10 +245,32 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
       ? { status: 'succeeded', classification: 'succeeded', snapshot: evidence.snapshot }
       : { status: 'failed', classification: 'failed', snapshot: evidence.snapshot,
           message: 'ZCode reported a terminal error before the stop could be attempted.' }, { signal });
+    await runRunnerCleanup(adapters, stopping, runnerCleanup);
     return publishedOutcome(winner, stopping);
   }
   const reread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
-  return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal, revalidated?.guard ?? null);
+  return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal, revalidated?.guard ?? null, runnerCleanup);
+}
+
+/**
+ * Perform the reconciler-owned marked-runner cleanup exactly once per stop
+ * pass. The adapter revalidates the durable record itself — runner-format
+ * marker, exact owner/epoch/job/claim, and two nonblocking held-lease probes —
+ * and signals only within its own remaining local deadline (best-effort
+ * identity by design: a probe-to-signal race remains, and a free lease is
+ * never signaled). The remote-control signal never gates this duty, and a
+ * cleanup failure never replaces the settlement outcome: the durable
+ * cancelling/queued-stop evidence re-arms the duty for the next bounded pass.
+ * @param {any} adapters @param {any} joined @param {{done: boolean}} state
+ */
+async function runRunnerCleanup(adapters, joined, state) {
+  if (state.done || typeof adapters.terminateMarkedRunner !== 'function') {
+    state.done = true;
+    return;
+  }
+  state.done = true;
+  try { await adapters.terminateMarkedRunner(joined, {}); }
+  catch { /* retained uncertainty is the durable retry authority */ }
 }
 
 /**
@@ -304,10 +414,11 @@ function invalidStopIntentPersistence() {
 
 /** @param {any} adapters */
 function validateAdapters(adapters) {
-  if (!isPlainObject(adapters) || !ADAPTER_NAMES.every((name) => typeof adapters[name] === 'function')) {
+  if (!isPlainObject(adapters) || !ADAPTER_NAMES.every((name) => typeof adapters[name] === 'function')
+    || (adapters.terminateMarkedRunner !== undefined && typeof adapters.terminateMarkedRunner !== 'function')) {
     throw new PluginError('RESCUE_LIFECYCLE_ADAPTERS_INVALID', 'The Rescue lifecycle reconciler requires all of its internal adapters.', {
       category: 'configuration',
-      remedy: `Provide exactly the adapter functions: ${ADAPTER_NAMES.join(', ')}.`,
+      remedy: `Provide the adapter functions: ${ADAPTER_NAMES.join(', ')}${' (plus an optional terminateMarkedRunner cleanup seam)'}.`,
       details: { adapters: ADAPTER_NAMES },
     });
   }

@@ -195,25 +195,40 @@ export function renderInternalOutput(value) { return `${JSON.stringify(value)}\n
 /** The queued acknowledgement's closed job identity: one 64-hex digest id. */
 const QUEUED_JOB_ID = /^[a-f0-9]{64}$/u;
 
+/** The only Result/Status invocations a queued acknowledgement may name (design 199-212). */
+const QUEUED_RESULT_COMMAND = '$zcode:result';
+const QUEUED_STATUS_COMMAND = '$zcode:status';
+
 /**
  * Reconstruct the bounded public queued acknowledgement (design 174-175,
  * 198-212) from validated values only. This is an allowlist projection, not
  * a secret-name filter: any unrecognized field — at either the response or
  * the job level — is dropped, never copied, because a denylist cannot know
  * the names a future producer leak might use. The response is discriminated
- * precisely: only a `type: 'background'` view carrying both string command
- * fields is the new closed acknowledgement; the legacy attached-background
- * response (no such fields) keeps its existing full-job redaction path. A
- * discriminated shape whose identity fields fail validation is a broken
- * producer contract and fails closed rather than falling back to the
- * delete-list.
+ * precisely by the command fields' presence: both must be the exact
+ * `$zcode:result`/`$zcode:status` transport literals for the closed
+ * reconstruction to apply — arbitrary strings are never copied into any
+ * transport. A partially present discriminator (one field only) or a
+ * response that is otherwise exactly the closed queued shape with both
+ * discriminators dropped is a broken producer contract and fails closed
+ * with a bounded error: falling back to the legacy delete-list path could
+ * let unknown private fields leak. Only the legacy attached-background
+ * response (no command fields, a full public job projection that never
+ * equals the closed four-field shape) keeps its existing redaction path.
  * @param {any} value @returns {any|null}
  */
 function queuedAcknowledgementView(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'background') return null;
-  if (typeof value.resultCommand !== 'string' || typeof value.statusCommand !== 'string') return null;
-  const job = value.job;
+  const hasResultCommand = Object.hasOwn(value, 'resultCommand');
+  const hasStatusCommand = Object.hasOwn(value, 'statusCommand');
+  if (!hasResultCommand && !hasStatusCommand) {
+    return isStrippedQueuedAcknowledgement(value)
+      ? invalidQueuedAcknowledgement(['resultCommand', 'statusCommand']) : null;
+  }
   /** @type {string[]} */ const invalidFields = [];
+  if (value.resultCommand !== QUEUED_RESULT_COMMAND) invalidFields.push('resultCommand');
+  if (value.statusCommand !== QUEUED_STATUS_COMMAND) invalidFields.push('statusCommand');
+  const job = value.job;
   if (!job || typeof job !== 'object' || Array.isArray(job)) invalidFields.push('job');
   else {
     if (job.command !== 'rescue') invalidFields.push('command');
@@ -221,17 +236,38 @@ function queuedAcknowledgementView(value) {
     if (typeof job.id !== 'string' || !QUEUED_JOB_ID.test(job.id)) invalidFields.push('id');
     if (!validTimestamp(job.createdAt)) invalidFields.push('createdAt');
   }
-  if (invalidFields.length > 0) {
-    throw new PluginError('RESCUE_QUEUED_RESPONSE_INVALID', 'The reserved Rescue job cannot be projected as a queued acknowledgement.', {
-      category: 'state', remedy: 'Inspect the reserved job through Status and Result.', details: { invalidFields },
-    });
-  }
+  if (invalidFields.length > 0) return invalidQueuedAcknowledgement(invalidFields);
   return {
     type: 'background',
-    job: { id: /** @type {any} */ (job).id, command: 'rescue', status: 'queued', createdAt: /** @type {any} */ (job).createdAt },
+    job: { id: job.id, command: 'rescue', status: 'queued', createdAt: job.createdAt },
     resultCommand: value.resultCommand,
     statusCommand: value.statusCommand,
   };
+}
+
+/**
+ * Detect a response that is otherwise exactly the closed queued
+ * acknowledgement but lost both command discriminators — a broken queued
+ * producer, never a legacy attachment: every legacy projection carries a
+ * full public job (more than the four closed job fields) or additional
+ * response fields, so historical shapes are never rejected here.
+ * @param {any} value @returns {boolean}
+ */
+function isStrippedQueuedAcknowledgement(value) {
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('type') || !keys.includes('job')) return false;
+  const job = value.job;
+  if (!job || typeof job !== 'object' || Array.isArray(job) || Object.keys(job).length !== 4) return false;
+  return job.command === 'rescue' && job.status === 'queued'
+    && typeof job.id === 'string' && QUEUED_JOB_ID.test(job.id)
+    && validTimestamp(job.createdAt);
+}
+
+/** The bounded error every malformed queued response fails closed with. @param {string[]} invalidFields @returns {never} */
+function invalidQueuedAcknowledgement(invalidFields) {
+  throw new PluginError('RESCUE_QUEUED_RESPONSE_INVALID', 'The reserved Rescue job cannot be projected as a queued acknowledgement.', {
+    category: 'state', remedy: 'Inspect the reserved job through Status and Result.', details: { invalidFields },
+  });
 }
 
 /** @param {any} value @returns {any|null} */

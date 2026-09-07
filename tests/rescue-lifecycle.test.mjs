@@ -29,7 +29,8 @@ const HOST_STATES = ['active', 'idle', 'notLoaded', 'systemError', 'absent'];
  *   stopAcknowledged?: boolean, jobStatus?: 'queued'|'running'|'cancelling', persistedStopCause?: string,
  *   winner?: 'succeeded'|'failed'|'cancelled', winnerStopCause?: string, staleAt?: 'revalidate', staleWinner?: string,
  *   persistConflict?: string, archiveOutcome?: 'failed', hostOwned?: boolean, acceptedSession?: boolean,
- *   bindingCurrent?: boolean, permissionMatch?: boolean }} [overrides]
+ *   bindingCurrent?: boolean, permissionMatch?: boolean,
+ *   terminateRunner?: 'record'|'throws', abortController?: AbortController, rereadAbort?: boolean }} [overrides]
  */
 function fixtureAdapters(overrides = {}) {
   const options = {
@@ -102,6 +103,11 @@ function fixtureAdapters(overrides = {}) {
     },
     rereadRemote: async () => {
       events.push('reread-remote');
+      if (options.rereadAbort) {
+        const reason = new Error('the remote-control budget expired during the reread');
+        options.abortController?.abort(reason);
+        throw reason;
+      }
       if (options.remote === 'unreadable') return { kind: 'unreadable', error: new Error('remote state could not be reread') };
       if (options.remote === 'pending') return { kind: 'evidence', classification: 'pending', active: true, attributable: true };
       return { kind: 'evidence', classification: options.remote, active: false, attributable: true };
@@ -119,6 +125,15 @@ function fixtureAdapters(overrides = {}) {
       return options.archiveOutcome === 'failed' ? { status: 'failed' } : joined.job;
     },
   };
+
+  // The optional marked-runner cleanup adapter (Task 7): present only when the
+  // fixture selects it, proving callers without the seam keep today's behavior.
+  if (options.terminateRunner) {
+    adapters.terminateMarkedRunner = async () => {
+      events.push('terminate-marked-runner');
+      if (options.terminateRunner === 'throws') throw new Error('injected runner cleanup failure');
+    };
+  }
 
   Object.defineProperties(adapters, {
     adapters: { value: adapters },
@@ -497,6 +512,144 @@ test('an unpersisted stop intent never enables lifecycle control', async () => {
     assert.equal(fixture.events.includes('revalidate-generation'), false, String(index));
     assert.equal(fixture.events.some((event) => event.startsWith('publish-')), false, String(index));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Task 7 joined-state order: receipt/stop intent -> generation revalidation ->
+// remote stop/reread -> marked runner identity revalidation -> bounded local
+// termination -> exact lease acquisition and re-read -> winner or retained
+// guard. The cleanup adapter is the reconciler-driven seam; the adapter
+// implementations (recovery/job-control) own the marker/identity/lease probes.
+// ---------------------------------------------------------------------------
+
+test('an active stop terminates the marked runner between the reread and the cancelled winner', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', remote: 'interrupted' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'session-end', resumable: true });
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+});
+
+test('a remote timeout keeps the local cleanup budget and ends in the retained guard', async () => {
+  const events = [];
+  const controller = new AbortController();
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', abortController: controller, rereadAbort: true });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace, signal: controller.signal });
+  // The expired remote-control signal never skips the local termination duty:
+  // cleanup runs with its own remaining budget and the unresolved remote state
+  // keeps the guard — never a terminal claim.
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' });
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner']);
+  assert.equal(events.some((event) => event.startsWith('publish-')), false);
+});
+
+test('natural success publishes the durable winner before the marked-runner cleanup', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', remote: 'succeeded' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'succeeded', resumable: true });
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'publish-succeeded', 'terminate-marked-runner']);
+});
+
+test('a claimed queued runner is terminated after the durable stop intent and before the lease-acquiring cancel', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', jobStatus: 'queued', remote: 'interrupted' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: false });
+  // queued live claim -> queued stopIntent -> kill -> acquire lease -> cancelled
+  assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner', 'publish-cancelled']);
+});
+
+test('the unavailable remote-control exit terminates the marked runner before the executor-absence decision', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', loadRemote: 'unavailable', archiveOutcome: 'failed' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'failed', resumable: true });
+  assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner', 'settle-unavailable']);
+});
+
+test('an unacknowledged stop still terminates the marked runner and retains the guard', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', stopAcknowledged: false });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' });
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'terminate-marked-runner', 'retain-unresolved']);
+});
+
+test('the terminal early return keeps the marked-runner cleanup duty under stop authority', async () => {
+  const stopEvents = [];
+  const stopFixture = fixtureAdapters({ events: stopEvents, terminateRunner: 'record', winner: 'succeeded', host: 'absent', placement: 'background', receipt: 'matching' });
+  const stopOutcome = await createRescueLifecycleReconciler(stopFixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(stopOutcome, { kind: 'settled-terminal', status: 'succeeded', resumable: true });
+  assert.deepEqual(stopEvents, ['terminate-marked-runner'], 'a raced terminal winner never drops the still-held runner cleanup duty on an authorized pass');
+
+  const observeEvents = [];
+  const observeFixture = fixtureAdapters({ events: observeEvents, terminateRunner: 'record', winner: 'succeeded', host: 'active', placement: 'foreground', receipt: null });
+  const observeOutcome = await createRescueLifecycleReconciler(observeFixture.adapters).reconcile({ intent: { kind: 'wait' }, authority, workspace });
+  assert.deepEqual(observeOutcome, { kind: 'settled-terminal', status: 'succeeded', resumable: true });
+  assert.deepEqual(observeEvents, [], 'a mere view of a terminal record performs no process kill');
+});
+
+test('passes without a remote-control attempt or stop authority never terminate the runner', async () => {
+  // Management persist-before-control first pass: remote 'none' retains without
+  // any local termination — the exact remote stop owns the boundary this pass.
+  const noneEvents = [];
+  const noneFixture = fixtureAdapters({ events: noneEvents, terminateRunner: 'record', loadRemote: 'none', remote: 'interrupted' });
+  assert.deepEqual(await createRescueLifecycleReconciler(noneFixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace }), { kind: 'unresolved-stop', status: 'cancelling' });
+  assert.deepEqual(noneEvents, ['persist-stop-intent', 'retain-unresolved']);
+
+  // Ordinary background observation after child exit: no kill, no stop.
+  const observeEvents = [];
+  const observeFixture = fixtureAdapters({ events: observeEvents, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: null, remote: 'running' });
+  assert.deepEqual(await createRescueLifecycleReconciler(observeFixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace }), { kind: 'wait-current', status: 'running' });
+  assert.deepEqual(observeEvents, []);
+
+  // An older-epoch receipt grants neither stop nor cleanup authority.
+  const olderEvents = [];
+  const olderFixture = fixtureAdapters({ events: olderEvents, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'older', remote: 'running' });
+  assert.deepEqual(await createRescueLifecycleReconciler(olderFixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace }), { kind: 'wait-current', status: 'running' });
+  assert.deepEqual(olderEvents, []);
+});
+
+test('a persisted cancelling stop intent replays the runner cleanup without minting a new intent', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', jobStatus: 'cancelling', persistedStopCause: 'session-end', host: 'absent', placement: 'background', receipt: null, remote: 'pending' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  // A receipt-less observation of a durable cancelling record still retries the
+  // cleanup duty — durable cancelling-job evidence is the retry authority.
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' });
+  assert.equal(events.includes('persist-stop-intent'), false);
+  assert.deepEqual(events, ['revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'retain-unresolved']);
+});
+
+test('a cleanup adapter failure never replaces the settlement outcome', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, terminateRunner: 'throws', jobStatus: 'queued', remote: 'interrupted' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: false });
+  assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner', 'publish-cancelled']);
+});
+
+test('a stop without any durable decision still propagates an expired budget before cleanup is due', async () => {
+  // An abort that outruns the durable stop intent propagates: no authorized
+  // cleanup duty exists before the decision is durable.
+  const events = [];
+  const controller = new AbortController();
+  controller.abort(new Error('caller interrupted before the decision'));
+  const fixture = fixtureAdapters({ events, terminateRunner: 'record', remote: 'interrupted' });
+  await assert.rejects(createRescueLifecycleReconciler(fixture.adapters).reconcile(
+    { intent: { kind: 'stop', cause: 'user' }, authority, workspace, signal: controller.signal }),
+  (error) => error === controller.signal.reason);
+  assert.deepEqual(events, []);
+});
+
+test('the cleanup seam stays optional and must be a function when supplied', async () => {
+  const fixture = fixtureAdapters({ remote: 'interrupted' });
+  assert.equal('terminateMarkedRunner' in fixture.adapters, false);
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true }, 'callers without the seam keep the pre-Task-7 settlement exactly');
+  assert.throws(() => createRescueLifecycleReconciler({ ...fixtureAdapters(), terminateMarkedRunner: 'not-a-function' }),
+    (error) => error instanceof PluginError && error.code === 'RESCUE_LIFECYCLE_ADAPTERS_INVALID');
 });
 
 test('outcomes never expose private session, binding, capability, or path evidence', async () => {

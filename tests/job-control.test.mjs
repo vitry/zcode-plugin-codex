@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,12 +10,14 @@ import { isDeepStrictEqual } from 'node:util';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator } from '../scripts/lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, terminateLeasedProcessTree, withWorkerLease } from '../scripts/lib/job-control.mjs';
 import { JOB_LOG_DISABLED_LINE } from '../scripts/lib/job-log-runtime.mjs';
+import { hostOwnedStopIntentPatch } from '../scripts/lib/rescue-binding.mjs';
+import { createRescueLifecycleReconciler } from '../scripts/lib/rescue-lifecycle.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld } from '../scripts/lib/review.mjs';
-import { runCompanion } from '../scripts/zcode-companion.mjs';
+import { createManagementRescueReconcile, runCompanion } from '../scripts/zcode-companion.mjs';
 import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 async function setup() {
@@ -734,20 +737,28 @@ test('claimed queued cancellation persists its stop intent and a later controlle
   let releaseLease = () => {}; const leaseReleased = new Promise((resolve) => { releaseLease = () => resolve(undefined); });
   const holder = withWorkerLease({ dataRoot, workspace, jobId: job.id, workerLeaseId },
     async () => { leaseEntered(); await leaseReleased; });
-  const controller = createJobController({ store, dataRoot });
+  /** @type {number[]} */ const kills = [];
+  const controller = createJobController({ store, dataRoot, terminateProcessTree: async (/** @type {number} */ pid) => { kills.push(pid); } });
   await leaseAcquired; // the settlement must observe the lease provably held, whatever the I/O scheduling
   await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+  // Task 7 order for a claimed queued MARKED runner: durable stop intent ->
+  // identity-proven local termination (two held-lease probes passed) -> the
+  // lease-acquiring settlement defers while the claim is STILL held.
+  assert.deepEqual(kills, [process.pid], 'the lease-proven marked runner receives bounded local termination before the lease-acquiring settle');
   const queued = await store.readJob(workspace, job.id);
   assert.equal(queued.status, 'queued', 'a held claim keeps the durable queued record');
   assert.equal(queued.workerLeaseId, workerLeaseId, 'the exact claim is retained');
   assert.equal(queued.stopIntent?.cause, 'user', 'the stop decision is durable before any settlement');
   // Controller death and runner exit later: the lease goes free and a NEW
-  // controller settles the same durable decision without another send.
+  // controller settles the same durable decision without another send. The
+  // free lease is never signaled again (PID-reuse guard).
   releaseLease(); await holder;
-  const winner = await createJobController({ store, dataRoot }).cancel(workspace, job.id, 'session-a');
+  const winner = await createJobController({ store, dataRoot, terminateProcessTree: async (/** @type {number} */ pid) => { kills.push(pid); } })
+    .cancel(workspace, job.id, 'session-a');
   assert.equal(winner.status, 'cancelled');
   assert.equal(winner.stopCause, 'user');
   assert.equal(winner.stopIntent.cause, 'user');
+  assert.deepEqual(kills, [process.pid], 'a released lease never authorizes another signal of the recorded pid');
   const settled = await store.readJob(workspace, job.id);
   assert.equal('rescueExecutionInput' in settled, false);
   assert.equal(settled.rescueRunnerVersion, 1);
@@ -820,9 +831,12 @@ test('cancellation defers a fenced not-yet-claimed queued runner to its live res
   let releaseLease = () => {}; const leaseReleased = new Promise((resolve) => { releaseLease = () => resolve(undefined); });
   const holder = withWorkerLease({ dataRoot, workspace, jobId: job.id, workerLeaseId },
     async () => { leaseEntered(); await leaseReleased; });
-  const controller = createJobController({ store, dataRoot });
+  /** @type {number[]} */ const kills = [];
+  const recordTerminate = async (/** @type {number} */ pid) => { kills.push(pid); };
+  const controller = createJobController({ store, dataRoot, terminateProcessTree: recordTerminate });
   await leaseAcquired; // the settlement must observe the fence lease provably held, whatever the I/O scheduling
   await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+  assert.deepEqual(kills, [], 'a marked reservation whose executor PID is not yet proven (fence gap) is never a termination target');
   const queued = await store.readJob(workspace, job.id);
   assert.equal(queued.status, 'queued', 'a live fence lease is never an unclaimed job: the settlement defers');
   assert.equal(queued.workerLeaseId, undefined, 'the pre-claim fence gap is retained exactly');
@@ -830,7 +844,7 @@ test('cancellation defers a fenced not-yet-claimed queued runner to its live res
   // Controller death and runner exit later: the fence lease goes free and a NEW
   // controller settles the same durable decision without another send.
   releaseLease(); await holder;
-  const winner = await createJobController({ store, dataRoot }).cancel(workspace, job.id, 'session-a');
+  const winner = await createJobController({ store, dataRoot, terminateProcessTree: recordTerminate }).cancel(workspace, job.id, 'session-a');
   assert.equal(winner.status, 'cancelled');
   assert.equal(winner.stopCause, 'user');
   assert.equal(winner.stopIntent.cause, 'user');
@@ -2988,4 +3002,140 @@ test('artifact directory fsync failure fails the job before success', async () =
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { syncs += 1; if (syncs === 2) throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
   const failed = await store.readJob(workspace, job.id); assert.equal(failed.status, 'failed'); assert.equal(failed.resultArtifact, undefined);
   const log = await readFile(failed.logFile, 'utf8'); assert.match(log, /Assistant message\ndone\n/); assert.doesNotMatch(log, /Final output/);
+});
+
+test('the post-kill lease-release poll honors the controller-injected timers', async () => {
+  const { root, workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: 'lease-release-timers' });
+  const claimed = await store.claimJobWorkerForExecution(workspace, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+  // Hold the exact worker lease the way the live detached runner would, so the
+  // termination's probes observe a provably HELD lease and the poll must wait.
+  let leaseEntered = () => {}; const leaseAcquired = new Promise((resolve) => { leaseEntered = () => resolve(undefined); });
+  let releaseLease = () => {}; const leaseReleased = new Promise((release) => { releaseLease = () => release(undefined); });
+  const holder = withWorkerLease({ dataRoot: join(root, 'data'), workspace, jobId: claimed.id, workerLeaseId: claimed.workerLeaseId },
+    async () => { leaseEntered(); await leaseReleased; });
+  await leaseAcquired;
+  /** @type {Array<{callback:()=>void,ms:number}>} */
+  const scheduled = [];
+  /** @type {unknown[]} */
+  const cleared = [];
+  /** @type {number[]} */
+  const kills = [];
+  const terminated = terminateLeasedProcessTree({
+    dataRoot: join(root, 'data'), workspace,
+    deadlineMs: Date.now() + 200,
+    setTimeout: (/** @type {()=>void} */ callback, /** @type {number} */ ms) => { scheduled.push({ callback, ms }); return `poll-${scheduled.length}`; },
+    clearTimeout: (/** @type {unknown} */ timer) => { cleared.push(timer); },
+  }, { id: claimed.id, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId }, async (/** @type {number} */ pid) => { kills.push(pid); });
+  while (!scheduled.length) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(kills, [999_999_999], 'the held-lease identity proof drives the bounded local termination');
+  assert.equal(scheduled.length, 1, 'the post-kill poll schedules exactly one bounded delay');
+  assert.ok(scheduled[0].ms > 0 && scheduled[0].ms <= 25, `the poll delay stays inside the 25ms bound (was ${scheduled[0].ms}ms)`);
+  // The runner dies (the lease frees) while the poll delay is pending: the next
+  // probe must acquire the freed lease and return instead of burning the budget.
+  releaseLease(); await holder;
+  scheduled[0].callback();
+  await terminated;
+  assert.deepEqual(cleared, ['poll-1'], 'the poll releases its timer handle through the injected clearTimeout');
+});
+
+/** @param {number} pid */
+function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+/** A real detached, self-grouped child that holds the lease for its lifetime.
+ * @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string} workerLeaseId */
+function spawnDetachedLeaseHolder(dataRoot, workspace, jobId, workerLeaseId) {
+  const moduleUrl = new URL('../scripts/lib/job-control.mjs', import.meta.url).href;
+  const code = `const { withWorkerLease } = await import(${JSON.stringify(moduleUrl)});`
+    + ` setInterval(() => {}, 1 << 30);`
+    + ` await withWorkerLease({ dataRoot: ${JSON.stringify(dataRoot)}, workspace: ${JSON.stringify(workspace)},`
+    + ` jobId: ${JSON.stringify(jobId)}, workerLeaseId: ${JSON.stringify(workerLeaseId)} }, () => new Promise(() => {}));`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { detached: true, stdio: 'ignore' });
+  child.unref();
+  return child;
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string} workerLeaseId */
+async function leaseIsHeld(dataRoot, workspace, jobId, workerLeaseId) {
+  try {
+    await withWorkerLease({ dataRoot, workspace, jobId, workerLeaseId, timeoutMs: 0 }, async () => undefined);
+    return false;
+  } catch (error) {
+    if (!(error instanceof PluginError && error.code === 'LOCK_TIMEOUT')) throw error;
+    return true;
+  }
+}
+
+test('management reconciliation terminates the live marked runner before reporting the settled cancel winner', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-management-runner-'));
+  const dataRoot = join(root, 'data');
+  await mkdir(join(root, 'workspace'));
+  const workspace = await realpath(join(root, 'workspace'));
+  const store = createStateStore({ dataRoot });
+  const epoch = 'b'.repeat(64);
+  const workerLeaseId = 'f'.repeat(64);
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'session-a', ownerTurnId: 'turn-management-runner', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: 'session-a', parentTurnId: 'turn-management-runner', agentId: 'management-runner-child', agentType: 'zcode-rescue',
+      agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' },
+    // The true-background runner marker: without it the record is unmarked and
+    // the cleanup seam is a guarded no-op by design.
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const holder = spawnDetachedLeaseHolder(dataRoot, workspace, reserved.job.id, workerLeaseId);
+  await new Promise((resolve) => holder.once('spawn', resolve));
+  const holderPid = /** @type {number} */ (holder.pid);
+  assert.equal(typeof holderPid, 'number', 'the detached holder spawned with a pid');
+  try {
+    const deadline = Date.now() + 5_000;
+    while (!await leaseIsHeld(dataRoot, workspace, reserved.job.id, workerLeaseId)) {
+      if (Date.now() > deadline) throw new Error('the detached holder never acquired its lease');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: holderPid, workerLeaseId });
+    await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+      { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-management-runner', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'running',
+      { inputId: 'input-management-runner', startRevision: 1, beforeMessageIds: [] });
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'user'));
+    // An already-persisted cancelling job: the management reconciliation joins
+    // the exact remote evidence — a turn the prior stop already interrupted —
+    // publishes the stop-caused cancelled winner immediately, and must
+    // terminate the proven detached runner BEFORE the settled outcome is
+    // reported. The election (and its own cleanup path) never runs in this
+    // test: the reconciler pass alone must own the kill.
+    let reads = 0;
+    const client = {
+      readSession: async () => {
+        reads += 1;
+        return { projection: { status: 'idle' }, runtime: { stateRevision: 8 }, messages: [
+          { info: { role: 'user', messageId: 'input-management-runner' }, parts: [{ type: 'text', text: 'task' }] },
+          { info: { role: 'assistant', messageId: 'answer-management-runner', parentMessageId: 'input-management-runner', finish: 'aborted', time: { completed: 4 } },
+            parts: [{ type: 'text', text: 'stopped' }] },
+        ] };
+      },
+      stopSession: async () => { throw new Error('an already-interrupted turn must not be stopped again'); },
+      close: async () => {},
+    };
+    const reconcileRescueLifecycle = createManagementRescueReconcile({
+      store, dataRoot, workspace, ownerSessionId: 'session-a',
+      createClient: async () => client,
+      createRescueLifecycleReconciler,
+    });
+    const outcome = await reconcileRescueLifecycle({ intent: { kind: 'stop', cause: 'user' }, authority: { ownerSessionId: 'session-a' },
+      workspace, selector: { jobId: reserved.job.id } });
+    assert.equal(outcome.kind, 'settled-terminal', `the reconciled stop settles terminally: ${JSON.stringify(outcome)}`);
+    assert.equal(outcome.status, 'cancelled');
+    assert.equal(reads, 1, 'the settled winner came from the exact joined remote evidence');
+    assert.equal(processAlive(holderPid), false, 'the reconciled cancel terminates the live marked runner before reporting completion');
+    assert.equal(await leaseIsHeld(dataRoot, workspace, reserved.job.id, workerLeaseId), false, 'the released lease is acquirable after the kill');
+    const winner = await store.readJob(workspace, reserved.job.id);
+    assert.equal(winner.status, 'cancelled');
+    assert.equal(winner.stopCause, 'user');
+    assert.equal(winner.rescueRunnerVersion, 1, 'the marker persists through the terminal record');
+  } finally {
+    try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the reconciliation */ }
+    await rm(root, { force: true, recursive: true }).catch(() => {});
+  }
 });

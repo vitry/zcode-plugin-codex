@@ -398,6 +398,63 @@ test('a malformed queued acknowledgement fails closed instead of falling back to
   }
 });
 
+test('queued command discriminators must be the exact transport literals and fail closed otherwise', () => {
+  const job = { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' };
+  for (const commands of [
+    { resultCommand: 'arbitrary result invocation', statusCommand: '$zcode:status' },
+    { resultCommand: '$zcode:result', statusCommand: 'arbitrary status invocation' },
+    { resultCommand: '$zcode:result ', statusCommand: ' $zcode:status' },
+  ]) {
+    const malformed = { type: 'background', job, ...commands };
+    for (const render of [() => renderOutput(malformed), () => renderOutput(malformed, { json: true })]) {
+      assert.throws(render, (/** @type {any} */ error) => error.code === 'RESCUE_QUEUED_RESPONSE_INVALID');
+    }
+  }
+});
+
+test('a partially present queued response fails closed instead of the legacy denylist path', () => {
+  for (const commands of [{ resultCommand: '$zcode:result' }, { statusCommand: '$zcode:status' }]) {
+    const partial = {
+      type: 'background',
+      job: { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' },
+      ...commands,
+      internalRequest: { correlationRef: 'LEAK-INTERNAL-REQUEST-SENTINEL' },
+    };
+    const missing = Object.hasOwn(commands, 'resultCommand') ? 'statusCommand' : 'resultCommand';
+    // The bounded error is the only outcome for both transports: no legacy
+    // render may run, so the unknown private field can never leak.
+    assert.throws(() => renderOutput(partial),
+      (/** @type {any} */ error) => error.code === 'RESCUE_QUEUED_RESPONSE_INVALID' && error.details.invalidFields.join(',') === missing);
+    assert.throws(() => renderOutput(partial, { json: true }),
+      (/** @type {any} */ error) => error.code === 'RESCUE_QUEUED_RESPONSE_INVALID');
+    let output = '';
+    try { output = renderOutput(partial, { json: true }); } catch { output = ''; }
+    assert.doesNotMatch(output, /LEAK-INTERNAL-REQUEST-SENTINEL|internalRequest/u);
+  }
+});
+
+test('zero command fields keep the legacy path and fail closed for the stripped queued shape', () => {
+  // A legacy attached-background response carries a full public job (and may
+  // add private response fields), so it never matches the closed queued shape
+  // and keeps rendering through the existing legacy path unchanged.
+  const legacy = {
+    type: 'background',
+    job: { id, command: 'rescue', status: 'queued', owned: true, owner: 'same-owner', phase: 'starting', createdAt: '2026-09-07T00:00:00.000Z' },
+    privateInvocation: ['run-reserved-job', id],
+  };
+  assert.equal(renderOutput(legacy), `Reserved background job ${id}.\n`);
+  assert.deepEqual(JSON.parse(renderOutput(legacy, { json: true })), { type: 'background', job: legacy.job });
+
+  // A producer that drops both command discriminators from the otherwise
+  // exact closed queued shape is a broken queued response: it fails closed
+  // instead of masquerading as a legacy attachment.
+  const stripped = { type: 'background', job: { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' } };
+  for (const render of [() => renderOutput(stripped), () => renderOutput(stripped, { json: true })]) {
+    assert.throws(render, (/** @type {any} */ error) => error.code === 'RESCUE_QUEUED_RESPONSE_INVALID'
+      && error.details.invalidFields.join(',') === 'resultCommand,statusCommand');
+  }
+});
+
 test('legacy attached background responses keep their public projection and the existing redaction path', () => {
   const legacy = {
     type: 'background',

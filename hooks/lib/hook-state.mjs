@@ -503,7 +503,7 @@ export async function reconcilePriorEpochReceipts(input) {
             }, obligation.job.id)
             : await settleEndedRescueJob({
               store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
-              epoch: receipt.epoch, endedAt: receipt.endedAt, lockTimeoutMs: 0,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, deadlineMs: deadline, lockTimeoutMs: 0,
               requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS, timeoutMs: remaining(),
               signal: overall, includeSettlementEvidence: true, createClient: createClient(obligation.workspace),
             }, obligation.job.id);

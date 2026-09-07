@@ -27,7 +27,7 @@ import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, rescueBindingAuthori
 import { createRescueLifecycleReconciler } from './lib/rescue-lifecycle.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
-import { cancelJob as cancelRecoveryJob, completeEndedJob, endedRemoteEvidence, failJob as failRecoveryJob, reconcileOwnedJobs, scavengeWritableJobs, unavailableOrReadableEvidence, withWorkerLease } from './lib/recovery.mjs';
+import { cancelJob as cancelRecoveryJob, completeEndedJob, endedRemoteEvidence, failJob as failRecoveryJob, reconcileOwnedJobs, runnerCleanupDuty, scavengeWritableJobs, unavailableOrReadableEvidence, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
@@ -277,7 +277,12 @@ async function bindingCurrencyEvidence(store, workspace, ownerSessionId, job) {
  * and Adversarial jobs never enter the Reconciler and keep the existing
  * cancellation election, journal, and owner-recovery semantics. Wired adapters:
  * the exact owned joined state, durable stop-intent persistence, rollback-aware
- * queued settlement, and guard-preserving retention. Deferred adapters
+ * queued settlement, and guard-preserving retention — plus the reconciler-owned
+ * marked detached-runner cleanup seam, so a later management reconciliation of
+ * an already-persisted `cancelling` job terminates the exact proven runner
+ * before the terminal winner is reported (the same guarded composition the
+ * SessionEnd settlement uses: raw store, exact owner/epoch/claim revalidation,
+ * two nonblocking held-lease probes, bounded local budget). Deferred adapters
  * (fail-closed defaults): remote stop/reread, generation revalidation, and
  * unavailable-executor settlement stay owned by the existing cancellation
  * election and owner recovery until the lifecycle hooks (Tasks 5-7) publish
@@ -286,7 +291,7 @@ async function bindingCurrencyEvidence(store, workspace, ownerSessionId, job) {
  * never authorizes a stop on its own.
  * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>,createRescueLifecycleReconciler:(adapters:any)=>{reconcile:(request:any)=>Promise<any>}}} input
  */
-function createManagementRescueReconcile(input) {
+export function createManagementRescueReconcile(input) {
   /** One management reconciliation context: the exact joined job, the on-demand control client, and the revalidation guard. @type {{job:any,client?:any,guard?:any}} */
   const context = { job: undefined };
   const reconciler = input.createRescueLifecycleReconciler({
@@ -353,6 +358,22 @@ function createManagementRescueReconcile(input) {
       }
       return input.store.readJob(input.workspace, joined.job.id);
     },
+    // The Reconciler drives this seam on every authorized remote-control exit
+    // (and on a claimed queued stop before the lease-acquiring cancelled
+    // publication): guarded bounded termination of the MARKED detached runner
+    // for the exact joined record — the same composition the SessionEnd
+    // settlement wires (runner-format marker, exact owner/epoch/job/claim
+    // revalidation, two nonblocking held-lease probes; a free lease is never
+    // signaled and the unmarked attached companion is never a process-group
+    // target). Without it, a later management reconciliation of a persisted
+    // `cancelling` job publishes the terminal winner and the election's own
+    // cleanup path is skipped, leaving a wedged runner alive after Cancel or
+    // Status reports completion.
+    terminateMarkedRunner: (/** @type {any} */ joined) => runnerCleanupDuty({
+      store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
+      ownerSessionId: input.ownerSessionId,
+      ...(typeof joined.job?.ownerLifecycleEpoch === 'string' ? { epoch: joined.job.ownerLifecycleEpoch } : {}),
+    }, joined.job),
     // Executor absence is never provable from the management caller: a live
     // host child may still hold its worker lease, so an unavailable control
     // channel retains the durable guard — while persisting the bounded
