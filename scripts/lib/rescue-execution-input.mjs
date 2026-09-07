@@ -21,6 +21,12 @@ export const RESCUE_EXECUTION_MODEL_MAX_BYTES = 4 * 1024;
  */
 export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
+/** The bounded Result command named by the queued acknowledgement. */
+export const RESCUE_RESULT_COMMAND = '$zcode:result';
+
+/** The bounded Status command named by the queued acknowledgement. */
+export const RESCUE_STATUS_COMMAND = '$zcode:status';
+
 const INPUT_KEY_SETS = Object.freeze([
   'task\0version',
   'model\0task\0version',
@@ -109,6 +115,46 @@ function invalidExecutionInput(invalidFields) {
   return new PluginError('RESCUE_EXECUTION_INPUT_INVALID', 'The private Rescue execution input is invalid.', {
     category: 'authorization',
     remedy: 'Provide one bounded Rescue task with optional validated model and effort.',
+    details: { invalidFields },
+  });
+}
+
+/**
+ * Project the bounded public queued acknowledgement of one accepted true-
+ * background Rescue reservation. It is a RESERVATION SNAPSHOT, not a current
+ * Status read: a fast runner may already be running or terminal when the
+ * response arrives, so the projection reads only the reserved identity fields
+ * from the job record — never a spread — and reports the queued status the
+ * reservation accepted. The closed shape carries no task, execution input,
+ * binding, receipt, PID/lease, or ZCode session identifier, and it is not
+ * registered in the historical background delivery-rollback machinery: a
+ * delivery failure after the successful spawn leaves the accepted job intact
+ * for Status/Result/PromptSubmit discovery.
+ * @param {unknown} job @returns {{type:'background',job:{id:string,command:'rescue',status:'queued',createdAt:string},resultCommand:string,statusCommand:string}}
+ */
+export function queuedRescueAcknowledgement(job) {
+  const invalidFields = [];
+  if (typeof job !== 'object' || job === null || Array.isArray(job)) invalidFields.push('job');
+  else {
+    const record = /** @type {Record<string,unknown>} */ (job);
+    if (typeof record.id !== 'string' || !/^[a-f0-9]{64}$/u.test(record.id)) invalidFields.push('id');
+    if (typeof record.createdAt !== 'string' || Number.isNaN(Date.parse(record.createdAt))) invalidFields.push('createdAt');
+  }
+  if (invalidFields.length > 0) throw invalidQueuedJob(invalidFields);
+  const record = /** @type {{id:string,createdAt:string}} */ (job);
+  return {
+    type: 'background',
+    job: { id: record.id, command: 'rescue', status: 'queued', createdAt: record.createdAt },
+    resultCommand: RESCUE_RESULT_COMMAND,
+    statusCommand: RESCUE_STATUS_COMMAND,
+  };
+}
+
+/** @param {string[]} invalidFields */
+function invalidQueuedJob(invalidFields) {
+  return new PluginError('RESCUE_QUEUED_RESPONSE_INVALID', 'The reserved Rescue job cannot be projected as a queued acknowledgement.', {
+    category: 'state',
+    remedy: 'Inspect the reserved job through Status and Result.',
     details: { invalidFields },
   });
 }

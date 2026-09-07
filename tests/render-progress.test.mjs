@@ -316,6 +316,100 @@ test('JSON exposes only a valid exact-owner single-job probe while every other v
   ]) assert.equal(Object.hasOwn((JSON.parse(renderOutput(hidden, { json: true })).job ?? JSON.parse(renderOutput(hidden, { json: true })).jobs[0]), 'progressProbe'), false);
 });
 
+test('the queued background acknowledgement renders queued with its inspection commands', () => {
+  const acknowledgement = {
+    type: 'background',
+    job: { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+  };
+  const text = renderOutput(acknowledgement);
+  assert.match(text, new RegExp(`Rescue job ${id}`));
+  assert.match(text, /queued/iu);
+  assert.match(text, /\$zcode:status/);
+  assert.match(text, /\$zcode:result/);
+  // Queued is a reservation snapshot: the render must never claim that the
+  // runner is ready, starting up, or already running.
+  assert.doesNotMatch(text, /running|ready|startup|readiness|started/iu);
+
+  // The machine transport carries exactly the bounded allowlisted projection —
+  // redaction may strip private metadata, never add or rewrite public fields.
+  assert.deepEqual(JSON.parse(renderOutput(acknowledgement, { json: true })), acknowledgement);
+});
+
+test('queued acknowledgement JSON redaction strips private metadata without erasing the projection', () => {
+  const acknowledgement = {
+    type: 'background',
+    job: { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+  };
+  const rendered = renderOutput({
+    ...acknowledgement,
+    // A leaking producer must never smuggle private metadata through the
+    // queued response's JSON transport.
+    rescueExecutionInput: { version: 1, task: 'PRIVATE TASK SENTINEL' },
+    job: { ...acknowledgement.job, zcodeSessionId: 'PRIVATE-SESSION-SENTINEL', childPid: 424242, workerLeaseId: 'a'.repeat(64) },
+  }, { json: true });
+  assert.doesNotMatch(rendered, /PRIVATE TASK SENTINEL|PRIVATE-SESSION-SENTINEL|424242/u);
+  assert.deepEqual(JSON.parse(rendered), acknowledgement);
+});
+
+test('the queued acknowledgement render reconstructs the closed shape and drops unrecognized private fields', () => {
+  const acknowledgement = {
+    type: 'background',
+    job: { id, command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+  };
+  // A leaking producer must not smuggle private state through field names the
+  // denylist never knew about (design 174-175: extending the delete-list is
+  // insufficient). The render path reconstructs the closed acknowledgement
+  // from validated values and drops every unrecognized field.
+  const leaked = {
+    ...acknowledgement,
+    internalRequest: { correlationRef: 'LEAK-INTERNAL-REQUEST-SENTINEL' },
+    rescueTransportEnvelope: { dispatchRef: 'LEAK-ENVELOPE-SENTINEL' },
+    job: {
+      ...acknowledgement.job,
+      dispatchReceipt: { runnerHandle: 'LEAK-JOB-RECEIPT-SENTINEL' },
+      rescueExecutionInput: { version: 1, task: 'LEAK-TASK-SENTINEL' },
+    },
+  };
+  const text = renderOutput(leaked);
+  assert.equal(text, `Rescue job ${id} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.\n`);
+  assert.doesNotMatch(text, /LEAK-|internalRequest|correlationRef|rescueTransportEnvelope|dispatchRef|dispatchReceipt|runnerHandle|rescueExecutionInput/u);
+
+  const json = renderOutput(leaked, { json: true });
+  assert.doesNotMatch(json, /LEAK-|internalRequest|correlationRef|rescueTransportEnvelope|dispatchRef|dispatchReceipt|runnerHandle|rescueExecutionInput/u);
+  assert.deepEqual(JSON.parse(json), acknowledgement);
+});
+
+test('a malformed queued acknowledgement fails closed instead of falling back to the delete-list', () => {
+  const malformed = {
+    type: 'background',
+    job: { id: 'not-a-digest', command: 'rescue', status: 'queued', createdAt: '2026-09-07T00:00:00.000Z' },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+    internalRequest: { correlationRef: 'LEAK-INTERNAL-REQUEST-SENTINEL' },
+  };
+  for (const render of [() => renderOutput(malformed), () => renderOutput(malformed, { json: true })]) {
+    assert.throws(render, (/** @type {any} */ error) => error.code === 'RESCUE_QUEUED_RESPONSE_INVALID');
+  }
+});
+
+test('legacy attached background responses keep their public projection and the existing redaction path', () => {
+  const legacy = {
+    type: 'background',
+    job: {
+      id, command: 'rescue', status: 'queued', owned: true, owner: 'same-owner',
+      phase: 'starting', createdAt: '2026-09-07T00:00:00.000Z',
+    },
+  };
+  assert.deepEqual(JSON.parse(renderOutput(legacy, { json: true })), legacy);
+  assert.equal(renderOutput(legacy), `Reserved background job ${id}.\n`);
+});
+
 test('JSON exposes logFile only for an exact-owner single-job projection', () => {
   const logFile = `/private/zcode/jobs/${id}.log`;
   const exact = { job: { id, status: 'running', owned: true, owner: 'same-owner', logFile } };

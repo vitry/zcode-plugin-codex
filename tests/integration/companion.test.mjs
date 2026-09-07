@@ -16,7 +16,8 @@ import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
-import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
+import { atomicWriteJson, withFileLock } from '../../scripts/lib/fs.mjs';
+import { spawnRescueRunner } from '../../scripts/lib/rescue-runner.mjs';
 import { createJobController, ownerIdForSession, resumableJobIndicator } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
@@ -28,9 +29,9 @@ import { readResultArtifact, writeResultArtifact } from '../../scripts/lib/revie
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { terminateProcess } from '../../scripts/lib/process.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
-import { renderOutput } from '../../scripts/lib/render.mjs';
+import { errorEnvelope, renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
-import { deliverCompletionNotice, runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { deliverCompletionNotice, failBackgroundDelivery, runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { claimNotifications, finalizeNotifications, markForwarding, peekUnreadJobs, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
@@ -1497,6 +1498,42 @@ test('legacy-v1 execution capability cannot be newly issued for a modern reserva
   { code: 'IDENTITY_INPUT_INVALID' });
 });
 
+test('historical background Rescue keeps its legacy input bounds for a large task', async (t) => {
+  const context = await fixture();
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  // A non-Host `rescue --background` never uses the detached-runner path, so
+  // it must keep the historical sealed-spec behavior EXACTLY — including the
+  // historical acceptance of tasks far beyond the bounded runner input (the
+  // runner-input validator caps the task at 64 KiB). Constructing or even
+  // validating a `rescueExecutionInput` for this invocation is a regression.
+  const bigTask = `HISTORICAL_BIG_TASK_${'x'.repeat(96 * 1024)}`;
+  const record = join(context.directory, 'historical-big-task.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', bigTask], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('historical-big-task-owner'),
+  });
+  assert.equal(reserved.type, 'background');
+  // The legacy sealed-spec artifacts are produced, not the runner trio.
+  assert.deepEqual(reserved.privateInvocation, ['run-reserved-job', reserved.job.id]);
+  assert.equal(typeof reserved.executionCapability, 'string');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const job = await store.readJob(await realpath(context.workspace), reserved.job.id);
+  assert.equal(job.status, 'queued');
+  assert.equal(job.rescueExecutionInput, undefined, 'historical reservations carry no runner input');
+  assert.equal(job.rescueRunnerVersion, undefined, 'historical reservations carry no runner marker');
+  const storage = await resolveWorkspaceStorage(context);
+  const sealed = JSON.parse(await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'));
+  assert.equal(sealed.version, 2);
+  assert.ok(sealed.sealedSpec.ciphertext.length > bigTask.length, 'the sealed spec carries the full large task');
+  // The historical background execution route still runs the reservation.
+  const executed = await runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+  });
+  assert.equal(executed.job.status, 'succeeded');
+  const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(frames.filter((frame) => frame.method === 'session/send').length, 1);
+});
+
 for (const mutation of ['unknown-version', 'sealed-to-v1', 'v1-extra-field']) test(`background ${mutation} job-spec mutation fails closed before execution`, async () => {
   const context = await fixture(); const task = `PRIVATE_${mutation.toUpperCase().replaceAll('-', '_')}_TASK`;
   const record = join(context.directory, `${mutation}.jsonl`); await writeFile(record, '');
@@ -2572,59 +2609,545 @@ for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt $
     .filter((name) => name.endsWith('.json')), []);
 });
 
-test('new background Rescue runs attached and creates no detached execution artifacts', async () => {
-  const context = await fixture(); const workspace = await realpath(context.workspace);
-  const parentSessionId = 'attached-background-parent'; const childId = 'attached-background-child';
-  const record = join(context.directory, 'attached-background.jsonl'); await writeFile(record, '');
-  const effects = { workers: 0, capabilities: 0, specs: 0 };
+/** The terminal statuses of the durable job ledger. */
+const TERMINAL_JOB_STATUSES = ['succeeded', 'failed', 'cancelled'];
+
+/** Prepare one child-authorized Rescue placement choice in the current parent
+ * turn (fresh), returning the child invocation environment. Optional
+ * model/effort ride into the prepared envelope, exactly as the installed
+ * launcher reconstructs them for the invoke-time reservation.
+ * @param {any} context @param {{parentSessionId:string,childId:string,label:string,task:string,record:string,execution?:'foreground'|'background',model?:string,effort?:string}} input */
+async function prepareFreshBackgroundChild(context, input) {
+  const workspace = await realpath(context.workspace);
+  const execution = input.execution ?? 'background';
+  const placementFlags = `${input.model === undefined ? '' : ` --model ${input.model}`}${input.effort === undefined ? '' : ` --effort ${input.effort}`}`;
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
-  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'attached-parent-turn', workspace,
-    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --background attached native child' });
-  await recordParentSession(context, parentSessionId);
-  const active = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace });
+  await identity.beginCallerTurn({ sessionId: input.parentSessionId, turnId: `${input.label}-turn`, workspace,
+    permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --${execution === 'background' ? 'background' : 'wait'}${placementFlags} ${input.task}` });
+  await recordParentSession(context, input.parentSessionId);
+  const active = await identity.resolveActiveTurn({ sessionId: input.parentSessionId, workspace });
   await markForwarding(context.dataRoot, {
-    session_id: parentSessionId, turn_id: 'attached-child-turn', cwd: workspace,
-    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue',
+    session_id: input.parentSessionId, turn_id: `${input.label}-child-turn`, cwd: workspace,
+    hook_event_name: 'SubagentStart', agent_id: input.childId, agent_type: 'zcode-rescue',
   }, active);
-  const childEnv = { ...context.env, FAKE_CODEX_THREAD_JSON: JSON.stringify(rawCodexChild({ id: childId, parentThreadId: parentSessionId, cwd: workspace })), CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
-  assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'explicit',
-    task: 'attached native child', options: { execution: 'background', resume: 'fresh' } }), legacyPreparedRoute);
+  const childEnv = { ...context.env, FAKE_CODEX_THREAD_JSON: JSON.stringify(rawCodexChild({ id: input.childId, parentThreadId: input.parentSessionId, cwd: workspace })), CODEX_THREAD_ID: input.childId, FAKE_ZCODE_RECORD: input.record, FAKE_ZCODE_WORKSPACE: workspace };
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId: input.parentSessionId, source: 'explicit',
+    task: input.task, options: { execution, resume: 'fresh',
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.effort === undefined ? {} : { effort: input.effort }) } }), legacyPreparedRoute);
+  return childEnv;
+}
+
+/** A test spawn seam that records the launch input and spawns nothing: the
+ * queued enqueue contract must not depend on the runner's OS behavior.
+ * @param {{count?:number, launches:any[]}} capture */
+function recordingRunnerSpawn(capture) {
+  return async (/** @type {any} */ input) => {
+    capture.count = (capture.count ?? 0) + 1;
+    capture.launches.push(input);
+    return { pid: 424_242 };
+  };
+}
+
+test('new background Rescue reserves privately, spawns one detached runner, and returns queued', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'true-background-parent'; const childId = 'true-background-child';
+  const record = join(context.directory, 'true-background.jsonl'); await writeFile(record, '');
+  const effects = { workers: 0, capabilities: 0, specs: 0 };
+  /** @type {any[]} */ const launches = [];
+  const runnerSpawns = { count: 0, launches };
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'true-background',
+    task: 'true background child', record });
   const startedAt = (await resolveRecordedSessionStart(context.dataRoot, workspace, parentSessionId)).startedAt;
   const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: workspace, env: childEnv,
     dependencies: {
+      spawnRescueRunner: recordingRunnerSpawn(runnerSpawns),
       writeJobSpec: async () => { effects.specs += 1; },
       createExecutionCapability: async () => { effects.capabilities += 1; },
       startBackgroundWorker: async () => { effects.workers += 1; },
     },
   });
-  // Host-owned background execution never detaches: the child returns only
-  // after the durable terminal winner, with zero detached artifacts.
-  assert.equal(output.type, 'background-terminal');
-  assert.equal(output.job.status, 'succeeded');
-  // The Host Completion Notice is bounded (design 319): job ID, terminal
-  // status, resumability, and the Result command — no session IDs, private
-  // paths, prompts, child IDs, capabilities, or raw job internals.
-  const noticeKeys = Object.keys(output.job);
-  assert.equal(output.resultCommand, '$zcode:result', 'the notice carries the Result command');
-  for (const required of ['id', 'status', 'resumable']) assert.equal(noticeKeys.includes(required), true, `notice must carry ${required}`);
-  for (const forbidden of ['zcodeSessionId', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'prompt', 'agentId', 'parentSessionId', 'rescueExecutionReservation', 'error']) {
-    assert.equal(noticeKeys.includes(forbidden) || JSON.stringify(output.job).includes(`"${forbidden}"`), false, `the notice must never carry ${forbidden}`);
-  }
-  assert.equal(JSON.stringify(output.job).includes(output.job.zcodeSessionId ?? '\u0000'), false);
-  assert.deepEqual(effects, { workers: 0, capabilities: 0, specs: 0 });
+  // The acknowledgement is ONLY the bounded reservation snapshot — never a
+  // latest state read, never a claim, never a completion notice.
+  assert.deepEqual(output, {
+    type: 'background',
+    job: { id: output.job.id, command: 'rescue', status: 'queued', createdAt: output.job.createdAt },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+  });
+  assert.deepEqual(effects, { workers: 0, capabilities: 0, specs: 0 },
+    'true background spawns zero legacy detached artifacts');
+  assert.equal(runnerSpawns.count, 1, 'exactly one detached runner is spawned');
+  // The launch is the same installed companion entry with the private runner
+  // subcommand selector, the canonical workspace, and the inherited bounded
+  // runtime environment — never the legacy worker environment selector.
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].companionPath, cli);
+  assert.equal(launches[0].workspace, workspace);
+  assert.equal(launches[0].jobId, output.job.id);
+  assert.equal(launches[0].env.ZCODE_DATA_ROOT, context.dataRoot);
+  assert.equal(launches[0].env.ZCODE_PATH, context.env.ZCODE_PATH);
+  assert.equal(launches[0].env.ZCODE_BACKGROUND_WORKER, undefined);
+  // The durable reservation carries the bounded private execution input, the
+  // persistent runner-format marker, and the complete Host lifecycle trio.
   const store = createStateStore({ dataRoot: context.dataRoot });
   const job = await store.readJob(workspace, output.job.id);
+  assert.equal(job.status, 'queued');
   assert.equal(job.executionOwner, 'host-child');
   assert.equal(job.hostPlacement, 'background');
   assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
-  assert.equal(job.rescueExecutionReservation, undefined);
+  assert.equal(job.rescueRunnerVersion, 1);
+  assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'true background child' });
+  // The enqueue executed nothing: the fake ZCode observed no frames, and the
+  // queued acknowledgement claimed no completion notification.
+  assert.equal(await readFile(record, 'utf8'), '');
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), []);
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   assert.equal((await readdir(join(storage.directory, 'job-specs')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))).length, 0,
-    'attached execution never seals a job spec');
+    'true background never seals a job spec');
 });
 
-test('child-authorized bound continuations reserve the Host lifecycle trio for their placement', async () => {
+test('background enqueue returns queued while the detached runner is blocked before its claim', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'barrier-preclaim-parent'; const childId = 'barrier-preclaim-child';
+  const record = join(context.directory, 'barrier-preclaim.jsonl'); await writeFile(record, '');
+  t.after(async () => {
+    releaseStateLock();
+    if (runnerPid !== undefined) {
+      if (process.platform !== 'win32') { try { process.kill(-runnerPid, 'SIGKILL'); } catch { /* already exited */ } }
+      await waitForProcessExit(runnerPid, 5_000);
+    }
+    await rm(context.directory, { force: true, recursive: true });
+  });
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'barrier-preclaim',
+    task: 'blocked before claim child', record });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const stateLockPath = join(storage.directory, '.state.lock');
+  /** @type {()=>void} */ let releaseStateLock = () => {};
+  const stateLockReleased = new Promise((resolve) => { releaseStateLock = () => resolve(undefined); });
+  /** @type {()=>void} */ let stateLockAcquired = () => {};
+  const stateLockHeld = new Promise((resolve) => { stateLockAcquired = () => resolve(undefined); });
+  /** @type {number|undefined} */ let runnerPid;
+  /** @type {Promise<void>|undefined} */ let holdStateLock;
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: { spawnRescueRunner: async (/** @type {any} */ input) => {
+      // The state lock is held strictly BEFORE the runner process exists (the
+      // reservation has just released it), so the runner can never win the
+      // claim race: the parent's queued return happens before any claim
+      // without depending on timing.
+      holdStateLock = withFileLock(stateLockPath, async () => {
+        stateLockAcquired();
+        await stateLockReleased;
+      }).catch(() => {});
+      await stateLockHeld;
+      const spawned = await spawnRescueRunner(input);
+      runnerPid = spawned.pid;
+      return spawned;
+    } },
+  });
+  assert.equal(output.type, 'background');
+  assert.equal(output.job.status, 'queued', 'the acknowledgement is the reservation snapshot, not a state read');
+  // The parent is free before the claim: the raw durable record — read while
+  // the test still holds the state lock — is queued and unclaimed.
+  const rawJob = JSON.parse(await readFile(join(storage.directory, 'jobs', `${output.job.id}.json`), 'utf8'));
+  assert.equal(rawJob.status, 'queued');
+  assert.equal(rawJob.childPid, undefined);
+  assert.equal(rawJob.workerLeaseId, undefined);
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), []);
+  releaseStateLock();
+  await holdStateLock;
+  // The unblocked runner claims and executes exactly once; the job stays intact.
+  await waitFor(async () => TERMINAL_JOB_STATUSES.includes((await store.readJob(workspace, output.job.id)).status),
+    'the unblocked runner never executed the job', scaleTestTimeout(60_000));
+  const job = await store.readJob(workspace, output.job.id);
+  assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 1);
+  const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(frames.filter((frame) => frame.method === 'session/send').length, 1);
+});
+
+test('a runner that finishes before the queued acknowledgement still receives the reservation snapshot', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'barrier-fast-parent'; const childId = 'barrier-fast-child';
+  const record = join(context.directory, 'barrier-fast.jsonl'); await writeFile(record, '');
+  /** @type {number|undefined} */ let runnerPid;
+  t.after(async () => {
+    if (runnerPid !== undefined) await waitForProcessExit(runnerPid, 15_000);
+    await rm(context.directory, { force: true, recursive: true });
+  });
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'barrier-fast',
+    task: 'fast runner child', record });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: { spawnRescueRunner: async (/** @type {any} */ input) => {
+      const spawned = await spawnRescueRunner(input);
+      runnerPid = spawned.pid;
+      // The runner wins the whole race: it reaches a durable terminal winner
+      // BEFORE the enqueue resolves its acknowledgement.
+      await waitFor(async () => TERMINAL_JOB_STATUSES.includes((await store.readJob(workspace, input.jobId)).status),
+        'the fast runner never finished before the acknowledgement', scaleTestTimeout(60_000));
+      return spawned;
+    } },
+  });
+  // The acknowledgement is still the reservation snapshot — never overwritten
+  // with the newer terminal state.
+  assert.equal(output.type, 'background');
+  assert.equal(output.job.status, 'queued');
+  const job = await store.readJob(workspace, output.job.id);
+  assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 1);
+  // Neither ordering claims the completion notification: the terminal job
+  // stays unread for the next UserPromptSubmit.
+  assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), [{ id: output.job.id, status: 'succeeded' }]);
+});
+
+test('a deterministic runner launch failure settles the fresh queued job failed and never returns queued', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'spawn-failure-parent'; const childId = 'spawn-failure-child';
+  const record = join(context.directory, 'spawn-failure.jsonl'); await writeFile(record, '');
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-failure',
+    task: 'unlaunchable fresh child', record });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const spawnChild = () => { throw new Error('fixture operating system refused process creation'); };
+  /** @type {any} */ let failure;
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: { spawnRescueRunner: (/** @type {any} */ input) => spawnRescueRunner({ ...input, spawnChild }) },
+  }), (/** @type {any} */ error) => { failure = error; return error.code === 'RESCUE_RUNNER_SPAWN_FAILED'; });
+  assert.match(failure.message, /Could not start the detached Rescue runner process/u);
+  const [job] = await store.listJobs(workspace);
+  assert.equal(job.status, 'failed');
+  assert.equal(job.error.message, 'Could not start the detached Rescue runner process.');
+  assert.equal(job.startedAt, undefined);
+  assert.equal(job.zcodeSessionId, undefined);
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 1, 'the runner marker is retained through the terminal settlement');
+  assert.equal(await readFile(record, 'utf8'), '');
+  // The surfaced launch error's own public envelope carries no private data.
+  assert.doesNotMatch(renderOutput(errorEnvelope(failure), { json: true }), /unlaunchable fresh child/u);
+});
+
+test('a deterministic runner launch failure restores an active continuation to its exact anchor binding', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'spawn-failure-continuation-parent'; const childId = 'spawn-failure-continuation-child';
+  const record = join(context.directory, 'spawn-failure-continuation.jsonl'); await writeFile(record, '');
+  await prepareDirectRescueChild(context, { parentSessionId, parentTurnId: `${parentSessionId}-turn`,
+    childId, childTurnId: `${childId}-turn`, prompt: '$zcode:rescue --fresh --wait establish the spawn failure anchor' });
+  const anchorEnv = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const anchor = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace, env: anchorEnv });
+  assert.equal(anchor.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, { session_id: parentSessionId, turn_id: `${childId}-turn`, cwd: workspace,
+    hook_event_name: 'SubagentStop', agent_id: childId, agent_type: 'zcode-rescue' });
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'proactive',
+    task: 'unlaunchable continuation', options: { execution: 'background', resume: 'resume' } }), legacyPreparedRoute);
+  await writeFile(record, '');
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const spawnChild = () => { const child = new EventEmitter(); queueMicrotask(() => child.emit('error', new Error('fixture ENOENT before spawn'))); return child; };
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: {
+      readCodexThreadSpawnChild: async () => host,
+      spawnRescueRunner: (/** @type {any} */ input) => spawnRescueRunner({ ...input, spawnChild }),
+    },
+  }), { code: 'RESCUE_RUNNER_SPAWN_FAILED' });
+  const jobs = await store.listJobs(workspace);
+  assert.equal(jobs.length, 2);
+  const failed = jobs.find((/** @type {any} */ candidate) => candidate.id !== anchor.job.id);
+  assert.equal(failed?.status, 'failed');
+  assert.equal(failed?.startedAt, undefined);
+  assert.equal(failed?.zcodeSessionId, undefined);
+  assert.equal(failed?.rescueContinuationOrigin, undefined);
+  assert.equal(failed?.rescueExecutionInput, undefined);
+  assert.equal(failed?.rescueRunnerVersion, 1);
+  // The exact prior binding was restored: the anchor is current again, and a
+  // late runner claim for the failed attempt rejects.
+  const binding = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
+  assert.equal(binding.kind, 'bound');
+  assert.equal(binding.binding.currentJobId, anchor.job.id);
+  assert.equal(await readFile(record, 'utf8'), '');
+});
+
+test('a launch failure whose pre-start settlement also fails surfaces both failures and keeps the job recoverable', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'spawn-settlement-fault-parent'; const childId = 'spawn-settlement-fault-child';
+  const record = join(context.directory, 'spawn-settlement-fault.jsonl'); await writeFile(record, '');
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-settlement-fault',
+    task: 'unlaunchable faulted settlement child', record });
+  const realStore = createStateStore({ dataRoot: context.dataRoot });
+  // Fault-seam pattern (as with the established publication-hook wrappers):
+  // the launch fails deterministically AND the settlement transaction fails
+  // with a genuine state-write error, leaving the job queued-and-excluded.
+  const faultedStore = { ...realStore, finishJob: async () => {
+    throw new Error('fixture state write failed during pre-start settlement');
+  } };
+  const spawnChild = () => { throw new Error('fixture operating system refused process creation'); };
+  /** @type {any} */ let failure;
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: {
+      spawnRescueRunner: (/** @type {any} */ input) => spawnRescueRunner({ ...input, spawnChild }),
+      createStateStore: () => faultedStore,
+    },
+  }), (/** @type {any} */ error) => { failure = error; return true; });
+  // The raised error stays the launch failure but NEVER discards the
+  // settlement failure: it carries it as a secondary diagnostic, in both the
+  // message and the bounded details.
+  assert.equal(failure.code, 'RESCUE_RUNNER_SPAWN_FAILED');
+  assert.match(failure.message, /Could not start the detached Rescue runner process/u);
+  assert.match(failure.message, /fixture state write failed during pre-start settlement/u);
+  assert.match(String(failure.details?.settlementFailure?.message), /fixture state write failed during pre-start settlement/u);
+  // The invariant side: the job is NOT a silently stranded queued record — it
+  // stays exactly recoverable (queued, marker and private input intact) for
+  // the boundary owner's later settlement, and nothing executed.
+  const [queued] = await realStore.listJobs(workspace);
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.rescueRunnerVersion, 1);
+  assert.deepEqual(queued.rescueExecutionInput, { version: 1, task: 'unlaunchable faulted settlement child' });
+  assert.equal(await readFile(record, 'utf8'), '');
+  const recovered = await realStore.finishJob(workspace, queued.id, ['queued'], 'failed',
+    { error: { message: 'boundary owner settled the unlaunched job' }, exitCode: 1 });
+  assert.equal(recovered.status, 'failed');
+});
+
+test('a launch failure whose settlement lost to a confirmed concurrent winner surfaces only the launch error', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'spawn-settlement-winner-parent'; const childId = 'spawn-settlement-winner-child';
+  const record = join(context.directory, 'spawn-settlement-winner.jsonl'); await writeFile(record, '');
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-settlement-winner',
+    task: 'unlaunchable raced settlement child', record });
+  const realStore = createStateStore({ dataRoot: context.dataRoot });
+  let settlementAttempts = 0;
+  // A concurrent authority wins: by the time this settlement transaction
+  // rejects with the expected conflict code, the durable record is already
+  // terminal — the reread confirms the winner, so the conflict is swallowed.
+  const faultedStore = { ...realStore, finishJob: async (/** @type {string} */ racedWorkspace, /** @type {string} */ jobId) => {
+    settlementAttempts += 1;
+    await realStore.finishJob(racedWorkspace, jobId, ['queued'], 'failed',
+      { error: { message: 'concurrent recovery settled the job' }, exitCode: 1 });
+    throw new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, {
+      category: 'state', remedy: 'Reload the job and retry from its current status.', details: { jobId },
+    });
+  } };
+  const spawnChild = () => { throw new Error('fixture operating system refused process creation'); };
+  /** @type {any} */ let failure;
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: {
+      spawnRescueRunner: (/** @type {any} */ input) => spawnRescueRunner({ ...input, spawnChild }),
+      createStateStore: () => faultedStore,
+    },
+  }), (/** @type {any} */ error) => { failure = error; return true; });
+  assert.equal(settlementAttempts, 1);
+  assert.equal(failure.code, 'RESCUE_RUNNER_SPAWN_FAILED');
+  assert.match(failure.message, /Could not start the detached Rescue runner process/u);
+  assert.doesNotMatch(failure.message, /changed status unexpectedly/u);
+  assert.equal(failure.details?.settlementFailure, undefined);
+  const [job] = await realStore.listJobs(workspace);
+  assert.equal(job.status, 'failed');
+  assert.equal(job.error.message, 'concurrent recovery settled the job');
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 1, 'the runner marker is retained through the terminal settlement');
+});
+
+test('a failed queued-acknowledgement delivery leaves the accepted job intact without a relaunch', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'lost-ack-parent'; const childId = 'lost-ack-child';
+  const record = join(context.directory, 'lost-ack.jsonl'); await writeFile(record, '');
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'lost-ack',
+    task: 'lost acknowledgement child', record });
+  const capture = { count: 0, launches: [] };
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: { spawnRescueRunner: recordingRunnerSpawn(capture) },
+  });
+  assert.equal(output.type, 'background');
+  // Stdout losing the queued response after the successful spawn must not
+  // fail, cancel, or relaunch the accepted job: the response is deliberately
+  // NOT registered in the historical backgroundBindings rollback machinery.
+  await failBackgroundDelivery(output, new Error('fixture stdout lost'));
+  assert.equal(capture.count, 1, 'no replacement runner may be launched');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const job = await store.readJob(workspace, output.job.id);
+  assert.equal(job.status, 'queued');
+  assert.equal(job.rescueRunnerVersion, 1);
+  assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'lost acknowledgement child' });
+});
+
+test('public projections never expose true background private data but keep the full authorized result', async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const parentSessionId = 'sentinel-parent'; const childId = 'sentinel-child';
+  const record = join(context.directory, 'sentinel.jsonl'); await writeFile(record, '');
+  const sentinelTask = 'SENTINEL-TASK-7qf2 rescue the guarded realm';
+  const sentinelSession = 'zs-SENTINEL-SESSION-7qf2';
+  const sentinelModel = 'SENTINEL-MODEL-7qf2';
+  const sentinelLease = 'f'.repeat(64);
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'sentinel',
+    task: sentinelTask, record, model: sentinelModel, effort: 'xhigh' });
+  const capture = { count: 0, launches: [] };
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv,
+    dependencies: { spawnRescueRunner: recordingRunnerSpawn(capture) },
+  });
+  assert.equal(output.type, 'background');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  // Plant proof: the reserved record really carries the model and the effort
+  // INSIDE the bounded private execution input, so every absence assertion
+  // below exercises the queued/Status/Result redaction paths for these exact
+  // values instead of passing vacuously.
+  assert.deepEqual((await store.readJob(workspace, output.job.id)).rescueExecutionInput,
+    { version: 1, task: sentinelTask, model: sentinelModel, effort: 'xhigh' });
+  // Text and JSON queued projections carry no private task, model, session,
+  // PID, lease, binding, or receipt data.
+  for (const rendered of [renderOutput(output), renderOutput(output, { json: true }), JSON.stringify(output)]) {
+    assert.doesNotMatch(rendered, /SENTINEL-TASK-7qf2|SENTINEL-MODEL-7qf2|SENTINEL-SESSION-7qf2|rescueExecutionInput|workerLeaseId|childPid|ownerLifecycleEpoch/u);
+  }
+  // Status reads while the durable record still holds the private input: the
+  // allowlisted detail and list projections exclude the execution envelope.
+  const callerContext = caller(parentSessionId);
+  const queuedDetail = await runCompanion(['status', output.job.id], { cwd: workspace, env: context.env, caller: callerContext });
+  const queuedList = await runCompanion(['status', '--all'], { cwd: workspace, env: context.env, caller: callerContext });
+  for (const projection of [JSON.stringify(queuedDetail), renderOutput(queuedDetail), renderOutput(queuedDetail, { json: true }),
+    JSON.stringify(queuedList), renderOutput(queuedList), renderOutput(queuedList, { json: true })]) {
+    assert.doesNotMatch(projection, /SENTINEL-TASK-7qf2|SENTINEL-MODEL-7qf2|SENTINEL-SESSION-7qf2|rescueExecutionInput|rescueRunnerVersion|ownerLifecycleEpoch|executionOwner|hostPlacement/u, projection);
+  }
+  // Parity for the bounded effort enum: public job views expose top-level
+  // model/effort fields only where legacy attached reservations persisted
+  // them; the new-path record keeps both inside the private envelope, so the
+  // queued projections must not carry either key.
+  assert.equal(Object.hasOwn(queuedDetail.job, 'model'), false);
+  assert.equal(Object.hasOwn(queuedDetail.job, 'effort'), false);
+  for (const listedJob of queuedList.jobs) {
+    assert.equal(Object.hasOwn(listedJob, 'model') || Object.hasOwn(listedJob, 'effort'), false, JSON.stringify(listedJob));
+  }
+  // The detached runner's terminal publication, replayed on the durable ledger:
+  // the authorized result body quotes the user's requested output.
+  await startWritableRescueForTest(store, workspace, { id: output.job.id }, {
+    startedAt: new Date().toISOString(), zcodeSessionId: sentinelSession, childPid: 998_877, workerLeaseId: sentinelLease,
+  });
+  const authorizedResult = `Rescue complete.\nRequested work: ${sentinelTask}\n`;
+  const resultArtifact = await writeResultArtifact({ dataRoot: context.dataRoot, workspace, jobId: output.job.id, contents: authorizedResult });
+  await store.finishJob(workspace, output.job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+  const detail = await runCompanion(['status', output.job.id], { cwd: workspace, env: context.env, caller: callerContext });
+  const listed = await runCompanion(['status', '--all'], { cwd: workspace, env: context.env, caller: callerContext });
+  for (const projection of [JSON.stringify(detail), renderOutput(detail), renderOutput(detail, { json: true }),
+    JSON.stringify(listed), renderOutput(listed), renderOutput(listed, { json: true })]) {
+    assert.doesNotMatch(projection, /SENTINEL-TASK-7qf2|SENTINEL-MODEL-7qf2|SENTINEL-SESSION-7qf2|998877|rescueExecutionInput|rescueRunnerVersion|ownerLifecycleEpoch|executionOwner|hostPlacement/u, projection);
+  }
+  // The unfinished-result error projection is bounded metadata only.
+  const queuedId = output.job.id;
+  const unfinished = await runDirectInvocation(['invoke-status', 'rescue'], { cwd: workspace, env: childEnv }).catch(() => null);
+  if (unfinished !== null) assert.doesNotMatch(JSON.stringify(unfinished), /SENTINEL-TASK-7qf2|SENTINEL-MODEL-7qf2/u);
+  // The full authorized Result content is preserved — redaction applies to
+  // private metadata, never to the user's requested output.
+  const result = await runCompanion(['result', queuedId], { cwd: workspace, env: context.env, caller: callerContext });
+  assert.equal(result.result, authorizedResult);
+  assert.match(result.result, /SENTINEL-TASK-7qf2/u);
+  assert.doesNotMatch(JSON.stringify(result.job), /SENTINEL-SESSION-7qf2|SENTINEL-MODEL-7qf2|998877|rescueExecutionInput/u);
+  assert.equal(Object.hasOwn(result.job, 'model'), false);
+  assert.equal(Object.hasOwn(result.job, 'effort'), false);
+});
+
+for (const resume of /** @type {const} */ (['fresh', 'resume'])) for (const execution of /** @type {const} */ (['foreground', 'background'])) test(`placement matrix qualifies ${execution} ${resume} Rescue`, {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  /** @type {number|undefined} */ let runnerPid;
+  t.after(async () => {
+    if (runnerPid !== undefined && process.platform !== 'win32') { try { process.kill(-runnerPid, 'SIGKILL'); } catch { /* already exited */ } }
+    if (runnerPid !== undefined) await waitForProcessExit(runnerPid, 15_000);
+    await rm(context.directory, { force: true, recursive: true });
+  });
+  const parentSessionId = `matrix-${execution}-${resume}-parent`; const childId = `matrix-${execution}-${resume}-child`;
+  const record = join(context.directory, `matrix-${execution}-${resume}.jsonl`); await writeFile(record, '');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  /** @type {any} */ let anchorSessionId;
+  if (resume === 'resume') {
+    await prepareDirectRescueChild(context, { parentSessionId, parentTurnId: `${parentSessionId}-turn`, childId,
+      childTurnId: `${childId}-turn`, prompt: '$zcode:rescue --fresh --wait establish the placement matrix anchor' });
+    const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: workspace };
+    // The anchor runs attached through --wait: the full terminal result is the
+    // response, exactly as the placement contract requires.
+    const anchor = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace, env });
+    assert.equal(anchor.job.status, 'succeeded');
+    assert.match(String(anchor.result), /done/u, '--wait waits for the full terminal result');
+    anchorSessionId = anchor.job.zcodeSessionId;
+    await markForwarding(context.dataRoot, { session_id: parentSessionId, turn_id: `${childId}-turn`, cwd: workspace,
+      hook_event_name: 'SubagentStop', agent_id: childId, agent_type: 'zcode-rescue' });
+    assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'proactive',
+      task: `matrix ${execution} ${resume}`, options: { execution, resume } }), legacyPreparedRoute);
+    await writeFile(record, '');
+  } else {
+    // A fresh placement needs exactly one preparation in its own turn.
+    await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: `matrix-${execution}-${resume}`,
+      task: `matrix ${execution} ${resume}`, record, execution });
+  }
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: workspace };
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env,
+    dependencies: { readCodexThreadSpawnChild: async () => host,
+      ...(execution === 'background' ? { spawnRescueRunner: async (/** @type {any} */ input) => {
+        const spawned = await spawnRescueRunner(input);
+        runnerPid = spawned.pid;
+        return spawned;
+      } } : {}) },
+  });
+  if (execution === 'foreground') {
+    // Attached foreground execution waits for and returns the full result.
+    assert.equal(output.job.status, 'succeeded');
+    assert.match(String(output.result), /done/u);
+    const job = await store.readJob(workspace, output.job.id);
+    assert.equal(job.rescueRunnerVersion, undefined, 'foreground reservations never carry the runner marker');
+    assert.equal(job.rescueExecutionInput, undefined);
+  } else {
+    // Detached background execution returns the queued acknowledgement and the
+    // real detached runner executes the exact reservation.
+    assert.deepEqual(output, {
+      type: 'background',
+      job: { id: output.job.id, command: 'rescue', status: 'queued', createdAt: output.job.createdAt },
+      resultCommand: '$zcode:result',
+      statusCommand: '$zcode:status',
+    });
+    await waitFor(async () => TERMINAL_JOB_STATUSES.includes((await store.readJob(workspace, output.job.id)).status),
+      'the matrix runner never finished', scaleTestTimeout(60_000));
+    const job = await store.readJob(workspace, output.job.id);
+    assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
+    assert.equal(job.rescueRunnerVersion, 1);
+    assert.equal(job.rescueExecutionInput, undefined);
+    if (resume === 'resume') {
+      assert.equal(job.zcodeSessionId, anchorSessionId,
+        'the background continuation resumes the exact original session');
+      const binding = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
+      assert.equal(binding.kind, 'bound');
+      assert.equal(binding.binding.currentJobId, output.job.id, 'the exact binding advanced to the continuation');
+    } else assert.equal(job.rescueContinuationOrigin, undefined, 'the background fresh reservation stays fresh');
+  }
+  const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(frames.filter((frame) => frame.method === 'session/send').length, 1, 'exactly one turn runs');
+  assert.equal(frames.filter((frame) => frame.method === 'session/create').length, resume === 'fresh' ? 1 : 0);
+});
+
+test('child-authorized bound continuations reserve the Host lifecycle trio and private input for their placement', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const parentSessionId = 'attached-continuation-parent'; const childId = 'attached-continuation-child';
   const record = join(context.directory, 'attached-continuation.jsonl'); await writeFile(record, '');
@@ -2645,45 +3168,62 @@ test('child-authorized bound continuations reserve the Host lifecycle trio for t
   const startedAt = (await resolveRecordedSessionStart(context.dataRoot, workspace, parentSessionId)).startedAt;
   const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
     cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  const runnerSpawns = { count: 0, launches: [] };
   const second = await runDirectInvocation(['invoke-prepared', 'rescue'], {
-    cwd: workspace, env, dependencies: { readCodexThreadSpawnChild: async () => host },
+    cwd: workspace, env, dependencies: { readCodexThreadSpawnChild: async () => host,
+      spawnRescueRunner: recordingRunnerSpawn(runnerSpawns) },
   });
-  assert.equal(second.type, 'background-terminal');
-  assert.equal(second.job.status, 'succeeded');
+  // The background continuation enqueues: the queued acknowledgement is the
+  // reservation snapshot, and the detached runner executes the exact bound
+  // session (proven end-to-end by the runner-entry qualification).
+  assert.deepEqual(second, {
+    type: 'background',
+    job: { id: second.job.id, command: 'rescue', status: 'queued', createdAt: second.job.createdAt },
+    resultCommand: '$zcode:result',
+    statusCommand: '$zcode:status',
+  });
+  assert.equal(runnerSpawns.count, 1);
   // The exact-resumed session proof lives on the DURABLE record: the emitted
-  // notice projection is bounded and must not carry the session ID.
+  // acknowledgement projection is bounded and must not carry the session ID.
   const job = await createStateStore({ dataRoot: context.dataRoot }).readJob(workspace, second.job.id);
-  assert.equal(job.zcodeSessionId, first.job.zcodeSessionId, 'the attached background continuation resumes the exact original session');
   assert.equal(job.executionOwner, 'host-child');
   assert.equal(job.hostPlacement, 'background');
   assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
-  assert.equal(second.job.zcodeSessionId, undefined, 'the bounded notice projection never carries the session ID');
-  assert.equal(second.resultCommand, '$zcode:result');
+  assert.equal(job.rescueRunnerVersion, 1);
+  assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'continue attached' });
+  assert.equal(job.rescueContinuationOrigin?.priorBinding?.anchorJobId, first.job.id,
+    'the continuation reserves the exact original anchor session');
+  assert.equal(JSON.stringify(second).includes(first.job.zcodeSessionId), false,
+    'the bounded acknowledgement never carries the session ID');
 });
 
-/** Shared Host-owned attached background completion harness for notice delivery tests. @param {any} context @param {string} label */
-async function attachedBackgroundCompletion(context, label) {
+/** Shared Host-owned background completion harness for notice delivery tests:
+ * enqueue one true-background job (no runner spawn), then publish its durable
+ * terminal winner exactly as the detached runner would. @param {any} context @param {string} label */
+async function syntheticBackgroundCompletion(context, label) {
   const workspace = await realpath(context.workspace);
   const parentSessionId = `${label}-parent`; const childId = `${label}-child`;
   const record = join(context.directory, `${label}.jsonl`); await writeFile(record, '');
-  const identity = createIdentityStore({ dataRoot: context.dataRoot });
-  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: `${label}-turn`, workspace,
-    permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${label} native child` });
-  await recordParentSession(context, parentSessionId);
-  const active = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace });
-  await markForwarding(context.dataRoot, {
-    session_id: parentSessionId, turn_id: `${label}-child-turn`, cwd: workspace,
-    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue',
-  }, active);
-  const childEnv = { ...context.env, FAKE_CODEX_THREAD_JSON: JSON.stringify(rawCodexChild({ id: childId, parentThreadId: parentSessionId, cwd: workspace })), CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
-  assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'explicit',
-    task: `${label} native child`, options: { execution: 'background', resume: 'fresh' } }), legacyPreparedRoute);
-  return { output: await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace, env: childEnv }), parentSessionId, workspace };
+  const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label,
+    task: `${label} native child`, record });
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv, dependencies: { spawnRescueRunner: recordingRunnerSpawn({ count: 0, launches: [] }) },
+  });
+  assert.equal(output.type, 'background');
+  // The detached runner's terminal publication, replayed on the durable ledger.
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  await startWritableRescueForTest(store, workspace, { id: output.job.id }, { startedAt: new Date().toISOString(), zcodeSessionId: `zs-${label}` });
+  const resultArtifact = await writeResultArtifact({ dataRoot: context.dataRoot, workspace, jobId: output.job.id, contents: 'done\n' });
+  await store.finishJob(workspace, output.job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+  // The completion notice is built from the bounded terminal projection exactly
+  // as the delivery seam receives it.
+  const terminal = { type: 'background-terminal', noticeTarget: { dataRoot: context.dataRoot, workspace, sessionId: parentSessionId }, job: { id: output.job.id, status: 'succeeded' }, resultCommand: '$zcode:result' };
+  return { output: terminal, parentSessionId, workspace };
 }
 
 test('background completion publishes durable winner before one Host notice', async () => {
   const context = await fixture();
-  const { output, parentSessionId, workspace } = await attachedBackgroundCompletion(context, 'durable-winner-notice');
+  const { output, parentSessionId, workspace } = await syntheticBackgroundCompletion(context, 'durable-winner-notice');
   assert.equal(output.type, 'background-terminal');
   assert.equal(output.job.status, 'succeeded');
   assert.equal(output.noticeTarget.sessionId, parentSessionId);
@@ -2718,7 +3258,7 @@ test('background completion publishes durable winner before one Host notice', as
 
 test('failed live delivery remains unread for PromptSubmit fallback', async () => {
   const context = await fixture();
-  const { output, parentSessionId, workspace } = await attachedBackgroundCompletion(context, 'lost-notice');
+  const { output, parentSessionId, workspace } = await syntheticBackgroundCompletion(context, 'lost-notice');
   assert.equal(output.type, 'background-terminal');
   await assert.rejects(deliverCompletionNotice(output, renderOutput(output), { write: async () => { throw new Error('delivery lost'); } }), /delivery lost/);
   // The failed live delivery left the job unread (its claim released) ...
@@ -2819,7 +3359,18 @@ async function prepareRolledBackContinuationRetry(context, prepared, env) {
   });
 }
 
-for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of /** @type {const} */ (['resume', 'runtime-model', 'outer-dependency', 'outer-dependency-read'])) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, async () => {
+/** Faults the background rollback arms can reproduce: a detached runner child
+ * inherits only environment-carried faults, so dependency-injected launch
+ * faults stay foreground-only (the runner-side equivalents are qualified by the
+ * runner-entry suite). */
+const ROLLBACK_FAILURES = Object.freeze({
+  foreground: ['resume', 'runtime-model', 'outer-dependency', 'outer-dependency-read'],
+  background: ['resume', 'runtime-model'],
+});
+
+for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const failure of ROLLBACK_FAILURES[execution]) test(`rolls back active continuation ${execution} after ${failure} failure and retries the original session`, {
+  timeout: scaleTestTimeout(180_000),
+}, async () => {
   const context = await fixture();
   const failureHome = join(context.directory, `${failure}-home`); await mkdir(failureHome);
   const extraEnv = {
@@ -2860,12 +3411,22 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
       ...executionDependencies,
     },
   });
-  // Background continuations execute ATTACHED in the same Rescue child
-  // (ADR 0018), so a resume failure surfaces through the invocation exactly as
-  // in foreground — there is no detached worker to hand the job to.
-  await assert.rejects(invocation, (error) => { caught = error; return true; });
-  if (failure === 'outer-dependency-read') {
-    assert.equal(caught, outerError); assert.equal(outerReadFaults, 1);
+  if (execution === 'foreground') {
+    // Foreground continuations execute attached, so a resume failure surfaces
+    // through the invocation itself.
+    await assert.rejects(invocation, (error) => { caught = error; return true; });
+    if (failure === 'outer-dependency-read') {
+      assert.equal(caught, outerError); assert.equal(outerReadFaults, 1);
+    }
+  } else {
+    // A background continuation enqueues and returns queued; the detached
+    // runner inherits the environment-carried fault, fails before any accepted
+    // session, and settles Task 3's exact binding rollback on its own.
+    const queued = await invocation;
+    assert.equal(queued.type, 'background');
+    assert.equal(queued.job.status, 'queued');
+    await waitFor(async () => TERMINAL_JOB_STATUSES.includes((await store.readJob(context.workspace, queued.job.id)).status),
+      'the failed background runner never settled its rollback', scaleTestTimeout(120_000));
   }
 
   const jobsAfterFailure = await store.listJobs(context.workspace);
@@ -2875,6 +3436,11 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   assert.equal(failed?.startedAt, undefined); assert.equal(failed?.zcodeSessionId, undefined);
   assert.equal(failed?.rescueContinuationOrigin, undefined); assert.equal(failed?.rescueExecutionClaim, undefined);
   assert.equal(failed?.rescueExecutionReservation, undefined);
+  if (execution === 'background') {
+    assert.equal(failed?.rescueRunnerVersion, 1, 'the runner marker survives the rollback settlement');
+    assert.equal(failed?.childPid === undefined || (await waitForProcessExit(failed.childPid, 15_000)), true,
+      'the failed detached runner exits after its settlement');
+  }
   const bindingAfterFailure = await store.resolveRescueBinding({
     workspace: context.workspace, parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId,
   });
@@ -4405,22 +4971,38 @@ for (const execution of ['foreground', 'background']) test(`same-parent exact ch
     route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' } });
   assert.equal(plans, 1, 'one native follow-up preparation');
   await writeFile(record, '');
-  // The background continuation runs ATTACHED in the same Rescue child
-  // (ADR 0018): no detached worker, and the result arrives from one invocation.
+  const store = createStateStore({ dataRoot: context.dataRoot });
   const continuation = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env,
     dependencies: { readCodexThreadSpawnChild: async () => host } });
-  const result = continuation;
-  assert.equal(result.type, execution === 'background' ? 'background-terminal' : result.type);
-  assert.equal(result.job.status, 'succeeded');
-  // The bounded notice projection carries no session ID; the exact resumed
+  /** @type {any} */ let continuationJobId;
+  if (execution === 'background') {
+    // The background continuation enqueues; the detached runner resumes the
+    // exact stored session. Wait for its terminal publication.
+    assert.deepEqual(continuation, {
+      type: 'background',
+      job: { id: continuation.job.id, command: 'rescue', status: 'queued', createdAt: continuation.job.createdAt },
+      resultCommand: '$zcode:result',
+      statusCommand: '$zcode:status',
+    });
+    continuationJobId = continuation.job.id;
+    await waitFor(async () => TERMINAL_JOB_STATUSES.includes((await store.readJob(context.workspace, continuationJobId)).status),
+      'the detached continuation runner never finished', scaleTestTimeout(60_000));
+    const runner = await store.readJob(context.workspace, continuationJobId);
+    assert.equal(runner.status, 'succeeded', `error: ${JSON.stringify(runner.error ?? null)}`);
+    if (runner.childPid !== undefined) await waitForProcessExit(runner.childPid, 15_000);
+  } else {
+    assert.equal(continuation.job.status, 'succeeded');
+    continuationJobId = continuation.job.id;
+  }
+  // The bounded acknowledgement carries no session ID; the exact resumed
   // session is proven on the durable record and by the captured RPC frames.
-  const job = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, result.job.id);
+  const job = await store.readJob(context.workspace, continuationJobId);
   assert.equal(job.zcodeSessionId, first.job.zcodeSessionId);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(calls.filter((frame) => frame.method === 'session/resume' && frame.params?.sessionId === first.job.zcodeSessionId).length, 1);
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
   assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
-  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  const jobs = await store.listJobs(context.workspace);
   assert.equal(jobs.length, 2, 'one continuation reservation');
   const storage = await resolveWorkspaceStorage(context);
   const [preparedName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
@@ -4437,8 +5019,8 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   const host = { id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
     agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
   let reconciled = 0;
-  const reconcileThenDrift = async () => {
-    reconciled += 1;
+  /** @returns {Promise<void>} */
+  const applyDrift = async () => {
     if (drift === 'revoke') {
       const binding = await store.resolveRescueBinding({ workspace: context.workspace,
         parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
@@ -4458,14 +5040,39 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
       }));
     }
   };
-  const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
-    dependencies: { readCodexThreadSpawnChild: async () => host,
-      reconcileBrokerOwnership: reconcileThenDrift } });
-  const expectedError = { code: ['path', 'role'].includes(drift) ? 'RESCUE_BINDING_INVALID' : 'RESCUE_BINDING_STALE' };
-  // Background continuations execute ATTACHED (ADR 0018): the drift surfaces
-  // through the invocation itself, exactly as in foreground.
+  // Foreground continues attached: the drift is applied when the execution path
+  // reconciles broker ownership immediately before the resume. Background
+  // validates the exact binding at RESERVATION time, so its drift must be
+  // fully applied BEFORE the invocation starts executing — constructing the
+  // invocation first would race two asynchronous filesystem chains, and a
+  // winning reservation would return a queued acknowledgement instead of the
+  // required rejection. The runner-side revalidation is qualified by the
+  // runner suite.
+  const reconcileThenDrift = async () => { reconciled += 1; await applyDrift(); };
+  /** @type {Promise<unknown>} */
+  let invocation;
+  if (execution === 'foreground') {
+    invocation = runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+      dependencies: { readCodexThreadSpawnChild: async () => host, reconcileBrokerOwnership: reconcileThenDrift } });
+  } else {
+    await applyDrift();
+    invocation = runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+      dependencies: { readCodexThreadSpawnChild: async () => host, reconcileBrokerOwnership: async () => {} } });
+  }
+  // Execution-time revalidation (foreground) reports a drifted binding as
+  // STALE, while the reservation-time CAS (background) fails closed with the
+  // binding-invalid authorization error before any job exists. Both reject
+  // before any dispatch.
+  const expectedError = { code: execution === 'background' || ['path', 'role'].includes(drift)
+    ? 'RESCUE_BINDING_INVALID' : 'RESCUE_BINDING_STALE' };
   await assert.rejects(invocation, expectedError);
-  assert.equal(reconciled, 1);
+  if (execution === 'foreground') assert.equal(reconciled, 1);
+  else {
+    // No queued runner job may survive the rejected continuation: the binding
+    // advanced nowhere and nothing can be dispatched.
+    const jobs = await store.listJobs(context.workspace);
+    assert.equal(jobs.some((/** @type {any} */ job) => job.status === 'queued'), false);
+  }
   const calls = (await readFile(prepared.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 0);
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 0);

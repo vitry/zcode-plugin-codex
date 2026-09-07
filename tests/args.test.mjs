@@ -35,6 +35,14 @@ test('rescue defaults to foreground and enforces task, mode, model and effort co
   assert.equal(parseArgs(['rescue', '--effort', 'HIGH', 'task']).options.effort, 'high');
 });
 
+test('rescue placement flags are mutually exclusive and the default stays attached foreground', () => {
+  assert.equal(parseArgs(['rescue', '--wait', 'task']).options.execution, 'wait');
+  assert.equal(parseArgs(['rescue', '--background', 'task']).options.execution, 'background');
+  assert.equal(parseArgs(['rescue', 'task']).options.execution, 'foreground');
+  rejects(['rescue', '--wait', '--background', 'task']);
+  rejects(['rescue', '--background', '--wait', 'task']);
+});
+
 test('role-status accepts only the constant Rescue readiness query', () => {
   assert.deepEqual(parseArgs(['role-status', 'rescue']), {
     command: 'role-status', options: {}, positionals: ['rescue'],

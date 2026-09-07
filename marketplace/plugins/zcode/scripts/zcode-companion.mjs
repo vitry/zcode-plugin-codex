@@ -32,8 +32,8 @@ import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
-import { RESCUE_RUNNER_SUBCOMMAND } from './lib/rescue-runner.mjs';
-import { RESCUE_RUNNER_VERSION, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
+import { RESCUE_RUNNER_SUBCOMMAND, spawnRescueRunner } from './lib/rescue-runner.mjs';
+import { RESCUE_RUNNER_VERSION, queuedRescueAcknowledgement, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
 import { createStateStore, resumableHostOwnedCancellation, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -1118,6 +1118,26 @@ async function startPublic(context) {
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
+  // True-background placement reserves the bounded private execution input
+  // BESIDE the job, but ONLY for reservations that will actually use the new
+  // Host-owned runner — the same predicate the runner branch below applies via
+  // `validHostLifecycleRecord(job)`. The executor/permission evidence proving
+  // Host ownership is known before each Host-owned reservation (the
+  // child-authorized branch and the standalone resume of an exact binding
+  // both always persist the complete lifecycle trio), so the input is built
+  // lazily AT those reservation sites: a historical non-Host `--background`
+  // invocation follows the legacy sealed-spec path with its historical input
+  // bounds unchanged and never touches `validateRescueExecutionInput`.
+  // Validation still runs BEFORE any reservation write, so an invalid
+  // task/model/effort never writes state, and the StateStore accepts the input
+  // only on a valid Host-owned background Rescue reservation (the marker rides
+  // along with the input inside the locked publication).
+  const buildRescueExecutionInput = () => validateRescueExecutionInput({
+    version: RESCUE_RUNNER_VERSION,
+    task: parsed.positionals.join(' ') || context.originalPrompt,
+    ...(parsed.options.model === undefined ? {} : { model: parsed.options.model }),
+    ...(parsed.options.effort === undefined ? {} : { effort: parsed.options.effort }),
+  });
   /** @type {any} */ let job;
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
@@ -1152,7 +1172,12 @@ async function startPublic(context) {
       hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
     };
     const beforePersist = reservationEpochGate(context, epochPair.epoch);
-    if (parsed.options.resume === 'fresh' || !binding && context.rescueActivationKind === 'spawn') reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, lifecycle, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }, { beforePersist }));
+    // Every reservation in this branch carries the Host-managed lifecycle
+    // trio, so a background placement here is exactly the new Host-owned
+    // runner path: build (and validate) the bounded execution input now —
+    // still before any reservation write.
+    const rescueExecutionInput = parsed.options.execution === 'background' ? buildRescueExecutionInput() : undefined;
+    if (parsed.options.resume === 'fresh' || !binding && context.rescueActivationKind === 'spawn') reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, lifecycle, ...(rescueExecutionInput === undefined ? {} : { executionInput: rescueExecutionInput }), ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }, { beforePersist }));
     else if (binding) {
       const previewMigrationProof = binding.state === 'closed' ? context.rescueRoute?.migrationProof : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
@@ -1160,7 +1185,7 @@ async function startPublic(context) {
         : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
       permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
       const migrationProof = previewMigrationProof;
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, lifecycle, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? {
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, lifecycle, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(rescueExecutionInput === undefined ? {} : { executionInput: rescueExecutionInput }), ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? {
         expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId,
         expectedAnchorJobId: context.rescueRoute.expectedAnchorJobId ?? context.rescueRoute.candidateJobId,
         ...(context.rescueRoute.expectedBindingKey ? { expectedBindingKey: context.rescueRoute.expectedBindingKey } : {}),
@@ -1225,8 +1250,13 @@ async function startPublic(context) {
         executionOwner: 'host-child',
         hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
       };
+      // The binding-anchored continuation is a Host-owned reservation (the
+      // trio above), so its background placement rides the new runner path
+      // and reserves the bounded input first; an unbound legacy candidate
+      // below keeps the historical sealed-spec path with no input at all.
+      const rescueExecutionInput = parsed.options.execution === 'background' ? buildRescueExecutionInput() : undefined;
       const reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor,
-        operationId: prior.operationId, expectedCurrentJobId: candidate.id, expectedAnchorJobId: prior.anchorJobId, lifecycle }, { beforePersist: reservationEpochGate(context, epochPair.epoch) }));
+        operationId: prior.operationId, expectedCurrentJobId: candidate.id, expectedAnchorJobId: prior.anchorJobId, lifecycle, ...(rescueExecutionInput === undefined ? {} : { executionInput: rescueExecutionInput }) }, { beforePersist: reservationEpochGate(context, epochPair.epoch) }));
       job = reserved.job;
       candidate = reserved.anchorJob;
     } else {
@@ -1243,51 +1273,40 @@ async function startPublic(context) {
   }
   const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background' && validHostLifecycleRecord(job)) {
-    // A Host-owned background continuation executes ATTACHED in this process
-    // (ADR 0018: new Host-owned Rescue never launches a detached worker). The
-    // reservation keeps the caller's session-bound execution alive until the
-    // turn settles; the reserved background contract surfaces only after the
-    // durable terminal winner exists.
-    let terminal;
+    // True background (the session-bound detached design): the complete
+    // reservation — job, exact binding advancement, lifecycle trio, and the
+    // bounded private execution input — is durably published. Spawn ONE
+    // detached runner for the exact job and return the queued acknowledgement
+    // immediately; the Rescue Child supervises enqueue only and never waits
+    // for the claim, ZCode startup, send, or terminal state. The runner runs
+    // the same installed companion entry with the private Host-runner
+    // subcommand and inherits THIS process's bounded runtime environment.
     try {
-      terminal = await executeWithWorkerLease({ ...context, job, spec });
-    } catch (executionError) {
-      // A failed/cancelled durable winner still owes the bounded completion
-      // notice: reread the durable terminal job, emit the notice with the
-      // failure summary / stop cause, then rethrow the original execution
-      // error so the CLI surfaces it.
-      let reread = null;
-      try { reread = await store.readJob(cwd, job.id); } catch { reread = null; }
-      // Only a run whose remote session was ACCEPTED owes the failure notice:
-      // resume/setup failures before acceptance roll back exactly as foreground
-      // does (rejection), per the Engine Terminal Failure semantics.
-      if (reread !== null && typeof reread.zcodeSessionId !== 'string') { reread = null; }
-      // An EXTERNAL cancel/steer keeps its interrupted-turn contract (the
-      // child surfaces ZCODE_SESSION_STOPPED with a nonzero exit); only an
-      // engine/model terminal failure emits the bounded failure notice.
-      const typedExecutionError = /** @type {any} */ (executionError);
-      const interruptedTurn = typedExecutionError?.code === 'JOB_INTERRUPTED'
-        || typedExecutionError?.code === 'ZCODE_SESSION_STOPPED'
-        || /ZCODE_SESSION_STOPPED/.test(String(typedExecutionError?.message ?? ''));
-      if (reread !== null && interruptedTurn) { reread = null; }
-      if (reread !== null && ['failed', 'cancelled'].includes(reread.status)) {
-        // Route through the normal claimed delivery path WITHOUT pre-claiming:
-        // the CLI's claimNotificationForJob is the single ownership point —
-        // pre-claiming here would make the CLI lose to its own live claim and
-        // silently drop the failure notice.
-        const bindingCurrent = await bindingCurrencyEvidence(store, cwd, caller.sessionId, reread).catch(() => false);
-        return { type: 'background-terminal', noticeTarget: { dataRoot, workspace: cwd, sessionId: caller.sessionId }, job: terminalResultJob(reread, caller.permissionMode, bindingCurrent), resultCommand: '$zcode:result' };
-      }
-      throw executionError;
+      await (context.dependencies?.spawnRescueRunner ?? spawnRescueRunner)({
+        companionPath: activeCompanionPath, workspace: cwd, jobId: job.id, env: context.env,
+        ...(context.dependencies?.spawnChild === undefined ? {} : { spawnChild: context.dependencies.spawnChild }),
+      });
+    } catch (error) {
+      // A deterministic launch failure means NO runner exists: settle the
+      // still-queued job through the pre-start failure policy (generic fresh
+      // failure, exact active-continuation rollback, or session-ended
+      // migration rollback) and surface the launch error — never a queued
+      // acknowledgement for a job nothing will ever execute. Only an expected
+      // winner conflict (a concurrent authority already terminalized the job,
+      // confirmed by the settlement helper's state reread) may be swallowed;
+      // a genuine settlement failure is compounded onto the raised launch
+      // error as a secondary diagnostic, so the caller never receives a bare
+      // "spawn failed" while the queued job sits with no settlement outcome.
+      await settleUnclaimedBackgroundJob(store, cwd, job, error);
+      throw error;
     }
-    // The Host Completion Notice is bounded by design 319: job ID, terminal
-    // status, bounded stop cause / failure summary, resumability, and the
-    // Result command — no session IDs, private paths, or raw job internals.
-    let settledJob = terminal?.job ?? terminal;
-    const bindingCurrent = await bindingCurrencyEvidence(store, cwd, caller.sessionId, settledJob);
-    // Acknowledgement happens at the delivery-success boundary in
-    // runCompanionCli (after the notice is rendered to stdout), not here.
-    return { type: 'background-terminal', noticeTarget: { dataRoot, workspace: cwd, sessionId: caller.sessionId }, job: terminalResultJob(settledJob, caller.permissionMode, bindingCurrent), resultCommand: '$zcode:result' };
+    // The acknowledgement is the accepted-reservation snapshot only. It is
+    // deliberately NOT registered in the historical backgroundBindings
+    // capability/delivery-rollback machinery: post-spawn stdout failure
+    // leaves the accepted job intact for Status/Result/PromptSubmit
+    // discovery, and the enqueue delivery never touches the job's Completion
+    // Notice claim.
+    return queuedRescueAcknowledgement(job);
   }
   if (parsed.options.execution === 'background') {
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
@@ -1321,6 +1340,89 @@ async function startPublic(context) {
     }
   }
   return executeWithWorkerLease({ ...context, job, spec });
+}
+
+/**
+ * Pre-start settlement for one deterministic detached-runner launch failure:
+ * the job is still queued and NO runner ever claimed it, so the failure policy
+ * that matches its reservation kind applies — a generic queued failure for a
+ * fresh job (whose fresh operation stays non-resumable), the exact
+ * active-continuation rollback transaction (fail B, restore prior binding A),
+ * or the session-ended migration rollback. Every transaction is guarded by the
+ * durable queued state, so a competing winner (for example a stop that
+ * terminalized the job first) keeps its own outcome and rejects this
+ * settlement with an expected winner-conflict code; only such a rejection —
+ * CONFIRMED by rereading the durable record — is swallowed as the ordinary
+ * race it is. Any other settlement failure (an I/O error, a lock timeout, an
+ * unexpected state error, or a conflict whose reread still shows a winnerless
+ * queued job) is never discarded: it rides onto the raised launch error as a
+ * secondary diagnostic, so the caller never receives a bare "spawn failed"
+ * above a queued job whose settlement attempt failed.
+ * @param {any} store @param {string} cwd @param {any} job @param {unknown} error
+ */
+async function settleUnclaimedBackgroundJob(store, cwd, job, error) {
+  const patch = { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'The detached Rescue runner could not be launched.' }, exitCode: 1 };
+  try {
+    if (job.rescueContinuationOrigin?.kind === 'active-continuation') {
+      await store.finishActiveRescueContinuationFailure(cwd, job.id, null, job.rescueContinuationOrigin, 'failed', patch);
+    } else if (job.rescueMigrationRollback !== undefined) {
+      await store.finishSessionEndedRescueContinuation(cwd, job.id, job.rescueMigrationRollback, 'failed', patch);
+    } else {
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', patch);
+    }
+  } catch (settlementError) {
+    if (isSettlementWinnerConflict(settlementError) && await hasConcurrentSettlementWinner(store, cwd, job.id)) return;
+    throw withSettlementFailureDiagnostic(error, settlementError);
+  }
+}
+
+/** The transaction codes a concurrent winner legitimately produces against a
+ * guarded queued settlement: already terminal, unexpected status (including
+ * the durable stop decision cancellation owns), an exact claim conflict, or
+ * the specialized continuation/migration transaction rejecting because the
+ * binding/origin it guards advanced elsewhere. @param {unknown} error */
+function isSettlementWinnerConflict(error) {
+  return error instanceof PluginError
+    && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'WORKER_LEASE_CONFLICT', 'RESCUE_BINDING_INVALID'].includes(error.code);
+}
+
+/** Reread the durable record: the concurrent authority won the settlement when
+ * the job has LEFT queued (terminal, cancelling, or a claimed runner) or is
+ * queued carrying the durable stop decision that cancellation/recovery owns.
+ * A failed or empty reread confirms nothing, and the settlement surfaces.
+ * @param {any} store @param {string} cwd @param {string} jobId */
+async function hasConcurrentSettlementWinner(store, cwd, jobId) {
+  /** @type {any} */ let current;
+  try { current = await store.readJob(cwd, jobId); } catch { return false; }
+  return current !== null && typeof current === 'object'
+    && (current.status !== 'queued' || validStopIntent(current.stopIntent));
+}
+
+/** Compound bounded error in the repository's error-combination convention
+ * (the raised error keeps the launch failure's code, category, and remedy —
+ * `withStderr`-style — with the settlement failure additionally named in the
+ * message and carried in bounded `details.settlementFailure`).
+ * @param {unknown} launchError @param {unknown} settlementError */
+function withSettlementFailureDiagnostic(launchError, settlementError) {
+  const settlementMessage = settlementError instanceof Error
+    ? settlementError.message.slice(0, 2048) : 'The pre-start settlement of the queued job failed.';
+  /** @type {Record<string, unknown>} */ const details = {
+    settlementFailure: settlementError instanceof PluginError
+      ? { code: settlementError.code, message: settlementMessage }
+      : { message: settlementMessage },
+  };
+  const suffix = `Pre-start settlement of the queued job also failed: ${settlementMessage}`;
+  if (launchError instanceof PluginError) {
+    return new PluginError(launchError.code, `${launchError.message} ${suffix}`.slice(0, 4096), {
+      category: launchError.category, remedy: launchError.remedy, cause: launchError.cause,
+      details: { ...launchError.details, ...details },
+    });
+  }
+  return new PluginError('RESCUE_RUNNER_SPAWN_FAILED',
+    `Could not start the detached Rescue runner process. ${suffix}`.slice(0, 4096), {
+      category: 'runtime', remedy: 'Retry the background Rescue invocation from the active Codex turn.',
+      cause: launchError, details,
+    });
 }
 
 /** @param {any} binding */

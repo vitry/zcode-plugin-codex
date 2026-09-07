@@ -12,8 +12,18 @@ export function errorEnvelope(error) {
 
 /** @param {any} value @param {{json?:boolean}} [options] */
 export function renderOutput(value, options = {}) {
-  if (options.json) return `${JSON.stringify(redact(value, exactOwnerJob(value)))}\n`;
+  // The queued acknowledgement is allowlisted before every transport: neither
+  // render path may echo a field the closed projection never names.
+  const queued = queuedAcknowledgementView(value);
+  if (options.json) return `${JSON.stringify(queued ?? redact(value, exactOwnerJob(value)))}\n`;
   if (value?.type === 'transfer' && typeof value.result === 'string') return value.result.endsWith('\n') ? value.result : `${value.result}\n`;
+  if (queued) {
+    // The true-background queued acknowledgement: rendering says the run is
+    // QUEUED (a reservation snapshot, never a readiness or startup claim) and
+    // names the pull interfaces that discover the run later. Only the
+    // reconstructed closed projection is interpolated — never a caller field.
+    return `Rescue job ${queued.job.id} queued for background execution.\nCheck progress with ${safeInline(queued.statusCommand)}; read the final result with ${safeInline(queued.resultCommand)}.\n`;
+  }
   if (value?.type === 'background') return `Reserved background job ${value.job.id}.\n`;
   if (value?.jobs) return `${value.jobs.map(renderCompactJob).join('\n')}\n${renderModelPolicy(value.modelPolicy)}`;
   if (value?.result !== undefined) {
@@ -182,6 +192,48 @@ function renderModelPolicy(policy) { return policy ? `Model policy: default=${po
 /** Internal machine transport. Never use for user-facing rendering. @param {unknown} value */
 export function renderInternalOutput(value) { return `${JSON.stringify(value)}\n`; }
 
+/** The queued acknowledgement's closed job identity: one 64-hex digest id. */
+const QUEUED_JOB_ID = /^[a-f0-9]{64}$/u;
+
+/**
+ * Reconstruct the bounded public queued acknowledgement (design 174-175,
+ * 198-212) from validated values only. This is an allowlist projection, not
+ * a secret-name filter: any unrecognized field — at either the response or
+ * the job level — is dropped, never copied, because a denylist cannot know
+ * the names a future producer leak might use. The response is discriminated
+ * precisely: only a `type: 'background'` view carrying both string command
+ * fields is the new closed acknowledgement; the legacy attached-background
+ * response (no such fields) keeps its existing full-job redaction path. A
+ * discriminated shape whose identity fields fail validation is a broken
+ * producer contract and fails closed rather than falling back to the
+ * delete-list.
+ * @param {any} value @returns {any|null}
+ */
+function queuedAcknowledgementView(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'background') return null;
+  if (typeof value.resultCommand !== 'string' || typeof value.statusCommand !== 'string') return null;
+  const job = value.job;
+  /** @type {string[]} */ const invalidFields = [];
+  if (!job || typeof job !== 'object' || Array.isArray(job)) invalidFields.push('job');
+  else {
+    if (job.command !== 'rescue') invalidFields.push('command');
+    if (job.status !== 'queued') invalidFields.push('status');
+    if (typeof job.id !== 'string' || !QUEUED_JOB_ID.test(job.id)) invalidFields.push('id');
+    if (!validTimestamp(job.createdAt)) invalidFields.push('createdAt');
+  }
+  if (invalidFields.length > 0) {
+    throw new PluginError('RESCUE_QUEUED_RESPONSE_INVALID', 'The reserved Rescue job cannot be projected as a queued acknowledgement.', {
+      category: 'state', remedy: 'Inspect the reserved job through Status and Result.', details: { invalidFields },
+    });
+  }
+  return {
+    type: 'background',
+    job: { id: /** @type {any} */ (job).id, command: 'rescue', status: 'queued', createdAt: /** @type {any} */ (job).createdAt },
+    resultCommand: value.resultCommand,
+    statusCommand: value.statusCommand,
+  };
+}
+
 /** @param {any} value @returns {any|null} */
 function exactOwnerJob(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'jobs')
@@ -196,7 +248,7 @@ function redact(value, progressProbeOwner = null) {
   if (!value || typeof value !== 'object') return value;
   /** @type {Record<string,any>} */ const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|capability|executionCommitted|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueExecutionClaim|rescueExecutionReservation|rescueReservationKind|rescueJobSpecCommitment|rescueLegacyJobSpecProof|ownerLifecycleEpoch|executionOwner|hostPlacement|stopIntent|childPid|workerLeaseId|zcodeSessionId/i.test(key)) continue;
+    if (/token|capability|executionCommitted|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueExecutionClaim|rescueExecutionReservation|rescueExecutionInput|rescueRunnerVersion|rescueOriginWorkspace|rescueReservationKind|rescueJobSpecCommitment|rescueLegacyJobSpecProof|ownerLifecycleEpoch|executionOwner|hostPlacement|stopIntent|childPid|workerLeaseId|zcodeSessionId/i.test(key)) continue;
     if (/progressProbe/i.test(key) && (value !== progressProbeOwner || key !== 'progressProbe' || !validProgressProbe(entry))) continue;
     if (key === 'logFile' && value !== progressProbeOwner) continue;
     result[key] = redact(entry, progressProbeOwner);
