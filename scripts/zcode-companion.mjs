@@ -1845,7 +1845,13 @@ async function executeReserved(context) {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
     } else if (!isInterruption(executionError) && current?.status === 'queued') {
-      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: executionError instanceof Error ? executionError.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
+      // Setup-failure settlement keeps the claim discipline: the exact-lease
+      // claim-failure seam terminalizes only this attempt's own unclaimed/owned
+      // claim, so a competing claimant's newer claim is preserved as a no-op
+      // instead of being clobbered by this loser's compensation.
+      const failurePatch = { error: { message: executionError instanceof Error ? executionError.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 };
+      if (context.workerLeaseId === undefined) await store.finishJob(cwd, job.id, ['queued'], 'failed', failurePatch);
+      else await store.finishJobAfterExecutionClaimFailure(cwd, job.id, context.workerLeaseId, failurePatch);
     }
     throw executionError;
   }

@@ -57,6 +57,37 @@ async function fixture() {
   };
 }
 
+/** A deterministic pre-send setup failure: session discovery fails before any
+ * ZCode client (and therefore any remote call) can exist. @returns {() => Promise<never>} */
+function failingLaunch() {
+  return async () => { throw new Error('fixture runner setup failed before send'); };
+}
+
+/** Reserve one exact active-continuation background runner job whose anchor is a
+ * finished fresh job owning `anchorSessionId`. @param {any} context @param {string} anchorSessionId */
+async function reserveContinuationBackground(context, anchorSessionId) {
+  const anchorExecutor = context.executor('anchor', 'turn-runner-anchor');
+  const anchor = (await context.store.reserveFreshRescueJob({
+    workspace: context.workspace, reservation: context.reservation('turn-runner-anchor'), executor: anchorExecutor,
+  }));
+  const claimed = await context.store.claimJobWorkerForExecution(context.workspace, anchor.job.id,
+    { childPid: 999_999_999, workerLeaseId: anchor.job.id });
+  await context.store.transitionJob(context.workspace, anchor.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: anchorSessionId,
+    childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
+  await context.store.finishJob(context.workspace, anchor.job.id, ['running'], 'succeeded');
+  const job = (await context.store.reserveBoundRescueContinuation({
+    workspace: context.workspace,
+    reservation: context.reservation('turn-runner-continuation'),
+    executor: anchorExecutor,
+    operationId: anchor.binding.operationId,
+    lifecycle: context.lifecycle,
+    executionInput: { version: 1, task: PRIVATE_TASK },
+  })).job;
+  return { job, anchorId: anchor.job.id };
+}
+
 /** Publish the exact matching-epoch SessionEnd receipt for the fixture's owner session. @param {any} context @param {string} [origin] */
 async function publishOwnerReceipt(context, origin = 'session-end-hook') {
   return createHostLifecycleStore({ dataRoot: context.dataRoot }).publishSessionEnd({
@@ -425,4 +456,164 @@ test('the runner entry rejects wrong argument shapes before touching any job', a
   const job = await context.store.readJob(context.workspace, reserved.id);
   assert.equal(job.status, 'queued');
   assert.equal(job.childPid, undefined);
+});
+
+/** THE setup-error discipline: a failure after the claim but before any remote
+ * call settles the job failed through the EXACT-LEASE claim-failure seam, so a
+ * competing claimant that won the claim in the interim is preserved verbatim
+ * and never clobbered by a loser's compensation. */
+test('a setup failure before send preserves a racing second claimant instead of settling it', {
+  timeout: scaleTestTimeout(60_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = await context.reserveBackground();
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  // The racing claimant's published claim: a different process lifetime lease
+  // (and its exact claim token) replaced the runner's own after the claim.
+  const foreignLease = 'b'.repeat(64);
+  await assert.rejects(() => runRunnerEntry(context, ['run-host-rescue-job', reserved.id], {
+    dependencies: {
+      testOnlyAfterExecutionClaim: async () => {
+        const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+        const jobPath = join(storage.directory, 'jobs', `${reserved.id}.json`);
+        const record = JSON.parse(await readFile(jobPath, 'utf8'));
+        await atomicWriteJson(jobPath, { ...record, childPid: process.pid, workerLeaseId: foreignLease,
+          rescueExecutionClaim: { ...record.rescueExecutionClaim, workerLeaseId: foreignLease } });
+      },
+      discoverLaunch: failingLaunch(),
+    },
+  }), (/** @type {any} */ error) => /fixture runner setup failed before send/u.test(error.message));
+  // The newer claim survives untouched and still queued: the loser's settlement
+  // never terminalizes a claim it does not own, and the private input stays
+  // exactly as the owning claimant needs it.
+  const job = await context.store.readJob(context.workspace, reserved.id);
+  assert.equal(job.status, 'queued');
+  assert.equal(job.childPid, process.pid);
+  assert.equal(job.workerLeaseId, foreignLease);
+  assert.deepEqual(job.rescueExecutionInput, { version: 1, task: PRIVATE_TASK });
+  // The failed setup happened strictly before any remote call.
+  assert.deepEqual(await recordedRequests(context.record), []);
+});
+
+/** The ordinary setup-failure path: the runner's own exact claim settles failed,
+ * the private input is removed with the terminal publication, the detached-
+ * runner marker is retained, and no remote call ever happened. */
+test('a setup failure before send settles the runner\'s own exact claim as failed with no remote call', {
+  timeout: scaleTestTimeout(60_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = await context.reserveBackground();
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  await runRunnerEntry(context, ['run-host-rescue-job', reserved.id], {
+    dependencies: { discoverLaunch: failingLaunch() },
+  });
+  const job = await context.store.readJob(context.workspace, reserved.id);
+  assert.equal(job.status, 'failed');
+  assert.match(job.error?.message ?? '', /fixture runner setup failed before send/u);
+  assert.ok(job.error.message.length <= 2048);
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(/^\b[a-f0-9]{64}\b$/u.test(job.workerLeaseId ?? ''), true);
+  assert.equal(job.zcodeSessionId, undefined);
+  assert.equal(job.startedAt, undefined);
+  assert.deepEqual(await recordedRequests(context.record), []);
+});
+
+/** Task 3's pre-start rollback policy through the runner entry: an eligible
+ * active continuation's deterministic setup failure restores the EXACT prior
+ * binding to its anchor under the exact-lease transaction and retains the
+ * failed attempt — never a generic settlement that orphans the binding. */
+test('a setup failure before send rolls back an active continuation to its exact anchor binding', {
+  timeout: scaleTestTimeout(60_000),
+}, async (t) => {
+  const context = await fixture();
+  const anchorSessionId = 'runner-entry-anchor-session';
+  const { job, anchorId } = await reserveContinuationBackground(context, anchorSessionId);
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  await runRunnerEntry(context, ['run-host-rescue-job', job.id], {
+    dependencies: { discoverLaunch: failingLaunch() },
+  });
+  const failed = await context.store.readJob(context.workspace, job.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error?.message ?? '', /fixture runner setup failed before send/u);
+  assert.equal(failed.rescueContinuationOrigin, undefined);
+  assert.equal(failed.rescueExecutionInput, undefined);
+  assert.equal(failed.zcodeSessionId, undefined);
+  assert.equal(/^\b[a-f0-9]{64}\b$/u.test(failed.workerLeaseId ?? ''), true);
+  // The exact prior binding was restored: the anchor is current again.
+  const binding = await context.store.resolveRescueBinding({
+    workspace: context.workspace, parentSessionId: OWNER_SESSION, executorAgentId: 'runner-entry-child-anchor',
+  });
+  assert.equal(binding.kind, 'bound');
+  assert.equal(binding.binding.currentJobId, anchorId);
+  assert.deepEqual(await recordedRequests(context.record), []);
+});
+
+/** The duplicate/delayed-runner race: the claim CAS selects exactly one runner;
+ * a second entry invoked while the winner's lease is held rejects and exits
+ * without any remote call, so at most one session/create and one session/send
+ * ever happen for the job. */
+test('a duplicate runner entry while the winner\'s lease is held cannot send', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = await context.reserveBackground();
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  const first = runRunnerEntry(context, ['run-host-rescue-job', reserved.id]);
+  // The loser starts only once the winner's claim is durably published, so the
+  // claim CAS — not timing luck — must be what excludes it.
+  const claimedDeadline = Date.now() + scaleTestTimeout(30_000);
+  for (;;) {
+    const claimed = await context.store.readJob(context.workspace, reserved.id);
+    if (claimed.workerLeaseId !== undefined) break;
+    if (Date.now() > claimedDeadline) assert.fail('the first runner never claimed the job');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const second = runRunnerEntry(context, ['run-host-rescue-job', reserved.id]);
+  const settled = await Promise.allSettled([first, second]);
+  assert.equal(settled.filter((outcome) => outcome.status === 'fulfilled').length, 1,
+    `exactly one runner may win; outcomes: ${JSON.stringify(settled.map((outcome) => outcome.status === 'rejected' ? String(outcome.reason) : 'fulfilled'))}`);
+  assert.equal(settled.filter((outcome) => outcome.status === 'rejected').length, 1);
+  const job = await context.store.readJob(context.workspace, reserved.id);
+  assert.equal(job.status, 'succeeded', `the winning runner must execute; error: ${JSON.stringify(job.error ?? null)}`);
+  const requests = await recordedRequests(context.record);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 1);
+});
+
+/** Exact continuation through the runner entry: the stored anchor's session ID
+ * is resumed EXACTLY once — never a latest-session lookup, never a fresh
+ * create — and exactly one send runs the private task. */
+test('an exact continuation runner resumes the stored anchor session exactly once', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture();
+  const anchorSessionId = 'runner-entry-anchor-session';
+  const { job } = await reserveContinuationBackground(context, anchorSessionId);
+  const record = context.record;
+  await writeFile(record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  // The resumed session is fabricated by the fake from the durable workspace —
+  // in its canonical spelling, exactly the identity the entry's canonicalized
+  // cwd (and therefore the client's expected workspace) carries.
+  await runCompanion(['run-host-rescue-job', job.id], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: await realpath(context.workspace) },
+  });
+  const succeeded = await context.store.readJob(context.workspace, job.id);
+  assert.equal(succeeded.status, 'succeeded', `the continuation must execute; error: ${JSON.stringify(succeeded.error ?? null)}`);
+  assert.equal(succeeded.zcodeSessionId, anchorSessionId);
+  const requests = await recordedRequests(record);
+  const resumes = requests.filter((/** @type {any} */ request) => request.method === 'session/resume');
+  assert.equal(resumes.length, 1);
+  assert.equal(resumes[0].params?.sessionId, anchorSessionId);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/create').length, 0);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 1);
+  assert.ok(JSON.stringify(requests.find((/** @type {any} */ request) => request.method === 'session/send')).includes(PRIVATE_TASK));
+  const result = await readResultArtifact({ dataRoot: context.dataRoot, workspace: context.workspace, artifact: succeeded.resultArtifact });
+  assert.match(result, /done/u);
 });
