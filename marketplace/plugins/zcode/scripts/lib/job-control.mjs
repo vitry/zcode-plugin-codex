@@ -8,6 +8,7 @@ import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { terminateRecordedProcessTree } from './process.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
+import { recordedWorkspaceBrokerPids } from '../zcode-broker.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
@@ -94,8 +95,18 @@ function isDigestValue(value) { return typeof value === 'string' && /^[a-f0-9]{6
  * and the OS may have reused its pid — signaling it could kill an unrelated
  * process group. A LOCK_TIMEOUT proves a live holder still owns the lease, so
  * the recorded pid is still that worker. Records without a digest lease never
- * signal.
- * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number})=>Promise<unknown>} terminateProcessTree
+ * signal. The broker exclusion is forwarded in exactly ONE of three states:
+ * `input.excludePids` (resolved by the writable-Rescue caller, see
+ * terminateMarkedRunnerTree) names the COMPLETE, proven separately managed
+ * broker identity pid list the termination must spare, so the Windows branch
+ * walks the runner's PPID descendant tree minus the excluded broker subtrees;
+ * `input.excludeUnknown` (the lookup failed, timed out, or proved nothing)
+ * makes the Windows branch fail closed to the recorded pid alone (never /T)
+ * because any descendant could be the broker; NEITHER state means the caller
+ * has no broker concept at all and keeps the full `taskkill /T` tree cleanup.
+ * The POSIX group kill cannot reach the detached broker (its own group at
+ * spawn) and ignores both states.
+ * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number,excludePids?:readonly number[],excludeUnknown?:boolean})=>Promise<unknown>} terminateProcessTree
  */
 export async function terminateLeasedProcessTree(input, job, terminateProcessTree) {
   if (!isDigestValue(job.workerLeaseId) || !Number.isSafeInteger(job.childPid) || job.childPid <= 0) return;
@@ -134,7 +145,12 @@ export async function terminateLeasedProcessTree(input, job, terminateProcessTre
       } catch (reprobeError) {
         if (!(reprobeError instanceof PluginError && reprobeError.code === 'LOCK_TIMEOUT')) throw reprobeError;
       }
-      await terminateProcessTree(job.childPid, { timeoutMs: terminationBudgetMs });
+      await terminateProcessTree(job.childPid, {
+        timeoutMs: terminationBudgetMs,
+        ...(Array.isArray(input.excludePids) && input.excludePids.length > 0
+          ? { excludePids: input.excludePids }
+          : input.excludeUnknown === true ? { excludeUnknown: true } : {}),
+      });
       // The lease is process-lifetime: it frees when the terminated executor is
       // reaped. Wait (bounded by the same absolute deadline, polling ONLY the
       // lease lock — never a state or cancellation lock) so a lease-acquiring
@@ -196,7 +212,7 @@ async function waitForWorkerLeaseRelease(input, job, budgetMs) {
  * lease stay preserved until the executor itself releases them.
  * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void}} input
  * @param {any} selection the durable record this cleanup was selected for
- * @param {(pid:number,options:{timeoutMs?:number})=>Promise<unknown>} [terminateProcessTree]
+ * @param {(pid:number,options:{timeoutMs?:number,excludePids?:readonly number[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
  * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'}>}
  */
 export async function terminateMarkedRunnerTree(input, selection, terminateProcessTree = terminateRecordedProcessTree) {
@@ -225,7 +241,29 @@ export async function terminateMarkedRunnerTree(input, selection, terminateProce
     || (typeof selection.ownerLifecycleEpoch === 'string' && current.ownerLifecycleEpoch !== selection.ownerLifecycleEpoch)) {
     return { kind: 'not-proven' };
   }
-  await terminateLeasedProcessTree({ ...input, deadlineMs: input.deadlineMs, timeoutMs: remainingMs }, current, terminateProcessTree);
+  // Broker exclusion resolution (writable-Rescue runner-termination path):
+  // the durable workspace broker identities name the separately managed
+  // broker pids the Windows PPID-tree walk must spare, so descendant cleanup
+  // stays EXACT — runner-owned descendants die, the broker subtree survives.
+  // The lookup is THREE-VALUED and fails closed: only a COMPLETE, proven pid
+  // list forwards `excludePids`; a failed, timed-out, corrupt, partial, or
+  // absent lookup forwards the explicit `excludeUnknown` state instead, and
+  // the Windows branch then kills ONLY the recorded pid (graceful, then
+  // forced, never /T) rather than risking a broker it cannot name — including
+  // a workspace that legitimately records no broker yet, where pid-only stays
+  // the safe choice because a broker could still exist (or start) unrecorded
+  // below the runner. The POSIX group kill ignores both states.
+  /** @type {{status:'resolved'|'absent'|'failed',pids:number[]}} */
+  let exclusions;
+  try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace }); }
+  catch { exclusions = { status: 'failed', pids: [] }; }
+  await terminateLeasedProcessTree({
+    ...input,
+    ...(exclusions.status === 'resolved' && exclusions.pids.length > 0
+      ? { excludePids: exclusions.pids }
+      : { excludeUnknown: true }),
+    deadlineMs: input.deadlineMs, timeoutMs: remainingMs,
+  }, current, terminateProcessTree);
   return { kind: 'settled' };
 }
 

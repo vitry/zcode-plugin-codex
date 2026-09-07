@@ -138,7 +138,36 @@ export async function drainExitedProcessStreams(streams, timeoutMs = POST_EXIT_D
  * Bounded by `graceMs` and per-invocation `timeoutMs`; the optional `signal`
  * only accelerates the POSIX grace wait into an immediate group SIGKILL and
  * never gates the kill itself.
- * @param {number} pid @param {{ graceMs?: number, signal?: AbortSignal, timeoutMs?: number }} [options]
+ *
+ * Windows has no process-group addressing, so cleanup walks the recorded
+ * runner's PPID descendant tree. The broker exclusion is THREE-VALUED and
+ * fails closed:
+ * - `excludePids` names the separately managed broker identity pids the
+ *   settlement caller resolved from the workspace's durable broker identities:
+ *   each excluded pid AND its descendant subtree is pruned from the kill plan
+ *   (the broker and its engine must survive as runner-descendants), every
+ *   remaining descendant plus the runner itself is force-killed, and the walk
+ *   shares the single bounded deadline below.
+ * - `excludeUnknown: true` reports that the caller attempted the broker lookup
+ *   but could not prove the complete exclusion list (missing, corrupt,
+ *   unreadable, or timed-out identity, a partial scan, or no identity recorded
+ *   yet): cleanup fails CLOSED to the recorded pid alone (graceful, then
+ *   forced, NEVER /T) because any descendant could be the separately managed
+ *   broker, and no process-table snapshot is even taken — with an unprovable
+ *   exclusion the walk has nothing safe to plan. The same pid-only degradation
+ *   applies when an exclusion-aware walk cannot obtain the process-table
+ *   snapshot (timeout, tool failure, unparsable output): a runner descendant
+ *   that cannot be proven non-broker is never risked, and the
+ *   runner-at-minimum kill keeps the durable cleanup-pending evidence
+ *   authoritative.
+ * - NEITHER option means the caller asserts no broker concept at all, and the
+ *   full recorded tree terminates through `taskkill /T` exactly as before.
+ * @param {number} pid @param {{
+ *   graceMs?: number, signal?: AbortSignal, timeoutMs?: number,
+ *   excludePids?: readonly number[], excludeUnknown?: boolean,
+ *   enumerateProcessTable?: (timeoutMs: number) => Promise<Map<number, number[]>|null>,
+ *   runProcessKill?: (command: string, args: readonly string[], options?: { timeoutMs?: number }) => Promise<void>,
+ * }} [options]
  * @returns {Promise<boolean>} true when a live tree was signalled, false when absent.
  */
 export async function terminateRecordedProcessTree(pid, options = {}) {
@@ -155,23 +184,83 @@ export async function terminateRecordedProcessTree(pid, options = {}) {
     catch (error) { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'; }
   };
   if (!alive() && !groupAlive()) return false;
-  // Windows has no process-group negative-pid addressing: the full recorded
-  // tree (worker plus descendants) terminates through taskkill /T (ADR 0007).
-  // Each taskkill invocation is hard-bounded by timeoutMs alone — the caller's
-  // remote-control signal must never gate LOCAL cleanup, or an expired remote
-  // budget would abort the kill and leave the detached worker running.
+  // Windows has no process-group negative-pid addressing, so the termination
+  // scope must be built explicitly from the PPID tree: the runner's descendants
+  // belong to the recorded tree, EXCEPT the separately managed broker (and its
+  // engine) when the caller can name it — the broker-survival invariant
+  // outranks descendant coverage, and an unnamable descendant fails closed to
+  // the recorded pid alone rather than risking a broker with /T. (Spec-conflict
+  // resolution: the design's "Windows taskkill /T" wording is implemented as
+  // this exclusion-aware PPID walk for writable Rescue, satisfying its
+  // stronger, twice-stated rule that the separately managed broker must not be
+  // killed as a runner descendant.) `enumerateProcessTable` and
+  // `runProcessKill` default to the production implementations and exist as
+  // test seams so the Windows branch is unit-drivable on any host platform,
+  // mirroring the injectable terminateProcessTree convention.
   if (process.platform === 'win32') {
-    // ONE shared local deadline spans both taskkill invocations and the grace
-    // interval: whichever stage stalls, the whole sequence stays inside its own
-    // budget and can never push a SessionEnd hook past the native deadline.
+    // ONE shared local deadline spans the process-table snapshot, every
+    // taskkill invocation and the grace interval: whichever stage stalls, the
+    // whole sequence stays inside its own budget and can never push a
+    // SessionEnd hook past the native deadline.
     const totalMs = Number.isSafeInteger(options.timeoutMs) && /** @type {number} */ (options.timeoutMs) >= 0 ? /** @type {number} */ (options.timeoutMs) : 1_000;
     const deadline = Date.now() + totalMs;
     const remaining = () => Math.max(0, deadline - Date.now());
-    await boundedProcessKill('taskkill', ['/PID', String(pid), '/T'], { timeoutMs: remaining() });
+    const runKill = typeof options.runProcessKill === 'function' ? options.runProcessKill : boundedProcessKill;
+    const enumerateProcessTable = typeof options.enumerateProcessTable === 'function' ? options.enumerateProcessTable : readWindowsProcessTable;
+    // Kill ONLY the recorded pid — graceful taskkill, then forced, both inside
+    // the shared budget, never a descendant walk. This is the fail-closed
+    // primitive for every path where a descendant cannot be proven non-broker:
+    // a failed broker-exclusion lookup, and an exclusion-aware termination
+    // whose process-table snapshot is unavailable.
+    const killRecordedPidOnly = async () => {
+      await runKill('taskkill', ['/PID', String(pid)], { timeoutMs: remaining() });
+      // The grace timer stays REFERENCED: with no other referenced handles an
+      // unref'ed timer lets Node exit before the forced-kill fallback runs.
+      if (graceMs > 0 && remaining() > 0) await new Promise((resolve) => { setTimeout(resolve, Math.min(graceMs, remaining())); });
+      if (alive() && remaining() > 0) await runKill('taskkill', ['/PID', String(pid), '/F'], { timeoutMs: remaining() });
+    };
+    const excludePids = windowsExcludedPids(options.excludePids, pid);
+    if (excludePids.length > 0) {
+      // Snapshot once, inside the shared budget: the table maps each pid to
+      // its direct children so the runner's full descendant tree can be walked
+      // without further process launches.
+      const processTable = await enumerateProcessTable(remaining());
+      if (processTable) {
+        // Runner FIRST (a live runner can still spawn new descendants), then
+        // every non-excluded descendant, each force-killed inside the shared
+        // budget. Graceful taskkill is skipped here: excluded-tree kills must
+        // converge inside one budget and /F is the only bounded primitive.
+        for (const target of windowsDescendantKillTargets(pid, processTable, excludePids)) {
+          if (remaining() <= 0) break;
+          await runKill('taskkill', ['/PID', String(target), '/F'], { timeoutMs: remaining() });
+        }
+        return true;
+      }
+      // Enumeration unavailable (timeout, tool failure, unparsable output):
+      // fail CLOSED to the recorded pid alone. A descendant that cannot be
+      // proven non-broker is never force-killed, and the broker-survival
+      // invariant outranks the orphaned-descendant cleanup this forgoes.
+      await killRecordedPidOnly();
+      return true;
+    }
+    // The caller attempted the broker-exclusion lookup but its result is
+    // UNPROVEN (failed, timed out, corrupt, partial, or no identity recorded):
+    // any descendant could be the separately managed broker, so cleanup fails
+    // CLOSED to the recorded pid alone and never walks the tree. No snapshot
+    // is taken — with an unprovable exclusion the walk has nothing safe to
+    // plan, and a lookup-failed marker must never weaken into a /T walk.
+    if (options.excludeUnknown === true) {
+      await killRecordedPidOnly();
+      return true;
+    }
+    // No exclusions requested: no broker is known on this path, so the full
+    // recorded tree (runner plus every PPID descendant) terminates through
+    // taskkill /T, the faithful Windows equivalent of the POSIX group kill.
+    await runKill('taskkill', ['/PID', String(pid), '/T'], { timeoutMs: remaining() });
     // The grace timer stays REFERENCED: with no other referenced handles an
     // unref'ed timer lets Node exit before the forced-kill fallback runs.
     if (graceMs > 0 && remaining() > 0) await new Promise((resolve) => { setTimeout(resolve, Math.min(graceMs, remaining())); });
-    if (alive() && remaining() > 0) await boundedProcessKill('taskkill', ['/PID', String(pid), '/T', '/F'], { timeoutMs: remaining() });
+    if (alive() && remaining() > 0) await runKill('taskkill', ['/PID', String(pid), '/T', '/F'], { timeoutMs: remaining() });
     return true;
   }
   const signalGroup = (/** @type {NodeJS.Signals} */ signal) => {
@@ -195,6 +284,115 @@ export async function terminateRecordedProcessTree(pid, options = {}) {
   }
   if (alive() || groupAlive()) signalGroup('SIGKILL');
   return true;
+}
+
+/** Sanitize the caller-supplied broker exclusion list: keep positive safe
+ * integer pids only and never let an exclusion name the recorded runner
+ * itself (that would prune the tree root the caller asked to terminate).
+ * @param {readonly number[]|undefined} excludePids @param {number} pid @returns {number[]} */
+function windowsExcludedPids(excludePids, pid) {
+  if (!Array.isArray(excludePids)) return [];
+  return [...new Set(excludePids.filter((excluded) => Number.isSafeInteger(excluded) && /** @type {number} */ (excluded) > 0 && /** @type {number} */ (excluded) !== pid))];
+}
+
+/**
+ * Build the Windows kill plan for one recorded runner from a process-table
+ * snapshot: the runner FIRST, then its whole `ParentProcessId` descendant
+ * tree, minus every excluded pid and its descendant subtree (the separately
+ * managed broker and its engine must survive as runner descendants). The
+ * `excludeUnknown` marker reports a failed broker lookup and fails closed:
+ * only the runner is planned, because an empty exclusion list under a
+ * lookup-failed state proves no descendant non-broker. Cycles in the snapshot
+ * (reused pids recorded as their own ancestors) are safe: a visited set stops
+ * the walk. Exported for contract tests; production callers reach it through
+ * terminateRecordedProcessTree.
+ * @param {number} pid @param {Map<number, number[]>} processTable @param {readonly number[]} excludePids @param {{excludeUnknown?: boolean}} [options]
+ * @returns {number[]} kill targets in kill order, runner first.
+ */
+export function windowsDescendantKillTargets(pid, processTable, excludePids, options = {}) {
+  // A lookup-failed marker selects the recorded pid alone even when the
+  // exclusion list is empty: without a proven exclusion list no descendant can
+  // be proven non-broker, so the walk is never planned.
+  if (options.excludeUnknown === true) return [pid];
+  const pruned = new Set(/** @type {readonly number[]} */ (windowsExcludedPids(excludePids, pid)));
+  const markPrunedSubtree = (/** @type {number} */ root) => {
+    if (pruned.has(root)) return;
+    pruned.add(root);
+    for (const child of processTable.get(root) ?? []) markPrunedSubtree(child);
+  };
+  for (const excluded of pruned) markPrunedSubtree(excluded);
+  const targets = [pid];
+  const seen = new Set([pid]);
+  const walk = (/** @type {number} */ current) => {
+    for (const child of processTable.get(current) ?? []) {
+      if (seen.has(child) || pruned.has(child)) continue;
+      seen.add(child);
+      targets.push(child);
+      walk(child);
+    }
+  };
+  walk(pid);
+  return targets;
+}
+
+const WINDOWS_PROCESS_TABLE_SCRIPT = '$ErrorActionPreference = \'Stop\'; Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId | ForEach-Object { [string]$_.ParentProcessId + \' \' + [string]$_.ProcessId }';
+const MAX_WINDOWS_PROCESS_TABLE_BYTES = 1024 * 1024;
+
+/**
+ * One bounded Windows process-table snapshot: every live process as a map
+ * from pid to its direct children, read through PowerShell Get-CimInstance.
+ * The lightest reliable introspection available under this repo's constraints
+ * (no native modules; wmic is deprecated off current Windows). Any failure —
+ * spawn error, non-zero exit, unparsable line, output overflow, or the bound
+ * expiring — resolves NULL, the caller's fail-closed signal: the kill plan
+ * degrades to the recorded pid alone instead of guessing at the tree.
+ * Exported for contract tests; production callers reach it through
+ * terminateRecordedProcessTree.
+ * @param {number} timeoutMs
+ * @returns {Promise<Map<number, number[]>|null>}
+ */
+export async function readWindowsProcessTable(timeoutMs) {
+  if (!Number.isSafeInteger(timeoutMs) || /** @type {number} */ (timeoutMs) <= 0) return null;
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_TABLE_SCRIPT], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  // Like boundedProcessKill: the enumeration tool must never hold this
+  // process's event loop open past its bound.
+  child.unref?.();
+  return await new Promise((resolve) => {
+    let stdout = '';
+    let settled = false;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let timer;
+    const finish = (/** @type {Map<number, number[]>|null} */ value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout?.destroy();
+      resolve(value);
+    };
+    timer = setTimeout(() => { try { child.kill(); } catch { /* already gone */ } finish(null); }, timeoutMs);
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (/** @type {string} */ chunk) => {
+      stdout += chunk;
+      if (stdout.length > MAX_WINDOWS_PROCESS_TABLE_BYTES) { try { child.kill(); } catch { /* already gone */ } finish(null); }
+    });
+    child.once('error', () => finish(null));
+    child.once('exit', (/** @type {number|null} */ code) => {
+      if (code !== 0) return finish(null);
+      const processTable = new Map();
+      for (const line of stdout.split(/\r?\n/)) {
+        const match = /^(\d+) (\d+)$/u.exec(line.trim());
+        if (!match) continue;
+        const parentPid = Number(match[1]);
+        const childPid = Number(match[2]);
+        const children = processTable.get(parentPid);
+        if (children) children.push(childPid);
+        else processTable.set(parentPid, [childPid]);
+      }
+      // A live Windows system always reports processes: empty output means
+      // the snapshot is unusable, not that the OS has no processes.
+      finish(processTable.size > 0 ? processTable : null);
+    });
+  });
 }
 
 /** Run one external termination command hard-bounded by `timeoutMs` (default

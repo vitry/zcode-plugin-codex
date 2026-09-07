@@ -2,7 +2,7 @@
 // @ts-nocheck
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { chmod, readFile, unlink } from 'node:fs/promises';
+import { chmod, readdir, readFile, unlink } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -168,6 +168,57 @@ export async function inspectBrokerIdentity(path, options = {}) {
   const healthProbe = options.healthProbe ?? probeBrokerHealth;
   if (!await healthProbe(value)) return { status: 'unhealthy', record: value };
   return { status: 'healthy', record: value };
+}
+
+/**
+ * Resolve the separately managed broker pids of one workspace from its durable
+ * broker identities (all wire profiles) as a THREE-VALUED lookup. Windows
+ * runner-tree termination excludes these pids and their descendant subtrees:
+ * a broker the runner spawned is separately managed through the owner/session
+ * protocol and must never be killed as a runner descendant, so the settlement
+ * callers name them as the termination exclusion instead of walking the tree
+ * blindly. The statuses are:
+ * - `resolved`: every identity entry was inspected inside the bound and at
+ *   least one usable pid was collected — `pids` is the complete exclusion
+ *   list. A DEAD identity's pid is still reported (an unalived pid excludes
+ *   nothing and retiring rewrites the record).
+ * - `absent`: the workspace records no broker identity at all (missing broker
+ *   directory or no identity entry) — expected before a workspace's first
+ *   broker launch.
+ * - `failed`: an identity exists but the lookup cannot prove the COMPLETE
+ *   list — an unreadable broker directory, an unreadable/corrupt identity
+ *   entry, an entry without a usable pid, or the bound expiring between
+ *   entries. A PARTIAL scan is reported as `failed` with no pids: a partial
+ *   list would kill any omitted broker subtree.
+ * The writable-Rescue funnel treats `absent` and `failed` alike as unproven
+ * and fails closed to the recorded runner pid alone. The health probe is
+ * deliberately skipped: exclusion is identity-based, not liveness-based, and
+ * a socket probe must never ride the kill budget.
+ * @param {{dataRoot:string,workspace:string,timeoutMs?:number}} options
+ * @returns {Promise<{status:'resolved'|'absent'|'failed', pids:number[]}>}
+ */
+export async function recordedWorkspaceBrokerPids(options) {
+  if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw brokerInputError();
+  const timeoutMs = options.timeoutMs ?? 250;
+  const storage = await resolveWorkspaceStorage(options);
+  const brokerDirectory = join(storage.directory, 'broker');
+  let entries;
+  try { entries = await readdir(brokerDirectory, { encoding: 'utf8' }); }
+  catch (error) { return error?.code === 'ENOENT' ? { status: 'absent', pids: [] } : { status: 'failed', pids: [] }; }
+  const identities = entries.filter((entry) => /^identity(?:-[0-9a-f]{16})?\.json$/u.test(entry)).sort();
+  if (identities.length === 0) return { status: 'absent', pids: [] };
+  const deadline = Date.now() + timeoutMs;
+  const pids = [];
+  for (const entry of identities) {
+    if (Date.now() >= deadline) return { status: 'failed', pids: [] };
+    // The health probe is deliberately skipped: exclusion is identity-based,
+    // not liveness-based, and a socket probe must never ride the kill budget.
+    const inspected = await inspectBrokerIdentity(join(brokerDirectory, entry), { healthProbe: async () => true }).catch(() => ({ status: 'invalid', record: null }));
+    if (!inspected.record || !Number.isSafeInteger(inspected.record.pid) || inspected.record.pid <= 0) return { status: 'failed', pids: [] };
+    pids.push(inspected.record.pid);
+  }
+  return { status: 'resolved', pids: [...new Set(pids)] };
 }
 
 /** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record @param {number} [requestTimeoutMs] */

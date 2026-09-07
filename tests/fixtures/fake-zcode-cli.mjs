@@ -206,8 +206,23 @@ async function waitForArchiveProgress(sequence) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
-async function scheduleCompletion(sessionId, completion) {
-  const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
+/**
+ * Test-only session/create barrier: hold the create response until the gate
+ * file says `release`, mirroring the completion gate. The REACHED marker makes
+ * the held state OBSERVABLE to the test — a create request that has arrived
+ * but is provably unanswered can never have published a durable running
+ * boundary, which turns the claimed-queued kill window from a wall-clock
+ * delay into an explicit barrier.
+ */
+async function holdCreateGate() {
+  if (process.env.FAKE_ZCODE_CREATE_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_CREATE_GATE_REACHED, 'held');
+  while (true) {
+    const state = await readFile(process.env.FAKE_ZCODE_CREATE_GATE, 'utf8').then((value) => value.trim()).catch(() => '');
+    if (state === 'release') return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+async function scheduleCompletion(sessionId, completion) {  const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
   if (Number.isSafeInteger(reachedDelayMs) && reachedDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, reachedDelayMs));
   if (process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED, 'blocked');
   /** @type {NodeJS.Timeout} */ let timer;
@@ -402,6 +417,7 @@ input.on('line', async (line) => {
   const p = message.params ?? {};
   switch (message.method) {
     case 'session/create': {
+      if (process.env.FAKE_ZCODE_CREATE_GATE) await holdCreateGate();
       if (process.env.FAKE_ZCODE_RUNTIME_PREFERENCES_ID !== undefined) {
         const runtimePreferencesId = process.env.FAKE_ZCODE_RUNTIME_PREFERENCES_ID;
         pendingRuntimePreferencesCreate = { message, runtimePreferencesId };

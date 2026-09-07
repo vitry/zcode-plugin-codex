@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, terminateLeasedProcessTree, withWorkerLease } from '../scripts/lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, terminateLeasedProcessTree, terminateMarkedRunnerTree, withWorkerLease } from '../scripts/lib/job-control.mjs';
 import { JOB_LOG_DISABLED_LINE } from '../scripts/lib/job-log-runtime.mjs';
 import { hostOwnedStopIntentPatch } from '../scripts/lib/rescue-binding.mjs';
 import { createRescueLifecycleReconciler } from '../scripts/lib/rescue-lifecycle.mjs';
@@ -3137,5 +3137,140 @@ test('management reconciliation terminates the live marked runner before reporti
   } finally {
     try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the reconciliation */ }
     await rm(root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('terminateMarkedRunnerTree resolves the workspace broker identities and forwards them as the termination exclusion', async () => {
+  const { writeBrokerIdentity } = await import('../scripts/zcode-broker.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'zcode-runner-exclusion-'));
+  const dataRoot = join(root, 'data');
+  await mkdir(join(root, 'workspace'));
+  const workspace = await realpath(join(root, 'workspace'));
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const identity = await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), { endpoint: 'exclusion-fixture-endpoint' });
+  const selection = {
+    id: 'c'.repeat(64), ownerSessionId: 'session-a', command: 'rescue', readOnly: false,
+    rescueRunnerVersion: 1, workerLeaseId: 'a'.repeat(64), childPid: 999_111_999, ownerLifecycleEpoch: 'b'.repeat(64),
+  };
+  const store = { readJob: async () => selection };
+  /** @type {Array<{pid:number,options:any}>} */
+  const observed = [];
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot, workspace, jobId: selection.id, workerLeaseId: selection.workerLeaseId, timeoutMs: 0 },
+    () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    // State (a) — RESOLVED: a held lease proves the recorded pid and routes the
+    // guarded kill through terminateLeasedProcessTree; the complete durable
+    // broker pid list is forwarded as the exclusion. The stub releases it so
+    // the post-kill poll converges immediately.
+    const settled = await terminateMarkedRunnerTree({
+      store, dataRoot, workspace, ownerSessionId: 'session-a', epoch: 'b'.repeat(64), deadlineMs: Date.now() + 2_000,
+    }, selection, async (pid, options) => { observed.push({ pid, options }); releaseHolder(); });
+    assert.deepEqual(settled, { kind: 'settled' });
+    assert.equal(observed.length, 1, 'the guarded kill runs exactly once');
+    assert.equal(observed[0].pid, selection.childPid);
+    assert.deepEqual(observed[0].options.excludePids, [identity.pid], 'the durable broker identity pid is forwarded as the exclusion');
+    assert.equal(observed[0].options.excludeUnknown, undefined, 'a proven exclusion list is forwarded as pids, never as the lookup-failed state');
+    assert.ok(observed[0].options.timeoutMs > 0 && observed[0].options.timeoutMs <= 750, 'the forwarded kill stays bounded by the shared budget');
+  } finally {
+    releaseHolder();
+    await holder;
+    await rm(root, { force: true, recursive: true }).catch(() => {});
+  }
+
+  // State (b) — LOOKUP FAILED: a corrupt broker identity cannot prove the
+  // complete exclusion list, so the funnel forwards the explicit
+  // lookup-failed state (never a silently omitted exclusion) and the Windows
+  // branch kills ONLY the recorded pid instead of risking a broker it cannot
+  // name.
+  const corruptRoot = await mkdtemp(join(tmpdir(), 'zcode-runner-exclusion-corrupt-'));
+  const corruptDataRoot = join(corruptRoot, 'data');
+  await mkdir(join(corruptRoot, 'workspace'));
+  const corruptWorkspace = await realpath(join(corruptRoot, 'workspace'));
+  const corruptStorage = await resolveWorkspaceStorage({ dataRoot: corruptDataRoot, workspace: corruptWorkspace });
+  await mkdir(join(corruptStorage.directory, 'broker'));
+  await writeFile(join(corruptStorage.directory, 'broker', 'identity.json'), '{ not json', 'utf8');
+  /** @type {Array<{pid:number,options:any}>} */
+  const corruptObserved = [];
+  let releaseCorruptHolder = () => {};
+  let corruptHolderAcquired = () => {};
+  const corruptHolderAcquiredPromise = new Promise((resolve) => { corruptHolderAcquired = () => resolve(undefined); });
+  const corruptHolder = withWorkerLease({ dataRoot: corruptDataRoot, workspace: corruptWorkspace, jobId: selection.id, workerLeaseId: selection.workerLeaseId, timeoutMs: 0 },
+    () => { corruptHolderAcquired(); return new Promise((resolve) => { releaseCorruptHolder = () => resolve(undefined); }); });
+  await corruptHolderAcquiredPromise;
+  try {
+    const settled = await terminateMarkedRunnerTree({
+      store: { readJob: async () => selection }, dataRoot: corruptDataRoot, workspace: corruptWorkspace,
+      ownerSessionId: 'session-a', epoch: 'b'.repeat(64), deadlineMs: Date.now() + 2_000,
+    }, selection, async (pid, options) => { corruptObserved.push({ pid, options }); releaseCorruptHolder(); });
+    assert.deepEqual(settled, { kind: 'settled' });
+    assert.equal(corruptObserved[0].options.excludeUnknown, true, 'a corrupt broker identity fails closed to the explicit lookup-failed state');
+    assert.equal(corruptObserved[0].options.excludePids, undefined, 'an unproven lookup forwards no exclusion list');
+  } finally {
+    releaseCorruptHolder();
+    await corruptHolder;
+    await rm(corruptRoot, { force: true, recursive: true }).catch(() => {});
+  }
+
+  // State (b') — ABSENT: a workspace that records no broker identity yet is
+  // equally unproven for this funnel and still forwards the lookup-failed
+  // state: a broker could exist (or start) unrecorded below the runner, so
+  // pid-only stays the safe choice.
+  const bareRoot = await mkdtemp(join(tmpdir(), 'zcode-runner-exclusion-bare-'));
+  const bareDataRoot = join(bareRoot, 'data');
+  await mkdir(join(bareRoot, 'workspace'));
+  const bareWorkspace = await realpath(join(bareRoot, 'workspace'));
+  /** @type {Array<{pid:number,options:any}>} */
+  const bareObserved = [];
+  let releaseBareHolder = () => {};
+  let bareHolderAcquired = () => {};
+  const bareHolderAcquiredPromise = new Promise((resolve) => { bareHolderAcquired = () => resolve(undefined); });
+  const bareHolder = withWorkerLease({ dataRoot: bareDataRoot, workspace: bareWorkspace, jobId: selection.id, workerLeaseId: selection.workerLeaseId, timeoutMs: 0 },
+    () => { bareHolderAcquired(); return new Promise((resolve) => { releaseBareHolder = () => resolve(undefined); }); });
+  await bareHolderAcquiredPromise;
+  try {
+    const settled = await terminateMarkedRunnerTree({
+      store: { readJob: async () => selection }, dataRoot: bareDataRoot, workspace: bareWorkspace,
+      ownerSessionId: 'session-a', epoch: 'b'.repeat(64), deadlineMs: Date.now() + 2_000,
+    }, selection, async (pid, options) => { bareObserved.push({ pid, options }); releaseBareHolder(); });
+    assert.deepEqual(settled, { kind: 'settled' });
+    assert.equal(bareObserved[0].options.excludeUnknown, true, 'a workspace without broker identities still fails closed to the lookup-failed state');
+    assert.equal(bareObserved[0].options.excludePids, undefined, 'a workspace without broker identities forwards no exclusion list');
+  } finally {
+    releaseBareHolder();
+    await bareHolder;
+    await rm(bareRoot, { force: true, recursive: true }).catch(() => {});
+  }
+
+  // State (c) — NO BROKER CONCEPT: exclusion-free callers (no broker concept
+  // at all) forward NEITHER state, so terminateRecordedProcessTree keeps its
+  // pre-existing full /T tree cleanup. Only the writable-Rescue marked-runner
+  // funnel above uses the fail-closed lookup-failed state.
+  const plainRoot = await mkdtemp(join(tmpdir(), 'zcode-runner-exclusion-plain-'));
+  const plainDataRoot = join(plainRoot, 'data');
+  await mkdir(join(plainRoot, 'workspace'));
+  const plainWorkspace = await realpath(join(plainRoot, 'workspace'));
+  /** @type {Array<{pid:number,options:any}>} */
+  const plainObserved = [];
+  let releasePlainHolder = () => {};
+  let plainHolderAcquired = () => {};
+  const plainHolderAcquiredPromise = new Promise((resolve) => { plainHolderAcquired = () => resolve(undefined); });
+  const plainHolder = withWorkerLease({ dataRoot: plainDataRoot, workspace: plainWorkspace, jobId: selection.id, workerLeaseId: selection.workerLeaseId, timeoutMs: 0 },
+    () => { plainHolderAcquired(); return new Promise((resolve) => { releasePlainHolder = () => resolve(undefined); }); });
+  await plainHolderAcquiredPromise;
+  try {
+    await terminateLeasedProcessTree({ dataRoot: plainDataRoot, workspace: plainWorkspace, deadlineMs: Date.now() + 2_000 },
+      { id: selection.id, childPid: selection.childPid, workerLeaseId: selection.workerLeaseId },
+      async (pid, options) => { plainObserved.push({ pid, options }); releasePlainHolder(); });
+    assert.equal(plainObserved.length, 1, 'the exclusion-free guarded kill runs exactly once');
+    assert.equal(plainObserved[0].options.excludePids, undefined, 'an exclusion-free caller forwards no exclusion list');
+    assert.equal(plainObserved[0].options.excludeUnknown, undefined, 'an exclusion-free caller forwards no lookup-failed state, keeping the /T default');
+  } finally {
+    releasePlainHolder();
+    await plainHolder;
+    await rm(plainRoot, { force: true, recursive: true }).catch(() => {});
   }
 });

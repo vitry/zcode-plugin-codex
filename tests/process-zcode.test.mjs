@@ -602,3 +602,130 @@ test('terminateRecordedProcessTree SIGKILLs the recorded group when the leader e
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+/** Override the host platform for one Windows-branch unit test; the override
+ * is restored in a finally-style hook on every outcome. The win32 branch stays
+ * platform-gated in production, so the override is the only way to drive it on
+ * a macOS/Linux test host (native Windows CI asserts the real tooling). */
+function withWindowsPlatform(run) {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  return Promise.resolve().then(run).finally(() => {
+    Object.defineProperty(process, 'platform', { value: original, configurable: true });
+  });
+}
+
+/** A real live process stands in for the recorded runner so the branch's
+ * liveness probes observe a killable pid without any Windows tooling. */
+async function withLiveRunnerPid(run) {
+  const runner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30);'], { stdio: 'ignore', shell: false });
+  try {
+    assert.ok(Number.isSafeInteger(runner.pid) && runner.pid > 0, 'the stand-in runner must be live');
+    return await run(runner.pid);
+  } finally {
+    try { runner.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+test('windowsDescendantKillTargets prunes the excluded broker subtree and keeps the runner first', async () => {
+  const { windowsDescendantKillTargets } = await import('../scripts/lib/process.mjs');
+  const table = new Map([
+    [100, [111, 222]], // the runner owns the broker (111) and a version-check child (222)
+    [111, [333]], // the engine lives under the broker
+    [333, [444]], // a grandchild under the engine
+  ]);
+  assert.deepEqual(windowsDescendantKillTargets(100, table, [111]), [100, 222], 'broker subtree pruned, runner and other descendants kept, runner first');
+  assert.deepEqual(windowsDescendantKillTargets(100, table, []), [100, 111, 333, 444, 222], 'without exclusions the whole descendant tree is planned (depth-first)');
+  assert.deepEqual(windowsDescendantKillTargets(100, table, [100, 111, -1, 0, 1.5, Number.NaN]), [100, 222], 'the runner itself and non-pid exclusions are dropped, not honored');
+  const cyclic = new Map([[100, [111]], [111, [100]]]); // a reused-pid cycle in the snapshot
+  assert.deepEqual(windowsDescendantKillTargets(100, cyclic, []), [100, 111], 'a cyclic snapshot terminates the walk');
+  assert.deepEqual(windowsDescendantKillTargets(100, cyclic, [111]), [100], 'a cycle rooted at the exclusion is pruned entirely');
+  assert.deepEqual(windowsDescendantKillTargets(100, new Map(), []), [100], 'an empty snapshot still plans the runner');
+  assert.deepEqual(windowsDescendantKillTargets(100, table, [], { excludeUnknown: true }), [100], 'a failed broker lookup plans only the recorded pid even with an empty exclusion list');
+  assert.deepEqual(windowsDescendantKillTargets(100, table, [111], { excludeUnknown: true }), [100], 'the lookup-failed marker outranks any supplied exclusion list');
+});
+
+test('readWindowsProcessTable fails closed to null where no Windows tooling exists', { skip: process.platform === 'win32' ? 'real enumeration is asserted on native Windows CI.' : false }, async () => {
+  const { readWindowsProcessTable } = await import('../scripts/lib/process.mjs');
+  assert.equal(await readWindowsProcessTable(250), null, 'a failed spawn (no powershell on this host) resolves null, the fail-closed signal');
+  assert.equal(await readWindowsProcessTable(0), null, 'a non-positive bound resolves null before spawning');
+});
+
+test('terminateRecordedProcessTree win32 enumerates, spares the excluded broker subtree, and force-kills the runner plus remaining descendants', async () => {
+  const { terminateRecordedProcessTree } = await import('../scripts/lib/process.mjs');
+  await withLiveRunnerPid(async (runnerPid) => withWindowsPlatform(async () => {
+    const kills = [];
+    const enumerations = [];
+    const processTable = new Map([[runnerPid, [111, 222]], [111, [333]]]);
+    const result = await terminateRecordedProcessTree(runnerPid, {
+      graceMs: 0, timeoutMs: 1_000, excludePids: [111],
+      enumerateProcessTable: async (timeoutMs) => { enumerations.push(timeoutMs); return processTable; },
+      runProcessKill: async (command, args, options) => { kills.push({ command, args, options }); },
+    });
+    assert.equal(result, true, 'a live tree was signalled');
+    assert.equal(enumerations.length, 1, 'the snapshot runs exactly once');
+    assert.ok(enumerations[0] > 0 && enumerations[0] <= 1_000, 'the snapshot runs inside the shared deadline');
+    assert.deepEqual(kills.map((kill) => kill.args), [
+      ['/PID', String(runnerPid), '/F'],
+      ['/PID', '222', '/F'],
+    ], 'the runner is killed first, then every non-broker descendant, each forceful');
+    assert.equal(kills.some((kill) => kill.args.includes('/T')), false, 'the excluded-tree plan never degrades into a blind /T walk');
+    assert.ok(kills.every((kill) => kill.command === 'taskkill' && kill.options.timeoutMs > 0 && kill.options.timeoutMs <= 1_000), 'every kill is bounded by the shared deadline');
+  }));
+});
+
+test('terminateRecordedProcessTree win32 fails closed to the recorded pid alone when enumeration is unavailable', async () => {
+  const { terminateRecordedProcessTree } = await import('../scripts/lib/process.mjs');
+  await withLiveRunnerPid(async (runnerPid) => withWindowsPlatform(async () => {
+    const kills = [];
+    const result = await terminateRecordedProcessTree(runnerPid, {
+      graceMs: 0, timeoutMs: 900, excludePids: [111],
+      enumerateProcessTable: async () => null,
+      runProcessKill: async (command, args) => { kills.push([command, ...args]); },
+    });
+    assert.equal(result, true, 'the runner kill still reports a signalled tree');
+    assert.deepEqual(kills, [
+      ['taskkill', '/PID', String(runnerPid)],
+      ['taskkill', '/PID', String(runnerPid), '/F'],
+    ], 'enumeration failure degrades to the graceful-then-forced recorded pid, never a guessed tree');
+  }));
+});
+
+test('terminateRecordedProcessTree win32 kills only the recorded pid when the broker lookup failed', async () => {
+  const { terminateRecordedProcessTree } = await import('../scripts/lib/process.mjs');
+  await withLiveRunnerPid(async (runnerPid) => withWindowsPlatform(async () => {
+    const kills = [];
+    const enumerations = [];
+    const result = await terminateRecordedProcessTree(runnerPid, {
+      graceMs: 0, timeoutMs: 900, excludeUnknown: true,
+      enumerateProcessTable: async (timeoutMs) => { enumerations.push(timeoutMs); return new Map([[runnerPid, [111]]]); },
+      runProcessKill: async (command, args) => { kills.push([command, ...args]); },
+    });
+    assert.equal(result, true, 'the runner kill still reports a signalled tree');
+    assert.equal(enumerations.length, 0, 'no snapshot is taken when the broker lookup failed — no descendant can be proven non-broker');
+    assert.deepEqual(kills, [
+      ['taskkill', '/PID', String(runnerPid)],
+      ['taskkill', '/PID', String(runnerPid), '/F'],
+    ], 'a lookup-failed state degrades to the graceful-then-forced recorded pid, never a guessed tree');
+    assert.equal(kills.some((kill) => kill.includes('/T')), false, 'the lookup-failed state never weakens into a blind /T walk');
+  }));
+});
+
+test('terminateRecordedProcessTree win32 keeps the full /T tree cleanup when no broker exclusion is requested', async () => {
+  const { terminateRecordedProcessTree } = await import('../scripts/lib/process.mjs');
+  await withLiveRunnerPid(async (runnerPid) => withWindowsPlatform(async () => {
+    const kills = [];
+    const enumerations = [];
+    const result = await terminateRecordedProcessTree(runnerPid, {
+      graceMs: 0, timeoutMs: 800,
+      enumerateProcessTable: async () => { enumerations.push(1); return new Map(); },
+      runProcessKill: async (command, args) => { kills.push([command, ...args]); },
+    });
+    assert.equal(result, true, 'a live tree was signalled');
+    assert.equal(enumerations.length, 0, 'no snapshot is taken on an exclusion-free path');
+    assert.deepEqual(kills, [
+      ['taskkill', '/PID', String(runnerPid), '/T'],
+      ['taskkill', '/PID', String(runnerPid), '/T', '/F'],
+    ], 'without exclusions the whole recorded tree terminates through /T');
+  }));
+});
