@@ -430,6 +430,52 @@ async function terminateOwnedProcess(pid, killFn = process.kill) {
   assert.equal(await waitForProcessExit(pid, 1_000, killFn), true, `owned process ${pid} was not reaped`);
 }
 
+/** Terminate one test-spawned detached runner and BOUNDEDLY await its exit
+ * BEFORE any fixture-directory removal. A passive pid wait lets a runner that
+ * is still settling hold its cwd — the fixture workspace itself, because the
+ * runner launch pins cwd to the workspace (scripts/lib/rescue-runner.mjs) —
+ * past the teardown rmdir: EBUSY/EPERM on Windows, live-state removal on
+ * POSIX. Windows has no process groups, so the kill degrades to the recorded
+ * pid there (the runner's broker and engine are cwd-safe on win32: both are
+ * launched from tmpdir). The bounded wait re-issues the kill on every pass,
+ * because a Windows TerminateProcess can be delivered lazily on a loaded
+ * runner. Mirrors the true-background suite's terminateCapturedTree.
+ * @param {number} pid */
+async function terminateDetachedRunner(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || !processAlive(pid)) return;
+  const kill = async () => {
+    if (process.platform === 'win32') { try { process.kill(pid); } catch { /* already exited */ } return; }
+    try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  };
+  await kill();
+  await waitFor(async () => { await kill(); return !processAlive(pid); },
+    `detached runner ${pid} must exit after teardown termination`, scaleTestTimeout(5_000)).catch(() => {});
+}
+
+/** Remove one test fixture directory. On Windows the removal races the
+ * kernel's post-exit release of a just-terminated child's working-directory
+ * handle and real-time scanner/indexer locks on the freshly churned tree, so
+ * win32 retries a few bounded backoff attempts before failing; POSIX keeps
+ * the single-attempt behavior unchanged. Mirrors the true-background suite's
+ * cleanupFixture.
+ * @param {string} directory */
+async function removeFixtureDirectory(directory) {
+  const delays = process.platform === 'win32' ? [100, 250, 500, 1_000] : [0];
+  let lastError;
+  for (const delay of delays) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      await rm(directory, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+      if (process.platform !== 'win32' || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(code)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 /** @param {unknown} left @param {unknown} right */
 function sameExactBrokerIdentity(left, right) {
   if (left === null || right === null) return left === right;
@@ -520,7 +566,7 @@ async function cleanupChildLossProcesses(input) {
     if (releaseError) throw releaseError;
   }
   catch (error) { cleanupError = error; }
-  finally { await rm(input.context.directory, { recursive: true, force: true }); }
+  finally { await removeFixtureDirectory(input.context.directory); }
   await assert.rejects(stat(input.context.directory), { code: 'ENOENT' });
   if (cleanupError) throw cleanupError;
 }
@@ -1500,7 +1546,7 @@ test('legacy-v1 execution capability cannot be newly issued for a modern reserva
 
 test('historical background Rescue keeps its legacy input bounds for a large task', async (t) => {
   const context = await fixture();
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   // A non-Host `rescue --background` never uses the detached-runner path, so
   // it must keep the historical sealed-spec behavior EXACTLY — including the
   // historical acceptance of tasks far beyond the bounded runner input (the
@@ -2651,7 +2697,7 @@ function recordingRunnerSpawn(capture) {
 
 test('new background Rescue reserves privately, spawns one detached runner, and returns queued', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'true-background-parent'; const childId = 'true-background-child';
   const record = join(context.directory, 'true-background.jsonl'); await writeFile(record, '');
   const effects = { workers: 0, capabilities: 0, specs: 0 };
@@ -2717,11 +2763,8 @@ test('background enqueue returns queued while the detached runner is blocked bef
   const record = join(context.directory, 'barrier-preclaim.jsonl'); await writeFile(record, '');
   t.after(async () => {
     releaseStateLock();
-    if (runnerPid !== undefined) {
-      if (process.platform !== 'win32') { try { process.kill(-runnerPid, 'SIGKILL'); } catch { /* already exited */ } }
-      await waitForProcessExit(runnerPid, 5_000);
-    }
-    await rm(context.directory, { force: true, recursive: true });
+    if (runnerPid !== undefined) await terminateDetachedRunner(runnerPid);
+    await removeFixtureDirectory(context.directory);
   });
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'barrier-preclaim',
     task: 'blocked before claim child', record });
@@ -2781,8 +2824,8 @@ test('a runner that finishes before the queued acknowledgement still receives th
   const record = join(context.directory, 'barrier-fast.jsonl'); await writeFile(record, '');
   /** @type {number|undefined} */ let runnerPid;
   t.after(async () => {
-    if (runnerPid !== undefined) await waitForProcessExit(runnerPid, 15_000);
-    await rm(context.directory, { force: true, recursive: true });
+    if (runnerPid !== undefined) await terminateDetachedRunner(runnerPid);
+    await removeFixtureDirectory(context.directory);
   });
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'barrier-fast',
     task: 'fast runner child', record });
@@ -2814,7 +2857,7 @@ test('a runner that finishes before the queued acknowledgement still receives th
 
 test('a deterministic runner launch failure settles the fresh queued job failed and never returns queued', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'spawn-failure-parent'; const childId = 'spawn-failure-child';
   const record = join(context.directory, 'spawn-failure.jsonl'); await writeFile(record, '');
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-failure',
@@ -2841,7 +2884,7 @@ test('a deterministic runner launch failure settles the fresh queued job failed 
 
 test('a deterministic runner launch failure restores an active continuation to its exact anchor binding', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'spawn-failure-continuation-parent'; const childId = 'spawn-failure-continuation-child';
   const record = join(context.directory, 'spawn-failure-continuation.jsonl'); await writeFile(record, '');
   await prepareDirectRescueChild(context, { parentSessionId, parentTurnId: `${parentSessionId}-turn`,
@@ -2884,7 +2927,7 @@ test('a deterministic runner launch failure restores an active continuation to i
 
 test('a launch failure whose pre-start settlement also fails surfaces both failures and keeps the job recoverable', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'spawn-settlement-fault-parent'; const childId = 'spawn-settlement-fault-child';
   const record = join(context.directory, 'spawn-settlement-fault.jsonl'); await writeFile(record, '');
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-settlement-fault',
@@ -2927,7 +2970,7 @@ test('a launch failure whose pre-start settlement also fails surfaces both failu
 
 test('a launch failure whose settlement lost to a confirmed concurrent winner surfaces only the launch error', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'spawn-settlement-winner-parent'; const childId = 'spawn-settlement-winner-child';
   const record = join(context.directory, 'spawn-settlement-winner.jsonl'); await writeFile(record, '');
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'spawn-settlement-winner',
@@ -2968,7 +3011,7 @@ test('a launch failure whose settlement lost to a confirmed concurrent winner su
 
 test('a failed queued-acknowledgement delivery leaves the accepted job intact without a relaunch', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'lost-ack-parent'; const childId = 'lost-ack-child';
   const record = join(context.directory, 'lost-ack.jsonl'); await writeFile(record, '');
   const childEnv = await prepareFreshBackgroundChild(context, { parentSessionId, childId, label: 'lost-ack',
@@ -2993,7 +3036,7 @@ test('a failed queued-acknowledgement delivery leaves the accepted job intact wi
 
 test('public projections never expose true background private data but keep the full authorized result', async (t) => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
-  t.after(() => rm(context.directory, { force: true, recursive: true }));
+  t.after(() => removeFixtureDirectory(context.directory));
   const parentSessionId = 'sentinel-parent'; const childId = 'sentinel-child';
   const record = join(context.directory, 'sentinel.jsonl'); await writeFile(record, '');
   const sentinelTask = 'SENTINEL-TASK-7qf2 rescue the guarded realm';
@@ -3072,9 +3115,8 @@ for (const resume of /** @type {const} */ (['fresh', 'resume'])) for (const exec
   const context = await fixture(); const workspace = await realpath(context.workspace);
   /** @type {number|undefined} */ let runnerPid;
   t.after(async () => {
-    if (runnerPid !== undefined && process.platform !== 'win32') { try { process.kill(-runnerPid, 'SIGKILL'); } catch { /* already exited */ } }
-    if (runnerPid !== undefined) await waitForProcessExit(runnerPid, 15_000);
-    await rm(context.directory, { force: true, recursive: true });
+    if (runnerPid !== undefined) await terminateDetachedRunner(runnerPid);
+    await removeFixtureDirectory(context.directory);
   });
   const parentSessionId = `matrix-${execution}-${resume}-parent`; const childId = `matrix-${execution}-${resume}-child`;
   const record = join(context.directory, `matrix-${execution}-${resume}.jsonl`); await writeFile(record, '');
@@ -4307,8 +4349,13 @@ test('conversation scenario gate write failure aborts held execution with bounde
       (error) => ({ kind: 'rejected', error }),
     );
     await releaseFailed;
+    // The teardown bound is CI-scaled: aborting the held execution still has
+    // to settle promptly (far inside the scenario fixture's own scaled
+    // settlement deadline), but killing and rolling back a real child process
+    // on a loaded Windows runner can exceed a flat 2 s budget. Scaling keeps
+    // the bound meaningful while tolerating runner load.
     const outcome = await Promise.race([observedExecution, new Promise((resolvePromise) => {
-      deadline = setTimeout(() => resolvePromise({ kind: 'deadline' }), 2_000);
+      deadline = setTimeout(() => resolvePromise({ kind: 'deadline' }), scaleTestTimeout(2_000));
     })]).finally(() => clearTimeout(deadline));
     assert.notEqual(outcome.kind, 'deadline', 'gate write failure teardown did not settle');
     assert.equal(outcome.kind, 'rejected');
@@ -4358,7 +4405,13 @@ test('exclusive-baseline conversation ranges emit each known lifecycle once', as
 });
 
 test('initial-only conversation frames deterministically degrade on heartbeat without leaking frame material', async () => {
-  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'initial-only', { heartbeat: true });
+  // The durable probe transition must be observed BEFORE the turn is allowed
+  // to complete: the probe persist races the terminal settlement for the job
+  // record lock, and the store freezes progressProbe once the job is terminal,
+  // so a completion that wins the race would bury the fallback state.
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    heartbeat: true, completionAfterProbe: { state: 'snapshot-fallback' },
+  });
   const diagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
   assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
@@ -5388,7 +5441,7 @@ test('background reservation exposes one private invocation, which is single-use
 });
 
 test('one production background admission mints and transports its exact capability only through fd3', async (t) => {
-  const context = await fixture(); t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const context = await fixture(); t.after(() => removeFixtureDirectory(context.directory));
   const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
   let envelope = ''; const captures = /** @type {{invocation?:any,workerInput?:any}} */ ({}); let unrefCount = 0;
   authorization.setEncoding('utf8'); authorization.on('data', (chunk) => { envelope += chunk; });
@@ -6509,9 +6562,18 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
   const resumeLog = await readFile(resumed.json.job.logFile, 'utf8');
-  assert.match(resumeLog, /Assistant message\ndone\n/); assert.match(resumeLog, /Final output\ndone\n/);
+  assert.match(resumeLog, /Assistant message\ndone\n/);
   assert.equal((resumeLog.match(/Assistant message/g) ?? []).length, 1);
-  assert.equal((resumeLog.match(/Final output/g) ?? []).length, 1);
+  // The final block is an observational mirror written after durable success;
+  // its bounded append may time out under filesystem load (notably on Windows),
+  // leaving the archived progress-preview events and the assistant block as
+  // the durable completed-turn evidence.
+  const finalMirrorCount = resumeLog.split('Final output\ndone\n').length - 1;
+  assert.ok([0, 1].includes(finalMirrorCount));
+  assert.equal((resumeLog.match(/Final output/g) ?? []).length, finalMirrorCount);
+  if (finalMirrorCount === 0) {
+    assert.equal(resumed.stderr.split('[zcode] ZCode job log was disabled.\n').length - 1, 1);
+  }
   assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
 });
 

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, ownerIdForSession } from '../scripts/lib/job-control.mjs';
+import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, ownerIdForSession, runnerTerminationBudgetCapMs } from '../scripts/lib/job-control.mjs';
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from '../scripts/lib/review-schema.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
@@ -1311,7 +1311,9 @@ test('read-only worker termination derives its budget from the absolute SessionE
     assert.equal(kills.length, 0, 'a spent SessionEnd deadline must not grant a fresh local termination budget');
     await settle({ deadlineMs: Date.now() + 5_000 }).catch(() => {});
     assert.equal(kills.length, 1, 'the worker kill still runs inside a live deadline');
-    assert.ok(kills[0].timeoutMs <= 750, `the termination budget is capped by the shared deadline (got ${kills[0].timeoutMs})`);
+    // POSIX keeps the historical 750ms cap; Windows uses the platform's larger
+    // real process-operation cap (see runnerTerminationBudgetCapMs).
+    assert.ok(kills[0].timeoutMs > 0 && kills[0].timeoutMs <= runnerTerminationBudgetCapMs(), `the termination budget is capped by the shared deadline (got ${kills[0].timeoutMs})`);
   });
   await cleanupRecoveryFixture(fixture);
 });
@@ -1769,6 +1771,7 @@ test('SessionEnd settle treats an unreadable/corrupt job read as pending, not as
  * placement models the historical attached record and therefore carries no runner marker.
  * @param {any} fixture @param {string} workspace @param {{agent:string,epoch:string,placement?:string,claim?:boolean}} options */
 async function hostOwnedQueuedRunnerJob(fixture, workspace, { agent, epoch, placement = 'background', claim = true }) {
+  await recordBrokerIdentity(fixture.dataRoot, workspace);
   const store = createStateStore({ dataRoot: fixture.dataRoot });
   const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
     ownerTurnId: `turn-${agent}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
@@ -1776,7 +1779,7 @@ async function hostOwnedQueuedRunnerJob(fixture, workspace, { agent, epoch, plac
       agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
     lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
     ...(placement === 'background' ? { executionInput: { version: 1, task: 'bounded private task' } } : {}) });
-  const worker = { childPid: process.pid, workerLeaseId: reserved.job.id };
+  const worker = { childPid: 999_999_998, workerLeaseId: reserved.job.id };
   if (claim) await store.claimJobWorkerForExecution(workspace, reserved.job.id, worker);
   return { store, job: reserved.job, workerLeaseId: worker.workerLeaseId };
 }
@@ -1785,6 +1788,7 @@ async function hostOwnedQueuedRunnerJob(fixture, workspace, { agent, epoch, plac
  * binding advanced to this queued continuation, and a runner claim (free lease) is retained.
  * @param {any} fixture @param {string} workspace @param {{agent:string,epoch:string}} options */
 async function hostOwnedClaimedQueuedContinuation(fixture, workspace, { agent, epoch }) {
+  await recordBrokerIdentity(fixture.dataRoot, workspace);
   const store = createStateStore({ dataRoot: fixture.dataRoot });
   const executor = { parentSessionId: 'owner', parentTurnId: `turn-${agent}`, agentId: agent,
     agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
@@ -1793,7 +1797,7 @@ async function hostOwnedClaimedQueuedContinuation(fixture, workspace, { agent, e
   const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'background' };
   const first = await store.reserveFreshRescueJob({ workspace, reservation, executor, lifecycle,
     executionInput: { version: 1, task: 'bounded private task' } });
-  const firstWorker = { childPid: process.pid, workerLeaseId: first.job.id };
+  const firstWorker = { childPid: 999_999_998, workerLeaseId: first.job.id };
   await store.claimJobWorkerForExecution(workspace, first.job.id, firstWorker);
   await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(), zcodeSessionId: `zs-${agent}`, ...firstWorker });
@@ -2180,29 +2184,32 @@ test('SessionEnd persists a claimed queued stop intent and settles cancelled onc
   const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace, jobId: job.id, workerLeaseId },
     async () => { leaseEntered(); await leaseReleased; });
   const noClient = async () => { throw new Error('a queued reservation needs no control client'); };
-  // Task 7: the fixture records this test process as the runner pid; the
-  // injected seam observes the identity-proven kill without signaling the
-  // test's own process group (the real termination path is qualified with a
-  // genuine detached holder in the Task 7 matrix tests below).
+  // The fixture records a dead executor pid (the runner exited, its exact claim
+  // survives); the injected seams observe the identity-proven kill without
+  // signaling anything and stage the sweep verdicts (the real termination and
+  // sweep paths are qualified with a genuine detached holder in the Task 7
+  // matrix tests below).
   /** @type {number[]} */ const kills = [];
   const terminate = async (/** @type {number} */ pid) => { kills.push(pid); };
   await leaseAcquired; // the settlement must observe the lease provably held, whatever the I/O scheduling
   const first = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace,
-    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient, terminateProcessTree: terminate });
-  assert.deepEqual(kills, [process.pid], 'the durable queued stop intent drives the bounded local termination of the lease-proven marked runner before the lease-acquiring settlement');
-  assert.equal(first.kind, 'retained-writable-guard', 'a held claim defers the settlement');
+    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient, terminateProcessTree: terminate,
+    sweepDeadRootDescendants: async () => ({ kind: 'swept', killed: [424_242], pending: [] }) });
+  assert.deepEqual(kills, [999_999_998], 'the durable queued stop intent drives the bounded local termination of the lease-proven marked runner before the lease-acquiring settlement');
+  assert.equal(first.kind, 'retained-writable-guard', 'a held claim whose same-pass sweep found survivors defers the settlement');
   const retained = await store.readJob(workspace, job.id);
   assert.equal(retained.status, 'queued');
   assert.equal(retained.workerLeaseId, workerLeaseId, 'the exact claim survives the deferred stop');
   assert.equal(retained.stopIntent?.cause, 'session-end', 'the stop decision is durable before any settlement');
   releaseLease(); await holder;
   const second = await settleEndedOwnerWritableJob({ store, dataRoot: fixture.dataRoot, workspace,
-    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient, terminateProcessTree: terminate });
+    ownerSessionId: 'owner', lockTimeoutMs: 0, includeSettlementEvidence: true, createClient: noClient, terminateProcessTree: terminate,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }) });
   assert.equal(second.kind, 'confirmed-cancellation');
   assert.equal(second.job.status, 'cancelled');
   assert.equal(second.job.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in second.job, false);
-  assert.deepEqual(kills, [process.pid], 'the proven-free lease on the second pass is never signaled again (PID-reuse guard)');
+  assert.deepEqual(kills, [999_999_998], 'the proven-free lease on the second pass is never signaled again (PID-reuse guard); the completed-clean sweep settles');
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -2482,9 +2489,15 @@ test('scavenge defers a fenced queued runner to its live fence lease and settles
 async function markedRunnerRescue(fixture, options = {}) {
   const { status = 'running', epoch = '9'.repeat(64), placement = 'background', childPid = 999_999_999,
     workerLeaseId = 'e'.repeat(64), session = 'zs-marked', inputId = 'input-marked', boundary = true,
-    stopIntentCause = null, agent = 'marked-child', workspace: workspaceArg, detachedHolder = false } = options;
+    stopIntentCause = null, agent = 'marked-child', workspace: workspaceArg, detachedHolder = false,
+    // A production rescue runner always runs its turn through a broker whose
+    // identity the workspace records, so the sweep's three-valued lookup
+    // RESOLVES by default. Opt out for tests whose premise is the unproven
+    // (absent) lookup.
+    brokerIdentity = true } = options;
   const store = createStateStore({ dataRoot: fixture.dataRoot });
   const workspace = workspaceArg ?? await realpath(fixture.workspace);
+  if (brokerIdentity) await recordBrokerIdentity(fixture.dataRoot, workspace);
   const reserved = await store.reserveFreshRescueJob({ workspace,
     reservation: { workspace, ownerSessionId: 'owner', ownerTurnId: `turn-${agent}`, command: 'rescue', readOnly: false,
       permissionSnapshot: { permissionMode: 'workspace-write' } },
@@ -2625,7 +2638,12 @@ test('a proven-free lease never authorizes signaling the recorded runner pid', a
       epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
       terminateProcessTree: async (/** @type {number} */ pid) => { kills.push(pid); },
       createClient: async () => { throw new Error('unused'); } }, job.id);
-    assert.equal(outcome.job.status, 'cancelled');
+    // An alive recorded pid under a FREE lease is the accepted residual reuse
+    // risk: the dead-root proof fails, so the pass could not run the sweep and
+    // the pass RETAINS the active record (the reconciler's unresolved-stop
+    // projection) — and nothing was signaled.
+    assert.equal(outcome.kind, 'retained-writable-guard', 'the alive-root residual is retained, never settled');
+    assert.equal(outcome.job.status, 'queued');
     assert.deepEqual(kills, [], 'the lease was acquirable (free): the recorded pid is no longer proven to be the runner');
     assert.equal(processAlive(bystander.pid), true, 'the unrelated live pid was not signaled');
     assert.equal(await leaseIsHeld({ ...fixture, workspace }, job.id, workerLeaseId), false);
@@ -2663,8 +2681,8 @@ test('discovery surfaces a terminal marked runner still holding its lease and th
     const { discoverSessionEndObligations, settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
     const obligations = await discoverSessionEndObligations({ store: held.store, dataRoot: fixture.dataRoot,
       knownWorkspaces: [workspace], ownerSessionId: 'owner', epoch: null });
-    assert.deepEqual(obligations.map((/** @type {any} */ o) => o.job.id), [held.job.id],
-      'only the terminal record whose marked runner lease is still HELD is a cleanup obligation; the released one is not');
+    assert.deepEqual(obligations.map((/** @type {any} */ o) => o.job.id), [held.job.id, free.job.id],
+      'every terminal marked claim is a cleanup obligation; the lease only selects the kill mode');
     // The real default termination converges: the detached holder dies and its
     // lease releases inside the bounded local budget.
     const outcome = await settleEndedRescueJob({ store: held.store, dataRoot: fixture.dataRoot, workspace,
@@ -2787,7 +2805,7 @@ test('the missing-broker exit terminates the marked runner and archives only onc
   await cleanupRecoveryFixture(fixture);
 });
 
-test('a natural terminal winner publishes durable success before the residual cleanup duty', async () => {
+test('a natural terminal winner publishes only behind the completed-clean sweep duty', async () => {
   const fixture = await context();
   const { store, workspace, job, workerLeaseId } = await markedRunnerRescue(fixture, { agent: 'natural-winner' });
   const holder = await inProcessLeaseHolder({ ...fixture, workspace }, job.id, workerLeaseId);
@@ -2797,17 +2815,17 @@ test('a natural terminal winner publishes durable success before the residual cl
   await holder.acquired;
   const outcome = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
     epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
-    terminateProcessTree: async (/** @type {number} */ pid) => { events.push(`kill:${pid}`); },
+    terminateProcessTree: async (/** @type {number} */ pid) => { events.push(`kill:${pid}`); holder.release(); await holder; },
     createClient: async () => ({
       readSession: async () => coherentCurrentTurn('input-marked', 'natural success won'),
       stopSession: async () => { events.push('stop'); },
       close: async () => {},
     }) }, job.id);
-  holder.release(); await holder.done;
+  holder.release(); await holder.done.catch(() => { /* already released */ });
   assert.equal(outcome.kind, 'durable-completion', 'the natural winner is authoritative over the stop');
   assert.equal(events.includes('stop'), false, 'a proven terminal never receives another stop');
-  assert.deepEqual(events, ['publish-succeeded', `kill:${999_999_999}`],
-    'a remote terminal winner never excuses skipping a still-held marked runner lease: the durable success lands FIRST, then the residual cleanup');
+  assert.deepEqual(events, [`kill:${999_999_999}`, 'publish-succeeded'],
+    'the marked-runner cleanup duty (kill decision plus the completed-clean sweep) runs BEFORE the publication: a remote terminal winner never terminalizes over an unproven sweep');
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -2928,40 +2946,52 @@ test('lock contention before and during the stop defers with the durable duty in
   assert.deepEqual(kills, [], 'persist-before-control: contention before the decision authorizes no termination');
   assert.equal((await store.readJob(workspace, job.id)).status, 'running');
   assert.equal(endedObligationSettled(during), false, 'the undis-charged obligation keeps the receipt pending');
-  // (3) Contention AFTER terminal publication: the cleanup duty's own identity
-  // re-read loses the state lock — the guarded helper fails closed as
-  // non-termination, the durable winner stands, and the pass converges.
-  // A second workspace: the (1)/(2) job is still the first workspace's active
-  // writable guard, so the natural-success fixture reserves its own.
+  // (3) Contention of the cleanup duty's identity re-read: the guarded helper
+  // fails closed as non-termination, and the winner publication is GATED on
+  // the duty — the pass retains the active record instead of publishing over
+  // an unproven sweep. A second workspace: the (1)/(2) job is still the first
+  // workspace's active writable guard, so the natural-success fixture
+  // reserves its own.
   await mkdir(join(fixture.root, 'workspace-3'));
   const workspaceThree = await realpath(join(fixture.root, 'workspace-3'));
-  const natural = await markedRunnerRescue(fixture, { agent: 'post-publish-contention', workerLeaseId: 'd'.repeat(64), workspace: workspaceThree });
+  const natural = await markedRunnerRescue(fixture, { agent: 'pre-publish-contention', workerLeaseId: 'd'.repeat(64), workspace: workspaceThree });
   let cleanupReads = 0;
   const postPublish = {
     ...natural.store,
     readJob: async (/** @type {any} */ ...args) => {
       const value = await natural.store.readJob(...args);
       // The cleanup seam is the only caller that reads the job with a bounded
-      // integer timeoutMs on this path: contend exactly that re-read, once the
-      // terminal winner is already durable.
-      if (value.status === 'succeeded' && Number.isSafeInteger(args[2]?.timeoutMs) && ++cleanupReads === 1) {
+      // integer timeoutMs on this path: contend exactly that re-read, once.
+      if (Number.isSafeInteger(args[2]?.timeoutMs) && ++cleanupReads === 1) {
         throw new PluginError('LOCK_TIMEOUT', 'cleanup re-read contended', { category: 'timeout', remedy: 'retry' });
       }
       return value;
     },
   };
-  const winner = await settleEndedRescueJob({ store: postPublish, dataRoot: fixture.dataRoot,
+  const base = { store: postPublish, dataRoot: fixture.dataRoot,
     workspace: workspaceThree, ownerSessionId: 'owner', epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
     terminateProcessTree: async (/** @type {number} */ pid) => { kills.push(pid); },
-    createClient: async () => ({ readSession: async () => coherentCurrentTurn('input-marked', 'done'), stopSession: async () => {}, close: async () => {} }) }, natural.job.id);
-  assert.equal(winner.kind, 'durable-completion', 'a contended post-publication cleanup re-read never rewrites the durable winner');
-  assert.equal(cleanupReads, 1, 'the cleanup duty did attempt its identity revalidation after publication');
+    createClient: async () => ({ readSession: async () => coherentCurrentTurn('input-marked', 'done'), stopSession: async () => {}, close: async () => {} }) };
+  const retained = await settleEndedRescueJob(base, natural.job.id);
+  assert.equal(retained.kind, 'retained-writable-guard', 'a contended cleanup re-read retains the pass before any publication');
+  // Persist-before-control made the durable guard `cancelling` (with its
+  // session-end intent) BEFORE the gated cleanup ran; no terminal winner was
+  // published over the unproven sweep.
+  const retainedRecord = await natural.store.readJob(workspaceThree, natural.job.id);
+  assert.equal(retainedRecord.status, 'cancelling', 'the winner publication never ran over the unproven sweep: the durable guard is retained');
+  assert.equal(retainedRecord.stopIntent?.cause, 'session-end', 'the durable decision stays the retry authority');
+  assert.equal(cleanupReads, 1, 'the cleanup duty did attempt its identity revalidation before publication');
   assert.deepEqual(kills, [], 'a failed cleanup re-read signals nothing; the durable record keeps re-arming the duty');
+  // The retried pass proves the claim (free lease, clean sweep) and the SAME
+  // pass publishes the natural winner.
+  const winner = await settleEndedRescueJob({ ...base,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }) }, natural.job.id);
+  assert.equal(winner.kind, 'durable-completion', 'the gated pass converges once the cleanup proves the sweep');
   holder.release(); await holder.done;
   await cleanupRecoveryFixture(fixture);
 });
 
-test('a terminal lease probe that cannot prove the lease state fails discovery closed and the duty converges on a later pass', { skip: process.platform === 'win32' ? 'Windows cannot express the unreadable-lock-file fault fixture.' : false }, async () => {
+test('an unprovable lease state fails the terminal duty closed while discovery keeps surfacing the claim', { skip: process.platform === 'win32' ? 'Windows cannot express the unreadable-lock-file fault fixture.' : false }, async () => {
   const fixture = await context();
   const workspace = await realpath(fixture.workspace);
   const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'terminal-probe-fault', workspace, detachedHolder: true });
@@ -2970,31 +3000,37 @@ test('a terminal lease probe that cannot prove the lease state fails discovery c
     const discovery = (/** @type {any} */ overrides = {}) => discoverSessionEndObligations({ store: held.store, dataRoot: fixture.dataRoot,
       knownWorkspaces: [workspace], ownerSessionId: 'owner', epoch: null, ...overrides });
     assert.deepEqual((await discovery()).map((/** @type {any} */ o) => o.job.id), [held.job.id], 'sanity: the held lease is a cleanup obligation');
-    // A probe failure that is NOT LOCK_TIMEOUT (an unreadable advisory lock
-    // file: I/O/permission corruption) is UNKNOWN, never "released": discovery
-    // must fail closed so the caller keeps the receipt pending instead of
-    // settling over the live runner.
+    // Discovery never depends on the lease state at all: an unreadable advisory
+    // lock file (I/O/permission corruption) cannot drop the obligation — the
+    // claim stays surfaced and the SETTLEMENT fails closed instead.
     const advisory = join(await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace }).then((/** @type {any} */ storage) => storage.directory),
       'worker-leases', `${held.job.id}-${held.workerLeaseId}.lock`, 'advisory.lock');
     await chmod(advisory, 0o000);
-    await assert.rejects(discovery(), (/** @type {any} */ error) => error?.code === 'LOCK_OPEN_FAILED' || error?.code === 'LOCK_PATH_UNSAFE',
-      'an unprovable lease probe must propagate so the receipt stays pending');
-    let receiptDischarged = true;
-    try { await discovery(); } catch { receiptDischarged = false; }
-    assert.equal(receiptDischarged, false, 'the hook-shaped caller keeps the receipt pending');
+    assert.deepEqual((await discovery()).map((/** @type {any} */ o) => o.job.id), [held.job.id],
+      'the terminal marked claim is an obligation regardless of the unprovable lease state');
+    const base = { store: held.store, dataRoot: fixture.dataRoot, workspace,
+      ownerSessionId: 'owner', epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'clean' }),
+      createClient: async () => { throw new Error('terminal records need no remote control'); } };
+    // The duty's own lease probe hits the same fault: an unprovable state is
+    // never "released" — the cleanup stays pending and the runner survives.
+    const pending = await settleEndedRescueJob(base, held.job.id);
+    assert.equal(pending.kind, 'runner-cleanup-pending', 'an unprovable lease probe is uncertainty, never settlement');
+    assert.equal(pending.cleanup, 'not-proven');
+    assert.equal(processAlive(held.holderChild.pid), true, 'the runner was never signalled on an unproven identity');
+    assert.equal(endedObligationSettled(pending), false, 'the receipt stays pending');
     // Once the fault clears while the runner still holds the lease, the next
     // pass re-arms the duty and the settlement converges with the real kill.
     await chmod(advisory, 0o600);
-    assert.deepEqual((await discovery()).map((/** @type {any} */ o) => o.job.id), [held.job.id]);
-    const outcome = await settleEndedRescueJob({ store: held.store, dataRoot: fixture.dataRoot, workspace,
-      ownerSessionId: 'owner', epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
-      createClient: async () => { throw new Error('terminal records need no remote control'); } }, held.job.id);
+    const outcome = await settleEndedRescueJob(base, held.job.id);
     assert.equal(outcome.kind, 'durable-completion');
     assert.equal(outcome.job.status, 'succeeded', 'the terminal winner is untouched');
-    assert.equal(endedObligationSettled(outcome), true, 'the proven release discharges the receipt');
+    assert.equal(endedObligationSettled(outcome), true, 'the kill plus the completed-clean sweep discharge the receipt');
     assert.equal(processAlive(held.holderChild.pid), false, 'the retried duty terminated the proven runner');
+    // The freed lease does NOT drop the obligation: the sweep duty re-arms
+    // until a pass proves the tree gone.
     const released = await discovery();
-    assert.deepEqual(released.map((/** @type {any} */ o) => o.job.id), [], 'the freed lease is no longer an obligation');
+    assert.deepEqual(released.map((/** @type {any} */ o) => o.job.id), [held.job.id], 'the freed marked claim stays an obligation');
   } finally { try { process.kill(-held.holderChild.pid, 'SIGKILL'); } catch { /* terminated by the pass */ } }
   await cleanupRecoveryFixture(fixture);
 });
@@ -3045,5 +3081,420 @@ test('a terminal marked-runner cleanup that fails or exhausts its deadline keeps
     assert.equal(plainOutcome.kind, 'terminal');
     assert.equal(endedObligationSettled(plainOutcome), true, 'plain terminal records settle exactly as before Task 7');
   } finally { try { process.kill(-held.holderChild.pid, 'SIGKILL'); } catch { /* terminated by the pass */ } }
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an INCOMPLETE verified kill keeps the terminal obligation pending even when the runner lease freed', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'incomplete-free-lease', workspace });
+  const holder = await inProcessLeaseHolder({ ...fixture, workspace }, held.job.id, held.workerLeaseId);
+  try {
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    const base = { store: held.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000,
+      createClient: async () => { throw new Error('terminal records need no remote control'); } };
+    // The Windows verified walk signalled the recorded runner FIRST (it dies and
+    // its process-lifetime lease releases) and then spent its shared budget
+    // before the descendant dispatch: the seam reports INCOMPLETE with the
+    // surviving descendant pending. The freed runner lease proves the RUNNER
+    // gone, never the tree, so the obligation must stay pending.
+    const incomplete = await settleEndedRescueJob({ ...base,
+      terminateProcessTree: async () => { holder.release(); return { completed: false, dispatched: 1, pending: [424_242] }; } }, held.job.id);
+    assert.equal(incomplete.kind, 'runner-cleanup-pending',
+      'a freed runner lease alone never proves the tree cleanup: the incomplete duty keeps the obligation pending');
+    assert.equal(incomplete.cleanup, 'budget-expired', 'the incomplete verified sequence keeps the budget-expired duty convention');
+    assert.equal(incomplete.job.status, 'succeeded', 'the durable terminal winner is untouched');
+    assert.equal(incomplete.job.workerLeaseId, held.workerLeaseId, 'no durable evidence is stripped while the duty is pending');
+    assert.equal(endedObligationSettled(incomplete), false, 'the receipt stays the durable compensation authority');
+    // The pending duty re-arms: on the next bounded pass the runner's lease is
+    // already released, the guarded duty reports the runner exited-and-released
+    // (a COMPLETED duty outcome), and the proven release settles via the probe.
+    const settled = await settleEndedRescueJob({ ...base,
+      terminateProcessTree: async () => { throw new Error('a free lease is never signalled'); } }, held.job.id);
+    assert.equal(settled.kind, 'durable-completion', 'a COMPLETED duty outcome settles via the probe');
+    assert.equal(endedObligationSettled(settled), true, 'the proven release discharges the receipt');
+  } finally { holder.release(); await holder.done.catch(() => { /* already released */ }); }
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('the pending duty re-run kills the surviving descendant: the stub walk rediscovers it via the retained PPID', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'ppid-retention', workspace });
+  const holder = await inProcessLeaseHolder({ ...fixture, workspace }, held.job.id, held.workerLeaseId);
+  try {
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    // A stub process table with Windows PPID retention: the descendant's
+    // recorded parent stays the recorded runner pid even after the runner dies
+    // (Win32_Process keeps the original PPID — no re-parenting).
+    const tree = new Map([
+      [999_999_999, { alive: true }],
+      [424_242, { alive: true, ppid: 999_999_999 }],
+    ]);
+    const passes = [];
+    /** The verified Windows walk simulation: the runner FIRST, then every live
+     * PPID-descendant; the descendant dispatch fails once the budget is spent. */
+    const walk = (/** @type {boolean} */ descendantDispatchFails) => async (/** @type {number} */ pid) => {
+      assert.equal(pid, 999_999_999, 'the walk is rooted at the recorded runner pid');
+      const targets = [pid, ...[...tree].filter(([, identity]) => identity.ppid === pid && identity.alive).map(([candidate]) => candidate)];
+      /** @type {number[]} */
+      const dispatched = [];
+      for (const target of targets) {
+        if (target !== pid && descendantDispatchFails) break;
+        tree.get(target).alive = false;
+        dispatched.push(target);
+      }
+      passes.push({ descendantDispatchFails, dispatched, descendantFound: targets.includes(424_242) });
+      return dispatched.length === targets.length ? undefined : { completed: false, dispatched: dispatched.length, pending: targets.slice(dispatched.length) };
+    };
+    const base = () => ({ store: held.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true,
+      // The pass deadline is PLATFORM-SPLIT: only the stubbed KILL is
+      // instant — the same-pass descendant sweep and its broker-exclusion
+      // lookup are REAL. On Windows they are actual process-table snapshots
+      // behind a 1.5s lookup-skip reserve (see
+      // WINDOWS_MIN_RUNNER_TERMINATION_BUDGET_MS), so a flat 600ms deadline
+      // skips the sweep's lookup and the pass can never come back clean on a
+      // real Windows host; the Windows budget is the duty's own convergence
+      // fallback. Pass 1 stays pending through the stub's EXPLICIT incomplete
+      // kill outcome regardless of the budget, and pass 2's completing walk
+      // plus its real clean sweep settle inside it.
+      deadlineMs: Date.now() + (process.platform === 'win32' ? WINDOWS_RUNNER_DUTY_FALLBACK_MS : 600),
+      createClient: async () => { throw new Error('terminal records need no remote control'); } });
+    // Pass 1: the runner dispatch lands but the descendant dispatch exhausts the
+    // deadline; the terminated runner's lease is still HELD (not reaped yet), so
+    // the obligation stays pending exactly as established.
+    const pending = await settleEndedRescueJob({ ...base(), terminateProcessTree: walk(true) }, held.job.id);
+    assert.equal(pending.kind, 'runner-cleanup-pending');
+    assert.equal(endedObligationSettled(pending), false);
+    assert.equal(tree.get(999_999_999).alive, false, 'the runner dispatch landed');
+    assert.equal(tree.get(424_242).alive, true, 'the descendant survived the first pass');
+    // Pass 2: the duty re-runs lookup+kill; the walk STILL finds the descendant
+    // through the retained PPID, the completing dispatch kills it, the reaped
+    // runner's lease releases, and only then does the proven release discharge.
+    const completingWalk = walk(false);
+    const settled = await settleEndedRescueJob({ ...base(), terminateProcessTree: async (/** @type {number} */ pid) => {
+      const outcome = await completingWalk(pid);
+      holder.release(); // the reaped runner's process-lifetime lease releases
+      return outcome;
+    } }, held.job.id);
+    assert.equal(passes.length, 2, 'the duty re-ran lookup+kill on the second bounded pass');
+    assert.equal(passes[1].descendantFound, true, 'the descendant walk still finds the survivor via the retained PPID');
+    assert.deepEqual(passes[1].dispatched, [999_999_999, 424_242], 'the second pass kills the surviving descendant');
+    assert.equal(tree.get(424_242).alive, false, 'the descendant did not survive the retry');
+    assert.equal(settled.kind, 'durable-completion');
+    assert.equal(endedObligationSettled(settled), true, 'the COMPLETED kill settles via the probe');
+  } finally { holder.release(); await holder.done.catch(() => { /* already released */ }); }
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** Override the host platform for one Windows-branch sweep unit test; restored
+ * on every outcome. The sweep's table walk stays platform-gated in production,
+ * so the override is the only way to drive it on a macOS/Linux test host. It
+ * must only span the process.mjs helper itself (pure liveness probes plus the
+ * injectable seams), never the surrounding durable-state machinery. */
+function withWindowsPlatformOverride(run) {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  return Promise.resolve().then(run).finally(() => {
+    Object.defineProperty(process, 'platform', { value: original, configurable: true });
+  });
+}
+
+test('a released runner lease settles only after the dead-root descendant sweep proves the tree gone', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'dead-root-sweep', workspace });
+  try {
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    const { sweepDeadRootDescendantTree } = await import('../scripts/lib/process.mjs');
+    // A Windows-flavored survivor: the recorded runner (999_999_999, proven DEAD
+    // by the sweep's own liveness probe) left a descendant alive — Win32_Process
+    // retains the original PPID after the parent dies (no re-parenting), so the
+    // walk still finds it under the dead root.
+    let survivorAlive = true;
+    const enumerations = [];
+    const kills = [];
+    const sweepSeam = (/** @type {number} */ pid, /** @type {any} */ options) => withWindowsPlatformOverride(() => sweepDeadRootDescendantTree(pid, {
+      ...options,
+      enumerateProcessTable: async (/** @type {number} */ timeoutMs) => {
+        enumerations.push(timeoutMs);
+        return survivorAlive ? new Map([[424_242, { ppid: pid, commandLine: 'C:\\Tools\\node.exe C:\\ws\\worker.mjs' }]]) : new Map();
+      },
+      runProcessKill: async (/** @type {string} */ command, /** @type {string[]} */ args) => {
+        kills.push([...args]);
+        if (args.includes('424242')) survivorAlive = false;
+      },
+    }));
+    const base = { store: held.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000,
+      sweepDeadRootDescendants: sweepSeam,
+      createClient: async () => { throw new Error('terminal records need no remote control'); } };
+    // Pass 1: the runner's lease is ALREADY free (the guarded duty reports the
+    // released pid without signalling it), but the dead-root sweep finds the
+    // surviving descendant, kills it, and keeps the obligation pending until a
+    // pass proves nothing is left. (RED before the fix: the freed lease settled
+    // the obligation outright without any walk.)
+    const pending = await settleEndedRescueJob(base, held.job.id);
+    assert.equal(pending.kind, 'runner-cleanup-pending',
+      'a freed lease alone never proves the tree gone: the dead-root sweep must run before settlement');
+    assert.equal(endedObligationSettled(pending), false, 'the surviving descendant keeps the receipt pending');
+    assert.equal(pending.sweep, 'swept', 'the pending outcome names the sweep that killed verified survivors');
+    assert.deepEqual(kills, [['/PID', '424242', '/F']], 'the sweep force-killed exactly the verified surviving descendant');
+    assert.equal(survivorAlive, false, 'the descendant did not survive the sweep');
+    assert.equal(enumerations.length, 2, 'the killing pass plans from one snapshot and revalidates against a second before any kill');
+    // Pass 2: the sweep finds nothing left to kill and the proven release settles.
+    const settled = await settleEndedRescueJob(base, held.job.id);
+    assert.equal(settled.kind, 'durable-completion', 'a COMPLETED sweep that finds nothing settles via the probe');
+    assert.equal(endedObligationSettled(settled), true, 'the proven release plus the clean sweep discharge the receipt');
+    assert.equal(enumerations.length, 3, 'the settling pass planned one fresh snapshot and needed no revalidation');
+  } finally { await cleanupRecoveryFixture(fixture); }
+});
+
+test('an alive recorded pid under a released lease keeps the obligation pending without any sweep walk', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const resident = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30);'], { stdio: 'ignore', shell: false });
+  try {
+    assert.ok(Number.isSafeInteger(resident.pid) && resident.pid > 0, 'the stand-in recorded pid must be live');
+    const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'alive-root-risk', workspace, childPid: resident.pid });
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    const { sweepDeadRootDescendantTree } = await import('../scripts/lib/process.mjs');
+    const enumerations = [];
+    const outcome = await settleEndedRescueJob({
+      store: held.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000,
+      sweepDeadRootDescendants: (/** @type {number} */ pid, /** @type {any} */ options) => sweepDeadRootDescendantTree(pid, {
+        ...options,
+        enumerateProcessTable: async () => { enumerations.push(1); return new Map(); },
+      }),
+      createClient: async () => { throw new Error('terminal records need no remote control'); },
+    }, held.job.id);
+    // A live recorded pid under a FREE lease cannot be distinguished from a pid
+    // reused by an unrelated live process (the accepted residual reuse risk):
+    // the sweep never walks — and the settlement machinery never signals — such
+    // a pid. Because the dead-root proof FAILED, the pass could not run the
+    // sweep, so the obligation stays pending: settlement requires a completed
+    // sweep, and an alive root is not one.
+    assert.equal(outcome.kind, 'runner-cleanup-pending', 'the residual-reuse-risk case is pending, never settled unproven');
+    assert.equal(outcome.sweep, 'root-alive', 'the pending outcome names the alive-root residual');
+    assert.equal(endedObligationSettled(outcome), false);
+    assert.deepEqual(enumerations, [], 'the sweep never enumerates below a live recorded pid');
+  } finally {
+    try { resident.kill('SIGKILL'); } catch { /* already gone */ }
+    await cleanupRecoveryFixture(fixture);
+  }
+});
+
+test('an incomplete kill on the cancelling recovery path retains the durable guard and the writable exclusion', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const { store, job, workerLeaseId } = await markedRunnerRescue(fixture, { status: 'cancelling', stopIntentCause: 'session-end', agent: 'incomplete-guard', workspace });
+  const holder = await inProcessLeaseHolder({ ...fixture, workspace }, job.id, workerLeaseId);
+  try {
+    const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
+    await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+      deadlineMs: Date.now() + 5_000,
+      terminateProcessTree: async () => { holder.release(); return { completed: false, dispatched: 1, pending: [424_242] }; },
+      reconcileOwnership: async () => {},
+      createClient: async () => { throw new PluginError('ZCODE_DISCONNECTED', 'no broker', { category: 'runtime', remedy: 'restart' }); } });
+    const stored = await store.readJob(workspace, job.id);
+    assert.equal(stored.status, 'cancelling', 'an incomplete kill never upgrades the guard to cancelled');
+    assert.equal(stored.stopIntent?.cause, 'session-end', 'the durable stop intent stays the retry authority');
+    await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next', ownerTurnId: 'next-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the writable exclusion stays pending while surviving descendants have no proven kill');
+  } finally { holder.release(); await holder.done.catch(() => { /* already released */ }); }
+  await cleanupRecoveryFixture(fixture);
+});
+
+/** Record one durable broker identity in the workspace so the sweep's
+ * WINDOWS-path lookup RESOLVES (complete, signature-bearing identity set):
+ * the recorded pid is dead, so the walk excludes nothing — only the resolved
+ * STATUS matters to the duty. (The POSIX group sweep never consults the
+ * lookup at all.) */
+async function recordBrokerIdentity(dataRoot, workspace) {
+  const { writeBrokerIdentity } = await import('../scripts/zcode-broker.mjs');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), {
+    endpoint: 'recovery-sweep-fixture-endpoint', pid: 111_000_001,
+    launch: { command: '/tools/node', args: ['broker.mjs', 'config.json'] },
+  });
+}
+
+test('a terminal marked claim is an obligation regardless of lease state: the lease only selects the kill mode', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'terminal-obligation-held', workspace, detachedHolder: true });
+  const free = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'terminal-obligation-free', workspace, workerLeaseId: 'a'.repeat(64) });
+  try {
+    const { discoverSessionEndObligations } = await import('../scripts/lib/recovery.mjs');
+    // RED before the fix: the released lease dropped the record from discovery,
+    // so the receipt settled without ever re-arming the descendant sweep duty.
+    const obligations = await discoverSessionEndObligations({ store: held.store, dataRoot: fixture.dataRoot,
+      knownWorkspaces: [workspace], ownerSessionId: 'owner', epoch: null });
+    assert.deepEqual(obligations.map((/** @type {any} */ o) => o.job.id), [held.job.id, free.job.id],
+      'discovery never depends on the lease being held: a terminal marked claim is always an obligation');
+  } finally { try { process.kill(-held.holderChild.pid, 'SIGKILL'); } catch { /* fixture teardown */ } }
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('the sweep exclusion rule splits by platform: a Windows absent lookup walks with the proven-empty set, only a failed lookup fails closed', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const held = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'absent-lookup-sweep', workspace, workerLeaseId: 'a'.repeat(64), brokerIdentity: false });
+  try {
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    const sweepInvocations = [];
+    const base = { store: held.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000, platform: 'win32',
+      sweepDeadRootDescendants: (/** @type {number} */ pid, /** @type {any} */ options) => {
+        sweepInvocations.push({ pid, options });
+        return Promise.resolve({ kind: 'clean' });
+      },
+      createClient: async () => { throw new Error('terminal records need no remote control'); } };
+    // The workspace records NO broker identity (the runner exited before
+    // creating one, or the broker already retired): the absent lookup is the
+    // PROVEN complete empty scan, so the Windows walk plans under the held
+    // startup lock with the empty exclusion set instead of failing the duty
+    // closed pending forever. RED before the split: no walk ever ran.
+    const settled = await settleEndedRescueJob(base, held.job.id);
+    assert.equal(settled.kind, 'durable-completion', 'the absent lookup still plans the lock-held empty-exclusion walk');
+    assert.equal(endedObligationSettled(settled), true);
+    assert.deepEqual(sweepInvocations.map((/** @type {any} */ call) => call.pid), [held.job.childPid],
+      'the walk runs exactly once, rooted at the recorded pid');
+    assert.deepEqual(sweepInvocations[0]?.options?.excludeBrokers, [],
+      'the absent outcome forwards the PROVEN-EMPTY exclusion set, never the fail-closed state');
+    // Once the workspace records a complete broker identity the Windows lookup
+    // resolves (lock-held exclusions) and the walk runs under them.
+    await recordBrokerIdentity(fixture.dataRoot, workspace);
+    const resolvedJob = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'resolved-lookup-sweep', workspace, workerLeaseId: 'b'.repeat(64) });
+    sweepInvocations.length = 0;
+    const resolved = await settleEndedRescueJob({ ...base, store: resolvedJob.store }, resolvedJob.job.id);
+    assert.equal(resolved.kind, 'durable-completion', 'a resolved lock-held lookup plans the sweep');
+    assert.equal(endedObligationSettled(resolved), true);
+    assert.deepEqual(sweepInvocations.map((/** @type {any} */ call) => call.pid), [resolvedJob.job.childPid],
+      'the resolved walk runs exactly once, rooted at the recorded pid');
+    assert.equal(sweepInvocations[0]?.options?.excludeBrokers?.[0]?.pid, 111_000_001,
+      'the walk runs under the resolved identity-matched exclusions');
+    // A FAILED (unreadable/corrupt) lookup stays fail closed: an unprovable
+    // exclusion set must never silently become an empty one — the prior
+    // round's rule, unchanged by the platform split.
+    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+    await writeFile(join(storage.directory, 'broker', 'identity.json'), '{ not json', 'utf8');
+    const corruptJob = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'failed-lookup-sweep', workspace, workerLeaseId: 'c'.repeat(64), brokerIdentity: false });
+    sweepInvocations.length = 0;
+    const pending = await settleEndedRescueJob({ ...base, store: corruptJob.store }, corruptJob.job.id);
+    assert.equal(pending.kind, 'runner-cleanup-pending', 'a failed lookup never proves the tree gone');
+    assert.equal(pending.sweep, 'incomplete', 'the pending outcome names the unproven broker scan');
+    assert.deepEqual(sweepInvocations, [], 'the sweep never walks below an unproven exclusion state');
+    assert.equal(endedObligationSettled(pending), false, 'the receipt stays the compensation authority');
+  } finally { await cleanupRecoveryFixture(fixture); }
+});
+
+test('a released marked claim sweeps before the recovery convergence publishes the cancelled winner', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  // Claimed queued marked runner whose lease is already released (claimed
+  // without a live holder): the durable stop decision re-arms the duty.
+  const { store, job } = await markedRunnerRescue(fixture, { status: 'queued', stopIntentCause: 'session-end', agent: 'released-queued-sweep', workspace });
+  try {
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    /** @type {string[]} */
+    const sweepKinds = ['swept', 'clean'];
+    const sweepInvocations = [];
+    const base = { store, dataRoot: fixture.dataRoot, workspace, reconcileOwnership: async () => {},
+      createClient: async () => { throw new Error('a queued record has no remote session'); } };
+    // Pass 1: RED before the fix — the released lease reported the duty settled
+    // without any walk and the record converged to cancelled in the same pass.
+    const retained = await scavengeWritableJobs({ ...base, deadlineMs: Date.now() + 5_000,
+      sweepDeadRootDescendants: (/** @type {number} */ pid) => { sweepInvocations.push(pid); return Promise.resolve({ kind: sweepKinds[0], killed: [424_242], pending: [] }); } });
+    assert.equal(retained.at(-1)?.id, job.id);
+    const storedAfterSwept = await store.readJob(workspace, job.id);
+    assert.equal(storedAfterSwept.status, 'queued', 'a sweep that killed verified survivors never converges the record');
+    assert.equal(storedAfterSwept.stopIntent?.cause, 'session-end', 'the durable decision stays the retry authority');
+    assert.deepEqual(sweepInvocations, [job.childPid], 'the released-lease pass ran the dead-root sweep');
+    await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next', ownerTurnId: 'next-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the retained queued stop keeps the writable exclusion');
+    // Pass 2: the sweep finds nothing left to kill and the SAME pass converges.
+    const settled = await scavengeWritableJobs({ ...base, deadlineMs: Date.now() + 5_000,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'clean' }) });
+    assert.equal(settled.at(-1)?.id, job.id);
+    const storedSettled = await store.readJob(workspace, job.id);
+    assert.equal(storedSettled.status, 'cancelled', 'queued stopIntent -> released lease -> completed-clean sweep -> cancelled');
+    assert.equal(storedSettled.stopCause, 'session-end', 'the durable intent labels the winner');
+  } finally { await cleanupRecoveryFixture(fixture); }
+});
+
+test('a stop-settled pass retains the guard instead of publishing a terminal winner over an unproven sweep', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  const { store, workspace: _w, job, workerLeaseId } = await markedRunnerRescue(fixture, { agent: 'natural-gate' });
+  void _w;
+  const holder = await inProcessLeaseHolder({ ...fixture, workspace }, job.id, workerLeaseId);
+  try {
+    const { settleEndedRescueJob } = await import('../scripts/lib/recovery.mjs');
+    /** @type {string[]} */
+    const publications = [];
+    const wrapped = { ...store, finishJob: async (/** @type {any} */ ...args) => { publications.push(args[3]); return store.finishJob(...args); } };
+    const base = { store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000,
+      createClient: async () => ({
+        readSession: async () => coherentCurrentTurn('input-marked', 'natural success won'),
+        stopSession: async () => {},
+        close: async () => {},
+      }) };
+    // Pass 1: RED before the fix — the natural winner published `succeeded`
+    // FIRST and discarded the incomplete duty outcome, terminalizing the marked
+    // job with verified descendants still unproven.
+    const retained = await settleEndedRescueJob({ ...base,
+      terminateProcessTree: async () => { holder.release(); return { completed: false, dispatched: 1, pending: [424_242] }; } }, job.id);
+    assert.equal(retained.kind, 'retained-writable-guard', 'an unproven sweep never publishes the terminal winner');
+    assert.equal(retained.job.status, 'cancelling', 'the durable guard is retained for the next bounded pass');
+    assert.deepEqual(publications, [], 'no terminal publication happened in the unproven pass');
+    assert.equal(retained.job.stopIntent?.cause, 'session-end', 'the durable intent stays the retry authority');
+    // Pass 2: the duty completes clean and the SAME pass publishes the winner.
+    const settled = await settleEndedRescueJob({ ...base,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'clean' }),
+      terminateProcessTree: async () => {} }, job.id);
+    assert.equal(settled.kind, 'durable-completion', 'the completed-clean sweep discharges the pass');
+    assert.deepEqual(publications, ['succeeded'], 'the winner publishes only after the clean sweep');
+  } finally { holder.release(); await holder.done.catch(() => { /* already released */ }); }
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a terminal marked job settles only after a completed-clean sweep, regardless of lease state', async () => {
+  const fixture = await context();
+  const workspace = await realpath(fixture.workspace);
+  // (a) HELD lease: the guarded kill runs in the pass, but the same-pass sweep
+  // finds a verified survivor — the obligation stays pending.
+  const heldPass = await markedRunnerRescue(fixture, { status: 'succeeded', agent: 'invariant-held', workspace, detachedHolder: true });
+  try {
+    const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+    const base = { store: heldPass.store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner', epoch: null,
+      lockTimeoutMs: 0, includeSettlementEvidence: true, deadlineMs: Date.now() + 5_000,
+      createClient: async () => { throw new Error('terminal records need no remote control'); } };
+    const swept = await settleEndedRescueJob({ ...base,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'swept', killed: [424_242], pending: [] }) }, heldPass.job.id);
+    assert.equal(swept.kind, 'runner-cleanup-pending', 'a kill whose sweep found survivors never settles');
+    assert.equal(swept.sweep, 'swept');
+    assert.equal(processAlive(heldPass.holderChild.pid), false, 'the kill did run in the same pass');
+    assert.equal(endedObligationSettled(swept), false);
+    const settled = await settleEndedRescueJob({ ...base,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'clean' }) }, heldPass.job.id);
+    assert.equal(settled.kind, 'durable-completion', 'the completed-clean sweep settles on a later pass');
+    assert.equal(endedObligationSettled(settled), true);
+    // (b) FREE lease: the dead-root sweep is the only evidence this pass ran.
+    const freePass = await markedRunnerRescue(fixture, { status: 'failed', agent: 'invariant-free', workspace, workerLeaseId: 'b'.repeat(64) });
+    const freeSwept = await settleEndedRescueJob({ ...base,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'swept', killed: [424_243], pending: [] }) }, freePass.job.id);
+    assert.equal(freeSwept.kind, 'runner-cleanup-pending', 'a freed lease settles only through the sweep too');
+    const freeSettled = await settleEndedRescueJob({ ...base,
+      sweepDeadRootDescendants: () => Promise.resolve({ kind: 'clean' }) }, freePass.job.id);
+    assert.equal(freeSettled.kind, 'terminal', 'the free-lease pass settles through its completed-clean sweep');
+    assert.equal(endedObligationSettled(freeSettled), true);
+  } finally { try { process.kill(-heldPass.holderChild.pid, 'SIGKILL'); } catch { /* fixture teardown */ } }
   await cleanupRecoveryFixture(fixture);
 });

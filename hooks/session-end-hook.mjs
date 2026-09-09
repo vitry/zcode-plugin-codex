@@ -17,6 +17,7 @@ import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../s
 import { cleanupSession, resolveRecordedSessionStart } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 import { remoteRemainingBudgetFor, sessionEndBudgetMs } from './lib/session-end-budget.mjs';
+import { runSessionEndDischargeFence } from './lib/session-end-fence.mjs';
 
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 const ownerReleaseRequestTimeoutMs = process.platform === 'win32' ? 1_000 : 500;
@@ -131,6 +132,9 @@ try {
     allDelegated = false;
     for (const workspace of knownWorkspaces) releaseUnsafeWorkspaces.add(workspace);
   }
+  const createClient = (workspace) => (job, derivedOwnerId) => createExistingManagedZCodeClient({
+    dataRoot, workspace, ownerId: derivedOwnerId, requestTimeoutMs: existingBrokerRequestTimeoutMs,
+  });
   try {
     // (4) Discover this epoch's writable Rescue obligations across the known
     // workspaces under a bounded lock budget. An unproven epoch (no receipt)
@@ -146,9 +150,6 @@ try {
     // dependency. Writable Rescue obligations settle through the Reconciler; active
     // read-only detached runs settle through the existing recovery primitives and a
     // recorded-worker-tree termination, never the writable binding interface.
-    const createClient = (workspace) => (job, derivedOwnerId) => createExistingManagedZCodeClient({
-      dataRoot, workspace, ownerId: derivedOwnerId, requestTimeoutMs: existingBrokerRequestTimeoutMs,
-    });
     let scheduledObligations = 0;
     await runBounded(obligations, 2, async (obligation) => {
       scheduledObligations += 1;
@@ -204,6 +205,43 @@ try {
     // scheduled received neither a terminal winner nor a stop intent, so the
     // receipt must stay pending as the durable compensation authority.
     if (scheduledObligations < obligations.length) allDelegated = false;
+    // (5b) The obligation discharge fence: a final re-scan BEFORE the broker
+    // owner release below. An obligation that raced stage (5) is delegated
+    // here, so settlement never claims more than the durable state proves
+    // (the narrow scan-to-settle window, and the equivalent resume-side
+    // window, is closed by the reservation-side epoch fence). The ORDER is
+    // load-bearing under the settlement invariant: a terminal record with a
+    // marked runner claim discharges ONLY behind a duty whose descendant
+    // sweep completed clean, and that sweep resolves its identity-matched
+    // exclusions from the durable broker identities — which the owner
+    // release below RETIRES (the released broker fast-idle-closes and
+    // removes its identity.json). A fence that ran after the release could
+    // never prove a walk, stranding the receipt pending with no retry path
+    // inside this hook; running it first lets the same pass re-run the
+    // bounded local duty while the exclusion evidence still exists. A duty
+    // that still cannot finish keeps the receipt pending AND defers this
+    // workspace's owner release (the surviving obligation's durable guard
+    // is release-unsafe evidence, exactly like a stage-(5) retention). A
+    // failure of the scan ITSELF (thrown error, lock contention, or the
+    // fence slice's timeout) is broader: the affected workspace is unknown,
+    // so EVERY known workspace's owner release defers for this pass — only
+    // a scan that COMPLETED (even empty) lets stage (6) release.
+    if (receipt !== null && allDelegated && !budgetExhausted()) {
+      // The fence loop lives in ./lib/session-end-fence.mjs under the shared
+      // hookDeadline: it stops at exhaustion (an unprocessed obligation keeps
+      // its workspace release-unsafe and the receipt pending for the next
+      // pass), mints no per-obligation deadline beyond the shared bound, and
+      // defers EVERY known workspace's owner release when the scan ITSELF
+      // fails — only a scan that COMPLETED (even empty) lets stage (6)
+      // release.
+      const fence = await runSessionEndDischargeFence({
+        store, dataRoot, knownWorkspaces, ownerSessionId,
+        epoch: receipt.epoch, endedAt: receipt.endedAt, hookDeadline, createClient,
+      });
+      for (const workspace of fence.deferredWorkspaces) releaseUnsafeWorkspaces.add(workspace);
+      if (fence.failedScan === true) process.stderr.write(`ZCode SessionEnd settlement fence deferred: ${fence.error?.code ?? 'UNKNOWN'} (all owner releases deferred this pass)\n`);
+      if (!fence.clean) allDelegated = false;
+    }
     // (6) A workspace still hosting an ACTIVE job from a different (newer) epoch
     // keeps its broker owner: releasing this ending owner would stop the post-resume
     // turn, which this old receipt has no authority over. Discovery already saw these
@@ -261,39 +299,12 @@ try {
   } finally { clearTimeout(remoteTimer); }
 
   // (8) Settle the receipt only when every exact obligation is terminal or durably
-  // delegated; otherwise leave it pending as the durable compensation authority.
-  // Pending receipts are consumed by the Task 6 prompt-time reconciliation
-  // (UserPromptSubmit retries matching pending receipts through
-  // lifecycle.listPendingReceipts/readReceipt before new Rescue work — design
-  // 'Resume after SessionEnd'), so an unsettled boundary is never orphaned.
-  if (receipt !== null && allDelegated && !budgetExhausted()) {
-    // Final re-scan before settlement: an obligation that raced stage (5) is
-    // delegated here, so settlement never claims more than the durable state
-    // proves. The narrow scan-to-settle window (and the equivalent resume-side
-    // window) is closed by Task 8's atomic reservation-side epoch fence.
-    let fenceClean = true;
-    try {
-      const late = await discoverSessionEndObligations({
-        store, dataRoot, knownWorkspaces, ownerSessionId,
-        epoch: receipt.epoch, endedAt: receipt.endedAt,
-        signal: AbortSignal.timeout(Math.max(1, Math.min(250, hookDeadline - Date.now()))),
-        timeoutMs: Math.max(1, Math.min(250, hookDeadline - Date.now())),
-      });
-      for (const obligation of late) {
-        try {
-          const delegated = await delegateEndedStopIntent({ store, dataRoot, workspace: obligation.workspace, ownerSessionId, epoch: receipt.epoch, endedAt: receipt.endedAt, signal: AbortSignal.timeout(Math.max(1, Math.min(250, hookDeadline - Date.now()))), timeoutMs: Math.max(1, Math.min(250, hookDeadline - Date.now())) }, obligation.job.id);
-          // Delegation is only discharge evidence when the job actually reached
-          // cancelling (with the exact intent) or a terminal: a QUEUED job is
-          // returned unchanged, and settlement must stay pending for it.
-          if (!endedObligationSettled({ kind: null, job: delegated })) fenceClean = false;
-        } catch { fenceClean = false; }
-      }
-    } catch (error) {
-      fenceClean = false;
-      process.stderr.write(`ZCode SessionEnd settlement fence deferred: ${error?.code ?? 'UNKNOWN'}\n`);
-    }
-    if (!fenceClean) allDelegated = false;
-  }
+  // delegated (stage 5 plus the 5b discharge fence above); otherwise leave it
+  // pending as the durable compensation authority. Pending receipts are consumed
+  // by the prompt-time reconciliation (UserPromptSubmit retries matching pending
+  // receipts through lifecycle.listPendingReceipts/readReceipt before new Rescue
+  // work — design 'Resume after SessionEnd'), so an unsettled boundary is never
+  // orphaned.
   if (receipt !== null && allDelegated) {
     try {
       await lifecycle.settleReceipt(receipt.epoch, receipt.updatedAt, { signal: stageSignal(receiptSettlementBudgetMs) });

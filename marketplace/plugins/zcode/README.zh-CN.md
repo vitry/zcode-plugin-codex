@@ -84,7 +84,7 @@ ZCode 支持时，child 会订阅 online conversation progress，并用结构化
 
 仅在这个被选中的 Rescue 子 agent 内，精确去除首尾空白后的 `zcode status`、`$zcode:status` 和 `/zcode:status` 才会检查只绑定到该子 agent 的 job。这个 bound status sidecar 不接受 job ID 或选项，不能选择其他 job，也绝不会启动或替换原始前台执行。上表中的公开 `$zcode:status` 仍用于普通 durable job 的 owner-scoped 控制。
 
-后台 Rescue 由 host 托管且 session-bound：显式 `--background` 让 Rescue child 作为同一个 companion run 保持挂靠在所属 Codex host 上，新 Rescue 不再启动 detached worker。child 会持续观察 ZCode turn 直到持久终态，先写入 result artifact，再在 host session 仍活跃时送达一条简洁的完成通知；完整输出仍通过 `$zcode:result` 获取。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
+后台 Rescue 由 host 托管且 session-bound：显式 `--background` 会持久预留一个精确 job，启动一个 session-bound 的 detached runner，并立即返回 queued 确认；Rescue child 不再观察运行到终态就退出，新的 Rescue 也绝不复用旧 detached worker 启动路径。queued 仅表示已被接受等待执行：它不证明 runner 已 claim 或已开始运行，queued 确认也绝不会最终化完成标记。runner 会先发布 result artifact 与持久终态 winner；`$zcode:status` 与 `$zcode:result` 仍是权威的拉取接口，未读的终态结果会在下一次 UserPromptSubmit 依据现有单次送达 claim 通告，完整输出仍通过 `$zcode:result` 获取。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 
 每个 session-bound run 都始终处于所属 session 的授权之下。`$zcode:status` 与 `$zcode:result` 会暴露 `resumable`：当已停止、失败或已取消 job 的精确 binding 仍可恢复时为 true；确认的取消会携带其 Stop Cause：`user`、`session-end` 或 `host-coordination-loss`。中断尚未被证明时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效；在停止结算前已自然完成的运行保持 `succeeded`。
 

@@ -16,8 +16,9 @@ import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
-import { createHostLifecycleStore } from '../helpers/host-lifecycle-store.mjs';
+import { createHostLifecycleStore, scaledAbortBudget } from '../helpers/host-lifecycle-store.mjs';
 import { runChild } from '../helpers/run-child.mjs';
+import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -215,7 +216,16 @@ function identitySessionLockDir(dataRootPath, sessionId) {
 async function waitForReceipt(lifecycle, epoch, timeoutMs = 2_500) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const receipt = await lifecycle.readReceipt(epoch);
+    // The poll legitimately races the hook's own in-flight atomic publication
+    // (temp write -> rename -> chmod): a read whose stability window spans the
+    // post-rename chmod observes the receipt's ctime move and fail-closes
+    // PRIVATE_PATH_UNSAFE — the storage boundary working exactly as designed
+    // against metadata movement mid-read. That is a transient mid-publish
+    // read, not a durability verdict, so it retries inside the same budget.
+    const receipt = await lifecycle.readReceipt(epoch).catch((error) => {
+      if (error?.code === 'PRIVATE_PATH_UNSAFE') return null;
+      throw error;
+    });
     if (receipt) return receipt;
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
@@ -907,9 +917,36 @@ test('a SessionEnd receipt published inside the job-state lock window fences the
 // --- Task 7: SubagentStop Rescue child coordination-loss policy ---
 
 /** Run the REAL SubagentStart then SubagentStop hooks for one stopped Rescue child. */
-async function runSubagentHooks(ctx, { sessionId, cwd, turn, child }) {
+async function runSubagentHooks(ctx, descriptor) {
+  const { sessionId, cwd, turn, child } = descriptor;
   await hook(ctx, 'subagent-hook.mjs', { session_id: sessionId, turn_id: `${turn}-child`, cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: child, agent_type: 'zcode-rescue' });
+  await runSubagentStopHook(ctx, descriptor);
+}
+
+/** One real SubagentStop pass for a stopped Rescue child — the exact stop-event
+ * input `runSubagentHooks` submits, reusable as a convergence re-drive. */
+async function runSubagentStopHook(ctx, { sessionId, cwd, turn, child }) {
   await hook(ctx, 'subagent-hook.mjs', { session_id: sessionId, turn_id: `${turn}-child`, cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: child, agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null });
+}
+
+/** Bounded convergence for the advisory SubagentStop settlement. The whole
+ * settlement stage is deferral-safe by design: a pass whose single shared wall
+ * deadline elapses on a loaded runner (notably shared Windows CI) exits ZERO
+ * having deferred, leaving the durable stop to a later reconciliation pass —
+ * in production the SessionEnd receipt and the pending parent turn drive it.
+ * The harness follows the suite's convergence-driver idiom instead of trusting
+ * wall-clock luck for the terminal assertion: after every unconverged read it
+ * re-runs the SAME stop pass — each real hook process brings its own fresh
+ * budget — and only fails after the full scaled window. */
+async function convergeStoppedRescueJob(ctx, descriptor, readStored, message) {
+  const deadline = Date.now() + scaleTestTimeout(10_000);
+  for (;;) {
+    const stored = await readStored();
+    if (['cancelling', 'cancelled', 'failed'].includes(stored.status)) return stored;
+    if (Date.now() > deadline) assert.fail(`${message} (was ${stored.status})`);
+    await runSubagentStopHook(ctx, descriptor);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /** The caller turn + running Host-owned Rescue + real Subagent hooks for one placement. */
@@ -954,10 +991,14 @@ test('SubagentStop selects a matching-epoch receipt session-end stop over coordi
   const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'receipt-fg-owner', epoch, agent: 'receipt-fg-child', remote: 'zs-receipt-fg', placement: 'foreground' });
   const startedAt = (await resolveRecordedSessionStart(ctx.dataRoot, canonicalWorkspace, 'receipt-fg-owner')).startedAt;
   const lifecycle = createHostLifecycleStore({ dataRoot: ctx.dataRoot });
-  await lifecycle.publishSessionEnd({ sessionId: 'receipt-fg-owner', sessionStartedAt: startedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(250) });
-  await runSubagentHooks(ctx, { sessionId: 'receipt-fg-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'receipt-fg-child' });
-  const fgStored = await store.readJob(canonicalWorkspace, job.id);
-  assert.ok(['cancelling', 'cancelled', 'failed'].includes(fgStored.status), `the matching receipt settles or delegates the foreground job (was ${fgStored.status})`);
+  // Publishing a receipt is real bounded filesystem work (layout, lock, atomic
+  // rename, chmod, fsync): a fixed 250ms caller budget is routinely exceeded on
+  // a loaded Windows runner, so the harness pins the suite-standard scaled
+  // budget instead of the production floor.
+  await lifecycle.publishSessionEnd({ sessionId: 'receipt-fg-owner', sessionStartedAt: startedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(scaledAbortBudget()) });
+  const fgDescriptor = { sessionId: 'receipt-fg-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'receipt-fg-child' };
+  await runSubagentHooks(ctx, fgDescriptor);
+  const fgStored = await convergeStoppedRescueJob(ctx, fgDescriptor, () => store.readJob(canonicalWorkspace, job.id), 'the matching receipt settles or delegates the foreground job');
   assert.equal(fgStored.stopIntent?.cause, 'session-end', 'a matching-epoch receipt always selects the session-end stop, never coordination loss');
 
   const backgroundDir = join(ctx.workspace, '..', 'receipt-bg-workspace');
@@ -967,10 +1008,10 @@ test('SubagentStop selects a matching-epoch receipt session-end stop over coordi
   await beginRescueTurn(ctx, 'receipt-bg-owner', bgWorkspace);
   const bgJob = await hostOwnedRunningJob(ctx, { workspace: bg.canonicalWorkspace, ownerSessionId: 'receipt-bg-owner', epoch: bg.epoch, agent: 'receipt-bg-child', remote: 'zs-receipt-bg', placement: 'background' });
   const bgStartedAt = (await resolveRecordedSessionStart(ctx.dataRoot, bgWorkspace, 'receipt-bg-owner')).startedAt;
-  await lifecycle.publishSessionEnd({ sessionId: 'receipt-bg-owner', sessionStartedAt: bgStartedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [bgWorkspace] }, { signal: AbortSignal.timeout(250) });
-  await runSubagentHooks(ctx, { sessionId: 'receipt-bg-owner', cwd: bgWorkspace, turn: 'turn', child: 'receipt-bg-child' });
-  const bgStored = await bgJob.store.readJob(bg.canonicalWorkspace, bgJob.job.id);
-  assert.ok(['cancelling', 'cancelled', 'failed'].includes(bgStored.status), `a matching receipt stops even a background Rescue (was ${bgStored.status})`);
+  await lifecycle.publishSessionEnd({ sessionId: 'receipt-bg-owner', sessionStartedAt: bgStartedAt, endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [bgWorkspace] }, { signal: AbortSignal.timeout(scaledAbortBudget()) });
+  const bgDescriptor = { sessionId: 'receipt-bg-owner', cwd: bgWorkspace, turn: 'turn', child: 'receipt-bg-child' };
+  await runSubagentHooks(ctx, bgDescriptor);
+  const bgStored = await convergeStoppedRescueJob(ctx, bgDescriptor, () => bgJob.store.readJob(bg.canonicalWorkspace, bgJob.job.id), 'a matching receipt stops even a background Rescue');
   assert.equal(bgStored.stopIntent?.cause, 'session-end');
 });
 
@@ -983,7 +1024,11 @@ test('an old receipt grants SubagentStop no session-end authority over the coord
   const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'old-receipt-owner');
   await beginRescueTurn(ctx, 'old-receipt-owner', canonicalWorkspace);
   const { store, job } = await hostOwnedRunningJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'old-receipt-owner', epoch, agent: 'old-receipt-child', remote: 'zs-old-receipt', placement: 'background' });
-  await lifecycle.publishSessionEnd({ sessionId: 'old-receipt-owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(250) });
+  // The suite-standard scaled publication budget: a fixed 250ms caller signal
+  // aborts this real filesystem publication mid-rename on loaded Windows CI
+  // runners ("The operation was aborted due to timeout"), so the superseded
+  // receipt never becomes durable and the policy test measures abort noise.
+  await lifecycle.publishSessionEnd({ sessionId: 'old-receipt-owner', sessionStartedAt: '2026-01-01T00:00:00.000Z', endedAt: new Date().toISOString(), origin: 'session-end-hook', workspaceHints: [canonicalWorkspace] }, { signal: AbortSignal.timeout(scaledAbortBudget()) });
   await runSubagentHooks(ctx, { sessionId: 'old-receipt-owner', cwd: canonicalWorkspace, turn: 'turn', child: 'old-receipt-child' });
   const bgStored = await store.readJob(canonicalWorkspace, job.id);
   assert.equal(bgStored.status, 'running', 'an old receipt never authorizes a stop over the background Rescue');
@@ -1065,25 +1110,58 @@ async function hostOwnedRunnerJob(ctx, { workspace, ownerSessionId, epoch, agent
   const workerLeaseId = holderLeaseId ?? reserved.job.id;
   // A detached, self-grouped child that holds the lease with an explicitly
   // referenced keep-alive timer, so "alive" and "holding" are one observable
-  // state: only an authorized process-tree termination can end it.
+  // state: only an authorized process-tree termination can end it. The holder
+  // is spawned through an IMMEDIATELY-EXITING intermediate executor exactly
+  // the way production detaches a true background runner from its short-lived
+  // host child: the holder is reparented to init, which reaps its zombie the
+  // moment it dies, so the POSIX descendant sweep can observe the gone group
+  // inside the settlement pass (a live parent would hold the zombie unreaped
+  // and the zombie would keep the group probe alive past the pass).
   const moduleUrl = new URL('../../scripts/lib/recovery.mjs', import.meta.url).href;
-  const holder = `const { withWorkerLease } = await import(${JSON.stringify(moduleUrl)}); setInterval(() => {}, 1 << 30);`
+  const pidFile = join(ctx.dataRoot, `holder-${reserved.job.id}.pid`);
+  const holderSource = `const { withWorkerLease } = await import(${JSON.stringify(moduleUrl)}); setInterval(() => {}, 1 << 30);`
     + ` await withWorkerLease({ dataRoot: ${JSON.stringify(ctx.dataRoot)}, workspace: ${JSON.stringify(workspace)}, jobId: ${JSON.stringify(reserved.job.id)}, workerLeaseId: ${JSON.stringify(workerLeaseId)} }, () => new Promise(() => {}));`;
-  const worker = spawn(process.execPath, ['--input-type=module', '-e', holder], { detached: true, stdio: 'ignore' });
-  await new Promise((resolve) => worker.once('spawn', resolve));
-  worker.unref();
+  const spawnerSource = `const { spawn } = await import('node:child_process');`
+    + ` const { writeFile } = await import('node:fs/promises');`
+    + ` const holder = spawn(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(holderSource)}], { detached: true, stdio: 'ignore' });`
+    + ` holder.unref();`
+    + ` await new Promise((resolve, reject) => { holder.once('spawn', resolve); holder.once('error', reject); });`
+    + ` await writeFile(${JSON.stringify(pidFile)}, String(holder.pid));`;
+  const spawner = spawn(process.execPath, ['--input-type=module', '-e', spawnerSource], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => {
+    spawner.once('exit', (code) => code === 0 ? resolve(undefined) : reject(new Error(`the holder spawner exited ${code}`)));
+    spawner.once('error', reject);
+  });
+  const holderPid = Number.parseInt(await readFile(pidFile, 'utf8'), 10);
   await waitFor(() => leaseLockHeld(ctx.dataRoot, workspace, reserved.job.id, workerLeaseId), 'the detached runner must acquire its worker lease');
-  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: worker.pid, workerLeaseId });
-  if (status === 'queued') return { store, job: claimed, workerLeaseId, holderPid: worker.pid };
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: holderPid, workerLeaseId });
+  if (status === 'queued') return { store, job: claimed, workerLeaseId, holderPid };
   let running = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(), zcodeSessionId: remote, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
   running = await store.transitionJob(workspace, running.id, ['running'], 'running', { inputId: `input-${agent}`, startRevision: 1, beforeMessageIds: [] });
-  return { store, job: running, workerLeaseId, holderPid: worker.pid };
+  return { store, job: running, workerLeaseId, holderPid };
+}
+
+/** Record one durable broker identity in the workspace so the settlement
+ * sweep's three-valued lookup RESOLVES under its held startup lock: a real
+ * rescue runner always runs its turn through a broker whose identity the
+ * workspace records, and an `absent` lookup is unproven for a descendant walk
+ * (the duty fails closed pending). The recorded pid is dead, so it excludes
+ * nothing on the Windows walk and is never consulted on the POSIX group
+ * check — only the resolved STATUS matters to the duty. */
+async function recordBrokerIdentity(dataRoot, workspace) {
+  const { writeBrokerIdentity } = await import('../../scripts/zcode-broker.mjs');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), {
+    endpoint: 'two-session-sweep-fixture-endpoint', pid: 111_000_002,
+    launch: { command: '/tools/node', args: ['broker.mjs', 'config.json'] },
+  });
 }
 
 test('SessionEnd terminates a claimed-queued marked runner tree and settles its receipt cancelled', async (t) => {
   const ctx = await fixture(t);
   const { epoch, canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'runner-queue-owner');
+  await recordBrokerIdentity(ctx.dataRoot, canonicalWorkspace);
   const { store, job, holderPid } = await hostOwnedRunnerJob(ctx, { workspace: canonicalWorkspace, ownerSessionId: 'runner-queue-owner', epoch, agent: 'runner-queue-child', remote: 'zs-runner-queue', placement: 'background', marked: true, status: 'queued' });
   t.after(() => { try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the pass */ } });
   assert.equal(isPidAlive(holderPid), true, 'the runner is alive before SessionEnd');
@@ -1092,6 +1170,57 @@ test('SessionEnd terminates a claimed-queued marked runner tree and settles its 
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 3_000, `the bounded SessionEnd must stay within the native budget (took ${elapsed}ms)`);
   assert.equal(ended.code, 0, ended.stderr);
+  if (process.platform === 'win32') {
+    // WINDOWS DEFERRED SETTLEMENT, DIRECT CONVERGENCE ACCEPTED: one hook pass
+    // (native 3s limit) fits the fail-fast recorded-pid kill but USUALLY not
+    // also the completed-clean descendant sweep (two bounded process-table
+    // snapshots), so the pass retains the queued record with its durable
+    // session-end stop intent and leaves the receipt pending. A warm or fast
+    // machine may settle the same pass directly — both outcomes satisfy the
+    // END contract — so the retained-state assertions run only while the
+    // record is still unconverged. Convergence then drives the DESIGNED
+    // post-SessionEnd compensation path: a same-ID resume re-records the
+    // session (new epoch), and each retry joins a real UserPromptSubmit pass
+    // (fail-fast at its native budget; it defers when the cold sweep cannot
+    // fit) with the NON-HOOK reconcile path — a real `status --wait` whose
+    // marked-runner duty runs at the Windows convergence budget with no
+    // native hook limit — until the sweep completes clean and the record
+    // converges exactly as the POSIX in-pass settlement does.
+    const retained = await store.readJob(canonicalWorkspace, job.id);
+    if (retained.status !== 'cancelled') {
+      assert.equal(retained.status, 'queued', `the Windows hook pass retains the claimed queued record; was ${retained.status}`);
+      assert.equal(retained.stopIntent?.cause, 'session-end', 'the durable stop decision is the retry authority');
+      const pendingReceipt = await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).readReceipt(epoch);
+      assert.equal(pendingReceipt?.state, 'pending', 'the unproven sweep keeps the receipt pending after the first Windows pass');
+    }
+    await child(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+      cwd: canonicalWorkspace, env: ctx.env, input: {
+        session_id: 'runner-queue-owner', cwd: canonicalWorkspace, hook_event_name: 'SessionStart',
+        transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume',
+      },
+    });
+    const convergeCaller = await createIdentityStore({ dataRoot: ctx.dataRoot }).createCallerContext({ sessionId: 'runner-queue-owner', turnId: 'runner-queue-converge', workspace: canonicalWorkspace, permissionMode: 'acceptEdits' });
+    const convergeDeadline = Date.now() + scaleTestTimeout(90_000);
+    for (;;) {
+      const converged = await store.readJob(canonicalWorkspace, job.id);
+      const receipt = await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).readReceipt(epoch);
+      if (converged.status === 'cancelled' && receipt?.state === 'settled') break;
+      if (Date.now() > convergeDeadline) assert.fail('the retained session-end stop must converge cancelled and discharge the receipt through bounded Windows passes (fail-fast prompt deferral plus the non-hook status driver)');
+      await child(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+        cwd: canonicalWorkspace, env: ctx.env, input: {
+          session_id: 'runner-queue-owner', cwd: canonicalWorkspace, hook_event_name: 'UserPromptSubmit',
+          transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'retry',
+        },
+      });
+      // The non-hook convergence driver: a real management `status --wait`
+      // whose reconcile passes carry the Windows duty budget. Its result is
+      // evidence, not an assertion — the loop's own break condition decides.
+      await runChild(process.execPath, [cli, 'status', job.id, '--wait', '--timeout-ms', '60000'], {
+        cwd: ctx.workspace, env: ctx.env, input: { callerContext: convergeCaller }, protectedInput: true, timeoutMs: scaleTestTimeout(90_000),
+      }).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
   const stored = await store.readJob(canonicalWorkspace, job.id);
   assert.equal(stored.status, 'cancelled', 'queued stopIntent -> kill -> acquire lease -> cancelled through the real hook');
   assert.equal(stored.stopCause, 'session-end');

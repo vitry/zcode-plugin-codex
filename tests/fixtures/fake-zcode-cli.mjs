@@ -181,6 +181,39 @@ async function record(message) {
   }
 }
 
+/**
+ * Cross-generation session persistence. The in-memory `sessions` map is
+ * per-process, but a real engine persists its sessions on disk: a FRESH
+ * engine instance (a new broker generation after a retirement or a
+ * SessionEnd) must be able to resume a session an EARLIER instance created
+ * and must report that session's true recorded workspace. Without the
+ * registry the fresh instance invents the session with its own cwd as the
+ * workspace — and on Windows the broker launches the engine with a tmpdir
+ * cwd (never the workspace), so the invented workspace fails the caller's
+ * exact session/workspace validation. Tests opt in by pointing
+ * FAKE_ZCODE_SESSION_REGISTRY at a file shared by every engine generation.
+ */
+async function recordedSessionWorkspace(sessionId) {
+  const registry = process.env.FAKE_ZCODE_SESSION_REGISTRY;
+  if (!registry) return undefined;
+  const contents = await readFile(registry, 'utf8').catch(() => '');
+  let workspacePath;
+  for (const line of contents.split('\n')) {
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry?.sessionId === sessionId && typeof entry.workspacePath === 'string' && entry.workspacePath) workspacePath = entry.workspacePath;
+    } catch { /* a torn concurrent append line is skippable; the last intact entry wins */ }
+  }
+  return workspacePath;
+}
+
+async function recordSessionWorkspace(sessionId, workspacePath) {
+  if (process.env.FAKE_ZCODE_SESSION_REGISTRY) {
+    await appendFile(process.env.FAKE_ZCODE_SESSION_REGISTRY, `${JSON.stringify({ sessionId, workspacePath })}\n`);
+  }
+}
+
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
@@ -362,10 +395,12 @@ function isUnsupportedRuntimePreferencesResponse(message, pending) {
     && typeof message.error.message === 'string';
 }
 
-function completeCreate(message, respond = send) {
+async function completeCreate(message, respond = send) {
   const p = message.params ?? {};
   const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
-  sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
+  const workspacePath = p.workspace?.workspacePath ?? '/repo';
+  sessions.set(sessionId, { sessionId, workspacePath, settings: settings(p.model ?? defaultModel), messages: [] });
+  await recordSessionWorkspace(sessionId, workspacePath);
   const result = snapshotForMethod('session/create', sessionId);
   if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
   if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
@@ -384,7 +419,7 @@ input.on('line', async (line) => {
   if (!message.method && pendingRuntimePreferencesCreate) {
     const pending = pendingRuntimePreferencesCreate;
     pendingRuntimePreferencesCreate = undefined;
-    if (isUnsupportedRuntimePreferencesResponse(message, pending)) completeCreate(pending.message);
+    if (isUnsupportedRuntimePreferencesResponse(message, pending)) await completeCreate(pending.message);
     else send({ id: pending.message.id, error: { code: -32098, message: 'invalid runtime preference response' } });
     return;
   }
@@ -424,8 +459,8 @@ input.on('line', async (line) => {
         send({ id: runtimePreferencesId, method: 'session/requestRuntimePreferences', params: { sessionId: 'session-1', scope: 'runtime-materialization' } });
         break;
       }
-      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentCreateResponse = completeCreate(message, () => {}); flushConcurrentCreateSubscribe(); }
-      else completeCreate(message);
+      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentCreateResponse = await completeCreate(message, () => {}); flushConcurrentCreateSubscribe(); }
+      else await completeCreate(message);
       break;
     }
     case 'session/send': {
@@ -626,13 +661,21 @@ input.on('line', async (line) => {
       if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') sessionProgressRecoveryCompleted.add(p.sessionId);
       break;
     }
-    case 'session/resume':
+    case 'session/resume': {
       resumeCount += 1;
       if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
-      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), settings: settings(), messages: [], ...(process.env.FAKE_ZCODE_COLD_RESUME_MODEL ? { runtimeMaterialized: false, coldResumeObserved: true } : {}) });
+      if (!sessions.has(p.sessionId)) {
+        // A session unknown to THIS engine generation is still resumable when
+        // an earlier generation recorded it: real engines persist sessions on
+        // disk, so the recorded workspace (not this process's launch cwd)
+        // becomes the resumed session's workspace.
+        const recordedWorkspace = await recordedSessionWorkspace(p.sessionId);
+        sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: recordedWorkspace ?? process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), settings: settings(), messages: [], ...(process.env.FAKE_ZCODE_COLD_RESUME_MODEL ? { runtimeMaterialized: false, coldResumeObserved: true } : {}) });
+      }
       else if (process.env.FAKE_ZCODE_COLD_RESUME_MODEL && sessions.get(p.sessionId).coldResumeObserved !== true) { sessions.get(p.sessionId).runtimeMaterialized = false; sessions.get(p.sessionId).coldResumeObserved = true; }
       send({ id: message.id, result: snapshotForMethod('session/resume', p.sessionId) });
       break;
+    }
     case 'session/list': {
       listCount += 1;
       const mode = await recoveryMode(); const listed = mode === 'missing' ? [] : [...sessions.values()];

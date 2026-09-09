@@ -86,7 +86,7 @@ test('real lifecycle fixtures reject duplicate, reordered, wrapped, and key-drif
     assert.throws(() => validateCodexContinuationLifecycleFixture(changed), CodexRescueEvidenceMismatchError);
   }
 });
-const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
+const backgroundPublicOutput = `Rescue job ${backgroundJobId} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.`;
 const executionCapability = 'qualification-capability-sentinel-private';
 
 test('legacy adoption qualification cannot mint retired preparation authority', async (t) => {

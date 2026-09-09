@@ -14,7 +14,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { isSafeIdentifier } from './lib/identifier.mjs';
-import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
+import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
@@ -166,9 +166,17 @@ export async function runCompanion(argv, runtime = {}) {
   // Management commands drive the same bounded prior-epoch retry (without the
   // hard block): terminalizing an old job through cancel/status recovery must
   // also settle that epoch's pending lifecycle receipt, or future Rescue work
-  // stays blocked behind an already-settled obligation.
+  // stays blocked behind an already-settled obligation. The retry's budget is
+  // PLATFORM-SPLIT for the same reason the marked-runner duty fallback is: a
+  // hook pass is bounded by its native limit (a UserPromptSubmit pass stays
+  // inside ten seconds), but THIS retry is the NON-HOOK convergence path — a
+  // status/cancel command carries no native hook limit, and a Windows receipt
+  // whose marked-runner sweep needs cold process-table snapshots can never
+  // discharge inside a flat 1.5s. Windows gets the duty's own convergence
+  // budget so the advertised remedy (status reconciles the stop) actually
+  // converges; POSIX keeps the historical 1.5s stage budget.
   if (typeof caller?.sessionId === 'string' && ['status', 'result', 'cancel'].includes(parsed.command)) {
-    try { await reconcilePriorEpochReceipts({ dataRoot, sessionId: caller.sessionId, workspace: cwd, signal: boundedObservationSignal(runtime), budgetMs: 1_500 }); }
+    try { await reconcilePriorEpochReceipts({ dataRoot, sessionId: caller.sessionId, workspace: cwd, signal: boundedObservationSignal(runtime), budgetMs: process.platform === 'win32' ? WINDOWS_RUNNER_DUTY_FALLBACK_MS : 1_500 }); }
     catch { /* status/result/cancel remain available even when the retry cannot run */ }
   }
   await reconcile();

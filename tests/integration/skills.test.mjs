@@ -20,9 +20,10 @@ import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { writeWorkspaceModelConfig } from '../../scripts/lib/workspace-config.mjs';
 import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
-import { recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
+import { claimNotifications, finalizeNotifications, peekUnreadJobs, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from '../fixtures/pr39-origin-route-compatibility.mjs';
 import { runChild } from '../helpers/run-child.mjs';
+import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -52,8 +53,12 @@ async function cleanupFixture(directory) {
   throw lastError;
 }
 
+// Every wait below is scaled by ZCODE_TEST_TIMEOUT_MULTIPLIER: the CI runs the
+// suite under load where real broker startup, detached runner spawn, and the
+// first engine round trip alone can consume several seconds, so raw
+// wall-clock windows flake on Windows long before any termination duty runs.
 async function waitUntil(predicate, timeoutMs, message) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + scaleTestTimeout(timeoutMs);
   while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); }
   assert.fail(message);
 }
@@ -64,6 +69,7 @@ async function workerLeaseAvailable(ctx, job) {
   catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; }
 }
 
+// The raw window is scaled ONCE inside waitUntil — callers pass unscaled values.
 async function waitForExactJobCleanup(ctx, store, jobId, timeoutMs = process.platform === 'win32' ? 30_000 : 5_000, cancel) {
   let latest;
   const settled = async () => { latest = await store.readJob(ctx.workspace, jobId); return ['succeeded', 'failed', 'cancelled'].includes(latest.status) && (!latest.workerLeaseId || await workerLeaseAvailable(ctx, latest)); };
@@ -1869,14 +1875,14 @@ test('direct background invocation keeps capabilities private and production own
   // Windows CI can be heavily contended while several independent fixtures
   // start brokers and native lock probes. Keep the worker bounded, but leave
   // enough room for that startup/lock contention before declaring it stuck.
-  const deadline = Date.now() + (process.platform === 'win32' ? 30_000 : 5_000);
+  const deadline = Date.now() + scaleTestTimeout(process.platform === 'win32' ? 30_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
   job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
   ctx.preserveEvidence = false;
 });
 
-test('named and generic Rescue children run background work attached while historical workers remain controllable', async (t) => {
+test('named and generic Rescue children enqueue true background work and return queued while the detached runner stays controllable', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA });
   const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached'); const record = join(ctx.directory, 'background-zcode.jsonl');
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
@@ -1887,45 +1893,82 @@ test('named and generic Rescue children run background work attached while histo
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
     try {
-      // Background Rescue executes ATTACHED in this same child (ADR 0018): the
-      // child keeps observing the run through its completion gate and returns
-      // only after the durable terminal winner exists.
-      const launchedPromise = invokePreparedRescue(ctx, parentId, childId, `${route} native child`, { execution: 'background', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' });
-      await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the fake peer did not reach its exact post-ack completion gate');
+      // True background (ADR 0021): the child durably reserves the job, spawns
+      // one detached session-bound runner, and EXITS after the queued
+      // acknowledgement — it never observes the run to terminal. The gate
+      // holds the runner's fake peer mid-execution after the accepted send.
+      const launched = await invokePreparedRescue(ctx, parentId, childId, `${route} native child`, { execution: 'background', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' });
+      assert.equal(launched.code, 0, `${launched.stderr}${launched.stdout}`);
+      assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
+      assert.equal(launched.internal, '');
+      assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+      await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the detached runner did not reach its exact post-ack completion gate');
       const [job] = await findNewJobs(store, ctx.workspace, baselineJobIds);
       assert.ok(job, `the ${route} child must reserve exactly one job`);
       assert.equal(job.executionOwner, 'host-child');
       assert.equal(job.hostPlacement, 'background');
+      assert.equal(job.rescueRunnerVersion, 1);
+      // The acknowledgement is the accepted-reservation snapshot only: queued
+      // text naming the pull interfaces, never a readiness or terminal claim.
+      assert.equal(launched.stdout, `Rescue job ${job.id} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.\n`);
+      const runnerClaimed = async () => (await store.readJob(ctx.workspace, job.id)).status === 'running';
+      await waitUntil(runnerClaimed, 5_000, `the detached runner never claimed the ${route} background job`);
       if (control === 'cancel') {
         const cancelled = await publicInvoke(ctx, ['cancel', job.id], callerContext);
         const cancelJob = await store.readJob(ctx.workspace, job.id); const callsAtCancel = await readFile(record, 'utf8').catch((error) => `record-read:${error?.code}`);
         const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel });
-        assert.equal(cancelled.code, 0, cancelEvidence); assert.equal(cancelled.json.job.status, 'cancelled');
-        // The attached child observes the exact remote stop like any foreground
-        // run: the interrupted turn surfaces the stop, while the durable winner
-        // stays the cancelled settlement published by the cancel election.
-        const launched = await launchedPromise;
-        assert.notEqual(launched.code, 0, `${launched.stderr}${launched.stdout}`);
-        assert.match(`${launched.stdout}${launched.stderr}`, /ZCODE_SESSION_STOPPED/u);
-        assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
-        assert.equal(launched.internal, '');
-        assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+        let cancelledJob;
+        if (cancelled.code === 0) {
+          cancelledJob = cancelled.json.job;
+        } else {
+          // A DEFERRED cancel is a legitimate bounded outcome on loaded CI: the
+          // election's marked-runner cleanup did not finish its proven
+          // descendant sweep in-pass, so the job stays `cancelling` with its
+          // persisted stop intent and the error's own remedy names the exact
+          // reconciliation command. Follow that remedy verbatim — a real
+          // `status --wait` drives the non-hook reconcile passes (the Windows
+          // convergence driver; on POSIX the same passes converge the guard)
+          // until the durable stop settles — then assert the converged END
+          // contract instead of demanding in-pass settlement.
+          assert.equal(cancelled.json?.error?.code, 'JOB_CANCEL_FAILED', cancelEvidence);
+          // The remedy wait needs a child window larger than the CLI wait
+          // itself (the default 30s child timeout would kill a legitimate
+          // multi-pass Windows reconciliation mid-convergence).
+          const waited = await runChild(process.execPath, [cli, 'status', job.id, '--wait', '--timeout-ms', process.platform === 'win32' ? '90000' : '30000'], {
+            cwd: ctx.workspace, env: ctx.env, input: { callerContext }, protectedInput: true, timeoutMs: scaleTestTimeout(120_000),
+          }).then((result) => ({ ...result, json: result.internal ? JSON.parse(result.internal) : null }));
+          assert.equal(waited.code, 0, `${waited.stderr}${waited.stdout}${waited.internal}`);
+          cancelledJob = waited.json.job;
+        }
+        assert.equal(cancelledJob.status, 'cancelled', cancelEvidence);
+        assert.equal(cancelledJob.resultArtifact, undefined);
         await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
         const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-        assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
+        assert.equal(calls.filter((call) => call.method === 'session/send').length, 1);
+        // An in-pass cancel runs exactly one remote stop; the deferred path's
+        // reconciliation may retry the stop while converging the retained
+        // intent, so only the never-resend invariant stays exact there.
+        if (cancelled.code === 0) assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1);
+        else assert.ok(calls.filter((call) => call.method === 'session/stop').length >= 1, cancelEvidence);
       } else {
         await writeFile(gate, 'release');
-        const launched = await launchedPromise;
-        assert.equal(launched.code, 0, `${launched.stderr}${launched.stdout}`);
-        assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke-prepared', 'rescue']);
-        assert.equal(launched.internal, '');
-        assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+        const finished = await waitForExactJobCleanup(ctx, store, job.id);
+        assert.equal(finished.status, 'succeeded', JSON.stringify(finished.error));
         const waited = await publicInvoke(ctx, ['status', job.id, '--wait', '--timeout-ms', '5000'], callerContext);
         assert.equal(waited.code, 0, waited.stderr); assert.equal(waited.json.job.status, 'succeeded');
         const result = await publicInvoke(ctx, ['result', job.id], callerContext);
         assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
         assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
       }
+      // PromptSubmit discovery after child exit: the queued acknowledgement
+      // never finalized a completion marker, so the terminal job is unread
+      // exactly once and the notification claim/finalize pair delivers it.
+      assert.deepEqual(await peekUnreadJobs(ctx.dataRoot, ctx.workspace, parentId), [{ id: job.id, status: control === 'cancel' ? 'cancelled' : 'succeeded' }]);
+      const claimed = await claimNotifications(ctx.dataRoot, ctx.workspace, parentId);
+      assert.deepEqual(claimed, [{ id: job.id, status: control === 'cancel' ? 'cancelled' : 'succeeded' }]);
+      await finalizeNotifications(ctx.dataRoot, ctx.workspace, parentId, claimed.map((delivered) => delivered.id));
+      assert.deepEqual(await peekUnreadJobs(ctx.dataRoot, ctx.workspace, parentId), []);
+      assert.deepEqual(await claimNotifications(ctx.dataRoot, ctx.workspace, parentId), [], 'a finalized notice must never re-announce');
       backgroundVerified = true;
     } finally {
       await writeFile(gate, 'release').catch(() => {});

@@ -510,8 +510,12 @@ test('release docs define Host-managed session-bound Rescue', () => {
     assert.match(source, /(?:placement|放置).{0,200}(?:task complexity|任务复杂度)/is);
     assert.match(source, /(?:explicit `?--wait`? (?:and|和|与|或) `?--background`?|显式 `?--wait`? (?:和|与|或) `?--background`?).{0,120}(?:authoritative|权威)/is);
     assert.match(source, /(?:Background Rescue is host-managed and session-bound|后台 Rescue 由 host 托管且 session-bound)/i);
-    assert.match(source, /(?:no detached plugin worker|不再启动 detached worker)/i);
-    assert.match(source, /(?:one concise completion notice|一条简洁的完成通知)/i);
+    // True-background contract (ADR 0021): the child exits after the queued
+    // acknowledgement, the legacy detached worker path stays retired, queued is
+    // accepted-only, and completion is pull plus PromptSubmit discovery.
+    assert.match(source, /(?:one session-bound detached runner|一个 session-bound 的 detached runner)/i);
+    assert.match(source, /(?:queued means accepted for execution only|queued 仅表示已被接受等待执行)/i);
+    assert.match(source, /(?:announced at the next UserPromptSubmit|下一次 UserPromptSubmit)/i);
     assert.match(source, /Stop Cause/);
     assert.match(source, /`user`.{0,80}`session-end`.{0,80}`host-coordination-loss`/is);
     assert.match(source, /cancelling/);
@@ -543,6 +547,44 @@ test('release docs define Host-managed session-bound Rescue', () => {
   assert.doesNotMatch(changelog, /controlled logout\/SessionEnd real qualification/);
   assert.match(changelog, /direct hook invocation[^\n]{0,200}outstanding manual release gate/is);
   assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
+test('ADR 0021 records the session-bound runner supersession with exact cross-links', () => {
+  // Contract: the true-background design supersedes ONLY the conflicting ADR
+  // 0017/0018 clauses; every other decision, and ADRs 0019/0020 in full, stay
+  // cross-linked and in force.
+  const adr = read('docs/adr/0021-run-rescue-background-in-a-session-bound-runner.md');
+  assert.match(adr, /^---\nstatus: accepted\nsupersedes: ADR-0017 \(live-notice-primary completion for true-background Rescue\); ADR-0018 \(prohibition on detached normal Rescue and the requirement that a background Rescue Child observe until terminal\)\n---/);
+  assert.match(adr, /session-bound Detached Rescue Runner/);
+  assert.match(adr, /Foreground Rescue remains attached/);
+  assert.match(adr, /Queued is accepted-only/);
+  assert.match(adr, /never finalizes a completion marker/);
+  assert.match(adr, /Completion uses pull and PromptSubmit/);
+  assert.match(adr, /delivery claims prevent two concurrent deliveries/);
+  assert.match(adr, /before marker finalization remains retryable/);
+  assert.match(adr, /exactly-once/);
+  assert.match(adr, /one ledger/);
+  assert.match(adr, /Rescue Lifecycle Reconciler of ADR 0019/);
+  assert.match(adr, /ADR 0020's exact process-tree termination/);
+  assert.match(adr, /descendant enumeration with broker-subtree exclusion/);
+  assert.match(adr, /fails closed to terminating only the recorded runner PID/);
+  assert.match(adr, /taskkill \/T/);
+  assert.match(adr, /never signals a PID whose worker lease is free/);
+  assert.match(adr, /release condition and are pending until a native run exists/);
+  const completionAdr = read('docs/adr/0017-deliver-background-completion-through-the-host.md');
+  assert.match(completionAdr, /^---\nstatus: accepted\n---/);
+  assert.match(completionAdr, /ADR 0021\]\(0021-run-rescue-background-in-a-session-bound-runner\.md\) supersedes the live-notice-primary rule above for true-background Rescue only/);
+  assert.match(completionAdr, /durable single-delivery rules[\s\S]+remain in force/);
+  const hostManagedAdr = read('docs/adr/0018-use-host-managed-session-bound-execution.md');
+  assert.match(hostManagedAdr, /^---\nstatus: accepted\n---/);
+  assert.match(hostManagedAdr, /ADR 0021\]\(0021-run-rescue-background-in-a-session-bound-runner\.md\) supersedes two clauses of the preceding paragraph for background Rescue placement/);
+  assert.match(hostManagedAdr, /Every other decision of this ADR is preserved/);
+  assert.match(read('docs/adr/0019-concentrate-rescue-lifecycle-in-a-deep-module.md'), /^---\nstatus: accepted\n---/);
+  assert.match(read('docs/adr/0020-keep-read-only-background-runs-detached-and-session-bound.md'), /^---\nstatus: accepted\n---/);
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /ADR 0021/);
+  assert.match(changelog, /queued is accepted-only/i);
+  assert.match(changelog, /broker-subtree exclusion/);
 });
 
 test('marketplace catalog and publisher describe an installable vitry snapshot', () => {

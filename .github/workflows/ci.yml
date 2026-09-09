@@ -38,13 +38,22 @@ jobs:
       - name: Production lockfile native binding smoke
         shell: bash
         run: |
-          # Windows test brokers intentionally retain their process/native
-          # addon for the documented 30-second idle window. If npm's cleanup
-          # races that window, retry once after it has elapsed.
-          if ! npm ci --omit=dev; then
-            if [[ "$RUNNER_OS" != "Windows" ]]; then exit 1; fi
-            echo "npm ci raced an idle Windows broker; retrying after 35 seconds"
-            sleep 35
-            npm ci --omit=dev
-          fi
+          # The test suite spawns real fake-ZCode broker daemons from this
+          # checkout (node <repo>/scripts/zcode-broker.mjs), and every daemon
+          # loads the repo's node_modules/fs-native-extensions .node via
+          # scripts/lib/fs.mjs. A broker whose registered sessions/owners never
+          # settle never fires its idle shutdown, so it outlives the whole job
+          # (run 34364385782: both Windows jobs still held the .node past the
+          # old 35s retry and post-job cleanup terminated 3 orphan node
+          # processes). Windows forbids unlinking a loaded module, so an
+          # in-repo `npm ci` — which unlinks the repo's node_modules — EPERMs
+          # there no matter how long it waits. The smoke therefore runs in a
+          # throwaway export of the same commit (git archive, so no ref
+          # reachability questions on detached PR merge checkouts): it verifies
+          # the exact committed npm-shrinkwrap.json, installs prod-only from
+          # scratch, and no step ever unlinks the repo's node_modules.
+          smoke=$(mktemp -d)
+          git archive "$GITHUB_SHA" | tar -x -C "$smoke"
+          cd "$smoke"
+          npm ci --omit=dev
           node -e "const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),lock=require('fs-native-extensions');const dir=fs.mkdtempSync(path.join(os.tmpdir(),'zcode-lock-'));const file=fs.openSync(path.join(dir,'smoke.lock'),'a+');if(!lock.tryLock(file))throw new Error('native lock unavailable');lock.unlock(file);fs.closeSync(file);fs.rmSync(dir,{recursive:true});"

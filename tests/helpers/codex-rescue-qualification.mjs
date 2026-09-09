@@ -1318,7 +1318,11 @@ function parseCapturedHostResult(output) {
 export function qualifyCodexRescueBackgroundEvidence(input, options) {
   const jobId = boundedString(options?.expectedJobId);
   if (!jobId || !/^[a-f0-9]{64}$/u.test(jobId)) mismatch('background-job-id', 'Background qualification requires one exact canonical queued job ID.');
-  const publicOutput = `Reserved background job ${jobId}.`;
+  // True-background contract (ADR 0021): the linked child command returns the
+  // bounded queued acknowledgement — an accepted-reservation snapshot naming
+  // the pull interfaces — and exits; it never carries task text, a readiness
+  // claim, or the terminal result.
+  const publicOutput = `Rescue job ${jobId} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.`;
   const publicLogs = options?.publicLogs === undefined ? [] : boundedArray(options.publicLogs, 64, 'background-public-logs');
   if (publicLogs.some((entry) => boundedString(entry) === undefined)) mismatch('background-public-logs', 'Background public logs exceed their count or text bound.');
   const capability = boundedString(options?.privateExecutionCapability);
@@ -2441,8 +2445,14 @@ function assertTerminalSentinel(output, sentinel) {
   const text = terminalOutputText(output, 'child-output-mismatch');
   const lines = text.split('\n');
   if (lines.at(-1) === '') lines.pop();
-  const occurrences = output.flatMap((item) => item.text.split('\n')).filter((line) => line === sentinel).length;
-  if (lines.at(-1) !== sentinel || occurrences !== 1) {
+  // The sentinel may be multi-line (the true-background queued acknowledgement
+  // is two lines): its complete line sequence must terminate the stdout, and
+  // the full sentinel text must occur exactly once across the structured items.
+  const sentinelLines = sentinel.split('\n');
+  const terminalMatch = lines.length >= sentinelLines.length
+    && sentinelLines.every((line, index) => lines[lines.length - sentinelLines.length + index] === line);
+  const occurrences = output.reduce((total, item) => total + (typeof item?.text === 'string' ? item.text.split(sentinel).length - 1 : 0), 0);
+  if (!terminalMatch || occurrences !== 1) {
     mismatch('child-output-mismatch', 'The unique public sentinel is not the terminal child stdout line.');
   }
 }

@@ -250,6 +250,7 @@ async function settleOutcome(input, createClient, ownerSessionId = 'owner-a') {
     includeSettlementEvidence: true,
     ...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
     ...(input.terminateProcessTree === undefined ? {} : { terminateProcessTree: input.terminateProcessTree }),
+    ...(input.sweepDeadRootDescendants === undefined ? {} : { sweepDeadRootDescendants: input.sweepDeadRootDescendants }),
   });
 }
 
@@ -1008,25 +1009,42 @@ async function markedQueuedRunner(input, agent, childPid = 999_999_999) {
   return { job: claimed, workerLeaseId: worker.workerLeaseId };
 }
 
+/** Record one durable broker identity in the workspace so the sweep's
+ * WINDOWS-path lookup RESOLVES (complete, signature-bearing identity set):
+ * the recorded pid is dead, so the walk excludes nothing — only the resolved
+ * STATUS matters to the duty. (The POSIX group sweep never consults the
+ * lookup at all; the identity is recorded to keep the production shape.) */
+async function recordBrokerIdentity(dataRoot, workspace) {
+  const { writeBrokerIdentity } = await import('../scripts/zcode-broker.mjs');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), {
+    endpoint: 'session-end-sweep-fixture-endpoint', pid: 111_000_001,
+    launch: { command: '/tools/node', args: ['broker.mjs', 'config.json'] },
+  });
+}
+
 test('a marked queued stop converges kill -> lease -> cancelled and stays pending until settled', async () => {
   const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
   const { job, workerLeaseId } = await markedQueuedRunner(input, 'pending-queue-child');
   /** @type {number[]} */ const kills = [];
   const terminate = async (/** @type {number} */ pid) => { kills.push(pid); };
   const noClient = async () => { throw new Error('a queued reservation has no remote session'); };
   const first = await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId },
-    () => settleOutcome({ ...input, terminateProcessTree: terminate }, noClient));
+    () => settleOutcome({ ...input, terminateProcessTree: terminate,
+      sweepDeadRootDescendants: async () => ({ kind: 'swept', killed: [424_242], pending: [] }) }, noClient));
   assert.deepEqual(kills, [999_999_999], 'the durable queued stop intent drives the identity-proven local termination');
-  assert.equal(first.kind, 'retained-writable-guard', 'the settlement defers while the wedge is still holding its lease');
+  assert.equal(first.kind, 'retained-writable-guard', 'the settlement defers while the duty is unproven (held lease, sweep found survivors)');
   const queued = await input.store.readJob(input.workspace, job.id);
   assert.equal(queued.status, 'queued');
   assert.equal(queued.stopIntent?.cause, 'session-end');
   assert.equal(endedObligationSettled(first), false, 'a queued stop intent does not discharge a receipt: it stays pending until settled');
-  const second = await settleOutcome({ ...input, terminateProcessTree: terminate }, noClient);
+  const second = await settleOutcome({ ...input, terminateProcessTree: terminate,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }) }, noClient);
   assert.equal(second.kind, 'confirmed-cancellation');
   assert.equal(second.job.status, 'cancelled');
   assert.equal(second.job.stopCause, 'session-end');
-  assert.deepEqual(kills, [999_999_999], 'the free lease on the retry pass is never signaled again (PID-reuse guard)');
+  assert.deepEqual(kills, [999_999_999], 'the free lease on the retry pass is never signaled again (PID-reuse guard); the completed-clean sweep settles');
   assert.equal(endedObligationSettled(second), true, 'only the settled terminal discharges the receipt');
   const released = await input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'other-owner', ownerTurnId: 'x', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' } });
@@ -1051,11 +1069,13 @@ test('a delegated cancelling marked job discharges its receipt yet keeps blockin
 // ---------------------------------------------------------------------------
 // The SessionEnd remote stage must never draw from the final slice of the
 // shared hook deadline: remoteRemainingBudgetFor pins the cap at
-// (deadline − 750ms local-termination reserve − now), so a remote stage that
+// (deadline − local-termination reserve − now), so a remote stage that
 // spends its ENTIRE capped budget still leaves exactly the reserve for the
-// marked-runner local termination and the remaining cleanup. The expectations
-// below are literal constants on purpose — deriving them from the imported
-// constants would let a reserve regression pass silently.
+// marked-runner local termination and the remaining cleanup. The reserve is
+// platform-split (750ms POSIX, 1500ms Windows — see localTerminationReserveFor),
+// so the pins below pass the platform EXPLICITLY: the POSIX expectations are
+// literal constants on purpose — deriving them from the imported constants
+// would let a reserve regression pass silently.
 // ---------------------------------------------------------------------------
 
 test('the remote stage budget caps at the deadline minus the 750ms local-termination reserve', async () => {
@@ -1064,19 +1084,181 @@ test('the remote stage budget caps at the deadline minus the 750ms local-termina
   const deadline = start + 2_750; // sessionEndBudgetMs
   // Early passes are capped by the remote stage budget alone (1750ms): the
   // reserve is not yet binding while fewer than 250ms have been spent.
-  assert.equal(remoteRemainingBudgetFor(deadline, start), 1_750);
-  assert.equal(remoteRemainingBudgetFor(deadline, start + 250), 1_750);
+  assert.equal(remoteRemainingBudgetFor(deadline, start, 'linux'), 1_750);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 250, 'linux'), 1_750);
   // From 250ms of spent budget onward the reserve binds: the cap equals
   // (deadline − 750 − now), never the plain remaining deadline.
-  assert.equal(remoteRemainingBudgetFor(deadline, start + 251), 1_749);
-  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_000), 1_000);
-  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_999), 1);
-  assert.equal(remoteRemainingBudgetFor(deadline, start + 2_000), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 251, 'linux'), 1_749);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_000, 'linux'), 1_000);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_999, 'linux'), 1);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 2_000, 'linux'), 0);
   // A remote stage that hangs until its cap fires ends exactly at
   // (deadline − 750) and leaves EXACTLY the 750ms reserve for cleanup.
-  assert.equal(remoteRemainingBudgetFor(deadline, deadline - 750), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline - 750, 'linux'), 0);
   assert.equal(deadline - (deadline - 750), 750);
   // A deadline that is already spent clamps at zero — never a negative budget.
-  assert.equal(remoteRemainingBudgetFor(deadline - 5_000, start), 0);
-  assert.equal(remoteRemainingBudgetFor(deadline, deadline + 1), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline - 5_000, start, 'linux'), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline + 1, 'linux'), 0);
+});
+
+test('the Windows remote stage reserve leaves the larger Windows local-termination slice', async () => {
+  const { localTerminationReserveFor, remoteRemainingBudgetFor } = await import('../hooks/lib/session-end-budget.mjs');
+  assert.equal(localTerminationReserveFor('linux'), 750);
+  assert.equal(localTerminationReserveFor('win32'), 1_500);
+  const start = 3_000_000;
+  const deadline = start + 2_750; // sessionEndBudgetMs — the same native limit on every platform
+  // The larger Windows reserve binds from the FIRST instant: (deadline − 1500)
+  // is 1250 < the 1750ms per-stage cap, so the remote stage's cap is ALWAYS
+  // (deadline − 1500 − now) there — the remote stage honestly gets less than
+  // its POSIX counterpart so the fail-fast pid-only kill keeps a real slice.
+  assert.equal(remoteRemainingBudgetFor(deadline, start, 'win32'), 1_250);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 250, 'win32'), 1_000);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_000, 'win32'), 250);
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_249, 'win32'), 1);
+  // A remote stage that hangs until its Windows cap fires ends exactly at
+  // (deadline − 1500) and leaves EXACTLY the 1500ms reserve for the
+  // pid-only kill dispatch; the descendant sweep defers to the next pass.
+  assert.equal(remoteRemainingBudgetFor(deadline, start + 1_250, 'win32'), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline - 1_500, 'win32'), 0);
+  assert.equal(deadline - (deadline - 1_500), 1_500);
+  // A deadline that is already spent clamps at zero — never a negative budget.
+  assert.equal(remoteRemainingBudgetFor(deadline - 5_000, start, 'win32'), 0);
+  assert.equal(remoteRemainingBudgetFor(deadline, deadline + 1, 'win32'), 0);
+});
+
+// ---------------------------------------------------------------------------
+// The final obligation-discharge fence shares the hook's ONE absolute
+// deadline: when the budget is spent mid-loop, the loop STOPS (the unprocessed
+// obligations' workspaces stay release-unsafe and the receipt stays pending
+// for the next pass) and no per-obligation settlement deadline is ever minted
+// beyond the shared bound — so any number of late job records can never push
+// the SessionEnd hook past its native three-second limit.
+// ---------------------------------------------------------------------------
+
+test('the discharge fence stops at the shared deadline and never mints a settlement deadline beyond it', async () => {
+  const { runSessionEndDischargeFence } = await import('../hooks/lib/session-end-fence.mjs');
+  const hookDeadline = 10_000;
+  // A controllable clock: the fence draws every budget decision from it.
+  let clock = 0;
+  const now = () => clock;
+  // THREE late obligations across three workspaces. The first discharges
+  // normally; its fence slice then consumes the ENTIRE remaining shared
+  // budget (the settlement stub advances the clock past the deadline), so the
+  // second and third obligations exceed what the budget allows.
+  const obligations = [
+    { workspace: '/ws/first', job: { id: 'job-1', status: 'running', command: 'rescue', readOnly: false }, readOnly: false },
+    { workspace: '/ws/second', job: { id: 'job-2', status: 'running', command: 'rescue', readOnly: false }, readOnly: false },
+    { workspace: '/ws/third', job: { id: 'job-3', status: 'running', command: 'rescue', readOnly: false }, readOnly: false },
+  ];
+  /** @type {Array<{jobId:string,deadlineMs:number}>} */ const delegated = [];
+  /** @type {Array<{jobId:string,deadlineMs:number}>} */ const settled = [];
+  const result = await runSessionEndDischargeFence({
+    store: { marker: 'fence-store' }, dataRoot: '/data', knownWorkspaces: ['/ws/first', '/ws/second', '/ws/third'],
+    ownerSessionId: 'owner-a', epoch: 'e'.repeat(64), endedAt: null, hookDeadline, now,
+    createClient: (workspace) => ({ marker: 'client', workspace }),
+    discover: async () => obligations,
+    // Delegation returns the job UNCHANGED (a running record without the
+    // session-end intent): the fence must fall through to the settlement.
+    delegate: async (input, jobId) => { delegated.push({ jobId, deadlineMs: input.timeoutMs }); return { id: jobId, status: 'running', command: 'rescue', readOnly: false }; },
+    // The first settlement discharges its obligation and spends the whole
+    // remaining shared budget — every later obligation exceeds the budget.
+    settle: async (input, jobId) => {
+      settled.push({ jobId, deadlineMs: input.deadlineMs });
+      clock = hookDeadline + 50;
+      return { kind: 'confirmed-cancellation', job: { id: jobId, status: 'cancelled' } };
+    },
+  });
+  // THE FIX: the loop stops at exhaustion. Only the first obligation was
+  // processed; the second and third received neither delegation nor
+  // settlement, and both stay release-unsafe for this pass.
+  assert.deepEqual(delegated.map((entry) => entry.jobId), ['job-1'], 'no obligation is delegated after the shared deadline is spent');
+  assert.deepEqual(settled.map((entry) => entry.jobId), ['job-1'], 'no settlement call occurs after the shared deadline is spent');
+  assert.equal(result.clean, false, 'an exhausted fence is never clean: the receipt stays pending for the next pass');
+  assert.deepEqual([...result.deferredWorkspaces].sort(), ['/ws/second', '/ws/third'], 'every unprocessed obligation workspace is release-unsafe this pass');
+  assert.equal(result.deferredWorkspaces.has('/ws/first'), false, 'the discharged first obligation keeps its workspace releasable');
+  assert.equal(result.failedScan, undefined, 'the scan itself completed: only the per-obligation budget was spent');
+  // No per-obligation deadline may exceed the shared bound: the settlement
+  // never receives a fresh Date.now()+slice deadline past the hook deadline.
+  for (const entry of settled) {
+    assert.ok(entry.deadlineMs <= hookDeadline, `settlement deadline ${entry.deadlineMs} never exceeds the shared hook deadline ${hookDeadline}`);
+  }
+});
+
+test('the fence settles a late marked runner that delegation left durably stopped instead of releasing over the live tree', async () => {
+  const { runSessionEndDischargeFence } = await import('../hooks/lib/session-end-fence.mjs');
+  const hookDeadline = 10_000;
+  // A controllable clock: the fence draws every budget decision from it.
+  let clock = 0;
+  const now = () => clock;
+  // A RUNNING marked runner discovered late (it raced stage (5)): delegation
+  // transitions it to `cancelling` with the exact session-end intent, which
+  // endedObligationSettled therefore treats as durably stopped — yet that
+  // guard only delegates stop authority to the cleanup duty; the detached
+  // runner tree (ADR 0021) is still alive until a settlement pass executes
+  // the termination duty, so this is never discharge-without-cleanup.
+  const markedClaim = {
+    id: 'job-late-marked', status: 'running', command: 'rescue', readOnly: false,
+    rescueRunnerVersion: 1, workerLeaseId: 'a'.repeat(64), childPid: 424_242,
+  };
+  /** @type {string[]} */ const settledJobs = [];
+  const result = await runSessionEndDischargeFence({
+    store: { marker: 'fence-store' }, dataRoot: '/data', knownWorkspaces: ['/ws/late'],
+    ownerSessionId: 'owner-a', epoch: 'e'.repeat(64), endedAt: null, hookDeadline, now,
+    createClient: (workspace) => ({ marker: 'client', workspace }),
+    discover: async () => [{ workspace: '/ws/late', job: markedClaim, readOnly: false }],
+    // Delegation returns the cancelling record with a valid session-end stop
+    // intent: the durable stop authority the duty owns, NOT cleanup evidence.
+    delegate: async (_input, jobId) => ({
+      ...markedClaim, id: jobId, status: 'cancelling',
+      stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-09-08T00:00:00.000Z' },
+    }),
+    // Budget remains, so the fence runs the settlement duty itself.
+    settle: async (_input, jobId) => {
+      settledJobs.push(jobId);
+      return { kind: 'confirmed-cancellation', job: { id: jobId, status: 'cancelled' } };
+    },
+  });
+  // THE INVARIANT: a broker owner is never released while a marked runner
+  // tree may still be alive without a completed-or-delegated-with-safety
+  // cleanup — the fence either executes the duty or defers the release.
+  assert.deepEqual(settledJobs, ['job-late-marked'], 'a durably-stopped marked claim still executes its cleanup duty before discharge');
+  assert.equal(result.clean, true, 'the duty ran and discharged the obligation: the workspace stays releasable');
+  assert.equal(result.deferredWorkspaces.size, 0, 'no release-unsafe deferral is needed once the duty completed');
+});
+
+test('the fence rechecks the shared deadline after delegation and defers instead of settling past the hook deadline', async () => {
+  const { runSessionEndDischargeFence } = await import('../hooks/lib/session-end-fence.mjs');
+  const hookDeadline = 10_000;
+  // A controllable clock: the fence draws every budget decision from it.
+  let clock = 0;
+  const now = () => clock;
+  // ONE late writable obligation. Delegation consumes the ENTIRE remaining
+  // shared budget (the stub advances the controllable clock past the hook
+  // deadline) and returns the record UNCHANGED — a running record without the
+  // session-end intent, still unsettled.
+  const obligations = [
+    { workspace: '/ws/raced', job: { id: 'job-raced', status: 'running', command: 'rescue', readOnly: false }, readOnly: false },
+  ];
+  /** @type {string[]} */ const settledJobs = [];
+  const result = await runSessionEndDischargeFence({
+    store: { marker: 'fence-store' }, dataRoot: '/data', knownWorkspaces: ['/ws/raced'],
+    ownerSessionId: 'owner-a', epoch: 'e'.repeat(64), endedAt: null, hookDeadline, now,
+    createClient: (workspace) => ({ marker: 'client', workspace }),
+    discover: async () => obligations,
+    delegate: async (_input, jobId) => {
+      clock = hookDeadline + 1; // the delegation write spent the last budget
+      return { id: jobId, status: 'running', command: 'rescue', readOnly: false };
+    },
+    settle: async (_input, jobId) => {
+      settledJobs.push(jobId);
+      return { kind: 'confirmed-cancellation', job: { id: jobId, status: 'cancelled' } };
+    },
+  });
+  // THE RECHECK: a spent deadline never schedules the settlement — the 1ms
+  // fence-slice floor would mint a settlement deadline beyond the hook's
+  // native limit (filesystem operations are not guaranteed to abort at the
+  // signal), so the obligation defers its workspace release to the next pass.
+  assert.deepEqual(settledJobs, [], 'no settlement is scheduled after the shared deadline is spent');
+  assert.equal(result.clean, false, 'the unproven obligation keeps the receipt pending for the next pass');
+  assert.deepEqual([...result.deferredWorkspaces], ['/ws/raced'], 'the deferred obligation workspace stays release-unsafe');
 });

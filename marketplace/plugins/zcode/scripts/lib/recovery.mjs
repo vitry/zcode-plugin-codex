@@ -104,7 +104,11 @@ export async function settleEndedOwnerWritableJob(input) {
     }, async () => {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
-        || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
+        || current.command !== 'rescue' || current.readOnly !== false) return classifyEndedSettlement(current);
+      // A terminal record with a marked runner claim settles only behind the
+      // structural duty (kill decision plus a completed-clean same-pass sweep)
+      // — never on the bare terminal status.
+      if (TERMINAL.has(current.status)) return settleTerminalRunnerDuty(input, current);
       const remotelySettleable = current.status === 'queued'
         || (['running', 'cancelling'].includes(current.status) && typeof current.zcodeSessionId === 'string');
       return remotelySettleable ? settleEndedRescueThroughReconciler(input, current) : { kind: 'retained-writable-guard', job: current };
@@ -113,12 +117,17 @@ export async function settleEndedOwnerWritableJob(input) {
     if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') settlement = { kind: 'retained-writable-guard', job: await input.store.readJob(input.workspace, selected.id) };
     else throw error;
   }
-  try { settlement = { ...settlement, job: await cleanupTerminalReservation(input, settlement.job) }; }
+  // A pending runner-cleanup duty keeps the terminal record EXACTLY as-is (the
+  // executor reservation included): the durable evidence is what re-arms the
+  // duty on the next bounded pass, so nothing is stripped before it converges.
+  try { settlement = settlement.kind === 'runner-cleanup-pending' ? settlement : { ...settlement, job: await cleanupTerminalReservation(input, settlement.job) }; }
   catch { /* retain the durable settlement winner */ }
   return input.includeSettlementEvidence === true ? settlement : settlement.job;
 }
 
-/** @param {any} job */
+/** Classify one durable record for the SessionEnd settlement evidence surface.
+ * @param {any} job
+ * @returns {{kind:('durable-completion'|'confirmed-cancellation'|'terminal'|'retained-writable-guard'),job:any}} */
 function classifyEndedSettlement(job) {
   if (job?.status === 'succeeded' && typeof job.resultArtifact === 'string') return { kind: 'durable-completion', job };
   if (job?.status === 'cancelled') return { kind: 'confirmed-cancellation', job };
@@ -193,16 +202,20 @@ export async function discoverSessionEndObligations(input) {
     for (const job of listed) {
       if (TERMINAL.has(job.status)) {
         // Terminal records retain the marker/PID/lease until the executor
-        // releases them. A still-HELD marked runner lease proves a live
-        // detached executor whose record settled before it exited: surface the
-        // record as a (settlement-discharged) obligation so receipt discovery
-        // never drops the local cleanup duty. A free lease is the normal
-        // exited-and-released case — no duty, no signal, no state change. A
-        // probe that cannot prove the lease state at all (I/O, permission,
-        // malformed lock layout) propagates: the pass fails closed so the
-        // caller keeps the receipt pending instead of "released" on uncertainty.
+        // releases them. A MARKED runner claim is an obligation REGARDLESS of
+        // the lease state — the settlement invariant's discovery half: the
+        // lease only selects the duty's kill mode (held -> guarded kill; free
+        // -> dead-root descendant sweep), never WHETHER the sweep duty exists.
+        // A freed lease proves the runner gone, never the tree, so the record
+        // whose lease already released is surfaced exactly like the still-held
+        // one and the next settlement pass re-runs the sweep — the sweep
+        // itself, run every pass, is the retry authority (no cleanup ledger;
+        // Windows retains the original PPID after parent death so survivors
+        // stay discoverable, POSIX the process group). A terminal record
+        // without the exact marked claim never had a local termination duty
+        // and is not an obligation.
         if (!endedJobEpochOwned(input.epoch, job, input.endedAt)) continue;
-        if (await markedRunnerLeaseHeld(input.dataRoot, workspace, job)) obligations.push({ workspace, job, readOnly: false });
+        if (isMarkedRunnerClaim(job)) obligations.push({ workspace, job, readOnly: false });
         continue;
       }
       const writable = isWritableRescueObligation(job);
@@ -217,35 +230,13 @@ export async function discoverSessionEndObligations(input) {
 
 /** Whether the durable record still carries the exact MARKED detached-runner
  * claim (runner-format marker + digest worker lease + safe executor pid) whose
- * process-lifetime lease is the local cleanup duty's identity proof.
- * @param {any} job */
-function isMarkedRunnerClaim(job) {
+ * process-lifetime lease is the local cleanup duty's identity proof. Exported
+ * so the SessionEnd discharge fence applies the exact duty-identity condition
+ * (a durably-stopped marked claim still owes its cleanup duty before its
+ * broker owner may be released). @param {any} job */
+export function isMarkedRunnerClaim(job) {
   return isWritableRescueObligation(job) && job.rescueRunnerVersion === RESCUE_RUNNER_VERSION
     && isDigest(job.workerLeaseId) && Number.isSafeInteger(job.childPid) && job.childPid > 0;
-}
-
-/**
- * Whether the exact worker lease of a MARKED writable runner is currently held
- * (nonblocking zero-timeout probe). An acquired lease proves the runner already
- * exited and released (`false`); LOCK_TIMEOUT proves a live holder (`true`); ANY
- * other probe failure (I/O, permission, malformed lock layout) is UNKNOWN and
- * propagates, so discovery fails closed and the caller keeps the receipt pending
- * instead of settling over a possibly-live runner. A missing dataRoot or a
- * record without the exact marked-claim identity is no obligation (`false`):
- * absence of proof never signals a pid.
- * @param {unknown} dataRoot @param {string} workspace @param {any} job
- * @returns {Promise<boolean>}
- */
-async function markedRunnerLeaseHeld(dataRoot, workspace, job) {
-  if (typeof dataRoot !== 'string' || dataRoot.length === 0) return false;
-  if (!isMarkedRunnerClaim(job)) return false;
-  try {
-    await withWorkerLease({ dataRoot, workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => undefined);
-    return false; // acquired -> free -> already released: nothing to terminate.
-  } catch (error) {
-    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return true;
-    throw error; // an unprovable probe state is uncertainty, never "released"
-  }
 }
 
 /**
@@ -310,7 +301,7 @@ export async function activeForeignEpochWorkspaces(input) {
  * channel RETAINS the durable cancelling guard instead of archiving the job —
  * coordination loss must never release the writable exclusion while the remote
  * turn is unconfirmed.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,deadlineMs?:number,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,terminateProcessTree?:(pid:number,options:{timeoutMs?:number})=>Promise<unknown>,runnerCleanupStore?:any,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean,intent?:any,sessionEndReceiptEvidence?:('matching'|'older'),unavailableOutcome?:('retain'),revalidateReceiptBeforeStop?:boolean}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,endedAt?:string|null,lockTimeoutMs?:number,timeoutMs?:number,deadlineMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,terminateProcessTree?:(pid:number,options:{timeoutMs?:number})=>Promise<unknown>,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,runnerCleanupStore?:any,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal,includeSettlementEvidence?:boolean,intent?:any,sessionEndReceiptEvidence?:('matching'|'older'),unavailableOutcome?:('retain'),revalidateReceiptBeforeStop?:boolean}} input
  * @param {string} jobId
  */
 export async function settleEndedRescueJob(input, jobId) {
@@ -341,13 +332,14 @@ export async function settleEndedRescueJob(input, jobId) {
   if (TERMINAL.has(selected.status)) {
     // A terminal record may still carry a MARKED runner whose process-lifetime
     // lease is held while the executor finalizes its exit (or a wedged runner
-    // whose record settled before it died — the still-held-lease obligation
-    // surfaced by discovery). The terminal early return performs the guarded
-    // cleanup duty before discharging and only a PROVEN release settles the
-    // obligation: a failed, budget-spent, or unprovable cleanup keeps it
-    // pending so the receipt never discharges over a surviving detached
-    // runner. Identity mismatch, a free lease, or an unmarked record make the
-    // duty a bounded no-op that never signals a pid.
+    // whose record settled before it died — the lease-state-independent
+    // obligation surfaced by discovery). The terminal early return performs
+    // the guarded cleanup duty — the kill decision PLUS a completed-clean
+    // same-pass descendant sweep — before discharging, and only a `settled`
+    // duty proves the tree gone: a failed, budget-spent, unprovable, or
+    // sweep-pending cleanup keeps the obligation pending so the receipt never
+    // discharges over a surviving detached runner. An unmarked record makes
+    // the duty a bounded no-op that never signals a pid.
     const settled = await settleTerminalRunnerDuty(input, selected);
     if (settled.kind === 'runner-cleanup-pending') return input.includeSettlementEvidence === true ? settled : selected;
     const cleaned = await cleanupTerminalReservation(input, selected).catch(() => selected);
@@ -393,17 +385,20 @@ export async function settleEndedRescueJob(input, jobId) {
 /**
  * Perform the marked detached-runner cleanup duty for one selected record from
  * the SessionEnd settlement machinery: guarded, bounded termination owned by
- * `terminateMarkedRunnerTree` (runner-format marker, exact owner/epoch/job/
- * claim revalidation, two nonblocking held-lease probes; a free lease is never
+ * `terminateMarkedRunnerTree`, CLOSED by the same-pass dead-root descendant
+ * sweep — the duty reports `settled` ONLY when the kill decision ran (or the
+ * runner had already exited and released) AND a COMPLETED sweep found nothing
+ * left to kill (runner-format marker, exact owner/epoch/job/claim
+ * revalidation, two nonblocking held-lease probes; a free lease is never
  * signaled, an unmarked attached companion is never a process-group target,
  * and job state is never mutated — the marker/PID/lease persist until the
  * executor releases them). The cleanup reads through the RAW store view and
  * bounds itself by the absolute local deadline only, so a spent remote-control
  * signal can never cancel the independent remaining local budget. Every
- * failure mode is swallowed as non-termination: the durable cancelling or
- * queued-stop evidence re-arms the same duty for the next bounded pass, and no
- * separate cleanup ledger exists.
- * @param {any} input the settlement input carrying store/runnerCleanupStore, dataRoot, workspace, ownerSessionId, epoch, deadlineMs/timeoutMs, terminateProcessTree
+ * failure mode is swallowed as non-termination (`not-proven`): the durable
+ * cancelling or queued-stop evidence re-arms the same duty for the next
+ * bounded pass, and no separate cleanup ledger exists.
+ * @param {any} input the settlement input carrying store/runnerCleanupStore, dataRoot, workspace, ownerSessionId, epoch, deadlineMs/timeoutMs, terminateProcessTree, sweepDeadRootDescendants
  * @param {any} selection the durable record this cleanup was selected for
  */
 export async function runnerCleanupDuty(input, selection) {
@@ -418,32 +413,58 @@ export async function runnerCleanupDuty(input, selection) {
       ...(Number.isSafeInteger(input.timeoutMs) ? { timeoutMs: /** @type {number} */ (input.timeoutMs) } : {}),
       ...(typeof input.setTimeout === 'function' ? { setTimeout: input.setTimeout } : {}),
       ...(typeof input.clearTimeout === 'function' ? { clearTimeout: input.clearTimeout } : {}),
+      ...(typeof input.sweepDeadRootDescendants === 'function' ? { sweepDeadRootDescendants: input.sweepDeadRootDescendants } : {}),
+      ...(typeof input.platform === 'string' && input.platform.length > 0 ? { platform: input.platform } : {}),
     }, selection, input.terminateProcessTree);
   } catch { return { kind: 'not-proven' }; }
 }
 
 /**
- * Terminal-obligation settlement: perform the guarded marked-runner cleanup
- * duty, then discharge ONLY on a proven release. A record without the exact
- * marked-claim identity never had a local termination duty and settles exactly
- * as before Task 7; a marked claim settles only when the post-cleanup
- * zero-timeout lease probe ACQUIRES free — the kill completed and the lease
- * released, or the runner had already exited and released on its own. A cleanup
- * that failed, spent its deadline, or leaves the lease provably (or possibly)
- * held keeps the obligation PENDING as `runner-cleanup-pending`: the receipt
- * stays the durable compensation authority and re-arms discovery and this duty
- * on the next bounded pass.
+ * Terminal-obligation settlement behind THE structural settlement invariant: a
+ * terminal job with a marked runner claim settles ONLY in a pass that ran a
+ * descendant sweep (broker-lock-held exclusions, dead-root-safe, double-
+ * snapshot identity) which COMPLETED and found nothing to kill. The whole
+ * kill-decision-plus-sweep sequence lives inside ONE duty call
+ * (`terminateMarkedRunnerTree`, see also sweepDeadRootForDuty): a held lease
+ * runs the guarded kill then the sweep re-check; a free lease runs the
+ * dead-root sweep directly — and a pass that could NOT run the sweep to a
+ * clean verdict (budget exhausted, an unproven WINDOWS broker exclusion
+ * lookup (`failed` — POSIX never consults one), an alive recorded pid under
+ * its free lease, survivors the sweep signalled) reports
+ * `runner-cleanup-pending` and NEVER settles.
+ *
+ * A record without the exact marked-claim identity never had a local
+ * termination duty and settles exactly as before Task 7. For a marked claim
+ * the duty outcome is AUTHORITATIVE over every indirect signal: a freed lease
+ * proves the RUNNER gone, never the TREE (an earlier pass may have died
+ * mid-walk after the runner kill; Windows keeps the original PPID in
+ * Win32_Process after the parent dies — no re-parenting — and POSIX keeps the
+ * process group, so the sweep still discovers survivors, with the residual
+ * pid-reuse caveat covered by the same double-snapshot identity policy). The
+ * pending receipt stays the durable compensation authority and re-arms
+ * discovery and this duty on the next bounded pass — discovery surfaces
+ * terminal marked claims regardless of lease state, so the retry is
+ * guaranteed; no separate cleanup ledger exists.
  * @param {any} input the settlement input (see runnerCleanupDuty)
  * @param {any} job the terminal durable record this settlement was selected for
+ * @returns {Promise<{kind:('durable-completion'|'confirmed-cancellation'|'terminal'|'epoch-not-owned'|'retained-writable-guard'),job:any}|{kind:'runner-cleanup-pending',job:any,cleanup:string,sweep?:string}>}
  */
 async function settleTerminalRunnerDuty(input, job) {
+  if (!isMarkedRunnerClaim(job)) {
+    // No exact marked claim — no recorded runner identity, so no local
+    // termination duty and nothing sweepable: settle exactly as before.
+    return classifyEndedSettlement(job);
+  }
   const duty = await runnerCleanupDuty(input, job);
-  try {
-    if (!isMarkedRunnerClaim(job) || !(await markedRunnerLeaseHeld(input.dataRoot, input.workspace, job))) {
-      return classifyEndedSettlement(job);
-    }
-  } catch { /* an unprovable post-cleanup lease state is pending, never settled */ }
-  return { kind: 'runner-cleanup-pending', job, cleanup: duty?.kind ?? 'not-proven' };
+  if (duty?.kind === 'settled') return classifyEndedSettlement(job);
+  // Every other duty outcome is retention, with the duty's own evidence
+  // preserved: `cleanup` names the kill-decision convention (budget-expired /
+  // pending / not-proven / unproven) and `sweep` the sweep verdict when the
+  // sweep ran (`swept`) or could not run (`incomplete`, `root-alive`).
+  return {
+    kind: 'runner-cleanup-pending', job, cleanup: duty?.kind ?? 'not-proven',
+    ...(duty && 'sweep' in duty && typeof duty.sweep === 'string' ? { sweep: duty.sweep } : {}),
+  };
 }
 
 /**
@@ -674,15 +695,42 @@ async function settleSelectedJob(input) {
     // unmarked legacy claim keeps the existing defer-to-live-worker behavior
     // exactly, and cleanup failures leave the durable evidence re-arming the
     // duty for the next bounded pass — no separate cleanup ledger.
+    let runnerCleanupOutcome = null;
     if (isDigest(workerLeaseId) && current.rescueRunnerVersion === RESCUE_RUNNER_VERSION
       && validStopIntent(current.stopIntent)) {
-      await terminateMarkedRunnerTree({
+      // THE SETTLEMENT INVARIANT (recovery-pass convergence): the kill decision
+      // and the dead-root descendant sweep run in the SAME pass inside the
+      // duty, and the record converges ONLY on `settled` — the kill ran (or
+      // the released lease was swept) AND a COMPLETED sweep found nothing left
+      // to kill. Every other outcome — a kill skipped or incomplete at its
+      // deadline (the budget-expired convention), a sweep that signalled
+      // verified survivors or could not prove the Windows exclusion list (a
+      // `failed` lookup; POSIX never consults one), an alive
+      // recorded pid under its released lease, an unproven identity — defers
+      // with the record untouched: the durable cancelling/queued-stop evidence
+      // stays authoritative and re-arms the duty on the next bounded pass,
+      // where the descendant walk still discovers the survivors (Windows keeps
+      // the original PPID in Win32_Process after the parent dies — no
+      // re-parenting; POSIX the process group; the residual pid-reuse caveat
+      // stays covered by the double-snapshot identity policy). Converging on
+      // the freed lease alone would release the writable exclusion (or publish
+      // the terminal winner) over surviving non-broker descendants with no
+      // proven sweep — exactly the whack-a-mole bug this invariant removes.
+      runnerCleanupOutcome = await terminateMarkedRunnerTree({
         store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
         ownerSessionId: current.ownerSessionId,
         epoch: typeof current.ownerLifecycleEpoch === 'string' ? current.ownerLifecycleEpoch : null,
         ...(Number.isSafeInteger(input.deadlineMs) ? { deadlineMs: /** @type {number} */ (input.deadlineMs) } : {}),
         ...(Number.isSafeInteger(input.timeoutMs) ? { timeoutMs: /** @type {number} */ (input.timeoutMs) } : {}),
+        ...(typeof input.sweepDeadRootDescendants === 'function'
+          ? { sweepDeadRootDescendants: input.sweepDeadRootDescendants } : {}),
       }, current, input.terminateProcessTree).catch(() => undefined);
+      // `unproven` is the fence-gap convention: the marker without a provable
+      // claim (no recorded pid/lease pair) names NO signalable process — the
+      // lease-acquiring publication below is itself the identity gate there,
+      // exactly as before this invariant. A THROWN duty (undefined) and every
+      // other unproven outcome retain the record.
+      if (runnerCleanupOutcome?.kind !== 'settled' && runnerCleanupOutcome?.kind !== 'unproven') return current;
     }
     if (current.status === 'queued') {
       // A durable stop decision outranks every queued aging policy for an

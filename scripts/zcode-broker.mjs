@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
-import { spawnDaemon } from './lib/process.mjs';
+import { isValidBrokerLaunchSignature, spawnDaemon } from './lib/process.mjs';
 import { validCreateSnapshot } from './lib/zcode-schema.mjs';
 import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, CORRELATED_RESPONSE_PROVENANCE, isCorrelatedZCodeResponseError, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
@@ -33,6 +33,11 @@ const MAX_CONCURRENT_OWNER_RELEASES = 16;
 const MAX_TERMINAL_WINNER_EVIDENCE = 256;
 const MAX_RELEASED_TURN_TOMBSTONES = 256;
 const RAW_ENDPOINT_PROBE_MS = 100;
+// Default bounded budget for a hold-resolved-lock `release()` call that the
+// caller gave no explicit budget: the same small bound the lookup itself uses
+// by default, so an abandoned release wait can never ride past a lifecycle
+// deadline uninvited.
+const DEFAULT_RELEASE_BUDGET_MS = 250;
 export const MIN_BROKER_IDLE_TIMEOUT_MS = 1_000;
 export const MAX_BROKER_IDLE_TIMEOUT_MS = 3_600_000;
 const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/updateRuntimeModelConfig', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner', 'broker/releaseTurn']);
@@ -143,10 +148,19 @@ export function brokerIdentityNameForWireOptions(options = {}) {
   return profile ? `identity-${profile}.json` : 'identity.json';
 }
 
-/** @param {string} path @param {{endpoint:string,pid?:number,instanceId?:string,brokerToken?:string}} input */
+/**
+ * Publish one durable broker identity. `launch` records HOW the broker was
+ * launched (its creation-fixed command and arguments): the Windows runner-tree
+ * termination funnel matches a snapshotted process's command line against this
+ * signature before trusting its pid as a broker exclusion, so a recorded pid
+ * alone is never identity evidence. A malformed signature is rejected — a
+ * broker identity that cannot prove its own launch would silently poison the
+ * exclusion funnel (which fails closed on it).
+ * @param {string} path @param {{endpoint:string,pid?:number,instanceId?:string,brokerToken?:string,launch?:{command:string,args:string[]}}} input */
 export async function writeBrokerIdentity(path, input) {
   if (!input || typeof input.endpoint !== 'string') throw brokerInputError();
-  const record = { version: 1, endpoint: input.endpoint, pid: input.pid ?? process.pid, instanceId: input.instanceId ?? randomBytes(24).toString('hex'), brokerToken: input.brokerToken ?? randomBytes(32).toString('hex'), createdAt: new Date().toISOString() };
+  if (input.launch !== undefined && !isValidBrokerLaunchSignature(input.launch)) throw brokerInputError();
+  const record = { version: 1, endpoint: input.endpoint, pid: input.pid ?? process.pid, instanceId: input.instanceId ?? randomBytes(24).toString('hex'), brokerToken: input.brokerToken ?? randomBytes(32).toString('hex'), launch: input.launch ?? null, createdAt: new Date().toISOString() };
   await ensurePrivateDirectory(dirname(path));
   await atomicWriteJson(path, record);
   return record;
@@ -171,54 +185,346 @@ export async function inspectBrokerIdentity(path, options = {}) {
 }
 
 /**
- * Resolve the separately managed broker pids of one workspace from its durable
+ * One recorded workspace broker: the identity pid PLUS the broker's recorded
+ * launch signature (how it was launched — its creation-fixed command and
+ * arguments, published by the broker itself into its identity file). Only the
+ * PAIR is identity evidence: on Windows, a dead broker identity can survive on
+ * disk while an unrelated process owns its reused pid, so the termination
+ * funnel matches a snapshotted process's command line against the signature
+ * before ever sparing the pid.
+ * @typedef {{ pid: number, command: string, args: string[] }} RecordedBrokerIdentity
+ */
+
+/**
+ * Resolve the separately managed brokers of one workspace from its durable
  * broker identities (all wire profiles) as a THREE-VALUED lookup. Windows
- * runner-tree termination excludes these pids and their descendant subtrees:
- * a broker the runner spawned is separately managed through the owner/session
- * protocol and must never be killed as a runner descendant, so the settlement
- * callers name them as the termination exclusion instead of walking the tree
- * blindly. The statuses are:
+ * runner-tree termination excludes these identity-matched brokers and their
+ * descendant subtrees: a broker the runner spawned is separately managed
+ * through the owner/session protocol and must never be killed as a runner
+ * descendant, so the settlement callers name them as the termination exclusion
+ * instead of walking the tree blindly. The statuses are:
  * - `resolved`: every identity entry was inspected inside the bound and at
- *   least one usable pid was collected — `pids` is the complete exclusion
- *   list. A DEAD identity's pid is still reported (an unalived pid excludes
- *   nothing and retiring rewrites the record).
+ *   least one usable pid was collected — `brokers` (and `pids`, the matching
+ *   pid list) is the complete exclusion set. A DEAD identity is still
+ *   reported: an unalived pid excludes nothing by itself, and the recorded
+ *   launch signature is what lets the termination walk prove whether the pid
+ *   still IS that broker (a reused pid whose command line no longer matches is
+ *   never excluded).
  * - `absent`: the workspace records no broker identity at all (missing broker
  *   directory or no identity entry) — expected before a workspace's first
  *   broker launch.
  * - `failed`: an identity exists but the lookup cannot prove the COMPLETE
- *   list — an unreadable broker directory, an unreadable/corrupt identity
- *   entry, an entry without a usable pid, or the bound expiring between
- *   entries. A PARTIAL scan is reported as `failed` with no pids: a partial
- *   list would kill any omitted broker subtree.
+ *   identity-matched list — an unreadable broker directory, an unreadable/
+ *   corrupt identity entry, an entry without a usable pid or WITHOUT a
+ *   provable launch signature (a pid number alone can never be re-proven as
+ *   that broker instance), the bound expiring anywhere inside the lookup
+ *   (storage resolution, directory scan, identity read, the broker-startup
+ *   lock acquisition, or the lock operation itself), or a broker startup
+ *   holding the `broker/.lock` past the bound. A PARTIAL scan is reported as
+ *   `failed` with nothing forwarded: a partial list would kill any omitted
+ *   broker subtree.
  * The writable-Rescue funnel treats `absent` and `failed` alike as unproven
- * and fails closed to the recorded runner pid alone. The health probe is
+ * and fails closed to the recorded runner pid alone — and unlike `resolved`,
+ * those outcomes need NO lock held across the kill: the pid-only fallback
+ * never walks the runner's descendant tree, so a broker whose startup races
+ * the kill (`absent` observed before a starting broker created its directory
+ * or published its identity, the startup completing right after the lookup
+ * returns) simply spawns outside the kill's reach — there is no descendant
+ * walk that could touch it. Only the `resolved` outcome plans a descendant
+ * walk from the snapshot, so only it must stay serialized against startup
+ * until termination is dispatched (`holdResolvedLock`). The health probe is
  * deliberately skipped: exclusion is identity-based, not liveness-based, and
  * a socket probe must never ride the kill budget.
- * @param {{dataRoot:string,workspace:string,timeoutMs?:number}} options
- * @returns {Promise<{status:'resolved'|'absent'|'failed', pids:number[]}>}
+ * The directory scan and every identity read run while HOLDING the same
+ * `broker/.lock` advisory lock `ensureZCodeBroker` holds across broker spawn
+ * and identity publication (identical lock file, poll cadence, and bounded
+ * acquisition convention), so a concurrently starting wire profile is either
+ * fully published — or failed and cleaned — before the scan observes it, or
+ * the scan fails closed instead of ever returning a partial list.
+ * `readdirFn`, `inspectIdentityFn`, and `withFileLockFn` default to the
+ * production implementations and exist as test seams so the slow-filesystem
+ * bounding is unit-drivable without staging a genuinely wedged plugin data
+ * directory, mirroring the injectable enumerateProcessTable convention.
+ * `holdResolvedLock` extends the `resolved` outcome for the Windows-termination
+ * funnel: the lookup then keeps HOLDING the `broker/.lock` past its return and
+ * the result carries a `release()` handle, so the exclusion snapshot stays
+ * synchronized with broker startup until the caller has dispatched (or
+ * abandoned) the guarded kill — without it, a wire profile starting in the gap
+ * between lookup-return and kill would publish a pid absent from the exclusion
+ * and the descendant walk would force-kill a managed broker. `release()` is
+ * idempotent and resolves `undefined` only once the lock is fully released. Its
+ * WAIT is bounded: an optional `releaseBudgetMs` (the caller's remaining
+ * lifecycle deadline; defaulting to a small bounded constant) races the
+ * underlying `withFileLock` promise, whose asynchronous file-handle close can
+ * stall past any deadline on a slow or wedged data volume — the caller awaits
+ * the release in a `finally` AFTER the (already bounded) kill, so an unbounded
+ * wait could block a cancellation or SessionEnd indefinitely even though the
+ * lookup and kill themselves were bounded. At the budget expiry the wait is
+ * abandoned — never the unlock: the underlying release proceeds in the
+ * background, the lock helper's own bounded release conventions still apply, so
+ * an abandoned release self-heals free, and a late rejection is suppressed. The
+ * abandonment resolves a bounded diagnostic
+ * ({released:false, reason:'budget-expired', budgetMs, message}) instead of
+ * throwing — a `finally` caller must never observe a release throw.
+ * `absent` and `failed` hold no lock and carry no `release`. Without the flag
+ * the result shape is unchanged ({status, pids, brokers}) and the lock is
+ * released before returning.
+ * @param {{dataRoot:string,workspace:string,timeoutMs?:number,holdResolvedLock?:boolean,readdirFn?:typeof readdir,inspectIdentityFn?:typeof inspectBrokerIdentity,withFileLockFn?:typeof withFileLock}} options
+ * @returns {Promise<{status:'resolved'|'absent'|'failed', pids:number[], brokers:RecordedBrokerIdentity[], release?:()=>Promise<void>}>}
  */
+/**
+ * Scan one workspace broker directory for durable broker identities and map
+ * them to the complete identity-matched exclusion set — the EXACT scan
+ * `recordedWorkspaceBrokerPids` runs while holding the `broker/.lock` startup
+ * lock, extracted as a shared helper so the Windows dead-root sweep can RE-run
+ * it under a lock IT already reacquired (see sweepDeadRootForDuty's absent
+ * branch): the CALLER owns the serialization — this helper never takes a lock
+ * itself, so re-running it inside an already-held `broker/.lock` cannot
+ * self-deadlock. The three-valued outcome and every fail-closed rule are the
+ * lookup's own: `resolved` (every identity proven — pid PLUS launch
+ * signature), `absent` (no identity entry at all), and `failed` (unreadable
+ * directory, corrupt or pid-less entry, an entry WITHOUT a provable launch
+ * signature, or the bound expiring anywhere inside the scan). Every stage is
+ * raced against the caller-supplied budget (`timeoutMs`, defaulting to the
+ * lookup's own documented 250ms; a zero budget is an immediately-expired,
+ * fail-closed scan) exactly like the lookup races its stages against its
+ * entry deadline. `readdirFn` and `inspectIdentityFn` are the lookup's test
+ * seams, forwarded unchanged.
+ * @param {string} brokerDirectory
+ * @param {{timeoutMs?:number,readdirFn?:typeof readdir,inspectIdentityFn?:typeof inspectBrokerIdentity}} [options]
+ * @returns {Promise<{status:'resolved'|'absent'|'failed', pids:number[], brokers:RecordedBrokerIdentity[]}>}
+ */
+export async function scanBrokerIdentityDirectory(brokerDirectory, options = {}) {
+  if (typeof brokerDirectory !== 'string' || !brokerDirectory
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) throw brokerInputError();
+  const timeoutMs = options.timeoutMs ?? 250;
+  const readdirFn = typeof options.readdirFn === 'function' ? options.readdirFn : readdir;
+  const inspectIdentityFn = typeof options.inspectIdentityFn === 'function' ? options.inspectIdentityFn : inspectBrokerIdentity;
+  const deadline = Date.now() + timeoutMs;
+  const budgetExpiry = Symbol('broker-identity-scan-budget-expired');
+  const withinBudget = (/** @type {Promise<any>} */ operation) => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      operation.catch(() => {}); // an operation issued at (or after) expiry must never surface an unhandled rejection
+      return Promise.resolve(budgetExpiry);
+    }
+    let timer;
+    const expiry = new Promise((resolve) => { timer = setTimeout(() => resolve(budgetExpiry), remainingMs); });
+    operation.catch(() => {}); // a rejection after the expiry won must not become an unhandled rejection
+    return Promise.race([operation, expiry]).finally(() => { clearTimeout(timer); });
+  };
+  /** @type {{status:'resolved'|'absent'|'failed', pids:number[], brokers:RecordedBrokerIdentity[]}} */
+  const failedOutcome = { status: 'failed', pids: [], brokers: [] };
+  let entries;
+  try { entries = await withinBudget(readdirFn(brokerDirectory, { encoding: 'utf8' })); }
+  catch (error) { return error?.code === 'ENOENT' ? { status: 'absent', pids: [], brokers: [] } : failedOutcome; }
+  if (entries === budgetExpiry) return failedOutcome;
+  const identities = entries.filter((entry) => /^identity(?:-[0-9a-f]{16})?\.json$/u.test(entry)).sort();
+  if (identities.length === 0) return { status: 'absent', pids: [], brokers: [] };
+  /** @type {RecordedBrokerIdentity[]} */
+  const brokers = [];
+  for (const entry of identities) {
+    // The health probe is deliberately skipped: exclusion is identity-based,
+    // not liveness-based, and a socket probe must never ride the kill budget.
+    // What proves the pid is IDENTITY instead: the recorded launch signature
+    // the broker published with its identity — the Windows walk matches a
+    // snapshotted command line against it before ever sparing the pid, so a
+    // dead identity whose pid was reused by a non-broker descendant is
+    // unmasked instead of trusted.
+    const inspected = await withinBudget(inspectIdentityFn(join(brokerDirectory, entry), { healthProbe: async () => true }).catch(() => ({ status: 'invalid', record: null })));
+    if (inspected === budgetExpiry) return failedOutcome;
+    const record = inspected.record;
+    if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0) return failedOutcome;
+    // An identity without a provable launch signature makes the complete
+    // identity-matched exclusion list unprovable — a pid holding that
+    // number could never be re-verified as the broker. Fail closed like
+    // every other partial scan instead of forwarding a pid-only proof.
+    if (!isValidBrokerLaunchSignature(record.launch)) return failedOutcome;
+    if (brokers.some((broker) => broker.pid === record.pid)) continue;
+    brokers.push({ pid: record.pid, command: record.launch.command, args: [...record.launch.args] });
+  }
+  return { status: 'resolved', pids: brokers.map((broker) => broker.pid), brokers };
+}
+
 export async function recordedWorkspaceBrokerPids(options) {
   if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace
     || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw brokerInputError();
   const timeoutMs = options.timeoutMs ?? 250;
-  const storage = await resolveWorkspaceStorage(options);
-  const brokerDirectory = join(storage.directory, 'broker');
-  let entries;
-  try { entries = await readdir(brokerDirectory, { encoding: 'utf8' }); }
-  catch (error) { return error?.code === 'ENOENT' ? { status: 'absent', pids: [] } : { status: 'failed', pids: [] }; }
-  const identities = entries.filter((entry) => /^identity(?:-[0-9a-f]{16})?\.json$/u.test(entry)).sort();
-  if (identities.length === 0) return { status: 'absent', pids: [] };
+  const holdResolvedLock = options.holdResolvedLock === true;
+  const withFileLockFn = typeof options.withFileLockFn === 'function' ? options.withFileLockFn : withFileLock;
+  // The deadline starts at ENTRY, not at the first identity read:
+  // resolveWorkspaceStorage, the broker-directory scan, every identity read,
+  // AND the broker-startup lock acquisition below are filesystem I/O on the
+  // plugin data directory, and a slow or wedged directory must not ride past
+  // the shared lifecycle deadline this lookup shares with marked-runner
+  // cancellation and SessionEnd reconciliation — the local runner kill still
+  // has to happen. Every operation is raced against the remaining budget;
+  // expiry surfaces the established fail-closed `failed` outcome (callers
+  // degrade to the pid-only kill).
   const deadline = Date.now() + timeoutMs;
-  const pids = [];
-  for (const entry of identities) {
-    if (Date.now() >= deadline) return { status: 'failed', pids: [] };
-    // The health probe is deliberately skipped: exclusion is identity-based,
-    // not liveness-based, and a socket probe must never ride the kill budget.
-    const inspected = await inspectBrokerIdentity(join(brokerDirectory, entry), { healthProbe: async () => true }).catch(() => ({ status: 'invalid', record: null }));
-    if (!inspected.record || !Number.isSafeInteger(inspected.record.pid) || inspected.record.pid <= 0) return { status: 'failed', pids: [] };
-    pids.push(inspected.record.pid);
-  }
-  return { status: 'resolved', pids: [...new Set(pids)] };
+  const budgetExpiry = Symbol('broker-identity-lookup-budget-expired');
+  const budgetExpiredError = () => new PluginError('BROKER_IDENTITY_LOOKUP_BUDGET_EXPIRED', 'The broker identity lookup budget expired.', { category: 'runtime' });
+  const withinBudget = (/** @type {Promise<any>} */ operation) => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      operation.catch(() => {}); // an operation issued at (or after) expiry must never surface an unhandled rejection
+      return Promise.resolve(budgetExpiry);
+    }
+    let timer;
+    const expiry = new Promise((resolve) => { timer = setTimeout(() => resolve(budgetExpiry), remainingMs); });
+    operation.catch(() => {}); // a rejection after the expiry won must not become an unhandled rejection
+    return Promise.race([operation, expiry]).finally(() => { clearTimeout(timer); });
+  };
+  /** @type {{status:'resolved'|'absent'|'failed', pids:number[], brokers:RecordedBrokerIdentity[]}} */
+  const failedOutcome = { status: 'failed', pids: [], brokers: [] };
+  const storage = await withinBudget(resolveWorkspaceStorage(options));
+  if (storage === budgetExpiry) return failedOutcome;
+  const brokerDirectory = join(storage.directory, 'broker');
+  // Existence probe (outside the startup lock): a MISSING broker directory
+  // proves no identity was ever published — broker startup creates the
+  // directory BEFORE it takes the lock but spawns and publishes only while
+  // HOLDING it — so `absent` is already the fail-safe pid-only outcome, and
+  // this read-path lookup must not create the lock layout as a side effect.
+  let directoryExists;
+  try { directoryExists = await withinBudget(readdir(brokerDirectory, { encoding: 'utf8' })) !== budgetExpiry; }
+  catch (error) { return error?.code === 'ENOENT' ? { status: 'absent', pids: [], brokers: [] } : failedOutcome; }
+  if (!directoryExists) return failedOutcome;
+  // Serialize the scan with broker startup (see the docblock above).
+  // LOCK-ORDER SAFETY: this lookup runs inside the settlement path, whose
+  // callers already hold the per-job cancellation lock
+  // (`cancel-locks/<jobId>.lock`) and probe worker-lease locks with
+  // zero-timeout acquisitions. The broker lock sits strictly BELOW those in
+  // the existing order: no path that holds `broker/.lock` (ensureZCodeBroker,
+  // dead-identity retirement, the broker's own owner-store locks) ever
+  // acquires a cancellation or worker-lease lock, so taking it here cannot
+  // invert. Contention is still never awaited long: the acquisition shares
+  // this lookup's remaining budget (an exhausted budget degrades to one
+  // nonblocking attempt) and is aborted the moment that budget expires, so
+  // the lookup never holds — or keeps waiting on — the startup lock past its
+  // bound. A lock timeout, an aborted acquisition, an unpublished lock layout
+  // (a startup between directory creation and layout publish), or any other
+  // acquisition failure fails closed to `failed` — callers degrade to the
+  // pid-only kill rather than ever forward a partial exclusion list.
+  const lockAbort = new AbortController();
+  const lockBudgetMs = Math.max(0, deadline - Date.now());
+  if (lockBudgetMs <= 0) lockAbort.abort(budgetExpiredError());
+  // `let`: the hold-resolved-lock mode disarms the timer once the release
+  // handle is published, so a bounded kill running past the lookup budget can
+  // never abort the release path while the lock is held open.
+  let lockExpiryTimer = lockBudgetMs > 0
+    ? setTimeout(() => lockAbort.abort(budgetExpiredError()), lockBudgetMs)
+    : null;
+  try {
+    // The scan itself is the shared helper (same fail-closed rules, same
+    // seams): the lookup passes its REMAINING shared budget so the extracted
+    // scan stays inside this lookup's entry deadline exactly as before.
+    const scanUnderLock = () => scanBrokerIdentityDirectory(brokerDirectory, {
+      timeoutMs: Math.max(0, deadline - Date.now()),
+      ...(typeof options.readdirFn === 'function' ? { readdirFn: options.readdirFn } : {}),
+      ...(typeof options.inspectIdentityFn === 'function' ? { inspectIdentityFn: options.inspectIdentityFn } : {}),
+    });
+    if (!holdResolvedLock) {
+      // The lock helper's `timeoutMs` bounds only its polling loop — its
+      // internal open/stat/layout I/O can stall past any timeout on a wedged
+      // or heavily delayed data volume, and its abort signal is observed only
+      // between awaits. The ENTIRE acquisition (operation included) is
+      // therefore raced against the remaining budget here; the loser is
+      // suppressed (no unhandled rejection) and expiry surfaces the
+      // established fail-closed `failed` outcome exactly like every other
+      // over-budget stage.
+      const outcome = await withinBudget(withFileLockFn(join(brokerDirectory, '.lock'), scanUnderLock, { timeoutMs: lockBudgetMs, signal: lockAbort.signal }));
+      return outcome === budgetExpiry ? failedOutcome : outcome;
+    }
+    // HOLD-RESOLVED-LOCK mode (the Windows-termination funnel): the `resolved`
+    // outcome keeps HOLDING the startup lock past this function's return and
+    // hands the caller a `release()` handle, so the exclusion snapshot stays
+    // synchronized with broker startup until the guarded kill is dispatched —
+    // the exact serialization that makes the snapshot authoritative. The
+    // operation below pins `withFileLock`'s unlock by staying pending until
+    // `release()` resolves it; absent/failed outcomes return immediately with
+    // no lock held (their fail-closed pid-only kill needs no exclusion, see the
+    // termination funnel). The bounded acquisition budget and abort above are
+    // untouched — the hold itself is bounded by the caller's bounded kill, and
+    // the expiry timer is disarmed once the handle is published so a slow hold
+    // can never abort the release path.
+    /** @type {(value:{status:'resolved'|'absent'|'failed',pids:number[],brokers:RecordedBrokerIdentity[],release?:()=>Promise<void>}) => void} */
+    let settleLookup;
+    const lookupPromise = new Promise((resolveLookup) => { settleLookup = resolveLookup; });
+    let releaseHold = () => {};
+    const holdOpen = new Promise((resolveHold) => { releaseHold = () => resolveHold(undefined); });
+    let released = false;
+    // A lookup that already returned `failed` at the budget OWNS the outcome:
+    // a hold that resolves only after that expiry must never publish an
+    // exclusion (and its release handle) that no caller will ever consume — it
+    // would leak the startup lock forever. The superseded marker redirects any
+    // such late publication straight to release.
+    let superseded = false;
+    const publish = (/** @type {{status:'resolved'|'absent'|'failed',pids:number[],brokers:RecordedBrokerIdentity[],release?:()=>Promise<void>}} */ outcome) => {
+      if (superseded) { releaseHold(); return; }
+      settleLookup(outcome);
+    };
+    const holding = withFileLockFn(join(brokerDirectory, '.lock'), async () => {
+      const outcome = await scanUnderLock();
+      if (outcome === budgetExpiry || outcome.status !== 'resolved') return outcome;
+      publish({
+        status: 'resolved', pids: outcome.pids, brokers: outcome.brokers,
+        // Release the held startup lock. `releaseBudgetMs` (optional) bounds the
+        // WAIT: on a slow or wedged data volume the underlying `withFileLock`
+        // promise — its asynchronous file-handle close included — can stall past
+        // any deadline, and the caller awaits this release in a `finally` AFTER
+        // the (already bounded) kill, so an unbounded wait would block a
+        // cancellation or SessionEnd indefinitely even though the lookup and
+        // kill themselves were bounded. At the budget expiry the wait is
+        // ABANDONED (never the unlock): the caller's `releaseHold` above has
+        // already told the lock helper to finish, so the underlying unlock
+        // proceeds in the background and the helper's own bounded release
+        // conventions still apply — the lock self-heals free with no further
+        // caller involvement; a late rejection of the abandoned wait is
+        // suppressed. The abandonment surfaces as a bounded diagnostic on the
+        // resolved value (a `finally` caller must never see a throw), while a
+        // fully-released release resolves `undefined` exactly as before.
+        release: async (/** @type {number|undefined} */ releaseBudgetMs) => {
+          if (!released) { released = true; releaseHold(); }
+          const budgetMs = Number.isSafeInteger(releaseBudgetMs) && releaseBudgetMs >= 0
+            ? releaseBudgetMs : DEFAULT_RELEASE_BUDGET_MS;
+          // A derived never-rejecting view: the loser of the race below must not
+          // surface an unhandled rejection from the abandoned wait.
+          const fullyReleased = holding.then(() => true, () => true);
+          let timer;
+          const budget = new Promise((resolveBudget) => { timer = setTimeout(() => resolveBudget(false), budgetMs); });
+          const settledRelease = await Promise.race([fullyReleased, budget]).finally(() => { clearTimeout(timer); });
+          if (settledRelease) return undefined;
+          return {
+            released: false, reason: 'budget-expired', budgetMs,
+            message: 'The broker-lock release wait was abandoned at its bounded budget; '
+              + 'the underlying unlock proceeds in the background and the lock helper\'s own '
+              + 'bounded release conventions still apply, so the lock self-heals free.',
+          };
+        },
+      });
+      if (lockExpiryTimer !== null) { clearTimeout(lockExpiryTimer); lockExpiryTimer = null; }
+      await holdOpen;
+      return outcome;
+    }, { timeoutMs: lockBudgetMs, signal: lockAbort.signal });
+    holding.then((outcome) => { publish(outcome === budgetExpiry ? failedOutcome : outcome); }, () => publish(failedOutcome));
+    // The ENTIRE `withFileLock` acquisition — its internal open/stat/layout
+    // I/O included — is bounded by the same race: the helper's `timeoutMs`
+    // covers only its polling loop, and its abort signal is observed only
+    // between awaits, so a stalled filesystem operation could otherwise keep
+    // this lookup pending past its budget indefinitely — the settlement path
+    // would miss its deadline without ever dispatching the required
+    // marked-runner termination. Racing the settlement promise (which the hold
+    // above intentionally leaves pending until release) keeps the hold design
+    // intact while guaranteeing this function settles at its budget: the
+    // loser is suppressed (the lookup promise never rejects, and a late
+    // publication is redirected to release by `superseded`), and expiry
+    // surfaces the fail-closed `failed` outcome exactly like every other
+    // over-budget stage.
+    const racedOutcome = await withinBudget(lookupPromise);
+    if (racedOutcome === budgetExpiry) { superseded = true; releaseHold(); return failedOutcome; }
+    return racedOutcome;
+  } catch { return failedOutcome; }
+  finally { if (lockExpiryTimer !== null) clearTimeout(lockExpiryTimer); }
 }
 
 /** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record @param {number} [requestTimeoutMs] */
@@ -244,6 +550,35 @@ export async function ensureZCodeBroker(options) {
   const identityPath = join(brokerDirectory, identityName);
   const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: storage.dataRootPath, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
   await ensurePrivateDirectory(brokerDirectory);
+  // LEGACY UPGRADE MIGRATION (PASSIVE — reuse, never retire): a HEALTHY
+  // identity WITHOUT a launch signature is a broker published by a
+  // pre-launch-signature plugin version — an in-place upgrade can leave that
+  // instance running. It is REUSED unconditionally, exactly like any healthy
+  // identity. A legacy broker has no IPC to prove its TRANSIENT admissions
+  // idle: a session/create is durably persisted only after the upstream
+  // request returns, so the durable owner registry can still be empty while a
+  // create is in flight — an active retirement gated on that registry would
+  // SIGTERM the broker mid-create and strand the remote session unowned, so
+  // there is no safe active migration. Instead the legacy instance keeps
+  // serving every client operation until it exits ON ITS OWN: its idle
+  // shutdown (scheduleIdleShutdown — a default ~30s window, bounded by the
+  // configured idleTimeoutMs) or a host shutdown runs the graceful close that
+  // removes its own identity, and the next ensure then finds no healthy
+  // identity and spawns a fresh broker that publishes the provable launch
+  // signature. The bounded consequences of that passive window:
+  // - Cleanup stays pid-only/pending for at most the legacy broker's own idle
+  //   window plus the next duty pass: the workspace broker-exclusion lookup
+  //   (recordedWorkspaceBrokerPids) keeps its strict fail-closed rule
+  //   (launchless identity → `failed`), and after the natural exit the lookup
+  //   is `absent`, so the sweep paths run per the platform rules.
+  // - The window is NOT prolonged by cleanup: the exclusion lookup's identity
+  //   scan deliberately skips the health probe (no socket is ever opened), so
+  //   it can never reset the legacy broker's idle timer. Only real client
+  //   activity — including the ensure inspection's own health probe below and
+  //   the owner-release cleanup's client connection — defers the shutdown,
+  //   which is exactly the work the broker should stay up for.
+  // - New client operations work throughout: every ensure reuses the healthy
+  //   legacy instance, so clients never observe a migration.
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
     const existing = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
     if (existing.status === 'healthy') return existing.record;
@@ -303,7 +638,11 @@ export class ZCodeBroker {
       if (process.platform !== 'win32') await chmod(this.options.endpoint, 0o600);
       if (this.options.publishIdentityAfterListen === true) {
         if (typeof this.options.identityPath !== 'string' || typeof this.options.instanceId !== 'string') throw brokerInputError();
-        try { await writeBrokerIdentity(this.options.identityPath, { endpoint: this.options.endpoint, pid: process.pid, instanceId: this.options.instanceId, brokerToken: this.options.brokerToken }); }
+        // The identity records the broker's own launch signature (its
+        // creation-fixed command and arguments): the Windows runner-tree
+        // termination funnel matches a snapshotted process's command line
+        // against it before trusting the recorded pid as an exclusion.
+        try { await writeBrokerIdentity(this.options.identityPath, { endpoint: this.options.endpoint, pid: process.pid, instanceId: this.options.instanceId, brokerToken: this.options.brokerToken, launch: { command: process.execPath, args: process.argv.slice(1) } }); }
         catch (error) { await removeBrokerIdentityInstance(this.options.identityPath, this.options.instanceId).catch(() => {}); throw error; }
       }
       return this;
@@ -957,6 +1296,7 @@ async function removeBrokerIdentityInstance(path, instanceId) { let value; try {
 async function removeBrokerIdentityRecord(path, expected) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch { return false; } if (!sameBrokerIdentity(value, expected)) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
 async function removeBrokerStartupConfig(path, expected) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch { return false; } if (JSON.stringify(value) !== JSON.stringify(expected)) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
 async function retireDeadBrokerIdentity(identityPath, endpoint, expected, platform) { if (await rawEndpointState(endpoint) !== 'stale') return false; const current = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint }); if (current.status !== 'dead' || !sameBrokerIdentity(current.record, expected) || isProcessAlive(expected.pid) || await rawEndpointState(endpoint) !== 'stale') return false; if (platform !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; }); return removeBrokerIdentityRecord(identityPath, expected); }
+
 async function clearStaleMissingEndpoint(identityPath, endpoint, platform) { if (await rawEndpointState(endpoint) !== 'stale') throw brokerUnhealthyError(); const identity = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint }); if (identity.status !== 'missing') throw brokerUnhealthyError(); if (await rawEndpointState(endpoint) !== 'stale') throw brokerUnhealthyError(); if (platform !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; }); }
 async function rawEndpointState(endpoint) { return new Promise((resolvePromise) => { const socket = net.createConnection(endpoint); let settled = false; const settle = (state) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolvePromise(state); }; const timer = setTimeout(() => settle('unknown'), RAW_ENDPOINT_PROBE_MS); timer.unref?.(); socket.once('connect', () => settle('live')); socket.once('error', (error) => settle(['ECONNREFUSED', 'ENOENT'].includes(error?.code) ? 'stale' : 'unknown')); }); }
 function isWindowsNamedPipe(endpoint) { return typeof endpoint === 'string' && endpoint.toLowerCase().startsWith('\\\\.\\pipe\\'); }

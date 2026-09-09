@@ -2618,4 +2618,3 @@ test('runner continuation publication seams retain the input on the queued attem
     assert.deepEqual(attempt.rescueExecutionInput, runnerExecutionInput, `${seam}: the queued attempt keeps its input`);
   }
 });
-

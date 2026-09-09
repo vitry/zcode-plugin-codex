@@ -128,10 +128,14 @@ function fixtureAdapters(overrides = {}) {
 
   // The optional marked-runner cleanup adapter (Task 7): present only when the
   // fixture selects it, proving callers without the seam keep today's behavior.
+  // The adapter returns the duty's OUTCOME CONTRACT: `settled` names the
+  // completed-clean same-pass descendant sweep that is the only marked-claim
+  // settlement authority; a thrown duty maps to `not-proven` retention.
   if (options.terminateRunner) {
     adapters.terminateMarkedRunner = async () => {
       events.push('terminate-marked-runner');
       if (options.terminateRunner === 'throws') throw new Error('injected runner cleanup failure');
+      return { kind: 'settled' };
     };
   }
 
@@ -543,12 +547,13 @@ test('a remote timeout keeps the local cleanup budget and ends in the retained g
   assert.equal(events.some((event) => event.startsWith('publish-')), false);
 });
 
-test('natural success publishes the durable winner before the marked-runner cleanup', async () => {
+test('natural success publishes the durable winner only behind the completed-clean sweep', async () => {
   const events = [];
   const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', remote: 'succeeded' });
   const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
   assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'succeeded', resumable: true });
-  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'publish-succeeded', 'terminate-marked-runner']);
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-succeeded'],
+    'the cleanup duty (kill decision plus the completed-clean sweep) gates the publication: a remote terminal winner never terminalizes over an unproven sweep');
 });
 
 test('a claimed queued runner is terminated after the durable stop intent and before the lease-acquiring cancel', async () => {
@@ -626,8 +631,17 @@ test('a cleanup adapter failure never replaces the settlement outcome', async ()
   const events = [];
   const fixture = fixtureAdapters({ events, terminateRunner: 'throws', jobStatus: 'queued', remote: 'interrupted' });
   const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
-  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: false });
-  assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner', 'publish-cancelled']);
+  // A thrown duty is `not-proven` — RETENTION under the settlement invariant:
+  // the claimed queued record keeps its durable stop intent and its writable
+  // exclusion, and the next bounded pass re-arms the duty (no terminal
+  // publication over an unproven sweep).
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'queued' });
+  assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner']);
+  const stored = fixtureAdapters({ events: [], terminateRunner: 'record', jobStatus: 'queued', remote: 'interrupted' });
+  const settled = await createRescueLifecycleReconciler(stored.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(settled, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: false },
+    'the completed-clean sweep on the retried pass settles the same queued stop');
+  assert.deepEqual(stored.events, ['persist-stop-intent', 'terminate-marked-runner', 'publish-cancelled']);
 });
 
 test('a stop without any durable decision still propagates an expired budget before cleanup is due', async () => {

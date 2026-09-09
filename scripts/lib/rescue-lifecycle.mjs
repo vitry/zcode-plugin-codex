@@ -11,12 +11,16 @@ import { HOST_PLACEMENTS, STOP_CAUSES } from './rescue-binding.mjs';
  * stop into a terminal claim or releases a writable guard on elapsed time.
  *
  * Stop-settled passes additionally own the marked detached-runner cleanup
- * order: the exact remote stop/reread first, then the optional
- * `terminateMarkedRunner` seam (identity revalidation plus bounded local
- * termination inside the two nonblocking lease probes owned by the adapter
- * implementation), then the lease-acquiring terminal election or the retained
- * guard. Callers that never supply the seam (attached foreground management)
- * keep the pre-Task-7 settlement exactly.
+ * order under the settlement invariant: the optional `terminateMarkedRunner`
+ * seam (identity revalidation, the bounded local kill decision, and a
+ * COMPLETED dead-root descendant sweep, all inside the adapter) runs on every
+ * authorized remote-control exit, and its outcome GATES every terminal
+ * publication — only a `settled` duty (kill decision plus a completed-clean
+ * same-pass sweep) or an `unmarked` record may terminalize; every other
+ * outcome retains the durable guard so a surviving verified descendant always
+ * has the next bounded pass as its retry authority. Callers that never supply
+ * the seam (attached foreground management) keep the pre-Task-7 settlement
+ * exactly.
  */
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -61,9 +65,15 @@ async function reconcile(adapters, request) {
   if (joined.winner) {
     // A terminal record may still carry a marked runner whose process-lifetime
     // lease is held while the executor finalizes its exit. On an authorized
-    // stop pass the terminal early return never drops that cleanup duty; a
-    // mere view (observation without stop authority) performs no process kill.
-    if (cause !== null) await runRunnerCleanup(adapters, joined, { done: false });
+    // stop pass the terminal early return never drops that cleanup duty — and
+    // its outcome gates the projection: an unproven cleanup reports the
+    // unresolved stop so the caller keeps the obligation pending instead of
+    // discharging over a surviving descendant. A mere view (observation
+    // without stop authority) performs no process kill.
+    if (cause !== null) {
+      const cleanup = await runRunnerCleanup(adapters, joined, { done: false, outcome: null });
+      if (!cleanupAllowsSettlement(cleanup)) return { kind: 'unresolved-stop', status: joined.winner.status };
+    }
     return racedOutcome(joined.winner, joined);
   }
   if (cause !== null) return stopAndSettle(adapters, joined, cause, request.signal);
@@ -117,7 +127,7 @@ async function stopAndSettle(adapters, joined, cause, signal) {
   // The durable stop decision now exists: everything after it is the settled
   // convergence, whose aborts end in the retained guard (never a lost cleanup
   // duty and never a terminal claim on uncertainty).
-  const runnerCleanup = { done: false };
+  const runnerCleanup = { done: false, outcome: null };
   try {
     signal?.throwIfAborted();
     if (joined.job?.status === 'queued') {
@@ -125,8 +135,11 @@ async function stopAndSettle(adapters, joined, cause, signal) {
       // lease-acquiring settlement can only win after the marked runner is
       // terminated, so bounded local termination precedes the cancelled
       // publication (queued stopIntent -> kill -> acquire lease -> cancelled).
-      // An unclaimed or unmarked record makes the adapter seam a guarded no-op.
-      await runRunnerCleanup(adapters, joined, runnerCleanup);
+      // An unclaimed or unmarked record makes the adapter seam a guarded
+      // no-op. The duty outcome gates the publication: only a settled duty
+      // (kill plus completed-clean sweep) or an unmarked record terminalizes.
+      const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+      if (!cleanupAllowsSettlement(cleanup)) return { kind: 'unresolved-stop', status: joined.job?.status };
       const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause) }, { signal });
       return publishedOutcome(winner, joined);
     }
@@ -152,17 +165,18 @@ async function stopAndSettle(adapters, joined, cause, signal) {
  * result and a stop-requested interruption or failure is claimed by the stop
  * cause — while attributable active evidence proceeds to the exact remote stop
  * and reread. Anything unreadable, unavailable, or non-attributable retains
- * the guard; an unavailable executor is archived only when the adapter can
- * safely prove its absence. Every remote-control exit performs the optional
- * marked-runner cleanup: before the decision when the decision itself depends
- * on the post-kill lease state or is caused by this stop (unavailable,
- * unreadable, retained uncertainty, stop-caused cancellation), and after the
- * publication for a natural durable winner (which still never excuses
- * skipping a still-held marked runner lease). The pass that attempts no remote
- * control (evidence `none`) defers the duty to the pass that does.
- * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard] @param {{done: boolean}} [runnerCleanup]
+ * the guard. Every remote-control exit performs the optional marked-runner
+ * cleanup BEFORE any publication, and its outcome gates the settlement: only
+ * a `settled` duty (kill decision plus a completed-clean same-pass sweep) or
+ * an `unmarked` record may publish a terminal winner or archive an unavailable
+ * executor — every other outcome retains the guard (no terminal publication,
+ * no exclusion release) so the durable cancelling/queued-stop evidence re-arms
+ * the duty on the next bounded pass, which then publishes the same durable
+ * winner behind its own clean sweep. The pass that attempts no remote control
+ * (evidence `none`) defers the duty to the pass that does.
+ * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard] @param {{done: boolean, outcome: string|null}} [runnerCleanup]
  */
-async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true }) {
+async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true, outcome: 'skipped' }) {
   signal?.throwIfAborted();
   const remote = joined.remote;
   // No remote control was attempted on this pass: neither terminate nor
@@ -170,10 +184,11 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
   // later pass joins the real remote evidence.
   if (!remote || remote.kind === 'none') return retainedOutcome(adapters, joined, undefined, signal);
   if (remote.kind === 'unavailable') {
-    // Remote-control exit (channel failure): terminate the marked runner first
-    // so the executor-absence decision sees the post-cleanup lease state —
-    // archival still requires the adapter to prove the lease free.
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    // Remote-control exit (channel failure): run the cleanup duty first — an
+    // unproven sweep retains the guard instead of the executor-absence
+    // decision, which would terminalize a marked job over survivors.
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, joined, remote.error, signal);
     const settled = await adapters.settleUnavailableExecutor(joined, { error: remote.error }, { signal });
     return settledOutcome(settled, joined);
   }
@@ -182,10 +197,12 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     return retainedOutcome(adapters, joined, remote.error, signal);
   }
   if (remote.classification === 'succeeded') {
-    // Natural success: the durable winner first, then the residual local
-    // cleanup duty for a still-held marked runner lease.
+    // Natural success: the cleanup duty runs BEFORE the durable winner so a
+    // marked job never terminalizes over an unproven sweep — the retained pass
+    // re-arms the duty and a later pass publishes the same winner.
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, joined, undefined, signal);
     const winner = await adapters.publishWinner(joined, { status: 'succeeded', classification: 'succeeded', snapshot: remote.snapshot }, { signal });
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
     return publishedOutcome(winner, joined);
   }
   if (remote.classification === 'failed' && guard === undefined) {
@@ -193,24 +210,27 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // was not caused by this stop, so its failure semantics are published —
     // never rewritten as cancellation. Failure observed only after an
     // acknowledged stop remains the cancelled race winner below.
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, joined, undefined, signal);
     const winner = await adapters.publishWinner(joined, { status: 'failed', classification: 'failed', snapshot: remote.snapshot,
       message: 'ZCode reported a terminal error before the stop could be attempted.' }, { signal });
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
     return publishedOutcome(winner, joined);
   }
   if (remote.classification === 'interrupted' || remote.classification === 'failed') {
     const publish = () => adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), classification: remote.classification, snapshot: remote.snapshot }, { signal });
     if (guard === undefined && remote.classification === 'interrupted') {
-      // First-level interrupted evidence precedes any stop attempt: publish the
-      // settlement this evidence already supports, then run the cleanup duty.
+      // First-level interrupted evidence precedes any stop attempt: the gated
+      // cleanup duty first, then the settlement this evidence already supports.
+      const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+      if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, joined, undefined, signal);
       const winner = await publish();
-      await runRunnerCleanup(adapters, joined, runnerCleanup);
       return publishedOutcome(winner, joined);
     }
     // A stop-caused race winner settles through the lease-aware publication,
-    // which re-reads the exact record after the local termination: the winner
-    // or the retained guard decides from post-cleanup evidence.
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    // which re-reads the exact record after the gated local termination: the
+    // winner or the retained guard decides from post-cleanup evidence.
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
     const winner = await publish();
     return publishedOutcome(winner, joined);
   }
@@ -224,7 +244,11 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
   }
   const revalidated = await adapters.revalidateGeneration(joined, { signal });
   if (revalidated?.kind === 'stale') {
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    // A raced terminal winner is not discharged over an unproven sweep: the
+    // unresolved-stop outcome keeps the obligation pending (the winner itself
+    // is already durable and carries no settlement claim of ours).
+    if (!cleanupAllowsSettlement(cleanup)) return { kind: 'unresolved-stop', status: revalidated.winner?.status ?? joined.job?.status };
     return racedOutcome(revalidated.winner, { ...joined, resumableEvidence: refreshedEvidence(revalidated) });
   }
   signal?.throwIfAborted();
@@ -239,38 +263,68 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
   if (isPlainObject(stop.preExistingTerminal)) {
     // A terminal outcome observed by the adapter BEFORE issuing the stop keeps
     // its own semantics: natural success publishes its result; an engine
-    // terminal failure publishes failed. Never the post-stop cancellation race.
+    // terminal failure publishes failed. Never the post-stop cancellation race
+    // — and never over an unproven sweep.
     const evidence = stop.preExistingTerminal;
+    const cleanup = await runRunnerCleanup(adapters, stopping, runnerCleanup);
+    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, stopping, undefined, signal);
     const winner = await adapters.publishWinner(stopping, evidence.classification === 'succeeded'
       ? { status: 'succeeded', classification: 'succeeded', snapshot: evidence.snapshot }
       : { status: 'failed', classification: 'failed', snapshot: evidence.snapshot,
           message: 'ZCode reported a terminal error before the stop could be attempted.' }, { signal });
-    await runRunnerCleanup(adapters, stopping, runnerCleanup);
     return publishedOutcome(winner, stopping);
   }
   const reread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
   return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal, revalidated?.guard ?? null, runnerCleanup);
 }
 
+/** @typedef {('settled'|'unmarked'|'unproven'|'not-proven'|'budget-expired'|'pending'|'skipped')} RunnerCleanupOutcome */
 /**
  * Perform the reconciler-owned marked-runner cleanup exactly once per stop
- * pass. The adapter revalidates the durable record itself — runner-format
- * marker, exact owner/epoch/job/claim, and two nonblocking held-lease probes —
- * and signals only within its own remaining local deadline (best-effort
- * identity by design: a probe-to-signal race remains, and a free lease is
- * never signaled). The remote-control signal never gates this duty, and a
- * cleanup failure never replaces the settlement outcome: the durable
- * cancelling/queued-stop evidence re-arms the duty for the next bounded pass.
- * @param {any} adapters @param {any} joined @param {{done: boolean}} state
+ * pass and return its OUTCOME as settlement authority: `settled` (the kill
+ * decision ran and the same-pass descendant sweep completed clean), `unmarked`
+ * (no marked claim — no local duty), or the retention outcomes
+ * (`budget-expired`, `pending`, `unproven`, `not-proven`; `skipped` when this
+ * pass supplied no cleanup seam at all). The adapter revalidates the durable
+ * record itself — runner-format marker, exact owner/epoch/job/claim, and two
+ * nonblocking held-lease probes — and signals only within its own remaining
+ * local deadline (best-effort identity by design: a probe-to-signal race
+ * remains, and a free lease is never signaled). The remote-control signal
+ * never gates this duty, and a cleanup failure never replaces the settlement
+ * outcome: the durable cancelling/queued-stop evidence re-arms the duty for
+ * the next bounded pass. The caller gates every terminal publication on
+ * cleanupAllowsSettlement of this result.
+ * @param {any} adapters @param {any} joined @param {{done: boolean, outcome: string|null}} state
+ * @returns {Promise<('settled'|'unmarked'|'unproven'|'not-proven'|'budget-expired'|'pending'|'skipped')>}
  */
 async function runRunnerCleanup(adapters, joined, state) {
   if (state.done || typeof adapters.terminateMarkedRunner !== 'function') {
     state.done = true;
-    return;
+    return /** @type {RunnerCleanupOutcome} */ (state.outcome ?? 'skipped');
   }
   state.done = true;
-  try { await adapters.terminateMarkedRunner(joined, {}); }
-  catch { /* retained uncertainty is the durable retry authority */ }
+  try {
+    const outcome = await adapters.terminateMarkedRunner(joined, {});
+    state.outcome = outcome && typeof outcome.kind === 'string'
+      ? /** @type {RunnerCleanupOutcome} */ (outcome.kind) : 'not-proven';
+  } catch { state.outcome = 'not-proven'; /* retained uncertainty is the durable retry authority */ }
+  return /** @type {RunnerCleanupOutcome} */ (state.outcome);
+}
+
+/**
+ * Whether a runner-cleanup outcome permits terminal settlement in the pass
+ * that produced it: a completed-clean sweep (`settled`), a record with no
+ * marked claim (`unmarked`) or no PROVABLE claim (`unproven` — the fence-gap
+ * shape whose lease-acquiring publication is itself the identity gate; a
+ * marker without a recorded pid/lease pair names no signalable process), or a
+ * pass with no cleanup seam at all (`skipped` — attached foreground
+ * management keeps the pre-Task-7 settlement). Every other outcome is
+ * retention: no terminal publication, no exclusion release, no receipt
+ * discharge — the durable guard re-arms the duty on the next bounded pass.
+ * @param {string|null} outcome
+ */
+function cleanupAllowsSettlement(outcome) {
+  return outcome === 'settled' || outcome === 'unmarked' || outcome === 'unproven' || outcome === 'skipped';
 }
 
 /**

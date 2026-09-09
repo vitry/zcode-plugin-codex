@@ -97,8 +97,8 @@ Confirmation that a background Rescue has been durably accepted for execution. I
 _Avoid_: Runner readiness confirmation, execution-start confirmation
 
 **Completion Notice**:
-A concise Codex Host message announcing a background Companion Run's authoritative terminal outcome while leaving the complete stored output to Result.
-_Avoid_: Full result, next-prompt reminder
+A concise Host message announcing a background Companion Run's authoritative terminal outcome while leaving the complete stored output to Result. For true-background Rescue it is presented through Status/Result pull and UserPromptSubmit unread-job discovery rather than a live push.
+_Avoid_: Live push, full result, transactional exactly-once delivery
 
 **Orphaned Job**:
 A nonterminal Tracked Job whose exact worker-lifetime lease is no longer held, proving that its local executor has disappeared.

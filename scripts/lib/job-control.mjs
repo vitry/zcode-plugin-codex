@@ -6,9 +6,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
-import { terminateRecordedProcessTree } from './process.mjs';
+import { sweepDeadRootDescendantTree, terminateRecordedProcessTree } from './process.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
-import { recordedWorkspaceBrokerPids } from '../zcode-broker.mjs';
+import { recordedWorkspaceBrokerPids, scanBrokerIdentityDirectory } from '../zcode-broker.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
@@ -16,6 +16,61 @@ import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBound
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+// The broker-identity lookup's own documented default bound (see
+// recordedWorkspaceBrokerPids): the lookup may never claim MORE than this from
+// the shared duty budget, and it always leaves the minimal termination slice
+// below untouched so the guarded kill keeps a non-zero budget. Exported so the
+// SessionEnd terminal-obligation sweep (see recovery.mjs) shares one accounting.
+// The bound is pure filesystem I/O (no process launch), so one value serves
+// both platforms.
+export const BROKER_LOOKUP_MAX_BUDGET_MS = 250;
+// The minimal non-zero budget the guarded kill keeps for itself when the
+// broker lookup (or identity revalidation) has consumed most of the shared
+// duty budget; below this slice the lookup is skipped entirely so the kill
+// runs pid-only with the whole remaining budget instead of being starved.
+// POSIX values are in-process dispatches (a group signal), so 50ms suffices.
+// WINDOWS: the kill sequence is real process launches (graceful + forced
+// taskkill, each 0.1-1s on a loaded machine) and one Windows process-table
+// snapshot costs 0.5-3s (see process.mjs WINDOWS_SNAPSHOT_KILL_RESERVE_MS), so
+// a 50ms reserve would let the lookup start a walk that starves the kill into
+// a no-op — the runner would never even be signalled. The Windows reserve
+// keeps the pid-only kill dispatchable and skips the lookup instead.
+export const MIN_RUNNER_TERMINATION_BUDGET_MS = 50;
+export const WINDOWS_MIN_RUNNER_TERMINATION_BUDGET_MS = 1_500;
+// The absolute cap of one guarded runner termination inside a shared duty
+// deadline (see terminateLeasedProcessTree): POSIX caps at the historical
+// 750ms group-kill bound; Windows caps at one exclusion-aware walk (two
+// bounded snapshots) plus the kill dispatch — still bounded by the caller's
+// remaining deadline through the min() below.
+export const WINDOWS_RUNNER_TERMINATION_BUDGET_MS = 6_000;
+// The duty fallback when a caller (management reconciliation, cancellation
+// election) proves NEITHER an absolute deadline nor a relative budget: POSIX
+// keeps the historical 1_000ms; Windows needs a budget one kill plus one
+// completed same-pass sweep can actually converge inside (two to four
+// process-table snapshots plus taskkill dispatches). This fallback IS the
+// Windows convergence budget for the NON-HOOK reconcile entry points —
+// `status` / `status --wait` (the companion's management reconciler and
+// owner-recovery passes) and the cancellation election carry no native hook
+// limit, so 30s lets one pass fit even a cold CI sweep (each PowerShell
+// snapshot alone costs 1.5-5s cold, and the pass also pays the identity
+// revalidation, the broker lookup, and the guarded kill). The HOOK passes
+// deliberately do NOT get this budget: a UserPromptSubmit reconciliation is
+// capped near the native ten-second prompt limit (8s budget in
+// hooks/lib/hook-state.mjs) and the SessionEnd pass at 2.75s, so on a slow
+// machine those passes fail fast and defer — the durable stop intent plus the
+// pending receipt re-arm the duty, and `status --wait` (THIS budget) is the
+// Windows convergence driver that finishes what a deferred hook pass retained.
+export const WINDOWS_RUNNER_DUTY_FALLBACK_MS = 30_000;
+
+/** @param {string} [platform] @returns {number} the platform's lookup-skip threshold below which the kill runs pid-only. */
+export function minRunnerTerminationBudgetMs(platform = process.platform) {
+  return platform === 'win32' ? WINDOWS_MIN_RUNNER_TERMINATION_BUDGET_MS : MIN_RUNNER_TERMINATION_BUDGET_MS;
+}
+
+/** @param {string} [platform] @returns {number} the platform's absolute cap for one guarded runner termination. */
+export function runnerTerminationBudgetCapMs(platform = process.platform) {
+  return platform === 'win32' ? WINDOWS_RUNNER_TERMINATION_BUDGET_MS : 750;
+}
 
 /**
  * Read the one Rescue job bound to a trusted forwarding executor without
@@ -96,41 +151,54 @@ function isDigestValue(value) { return typeof value === 'string' && /^[a-f0-9]{6
  * process group. A LOCK_TIMEOUT proves a live holder still owns the lease, so
  * the recorded pid is still that worker. Records without a digest lease never
  * signal. The broker exclusion is forwarded in exactly ONE of three states:
- * `input.excludePids` (resolved by the writable-Rescue caller, see
+ * `input.excludeBrokers` (resolved by the writable-Rescue caller, see
  * terminateMarkedRunnerTree) names the COMPLETE, proven separately managed
- * broker identity pid list the termination must spare, so the Windows branch
- * walks the runner's PPID descendant tree minus the excluded broker subtrees;
+ * broker identities — each a pid PLUS its recorded launch signature — the
+ * Windows branch must spare, so it walks the runner's PPID descendant tree
+ * excluding only identity-matched broker subtrees (a reused pid whose command
+ * line no longer matches the recorded signature is never excluded);
  * `input.excludeUnknown` (the lookup failed, timed out, or proved nothing)
  * makes the Windows branch fail closed to the recorded pid alone (never /T)
  * because any descendant could be the broker; NEITHER state means the caller
  * has no broker concept at all and keeps the full `taskkill /T` tree cleanup.
  * The POSIX group kill cannot reach the detached broker (its own group at
- * spawn) and ignores both states.
- * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number,excludePids?:readonly number[],excludeUnknown?:boolean})=>Promise<unknown>} terminateProcessTree
+ * spawn) and ignores both states. The outcome is reported so the guarded
+ * caller can keep its accounting honest: `released` (nothing to signal — the
+ * lease was free), `no-claim` (the record carries no signalable claim),
+ * `budget-expired` (the deadline was spent before a proven kill could be
+ * dispatched — the caller must NOT report the duty as performed), `incomplete`
+ * (the Windows verified kill sequence stopped early — the shared budget was
+ * spent or a dispatch failed after only some verified targets were signalled —
+ * so verified descendants survive and the caller must NOT report the duty as
+ * performed either), and `signaled` (the proven tree termination ran to its
+ * complete verified plan).
+ * @param {any} input @param {any} job @param {(pid:number,options:{signal?:AbortSignal,timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} terminateProcessTree
+ * @returns {Promise<{signaled:boolean, reason:'released'|'no-claim'|'budget-expired'|'incomplete'|'signaled', pending?:number[]}>}
  */
 export async function terminateLeasedProcessTree(input, job, terminateProcessTree) {
-  if (!isDigestValue(job.workerLeaseId) || !Number.isSafeInteger(job.childPid) || job.childPid <= 0) return;
+  if (!isDigestValue(job.workerLeaseId) || !Number.isSafeInteger(job.childPid) || job.childPid <= 0) return { signaled: false, reason: 'no-claim' };
   try {
     await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => {
       // The lease was FREE — the recorded worker already released it, so the
       // recorded pid is no longer proven to be that worker. Never signal it.
       return undefined;
     });
+    return { signaled: false, reason: 'released' };
   } catch (error) {
     if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') {
       // A live holder still owns the lease: the recorded pid is still that
       // worker's group leader — the exact recorded tree, safe to terminate.
       // Local termination runs inside the caller's ABSOLUTE deadline when one
       // is proven (the stale initial remote timeout would grant a fresh budget
-      // after the shared budget is already spent), capped at 750ms; when the
-      // deadline is already spent, the kill is skipped and the pending receipt
-      // remains the compensation authority. The remote-control signal never
-      // gates this local kill.
+      // after the shared budget is already spent), capped by the platform's
+      // termination bound; when the deadline is already spent, the kill is
+      // skipped and the pending receipt remains the compensation authority.
+      // The remote-control signal never gates this local kill.
       const absoluteDeadlineMs = typeof input.deadlineMs === 'number' && Number.isFinite(input.deadlineMs)
         ? input.deadlineMs - Date.now()
-        : (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : 1_000);
-      const terminationBudgetMs = Math.min(absoluteDeadlineMs, 750);
-      if (terminationBudgetMs <= 0) return;
+        : (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? input.timeoutMs : runnerTerminationBudgetCapMs());
+      const terminationBudgetMs = Math.min(absoluteDeadlineMs, runnerTerminationBudgetCapMs());
+      if (terminationBudgetMs <= 0) return { signaled: false, reason: 'budget-expired' };
       // Re-probe once immediately before signaling: the first LOCK_TIMEOUT may
       // predate a scheduling gap in which the worker released its lease, exited,
       // and its pid was reused — signaling then could hit an unrelated process.
@@ -141,25 +209,39 @@ export async function terminateLeasedProcessTree(input, job, terminateProcessTre
       // signaled.
       try {
         await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => undefined);
-        return;
+        return { signaled: false, reason: 'released' };
       } catch (reprobeError) {
         if (!(reprobeError instanceof PluginError && reprobeError.code === 'LOCK_TIMEOUT')) throw reprobeError;
       }
-      await terminateProcessTree(job.childPid, {
+      const termination = await terminateProcessTree(job.childPid, {
         timeoutMs: terminationBudgetMs,
-        ...(Array.isArray(input.excludePids) && input.excludePids.length > 0
-          ? { excludePids: input.excludePids }
+        ...(Array.isArray(input.excludeBrokers) && input.excludeBrokers.length > 0
+          ? { excludeBrokers: input.excludeBrokers }
           : input.excludeUnknown === true ? { excludeUnknown: true } : {}),
       });
+      // The Windows verified kill sequence reports INCOMPLETE when it stopped
+      // early — the shared budget was spent (typically by the runner's own
+      // kill) or a dispatch failed — with verified descendants still alive.
+      // Reporting `signaled` would let the settlement discharge a cleanup
+      // obligation whose surviving descendants have no retry path, so the
+      // outcome stays honest: non-signaled, with the pending pids preserved
+      // as evidence for the duty that must re-arm. The post-kill lease
+      // convergence below still runs first — the runner itself is the FIRST
+      // verified target and is usually already signalled — only the reported
+      // outcome differs.
       // The lease is process-lifetime: it frees when the terminated executor is
       // reaped. Wait (bounded by the same absolute deadline, polling ONLY the
       // lease lock — never a state or cancellation lock) so a lease-acquiring
       // settlement in the same pass converges instead of deferring to a retry.
       const releaseDeadlineMs = typeof input.deadlineMs === 'number' && Number.isFinite(input.deadlineMs)
         ? input.deadlineMs - Date.now()
-        : 300;
+        : (process.platform === 'win32' ? 1_000 : 300);
       await waitForWorkerLeaseRelease(input, job, releaseDeadlineMs);
-      return;
+      const incompleteOutcome = /** @type {any} */ (termination);
+      if (incompleteOutcome !== null && typeof incompleteOutcome === 'object' && incompleteOutcome.completed === false) {
+        return { signaled: false, reason: 'incomplete', pending: Array.isArray(incompleteOutcome.pending) ? [...incompleteOutcome.pending] : [] };
+      }
+      return { signaled: true, reason: 'signaled' };
     }
     throw error;
   }
@@ -178,7 +260,7 @@ async function waitForWorkerLeaseRelease(input, job, budgetMs) {
   if (!Number.isSafeInteger(budgetMs) || budgetMs <= 0) return;
   const scheduleTimeout = input.setTimeout ?? globalThis.setTimeout;
   const cancelTimeout = input.clearTimeout ?? globalThis.clearTimeout;
-  const deadline = Date.now() + Math.min(budgetMs, 750);
+  const deadline = Date.now() + Math.min(budgetMs, process.platform === 'win32' ? 1_000 : 750);
   for (;;) {
     let held = true;
     try {
@@ -197,40 +279,144 @@ async function waitForWorkerLeaseRelease(input, job, budgetMs) {
 }
 
 /**
- * Guarded local termination of one MARKED detached Rescue runner. The cleanup
- * selection's exact identity must survive revalidation: the runner-format
- * marker, this owner's writable Rescue job, the owner/epoch the caller settled
- * for, and the unchanged executor PID + worker-lease claim — plus (inside the
- * shared lease primitive) two nonblocking held-lease probes immediately around
- * the signal. A free lease is never signaled, and an unmarked attached
- * companion is NEVER targeted with detached process-group termination. The
- * bounded local budget derives from the absolute `deadlineMs` only: a remote
- * abort spends neither this duty nor the caller's locks. Every failure mode
- * (unreadable record, identity mismatch, contended read) fails closed as
- * non-termination; the durable cancelling/queued-stop evidence re-arms the
- * duty for the next bounded pass. This mutates no job state: the marker/PID/
- * lease stay preserved until the executor itself releases them.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void}} input
+ * Guarded local termination of one MARKED detached Rescue runner, CLOSED by
+ * the same-pass descendant sweep — the structural settlement invariant: a
+ * marked claim is `settled` ONLY when this pass ran the guarded kill decision
+ * AND a COMPLETED dead-root descendant sweep that found nothing left to kill.
+ * The cleanup selection's exact identity must survive revalidation: the
+ * runner-format marker, this owner's writable Rescue job, the owner/epoch the
+ * caller settled for, and the unchanged executor PID + worker-lease claim —
+ * plus (inside the shared lease primitive) two nonblocking held-lease probes
+ * immediately around the signal. A free lease is never signaled, and an
+ * unmarked attached companion is NEVER targeted with detached process-group
+ * termination. The bounded local budget derives from the absolute `deadlineMs`
+ * only: a remote abort spends neither this duty nor the caller's locks. Every
+ * failure mode (unreadable record, identity mismatch, contended read) fails
+ * closed as non-termination; the durable cancelling/queued-stop evidence
+ * re-arms the duty for the next bounded pass (discovery of terminal marked
+ * claims never depends on the lease state, so every later pass retries the
+ * SAME sweep — the sweep itself is the retry authority; no cleanup ledger
+ * exists). This mutates no job state: the marker/PID/lease stay preserved
+ * until the executor itself releases them.
+ *
+ * WINDOWS PASS-BUDGET SPLIT (convergence): a caller that proves no deadline
+ * gets the platform fallback (`WINDOWS_RUNNER_DUTY_FALLBACK_MS`) — the NON-HOOK
+ * reconcile entry points (`status` / `status --wait`, the owner-recovery pass,
+ * the cancellation election) carry no native hook limit, so on Windows their
+ * budget is the realistic multi-second convergence window. HOOK passes
+ * deliberately do NOT converge on Windows: a UserPromptSubmit reconciliation
+ * is capped near the native ten-second prompt limit and the SessionEnd pass at
+ * ~2.75s, and a cold process-table sweep alone can exceed either on a loaded
+ * machine — those passes fail fast, retain the durable stop evidence, and
+ * defer; `status --wait` (this fallback budget) is the Windows convergence
+ * driver that finishes what a deferred hook pass retained.
+ *
+ * OUTCOME CONTRACT (marked claims):
+ * - `settled` — the kill ran (or the runner had already exited and released)
+ *   AND the same-pass sweep COMPLETED CLEAN: the tree is proven gone.
+ * - `pending` — the kill decision ran but the sweep did not come back clean
+ *   (`sweep` names the evidence: `swept` survivors were signalled,
+ *   `incomplete` the sweep could not run or prove — spent budget, an unproven
+ *   Windows broker exclusion lookup (`failed`; POSIX never consults one, see
+ *   sweepDeadRootForDuty), a dead-root proof failure
+ *   (`root-alive` residual)). The caller must retain: no terminal
+ *   publication, no exclusion release, no receipt discharge.
+ * - `budget-expired` — the shared deadline was spent before a proven kill
+ *   could be dispatched, or the verified kill sequence stopped early. Same
+ *   retention obligation as `pending`.
+ * - `unmarked` — no marked claim: no local duty exists and the caller's
+ *   settlement is not gated.
+ * - `unproven` / `not-proven` — the claim identity is unprovable: retention.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
  * @param {any} selection the durable record this cleanup was selected for
- * @param {(pid:number,options:{timeoutMs?:number,excludePids?:readonly number[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
- * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'}>}
+ * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
+ * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
  */
 export async function terminateMarkedRunnerTree(input, selection, terminateProcessTree = terminateRecordedProcessTree) {
+  // The per-pass duty diagnostic is Windows-only, unconditional, and permanent
+  // (the repo's stderr convention for bounded-pass evidence — the same
+  // one-line discipline as the SessionEnd hook's `deferred:` diagnostics): one
+  // stderr line per pass naming the outcome (`settled` / `pending` /
+  // `budget-expired` / …), the sweep verdict (`swept` / `incomplete` /
+  // `root-alive`), the guarded-kill reason, each stage's elapsed share of the
+  // duty budget, and the total elapsed ms — so a slow CI machine shows WHICH
+  // stage consumed the budget when a pass fails to converge, with no debug
+  // flag required. Real Windows hosts only: a unit test pinning
+  // `platform: 'win32'` on a POSIX host stays silent, and POSIX production
+  // never emits (its group dispatch never budget-starves a pass).
+  if (process.platform !== 'win32') return runMarkedRunnerDuty(input, selection, terminateProcessTree);
+  const startedAtMs = Date.now();
+  /** @type {Record<string, number|string>} */
+  const stageTimings = {};
+  try {
+    const outcome = await runMarkedRunnerDuty({ ...input, dutyStageTimings: stageTimings }, selection, terminateProcessTree);
+    emitWindowsDutyDiagnostic(outcome, stageTimings, startedAtMs);
+    return outcome;
+  } catch (error) {
+    emitWindowsDutyDiagnostic({ kind: 'not-proven', thrown: error instanceof PluginError ? error.code : 'throw' }, stageTimings, startedAtMs);
+    throw error;
+  }
+}
+
+/** Emit the Windows duty diagnostic line (see terminateMarkedRunnerTree).
+ * Never throws: a diagnostic failure must never mask the duty outcome it
+ * reports. @param {any} outcome @param {Record<string, number|string>} stageTimings @param {number} startedAtMs */
+function emitWindowsDutyDiagnostic(outcome, stageTimings, startedAtMs) {
+  try {
+    const { budgetMs = 0, revalidateMs = 0, lookupMs = 0, killMs = 0, sweepMs = 0, killReason = '' } = stageTimings;
+    const accounting = {
+      outcome: outcome?.kind, ...(outcome?.sweep ? { sweep: outcome.sweep } : {}),
+      ...(Array.isArray(outcome?.pending) && outcome.pending.length > 0 ? { pending: outcome.pending.length } : {}),
+      ...(outcome?.thrown ? { thrown: outcome.thrown } : {}),
+      ...(killReason ? { killReason } : {}),
+      budgetMs, elapsedMs: Date.now() - startedAtMs,
+      stageMs: { revalidate: revalidateMs, lookup: lookupMs, kill: killMs, sweep: sweepMs },
+    };
+    process.stderr.write(`ZCode marked-runner duty pass (windows): ${JSON.stringify(accounting)}\n`);
+  } catch { /* diagnostics never mask the duty outcome */ }
+}
+
+/** The marked-runner cleanup duty itself (see terminateMarkedRunnerTree for
+ * the contract). The optional `input.dutyStageTimings` record accumulates the
+ * per-stage elapsed-ms accounting the Windows diagnostic surfaces.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,dutyStageTimings?:Record<string,number|string>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
+ * @param {any} selection the durable record this cleanup was selected for
+ * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
+ * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
+ */
+async function runMarkedRunnerDuty(input, selection, terminateProcessTree = terminateRecordedProcessTree) {
   // Marker requirement FIRST: absence means an attached/legacy record, whose
   // process group may be the caller's own — never a termination target here.
   if (!isPlainRecord(selection) || selection.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
     || selection.command !== 'rescue' || selection.readOnly !== false) return { kind: 'unmarked' };
   if (!isDigestValue(selection.workerLeaseId) || !Number.isSafeInteger(selection.childPid) || selection.childPid <= 0) return { kind: 'unproven' };
+  // One platform resolution drives every budget split below (the caller may
+  // pin a foreign platform for contract tests, exactly like the sweep split).
+  const platform = typeof input.platform === 'string' && input.platform.length > 0 ? input.platform : process.platform;
   const remainingMs = Number.isSafeInteger(input.deadlineMs) && Number.isFinite(input.deadlineMs)
     ? Math.max(0, /** @type {number} */ (input.deadlineMs) - Date.now())
-    : (Number.isSafeInteger(input.timeoutMs) && /** @type {number} */ (input.timeoutMs) >= 0 ? /** @type {number} */ (input.timeoutMs) : 1_000);
+    : (Number.isSafeInteger(input.timeoutMs) && /** @type {number} */ (input.timeoutMs) >= 0 ? /** @type {number} */ (input.timeoutMs) : platform === 'win32' ? WINDOWS_RUNNER_DUTY_FALLBACK_MS : 1_000);
   if (remainingMs <= 0) return { kind: 'budget-expired' };
+  // ONE absolute local bound spans the whole duty (identity revalidation →
+  // broker lookup → guarded kill): the caller's proven absolute deadline, or
+  // the relative fallback budget anchored here when no deadline was proven.
+  const dutyDeadlineMs = Number.isSafeInteger(input.deadlineMs) && Number.isFinite(input.deadlineMs)
+    ? /** @type {number} */ (input.deadlineMs)
+    : Date.now() + remainingMs;
+  // Per-stage elapsed-ms accounting for the Windows duty diagnostic (see
+  // terminateMarkedRunnerTree); a plain object noop when the diagnostic is off.
+  const stageTimings = input.dutyStageTimings;
+  const dutyStartedAtMs = Date.now();
+  if (stageTimings) stageTimings.budgetMs = Math.max(0, dutyDeadlineMs - dutyStartedAtMs);
+  const markStage = (/** @type {string} */ name, /** @type {number} */ sinceMs) => { if (stageTimings) stageTimings[name] = Date.now() - sinceMs; };
   // Identity revalidation reads the LATEST durable record under a bounded lock
   // budget but never under the (possibly expired) remote-control signal: an
   // unreadable or contended read fails closed without signaling.
   let current = null;
+  const revalidateStartedAtMs = Date.now();
   try { current = await input.store.readJob(input.workspace, selection.id, { timeoutMs: Math.min(remainingMs, 500) }); }
-  catch { return { kind: 'not-proven' }; }
+  catch { markStage('revalidateMs', revalidateStartedAtMs); return { kind: 'not-proven' }; }
+  markStage('revalidateMs', revalidateStartedAtMs);
   if (!isPlainRecord(current) || current.id !== selection.id
     || current.ownerSessionId !== input.ownerSessionId
     || current.command !== 'rescue' || current.readOnly !== false
@@ -243,34 +429,321 @@ export async function terminateMarkedRunnerTree(input, selection, terminateProce
   }
   // Broker exclusion resolution (writable-Rescue runner-termination path):
   // the durable workspace broker identities name the separately managed
-  // broker pids the Windows PPID-tree walk must spare, so descendant cleanup
-  // stays EXACT — runner-owned descendants die, the broker subtree survives.
-  // The lookup is THREE-VALUED and fails closed: only a COMPLETE, proven pid
-  // list forwards `excludePids`; a failed, timed-out, corrupt, partial, or
-  // absent lookup forwards the explicit `excludeUnknown` state instead, and
-  // the Windows branch then kills ONLY the recorded pid (graceful, then
-  // forced, never /T) rather than risking a broker it cannot name — including
-  // a workspace that legitimately records no broker yet, where pid-only stays
-  // the safe choice because a broker could still exist (or start) unrecorded
-  // below the runner. The POSIX group kill ignores both states.
-  /** @type {{status:'resolved'|'absent'|'failed',pids:number[]}} */
-  let exclusions;
-  try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace }); }
-  catch { exclusions = { status: 'failed', pids: [] }; }
-  await terminateLeasedProcessTree({
-    ...input,
-    ...(exclusions.status === 'resolved' && exclusions.pids.length > 0
-      ? { excludePids: exclusions.pids }
-      : { excludeUnknown: true }),
-    deadlineMs: input.deadlineMs, timeoutMs: remainingMs,
-  }, current, terminateProcessTree);
-  return { kind: 'settled' };
+  // brokers — each a recorded pid PLUS its recorded launch signature (how the
+  // broker was launched) — that the Windows PPID-tree walk must spare, so
+  // descendant cleanup stays EXACT: runner-owned descendants die, the broker
+  // subtree survives, and a stale identity whose pid was reused by a
+  // non-broker descendant is UNMASKED by the signature match instead of being
+  // trusted as an exclusion. The lookup is THREE-VALUED and fails closed:
+  // only a COMPLETE, proven identity-matched list forwards `excludeBrokers`;
+  // a failed, timed-out, corrupt, partial, signature-less, or absent lookup
+  // forwards the explicit `excludeUnknown` state instead, and the Windows
+  // branch then kills ONLY the recorded pid (forced-only, never /T)
+  // rather than risking a broker it cannot name — including a workspace that
+  // legitimately records no broker yet, where pid-only stays the safe choice
+  // because a broker could still exist (or start) unrecorded below the runner.
+  // The POSIX group kill ignores both states.
+  //
+  // STARTUP SYNCHRONIZATION (why the resolved snapshot holds the lock): the
+  // lookup runs under the `broker/.lock` startup lock `ensureZCodeBroker`
+  // holds across daemon spawn + identity publication, and for a `resolved`
+  // outcome it keeps that lock HELD past its return (the `release()` handle
+  // below) until termination has been planned AND dispatched. Serialization
+  // alone makes the snapshot authoritative: released early, a wire profile
+  // starting in the lookup-return → kill gap would publish a broker pid
+  // absent from the exclusion, and the descendant walk would force-kill that
+  // managed broker as a "runner descendant" — violating the broker-survival
+  // invariant (ADR 0021). `absent`/`failed` hold NO lock and need none: they
+  // degrade to the pid-only kill, which never walks the descendant tree, so
+  // a startup racing the kill (`absent` observed, broker spawns right after)
+  // spawns outside the kill's reach entirely — the pid-only kill cannot touch
+  // what it cannot walk.
+  //
+  // LOCK-ORDER SAFETY of the held span: the broker lock stays strictly BELOW
+  // the cancellation lock this duty already runs under in production (the
+  // settlement path takes broker AFTER cancellation, and no path holding
+  // `broker/.lock` — ensureZCodeBroker, dead-identity retirement, the
+  // broker's own owner-store locks — ever takes a cancellation lock), and the
+  // span never WAITS on another lock: the worker-lease contacts inside
+  // terminateLeasedProcessTree are zero-timeout probes (they report a held
+  // lease instead of waiting), and the only blocking wait under the held
+  // broker lock is the kill itself, bounded by this duty's absolute deadline
+  // (the bounded release wait that follows it shares that same remaining
+  // deadline: at expiry the release abandons its wait — the underlying unlock
+  // proceeds in the background and self-heals free — so a wedged close can
+  // never extend the caller's lifecycle deadline).
+  // A runner blocked mid-startup on the broker lock we hold is exactly the
+  // runner this duty kills — the kill and release unblock it; they cannot
+  // deadlock on it.
+  //
+  // DEADLINE ACCOUNTING: the revalidation read above may have consumed an
+  // unbounded share of the duty budget, so the lookup's budget is recomputed
+  // FRESHLY here as the remaining time to `dutyDeadlineMs` (capped at the
+  // lookup's own documented bound) minus a minimal non-zero slice the kill
+  // keeps for itself — lookup and termination together can never exceed the
+  // shared absolute deadline. When less than the minimal slice remains, the
+  // lookup is skipped entirely and the kill runs pid-only (`excludeUnknown`)
+  // with the whole remaining budget. If the lookup still spends its budget
+  // past the deadline, the duty degrades to the established `budget-expired`
+  // convention instead of dispatching a kill past the deadline or reporting
+  // a false `settled` — the durable evidence re-arms the duty next pass.
+  const remainingBeforeLookupMs = Math.max(0, dutyDeadlineMs - Date.now());
+  if (remainingBeforeLookupMs <= 0) return { kind: 'budget-expired' };
+  const lookupBudgetMs = Math.min(BROKER_LOOKUP_MAX_BUDGET_MS, remainingBeforeLookupMs - minRunnerTerminationBudgetMs(platform));
+  /** @type {{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[],release?:(releaseBudgetMs?:number)=>Promise<void>}} */
+  let exclusions = { status: 'failed', pids: [], brokers: [] };
+  /** @type {{signaled:boolean, reason:'released'|'no-claim'|'budget-expired'|'incomplete'|'signaled', pending?:number[]}|undefined} */
+  let termination = undefined;
+  const lookupStartedAtMs = Date.now();
+  try {
+    if (lookupBudgetMs >= 1) {
+      // The `resolved` outcome keeps the startup lock held past this call (see
+      // STARTUP SYNCHRONIZATION above); the finally releases it. Below the
+      // minimal slice, the lookup is skipped and the default fail-closed state
+      // lets the guarded kill keep the entire remaining budget pid-only.
+      try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true }); }
+      catch { exclusions = { status: 'failed', pids: [], brokers: [] }; }
+    }
+    markStage('lookupMs', lookupStartedAtMs);
+    const remainingBeforeKillMs = Math.max(0, dutyDeadlineMs - Date.now());
+    if (remainingBeforeKillMs <= 0) return { kind: 'budget-expired' };
+    // The DERIVED absolute duty deadline is forwarded even when the caller
+    // supplied only `timeoutMs`: lookup, guarded kill, AND the post-kill
+    // lease-release poll below must share ONE absolute bound, or the release
+    // poll would mint a fresh 300ms budget of its own and push the whole
+    // cleanup past the caller's overall timeout.
+    const killStartedAtMs = Date.now();
+    termination = await terminateLeasedProcessTree({
+      ...input,
+      ...(exclusions.status === 'resolved' && exclusions.brokers.length > 0
+        ? { excludeBrokers: exclusions.brokers }
+        : { excludeUnknown: true }),
+      deadlineMs: dutyDeadlineMs, timeoutMs: remainingBeforeKillMs,
+    }, current, terminateProcessTree);
+    markStage('killMs', killStartedAtMs);
+  } finally {
+    // Release the held broker startup lock — always AFTER termination returned
+    // or the duty was abandoned, so the snapshot stays synchronized until
+    // dispatch. The kill above is authoritative FIRST: the release wait can
+    // never skip or reorder it. The release WAIT honors the duty's remaining
+    // deadline (the lookup/kill shared the same absolute bound): a slow or
+    // wedged data volume can stall the underlying unlock's asynchronous
+    // file-handle close past any deadline, so at expiry the release abandons
+    // the wait (the unlock proceeds in the background and self-heals free) and
+    // resolves a bounded diagnostic instead of throwing from this `finally` or
+    // extending the caller's lifecycle deadline. A release failure never masks
+    // the duty's outcome, and the lock file itself stays consistent.
+    if (typeof exclusions?.release === 'function') {
+      await exclusions.release(Math.max(0, dutyDeadlineMs - Date.now())).catch(() => {});
+    }
+  }
+  // Honest accounting: a deadline that expired between the lookup and the
+  // dispatch surfaces as `budget-expired`, never as a kill that was silently
+  // skipped — and so does an INCOMPLETE verified kill sequence: a Windows
+  // walk whose shared budget expired (or a dispatch failed) after signalling
+  // only part of the verified plan leaves verified descendants alive with no
+  // other retry path, so the same durable budget-expired convention keeps
+  // the job/stop-intent/lease evidence authoritative and re-arms the duty
+  // next pass (where the sweep still discovers the survivors: Windows keeps
+  // the original PPID, POSIX the process group).
+  if (termination?.reason === 'budget-expired' || termination?.reason === 'incomplete') {
+    // The kill reason rides the diagnostic outcome only (the public duty
+    // contract stays the established budget-expired convention).
+    if (stageTimings) stageTimings.killReason = termination.reason;
+    return { kind: 'budget-expired' };
+  }
+  // THE SETTLEMENT INVARIANT (same-pass sweep): the kill decision proved —
+  // at very best — the RUNNER gone; a released lease proves even less. Only
+  // a COMPLETED dead-root descendant sweep that finds nothing left to kill
+  // proves the TREE gone, and it must run in THIS pass: a `settled` outcome
+  // is issued exclusively behind a `clean` sweep, so every caller can map
+  // `settled` to terminal settlement and everything else to retention
+  // (pending guard, no terminal publication, no exclusion release). The sweep
+  // runs strictly AFTER the `finally` above released the kill's held broker
+  // startup lock — on Windows the sweep resolves its OWN lock-held exclusions
+  // (see sweepDeadRootForDuty), so a broker startup in between either fully
+  // publishes (and is excluded by identity) or stays serialized outside the
+  // walk's reach entirely; on POSIX the sweep is group-addressed and never
+  // consults any broker identity at all.
+  const sweepStartedAtMs = Date.now();
+  const sweep = await sweepDeadRootForDuty(input, current, dutyDeadlineMs);
+  markStage('sweepMs', sweepStartedAtMs);
+  if (sweep.kind === 'clean') return { kind: 'settled' };
+  return { kind: 'pending', sweep: sweep.kind, ...('pending' in sweep && Array.isArray(sweep.pending) && sweep.pending.length > 0 ? { pending: [...sweep.pending] } : {}) };
+}
+
+/**
+ * The SAME-PASS dead-root descendant sweep behind the settlement invariant
+ * (see terminateMarkedRunnerTree). The production sweep is
+ * `sweepDeadRootDescendantTree` (process.mjs): it first proves the recorded
+ * pid NOT alive — a dead root cannot have been reused by a live process —
+ * then enumerates the surviving PPID descendants (Windows retains the original
+ * PPID after parent death; POSIX addresses the survivors as the recorded
+ * process group), revalidates them with the same double-snapshot identity
+ * policy, prunes the identity-matched broker subtree, and force-kills the
+ * verified survivors inside ONE shared absolute deadline.
+ *
+ * BROKER-EXCLUSION RESOLUTION IS SPLIT BY PLATFORM (ADR 0021 limits
+ * broker-subtree exclusion to the Windows descendant walk):
+ *
+ * POSIX never consults the broker lookup at all. The sweep is group-addressed
+ * — it signals the recorded leader's process GROUP, and the separately
+ * managed broker is spawned detached in its OWN group — so no exclusion set
+ * exists to prove: `absent`, `failed`, and lookup errors are irrelevant to a
+ * walk that cannot reach the broker, and refusing to probe even the group (the
+ * previous platform-blind rule) stranded every `absent`-lookup duty — a
+ * runner that exited before creating a broker identity, or whose broker
+ * already retired — pending forever, so cancellation and SessionEnd receipts
+ * could never converge. The sweep runs on the recorded group/leader evidence
+ * exactly as before.
+ *
+ * Windows (the PPID descendant walk) keeps the three-valued lookup:
+ * - `resolved` — unchanged: the complete identity-matched exclusion set,
+ *   serialized against startup by the startup lock the lookup keeps held
+ *   (`holdResolvedLock`) across sweep planning AND dispatch, so an in-flight
+ *   broker startup can neither publish its identity into an already-planned
+ *   walk nor spawn below it; the lock is released only after the sweep
+ *   returned. (The lookup's own convention makes a complete-but-empty scan
+ *   `absent`, never `resolved`; an empty broker list here therefore walks
+ *   with the equally-proven empty exclusion set.)
+ * - `absent` — the walk RUNS with the proven-EMPTY exclusion set under the
+ *   same `broker/.lock` startup lock, held by THIS duty for the sweep's whole
+ *   duration (created via withFileLock when no broker layout exists yet).
+ *   The lookup's `absent` observation is STALE by the time that lock is
+ *   reacquired (the lookup released it at its return), so the empty set is
+ *   RE-PROVEN inside the held lock: the identity scan re-runs there (the
+ *   same scan internals the lookup ran under its own hold — the shared
+ *   `scanBrokerIdentityDirectory` helper, which never takes a lock itself),
+ *   and only a rescan that still finds NOTHING legitimizes walking with the
+ *   empty exclusion set. A rescan that now finds identities — an orphan
+ *   daemon the dead runner spawned publishing in the lookup-release →
+ *   lock-reacquisition gap, a record another client could discover and ADOPT
+ *   before this lock was reacquired — resolves through the SAME rules as the
+ *   `resolved` path (exclude the proven launch-signature brokers) or fails
+ *   the walk closed (`incomplete`) when the set is unprovable. The safety
+ *   this proves: (1) the dead-root walk only ever reaches PPID-descendants
+ *   of the recorded runner, which is proven DEAD first — a dead root cannot
+ *   spawn, so every walk target was spawned by the runner itself before it
+ *   died; (2) every live broker startup (ensureZCodeBroker) holds this
+ *   exact lock across BOTH daemon spawn and identity publication, so while
+ *   the duty holds it no live startup can exist mid-window — one that
+ *   starts later blocks until release and then spawns parented by its own
+ *   live starter, never below the dead root; (3) the one residual
+ *   publisher is a daemon the dead runner already spawned whose identity
+ *   lands AFTER the rescan, mid-walk: identity PUBLICATION deliberately does
+ *   NOT take this lock — ensureZCodeBroker holds it across daemon spawn AND
+ *   the publication-wait health probe, so a daemon publishing under the same
+ *   lock would self-deadlock every normal startup (the parent waits for a
+ *   publication its child cannot make), and restructuring the parent to
+ *   release before publication would forfeit the single-flight spawn
+ *   guarantee (concurrent ensures would double-spawn and spuriously fail).
+ *   That residual daemon is an orphan of the exact dead-root tree this duty
+ *   must clean — its only supervisor is dead, its startup can never be
+ *   health-confirmed, and no client could have discovered it before the
+ *   walk's snapshot read identity.json — so killing it is runner cleanup,
+ *   not broker collateral, and the exposure window is the post-rescan walk
+ *   alone instead of the entire pre-reacquisition gap the rescan closed.
+ *   Stranding the duty instead (the previous rule) blocked every
+ *   already-retired or never-created broker identity from EVER settling.
+ * - `failed` (unreadable, corrupt, partial, contended, or an over-budget or
+ *   skipped lookup) — STILL fails closed: the sweep reports `incomplete` and
+ *   the duty stays PENDING for the next bounded pass. An unprovable
+ *   exclusion set must never silently become an empty one: `absent` proves
+ *   the complete scan found NOTHING; `failed` proves nothing at all.
+ * No durable data scope (no dataRoot) is equally unproven — the exclusion
+ * lookup and every lock live under it — so absence of proof never plans a
+ * walk on either platform.
+ * @param {any} input the duty input (see terminateMarkedRunnerTree); an
+ *   injectable `sweepDeadRootDescendants` seam overrides the production sweep
+ *   for tests, mirroring the `terminateProcessTree` convention, an injectable
+ *   `scanBrokerIdentities` seam overrides the absent path's under-lock rescan
+ *   the same way, and an optional `platform` pins the platform split the same
+ *   way
+ * @param {any} job the revalidated durable record carrying the marked claim
+ * @param {number} dutyDeadlineMs the duty's ONE shared absolute bound
+ * @returns {Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>}
+ */
+async function sweepDeadRootForDuty(input, job, dutyDeadlineMs) {
+  const sweep = typeof input.sweepDeadRootDescendants === 'function' ? input.sweepDeadRootDescendants : sweepDeadRootDescendantTree;
+  if (typeof input.dataRoot !== 'string' || input.dataRoot.length === 0) return { kind: 'incomplete', pending: [] };
+  const remainingMs = Math.max(0, dutyDeadlineMs - Date.now());
+  if (remainingMs <= 0) return { kind: 'incomplete', pending: [] };
+  // POSIX: the group-addressed sweep needs no exclusions (ADR 0021) — never
+  // consult the lookup, never gate the walk on its outcome.
+  if ((typeof input.platform === 'string' && input.platform.length > 0 ? input.platform : process.platform) !== 'win32') {
+    return await sweep(job.childPid, { timeoutMs: Math.max(0, dutyDeadlineMs - Date.now()) });
+  }
+  const lookupBudgetMs = Math.min(BROKER_LOOKUP_MAX_BUDGET_MS, remainingMs - minRunnerTerminationBudgetMs(
+    typeof input.platform === 'string' && input.platform.length > 0 ? input.platform : process.platform));
+  /** @type {{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[],release?:(releaseBudgetMs?:number)=>Promise<void>}|null} */
+  let exclusions = null;
+  if (lookupBudgetMs >= 1) {
+    try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true }); }
+    catch { exclusions = null; }
+  }
+  // Fail closed on every unproven exclusion state (see the docblock): only a
+  // lookup that PROVED its outcome — `resolved` (any broker count, lock held
+  // by the lookup) or `absent` (proven-empty, lock taken below) — plans a
+  // walk; `failed`, a thrown lookup, or a skipped/over-budget lookup never
+  // does.
+  if (!exclusions || exclusions.status === 'failed') return { kind: 'incomplete', pending: [] };
+  if (exclusions.status === 'absent') {
+    // Hold the SAME startup lock path across the whole sweep (creating the
+    // lock layout via withFileLock when no broker exists yet): that
+    // serialization is what makes the empty exclusion set PROVEN rather than
+    // assumed (see the docblock). The lookup's `absent` observation is STALE
+    // here — it released this lock at its return — so the exclusion set is
+    // RE-PROVEN inside the reacquired hold: the identity scan re-runs
+    // (scanBrokerIdentityDirectory, the lookup's own scan internals — the
+    // helper takes no lock itself, so it cannot self-deadlock against this
+    // hold), and only a rescan that still finds NOTHING walks with the empty
+    // exclusion set. A rescan that now finds identities — an orphan daemon
+    // the dead runner spawned publishing in the release→reacquisition gap,
+    // discoverable and ADOPTABLE by another client before this lock was
+    // reacquired — resolves through the resolved-path rules (exclude the
+    // proven launch-signature brokers); an unprovable rescan fails the walk
+    // closed. The rescan shares the duty's remaining deadline (minus the
+    // minimal termination slice the walk keeps for itself), so a stalled or
+    // wedged scan can never ride past the caller's lifecycle bound. A
+    // contended lock acquisition — a live startup holds it — equally fails
+    // closed to `incomplete`; the next bounded pass retries.
+    const sweepBudgetMs = Math.max(0, dutyDeadlineMs - Date.now());
+    const scanIdentities = typeof input.scanBrokerIdentities === 'function' ? input.scanBrokerIdentities : scanBrokerIdentityDirectory;
+    try {
+      const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+      return await withFileLock(join(storage.directory, 'broker', '.lock'), async () => {
+        const rescan = await scanIdentities(join(storage.directory, 'broker'), {
+          timeoutMs: Math.max(0, Math.min(BROKER_LOOKUP_MAX_BUDGET_MS, dutyDeadlineMs - Date.now() - minRunnerTerminationBudgetMs(
+            typeof input.platform === 'string' && input.platform.length > 0 ? input.platform : process.platform))),
+        });
+        if (rescan.status === 'failed') return { kind: 'incomplete', pending: [] };
+        return await sweep(job.childPid, { timeoutMs: Math.max(0, dutyDeadlineMs - Date.now()), excludeBrokers: rescan.brokers });
+      }, {
+        timeoutMs: Math.min(BROKER_LOOKUP_MAX_BUDGET_MS, Math.max(1, sweepBudgetMs)),
+        signal: AbortSignal.timeout(Math.max(1, sweepBudgetMs)),
+      });
+    } catch { return { kind: 'incomplete', pending: [] }; }
+  }
+  try {
+    return await sweep(job.childPid, {
+      timeoutMs: Math.max(0, dutyDeadlineMs - Date.now()),
+      excludeBrokers: exclusions.brokers,
+    });
+  } finally {
+    // Release the held broker startup lock — always AFTER the sweep returned
+    // or was abandoned, so an in-flight startup stays serialized until the
+    // sweep's kill plan is spent (a startup blocked on this lock spawns only
+    // after release, outside the sweep's reach).
+    if (typeof exclusions.release === 'function') {
+      await exclusions.release(Math.max(0, dutyDeadlineMs - Date.now())).catch(() => {});
+    }
+  }
 }
 
 /** @param {unknown} value */
 function isPlainRecord(value) { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 
-/** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,terminateProcessTree?:(pid:number,options:{timeoutMs?:number})=>Promise<unknown>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,reconcile?:(request:{intent:{kind:'observe'}|{kind:'wait'}|{kind:'stop',cause:string},authority:{ownerSessionId:string},workspace:string,selector:{jobId:string},signal?:AbortSignal})=>Promise<any>,stopSession?:(sessionId:string)=>Promise<unknown>,readSession?:(sessionId:string)=>Promise<any>,publishSucceededSnapshot?:(input:{workspace:string,job:any,snapshot:any,turnBoundary:any})=>Promise<any>,terminateProcessTree?:(pid:number,options:{timeoutMs?:number})=>Promise<unknown>,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,cancellationObservationMs?:number,cancellationObservationIntervalMs?:number,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   if (options.reconcile !== undefined && typeof options.reconcile !== 'function') throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'The lifecycle reconciliation seam must be a function.', { category: 'validation', remedy: 'Provide the Rescue Lifecycle Reconciler bound to one exact workspace owner.' });
@@ -744,11 +1217,20 @@ async function performCancellation(input, attempts, election) {
       ? { failedAttempt: attempt.attemptId, message, cause: error, retainedCancelling: true }
       : { failedAttempt: attempt.attemptId, message, cause: error };
   }
-  // Remote stop acknowledged: the marked detached runner is terminated now that
+  // Remote stop acknowledged: the marked detached runner cleanup runs now that
   // the exact remote-control exit is durable, before the settlement re-read
   // elects the winner. The helper is a guarded no-op for unmarked records and
-  // never signals a free-lease pid.
-  await terminateCancellationRunner(input, cancelling);
+  // never signals a free-lease pid. Its outcome GATES the terminal election:
+  // only a settled duty (kill decision plus a completed-clean same-pass sweep)
+  // or an unmarked record may terminalize — a budget-expired, pending-sweep,
+  // or unproven outcome retains the durable cancelling guard (below) so a
+  // surviving verified descendant always has the next bounded pass as its
+  // retry authority.
+  const runnerCleanupOutcome = await terminateCancellationRunner(input, cancelling);
+  if (runnerCleanupOutcome.kind !== 'settled' && runnerCleanupOutcome.kind !== 'unmarked') {
+    return cancellationUncertain(input, attempts, attempt, cancelling,
+      new Error('The marked detached-runner cleanup did not complete a proven descendant sweep.'));
+  }
   const boundary = persistedTurnBoundary(cancelling);
   if (!boundary && job.command === 'rescue' && job.readOnly === false) return cancellationUncertain(input, attempts, attempt, cancelling,
     new Error('ZCode cancellation cannot be proven before the accepted turn boundary is durable.'));
@@ -800,9 +1282,23 @@ async function settleClaimedQueuedCancellation(input, job, stopCause) {
   // cancelled. An unmarked legacy claim keeps the existing defer-to-starting-
   // worker behavior exactly.
   if (current.rescueRunnerVersion === RESCUE_RUNNER_VERSION) {
-    await terminateMarkedRunnerTree({ store: input.options.store, dataRoot, workspace: input.workspace,
-      ownerSessionId: input.ownerSessionId, epoch: current.ownerLifecycleEpoch },
+    // THE SETTLEMENT INVARIANT: the lease-acquiring cancelled publication below
+    // happens only behind a duty that ran the kill decision AND a completed-
+    // clean same-pass sweep. Every other outcome (budget-expired, pending
+    // sweep, a thrown duty) retains the claimed queued record exactly as-is —
+    // its durable stop intent is the retry evidence that re-arms the duty on
+    // the next bounded pass (discovery of marked claims never depends on the
+    // lease state, so the retry is guaranteed to re-run the sweep). `unproven`
+    // is the fence-gap convention (see settleSelectedJob in recovery.mjs): the
+    // marker without a provable claim (no recorded pid/lease pair) names NO
+    // signalable process, and the exact-lease CAS publication below is itself
+    // the identity gate there — exactly as before this invariant.
+    const runnerCleanup = await terminateMarkedRunnerTree({ store: input.options.store, dataRoot, workspace: input.workspace,
+      ownerSessionId: input.ownerSessionId, epoch: current.ownerLifecycleEpoch,
+      ...(typeof input.options.sweepDeadRootDescendants === 'function'
+        ? { sweepDeadRootDescendants: input.options.sweepDeadRootDescendants } : {}) },
     current, input.options.terminateProcessTree).catch(() => undefined);
+    if (runnerCleanup?.kind !== 'settled' && runnerCleanup?.kind !== 'unproven') return current;
   }
   const rollback = await readQueuedRescueMigrationRollback({ dataRoot, workspace: input.workspace,
     job: current, store: input.options.store,
@@ -827,9 +1323,14 @@ async function settleClaimedQueuedCancellation(input, job, stopCause) {
 
 /**
  * Perform the cancellation election's marked-runner cleanup duty on a remote-
- * control exit. Failures are swallowed: the durable cancelling record (with its
- * persisted stop intent) re-arms the same duty for owner recovery, reservation
- * scavenging, and a later reconciliation pass — no separate cleanup ledger.
+ * control exit. Failures are swallowed into the `not-proven` retention
+ * outcome. The duty's outcome is AUTHORITY, never a discarded diagnostic:
+ * only `settled` (kill decision plus a completed-clean same-pass sweep) or
+ * `unmarked` (no local duty exists) permits the caller to terminalize — every
+ * other outcome maps to retention (pending guard, no terminal publication, no
+ * exclusion release); the durable cancelling record (with its persisted stop
+ * intent) re-arms the same duty for owner recovery, reservation scavenging,
+ * and a later reconciliation pass — no separate cleanup ledger.
  * @param {any} input @param {any} cancelling
  */
 async function terminateCancellationRunner(input, cancelling) {
@@ -842,6 +1343,8 @@ async function terminateCancellationRunner(input, cancelling) {
       epoch: cancelling.ownerLifecycleEpoch,
       ...(typeof input.options.setTimeout === 'function' ? { setTimeout: input.options.setTimeout } : {}),
       ...(typeof input.options.clearTimeout === 'function' ? { clearTimeout: input.options.clearTimeout } : {}),
+      ...(typeof input.options.sweepDeadRootDescendants === 'function'
+        ? { sweepDeadRootDescendants: input.options.sweepDeadRootDescendants } : {}),
     }, cancelling, input.options.terminateProcessTree);
   } catch { return { kind: 'not-proven' }; }
 }
