@@ -68,6 +68,7 @@ const OWNER_BINDING_RECORD_VERSION = 2;
 const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
 const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
+const OWNER_JOB_BODY_MAX_BYTES = 1024 * 1024;
 const OWNER_JOB_ENTRIES_MAX = 10_000;
 const RESCUE_BINDING_CLOSED_GC_MS = 30 * 24 * 60 * 60_000;
 const JOB_PATCH_FIELDS = new Set([
@@ -117,6 +118,62 @@ export function createStateStore(options) {
 
   return {
     dataRoot,
+    /** Advisory only: no migration, repair, locking, or continuation authorization.
+     * @param {{workspace:string,parentSessionId:string}} input
+     * @returns {Promise<{state:'none'|'present'|'blocked'}>}
+     */
+    async inspectRescueContinuationPresence(input) {
+      try {
+        if (!isBoundedOwnerSessionId(input?.parentSessionId) || !validCanonicalWorkspacePath(input?.workspace)) return { state: 'blocked' };
+        const workspacePath = await realpath(input.workspace);
+        if (workspacePath !== input.workspace) return { state: 'blocked' };
+        const dataRootPath = resolve(dataRoot);
+        const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
+        const directory = join(dataRootPath, 'workspaces', workspaceKey);
+        // Stop at a proven missing ancestor; never create the workspace layout.
+        for (const path of [dataRootPath, join(dataRootPath, 'workspaces'), directory]) {
+          if (!await existingPrivateContinuationDirectory(path)) return { state: 'none' };
+        }
+        const jobsDirectory = join(directory, 'jobs'); const ownerIndexDirectory = join(directory, 'job-owners');
+        const storage = { dataRootPath, directory, workspacePath, workspaceKey, jobsDirectory, ownerIndexDirectory,
+          ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json') };
+        const partition = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
+        if (partition.records.size > 0) return { state: 'present' };
+        const jobsExist = await existingPrivateContinuationDirectory(jobsDirectory);
+        const indexExists = await existingPrivateContinuationDirectory(ownerIndexDirectory);
+        if (!jobsExist && !indexExists) return { state: 'none' };
+        if (!jobsExist || !indexExists) return { state: 'blocked' };
+        const marker = await readOwnerIndexMarker(storage); const layout = await readOwnerIndexLayout(storage);
+        if (marker?.version !== OWNER_INDEX_VERSION || !ownerIndexMarkerMatches(marker, layout)
+          || !sameStringList([...layout.canonicalJobIds].sort(), layout.bindings.map((binding) => binding.jobId).sort())) return { state: 'blocked' };
+        // The marker digest covers only the index layout (directory names and
+        // tuple filenames); it never binds job bodies to tuples. An internally
+        // consistent index can still misattribute a body — a current-parent job
+        // relabeled under another owner — so absence is provable only after
+        // cross-checking every canonical body's owner-derived tuple against the
+        // index: the ensureOwnerIndex repair expectation, read-only, bounded by
+        // layout.canonicalJobIds, and never reading through a symlink.
+        // The resulting proof holds only as of the unlocked layout snapshot:
+        // marker and layout are read once, the bodies afterwards, with no
+        // post-loop re-validation. A reservation publishing fully inside that
+        // window can therefore yield a stale none — accepted by design, because
+        // the observation is advisory and cannot bypass races anyway, while
+        // preparation revalidates the current state before any continuation is
+        // authorized. Each individual body read stays self-consistent through
+        // readBoundedJsonFile's per-file identity rechecks.
+        const actualTuples = new Set(layout.bindings.map((binding) => binding.tuple));
+        let present = false;
+        for (const jobId of layout.canonicalJobIds) {
+          const job = validateJobRecord(await readBoundedJsonFile(jobsDirectory, jobPath(jobsDirectory, jobId), OWNER_JOB_BODY_MAX_BYTES),
+            jobId, workspacePath, expectedJobLogPath(jobsDirectory, jobId));
+          if (!actualTuples.has(ownerBindingTuple(job.ownerSessionId, job.id))) return { state: 'blocked' };
+          if (job.ownerSessionId !== input.parentSessionId) continue;
+          await readRescueReservationEvidence(storage, job);
+          if (job.command === 'rescue') present = true;
+        }
+        return { state: present ? 'present' : 'none' };
+      } catch { return { state: 'blocked' }; }
+    },
     /**
      * Reserve one generic job. `options.beforePersist` (optional) runs INSIDE
      * the job-state lock before any record is written — the atomic epoch fence:
@@ -1425,6 +1482,17 @@ async function jobStorage(dataRoot, workspace) {
     ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
     lockPath: join(storage.directory, '.state.lock'),
   };
+}
+
+/** @param {string} path */
+async function existingPrivateContinuationDirectory(path) {
+  let stats;
+  try { stats = await lstat(path); }
+  catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return false; throw error; }
+  if (stats.isSymbolicLink() || !stats.isDirectory()
+    || process.platform !== 'win32' && (stats.mode & 0o777) !== 0o700
+    || await realpath(path) !== path) throw invalidRescueBinding();
+  return true;
 }
 
 /** Resolve only a complete pre-existing maintenance layout without creating or chmodding any path. @param {string} dataRoot @param {string} workspace */
