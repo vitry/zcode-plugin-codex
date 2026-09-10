@@ -410,10 +410,15 @@ test('persisted receipts with non-canonical hints are rejected as corrupt', asyn
 
 test('a clean caller signal still receives the bounded local abort budget', async () => {
   const fixtureState = await fixture();
-  // Pinned to the exact production bound: this test observes the production
-  // local budget itself, so the default scaled seam must not widen it.
+  // The FIXTURE publish only creates the receipt and its lock layout: it runs
+  // on the CI-scaled seam, because a single cold publish (storage validation,
+  // lock layout creation, several fsync'd metadata operations) routinely
+  // exceeds the production 500 ms bound on a loaded Windows runner — the
+  // scaled seam exists for exactly that. The OBSERVED contended publish below
+  // stays pinned to the exact production bound this test exists to observe.
+  const setupStore = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const receipt = await setupStore.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: RECEIPT_ABORT_BUDGET_MS, testOnlyScanBudgetMs: 5_000 });
-  const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const receiptsRoot = dirname(receipt.path);
   const lockDirectory = (await readdir(receiptsRoot, { withFileTypes: true }))
     .find((entry) => entry.isDirectory() && entry.name.endsWith('.lock'));
@@ -432,10 +437,15 @@ test('a clean caller signal still receives the bounded local abort budget', asyn
 
 test('settlement honors a caller-supplied abort signal during lock contention', async () => {
   const fixtureState = await fixture();
-  // Pinned to the exact production bound: the assertion reads "well inside
-  // the local 500ms budget", so the default scaled seam must not widen it.
+  // The FIXTURE publish only creates the receipt and its lock layout: it runs
+  // on the CI-scaled seam, because a single cold publish (storage validation,
+  // lock layout creation, several fsync'd metadata operations) routinely
+  // exceeds the production 500 ms bound on a loaded Windows runner — the
+  // scaled seam exists for exactly that. The OBSERVED contended settle below
+  // stays pinned to the exact production bound this test exists to observe.
+  const setupStore = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now });
+  const receipt = await setupStore.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const store = createHostLifecycleStore({ dataRoot: fixtureState.dataRoot, now: fixtureState.now, testOnlyAbortBudgetMs: RECEIPT_ABORT_BUDGET_MS, testOnlyScanBudgetMs: 5_000 });
-  const receipt = await store.publishSessionEnd({ sessionId: 'session-a', sessionStartedAt: START, endedAt: END, origin: 'session-end-hook' });
   const lockDirectory = (await readdir(dirname(receipt.path), { withFileTypes: true }))
     .find((entry) => entry.isDirectory() && entry.name.endsWith('.lock'));
   assert.notEqual(lockDirectory, undefined);

@@ -548,13 +548,17 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   // Both placements hand the child the same constant child command.
   assert.equal(role.match(/invoke-prepared rescue/gu)?.length, 1);
   assert.equal(generic.match(/invoke-prepared rescue/gu)?.length, 1);
-  // The generated Role describes the attached host-managed execution reality.
+  // The generated Role describes both placement realities: the foreground run
+  // stays observed to its durable terminal winner, while the background run is
+  // executed by one detached session-bound runner after a queued acknowledgement.
   assert.match(role, /placement/i);
-  assert.match(role, /attached/i);
-  assert.match(role, /durable winner/i);
-  assert.doesNotMatch(role, /detached/i);
+  assert.match(role, /foreground placement the command observes the run through its original companion process/i);
+  assert.match(role, /durable terminal winner/i);
+  assert.match(role, /detached session-bound runner/i);
+  assert.match(role, /queued means accepted for execution only/i);
   assert.doesNotMatch(generic, /detached/i);
-  // The public skill owns the explicit selection rules and the placement-only envelope.
+  // The public skill owns the explicit selection rules, the placement-only
+  // envelope, and the enqueue-and-return background contract.
   assert.match(skill, /without asking the user another placement question/i);
   assert.match(skill, /flag is authoritative/i);
   assert.match(skill, /small and clearly bounded/i);
@@ -562,7 +566,11 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   assert.match(skill, /without asking for confirmation/i);
   assert.match(skill, /`execution` is only `foreground` or `background`/);
   assert.match(skill, /never adds task text or a private identifier/i);
-  assert.doesNotMatch(skill, /detached/i);
+  assert.match(skill, /one detached session-bound runner, and returns only a queued acknowledgement/i);
+  assert.match(skill, /Queued means accepted for execution only/);
+  assert.match(skill, /announced at the next UserPromptSubmit/);
+  // The generic forwarder message stays placement-free.
+  assert.doesNotMatch(generic, /queued/i);
 });
 
 test('independent installed lifecycle validation rejects a caller-approved shell-injectable launcher', async () => {
@@ -1377,7 +1385,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       ...commonArgs.slice(0, -1), backgroundWorkspace,
       'Use the installed $zcode:rescue --fresh --background repair the background fixture skill exactly once now. Return only its public queued result.',
     ], backgroundWorkspace, { ...env, ZCODE_TEST_PRIVATE_CAPABILITY_EVIDENCE: privateCapabilityEvidence, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
-    backgroundJobId = /Reserved background job ([a-f0-9]{64})\./.exec(background.stdout)?.[1];
+    backgroundJobId = /Rescue job ([a-f0-9]{64}) queued for background execution\./.exec(background.stdout)?.[1];
     if (skipExternalFailure(t, background)) return;
     assert.equal(background.code, 0, `codex background Rescue failed\n${background.stdout}\n${background.stderr}`);
     assert.ok(backgroundJobId && !backgroundBaseline.has(backgroundJobId), 'native Rescue child must identify exactly one new canonical background job');
@@ -2657,7 +2665,9 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
   const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
   const configKeys = ['endpoint', 'instanceId', 'brokerToken', 'launch', 'workspace', 'launchCwd', 'ownershipPath', 'identityPath', 'publishIdentityAfterListen'];
-  const identityKeys = ['version', 'endpoint', 'pid', 'instanceId', 'brokerToken', 'createdAt'];
+  // The identity's `launch` is the broker's OWN creation-fixed spawn signature
+  // (distinct from `config.launch`, which spawns the ZCode protocol process).
+  const identityKeys = ['version', 'endpoint', 'pid', 'instanceId', 'brokerToken', 'launch', 'createdAt'];
   if (broker.originBrokerDirectory !== expected.originBrokerDirectory || broker.executionBrokerDirectory !== expected.executionBrokerDirectory
     || broker.configPath !== join(expected.executionBrokerDirectory, `config-${broker.config?.instanceId}.json`)
     || broker.identityPath !== join(expected.executionBrokerDirectory, 'identity.json')
@@ -2678,6 +2688,9 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
   if (!exactKeys(broker.identity, identityKeys) || !sameJson(parseRaw(broker.identityBytes), broker.identity)
     || broker.identity.version !== 1 || broker.identity.endpoint !== expected.brokerEndpoint || broker.identity.instanceId !== broker.config.instanceId
     || broker.identity.brokerToken !== broker.config.brokerToken || !Number.isSafeInteger(broker.identity.pid) || broker.identity.pid <= 0
+    || !exactKeys(broker.identity.launch, ['command', 'args']) || broker.identity.launch.command !== process.execPath
+    || !Array.isArray(broker.identity.launch.args) || broker.identity.launch.args.length !== 2
+    || !broker.identity.launch.args[0].replaceAll('\\', '/').endsWith('/scripts/zcode-broker.mjs') || broker.identity.launch.args[1] !== broker.configPath
     || typeof broker.identity.createdAt !== 'string' || !Number.isFinite(Date.parse(broker.identity.createdAt))
     || broker.identityBytes.includes(expected.originWorkspace) || broker.identityBytes.includes(expected.originBrokerEndpoint)) fail('broker identity mismatch');
   if (!exactKeys(broker.owners, ['version', 'sessions']) || broker.owners.version !== 1 || !exactKeys(broker.owners.sessions, [broker.sessionId])
@@ -2917,8 +2930,13 @@ function qualifyInstalledCapturedForeground(route) {
 
 function installedCapturedBackgroundRoute(route) {
   const jobId = (route.name === 'named' ? 'a' : 'b').repeat(64);
-  const publicOutput = `Reserved background job ${jobId}.`;
-  const fixture = JSON.parse(JSON.stringify(route.fixture).replaceAll(route.publicOutput, publicOutput));
+  // True background (ADR 0021): the linked child returns the bounded queued
+  // acknowledgement — never the legacy reserved-job line — and exits.
+  const publicOutput = `Rescue job ${jobId} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.`;
+  // The queued acknowledgement is two lines, so the JSON string replacement
+  // must inject its escaped form — a raw newline would corrupt the JSON text.
+  const escapedOutput = JSON.stringify(publicOutput).slice(1, -1);
+  const fixture = JSON.parse(JSON.stringify(route.fixture).replaceAll(route.publicOutput, escapedOutput));
   const child = fixture.rollouts[1];
   const commandCall = child.find((event) => event?.payload?.type === 'custom_tool_call'
     && event.payload.call_id === `${route.name}-exec`);

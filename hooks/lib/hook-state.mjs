@@ -259,7 +259,24 @@ export async function isOwnedSession(dataRoot, input) { const store = await path
 // one shared deadline keeps every sub-budget (receipt scan, discovery, remote
 // settlement, receipt settlement) under the native UserPromptSubmit limit, and
 // remote control uses ONLY an existing broker client — never a lazy spawn.
-const PROMPT_RECONCILIATION_BUDGET_MS = 2_000;
+// The deadline is PLATFORM-SPLIT: POSIX settles inside the historical 2s, while
+// Windows must fit the real process-table snapshots and taskkill dispatches the
+// marked-runner duty runs there (see scripts/lib/job-control.mjs) — the native
+// UserPromptSubmit hook limit is ten seconds, so the Windows budget stays
+// safely inside it.
+//
+// WINDOWS DEFERRAL SEMANTICS (structural, not best-effort): a cold Windows
+// process-table sweep alone (two bounded snapshots) can exceed even this 8s
+// budget on a loaded machine, so a prompt pass may NEVER complete the
+// marked-runner sweep to a clean verdict. That is by design: the pass fails
+// fast, retains the durable stop evidence (stop intent + pending receipt), and
+// defers — the retry authority is re-armed for the next pass. The CONVERGENCE
+// DRIVER on Windows is the non-hook reconcile path instead (`$zcode:status
+// <job> --wait` / cancel, whose duty runs at the
+// WINDOWS_RUNNER_DUTY_FALLBACK_MS budget with no native hook limit); do not
+// widen this prompt budget past the native ten-second limit to chase
+// convergence that belongs to the management path.
+const PROMPT_RECONCILIATION_BUDGET_MS = process.platform === 'win32' ? 8_000 : 2_000;
 const PROMPT_RECEIPT_STAGE_BUDGET_MS = 500;
 const PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS = process.platform === 'win32' ? 500 : 250;
 
@@ -503,7 +520,7 @@ export async function reconcilePriorEpochReceipts(input) {
             }, obligation.job.id)
             : await settleEndedRescueJob({
               store, dataRoot: input.dataRoot, workspace: obligation.workspace, ownerSessionId: input.sessionId,
-              epoch: receipt.epoch, endedAt: receipt.endedAt, lockTimeoutMs: 0,
+              epoch: receipt.epoch, endedAt: receipt.endedAt, deadlineMs: deadline, lockTimeoutMs: 0,
               requestTimeoutMs: PROMPT_EXISTING_BROKER_REQUEST_TIMEOUT_MS, timeoutMs: remaining(),
               signal: overall, includeSettlementEvidence: true, createClient: createClient(obligation.workspace),
             }, obligation.job.id);

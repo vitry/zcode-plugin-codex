@@ -35,6 +35,18 @@ const rescueLauncherDescriptor = `[zcode-rescue-launcher] ${JSON.stringify({ ver
 // Parallel Windows runners can spend more than 750 ms scheduling a legacy
 // broker request even though the SessionEnd cleanup budget remains bounded.
 const brokerTestRequestTimeoutMs = process.platform === 'win32' ? 2_000 : 750;
+// Wall budget for the contended legacy-fallback SessionEnd invocation. Every
+// wait INSIDE the hook on that path is clamped to the shared
+// sessionEndBudgetMs deadline (the platform-split 1s Windows owner-release
+// request timeout plus the bounded discovery/cleanup stages spend roughly
+// 1.4s of the 2.75s budget), so POSIX keeps the historical 2.5s wall
+// byte-identical. Windows runs the same bounded stages plus the spawned hook
+// process's Node bootstrap and slower filesystem: loaded windows runners
+// measured ~3.4s wall against a ~1.85s median, so the WALL budget — never the
+// hook's own deadline budget — scales there. Any UNBOUNDED wait regression
+// (the 5s default advisory-lock timeout or the 5s receipt-prune scan
+// surfacing inside the hook) still exceeds this bound on every platform.
+const contendedLegacyWallBudgetMs = process.platform === 'win32' ? 4_000 : 2_500;
 
 function isGateRunPath(path) { return path.split(sep).includes('gate-runs'); }
 
@@ -1660,7 +1672,7 @@ test('legacy fallback stays inside the hook budget when the owner store lock is 
   const holder = spawn(process.execPath, [ownerStoreLockHolder, data, cwd, 'identity.json'], { stdio: ['pipe', 'pipe', 'pipe'] }); t.after(() => { try { process.kill(holder.pid, 'SIGTERM'); } catch { /* exited */ } }); const holderArmed = await new Promise((resolvePromise, reject) => { holder.stdout.once('data', (chunk) => resolvePromise(chunk.toString('utf8').trim())); holder.once('error', reject); holder.once('exit', (code) => reject(new Error(`lock holder exited ${code}`))); }); assert.equal(holderArmed, `armed:${ownershipPath}.lock`);
   const holderReadyPromise = new Promise((resolvePromise, reject) => { holder.stdout.once('data', (chunk) => resolvePromise(chunk.toString('utf8').trim())); holder.once('error', reject); holder.once('exit', (code) => reject(new Error(`lock holder exited ${code}`))); }); holder.stdin.write('acquire'); const holderReady = await holderReadyPromise; assert.equal(holderReady, `ready:${ownershipPath}.lock`); assert.equal(processAlive(holder.pid), true);
   const lockProbeSource = `import { withFileLock } from ${JSON.stringify(new URL('../scripts/lib/fs.mjs', import.meta.url).href)}; try { await withFileLock(process.argv[1], async () => {}, { timeoutMs: 0 }); process.stdout.write('acquired'); } catch (error) { process.stdout.write(error.code); }`; const probe = spawn(process.execPath, ['--input-type=module', '--eval', lockProbeSource, `${ownershipPath}.lock`], { stdio: ['ignore', 'pipe', 'pipe'] }); let probeOutput = ''; probe.stdout.on('data', (chunk) => { probeOutput += chunk; }); await new Promise((resolvePromise, reject) => { probe.once('error', reject); probe.once('exit', resolvePromise); }); assert.equal(probeOutput, 'LOCK_TIMEOUT');
-  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'contended-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { PLUGIN_DATA: data }); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500, 'contended legacy cleanup must remain inside the SessionEnd budget'); const owners = JSON.parse(await readFile(ownershipPath, 'utf8')).sessions; assert.equal(owners['contended-target-active'], owner); assert.equal(owners['contended-sibling-active'], sibling); assert.equal(histories.filter((sessionId) => owners[sessionId] === owner).length, 17);
+  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'contended-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { PLUGIN_DATA: data }); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < contendedLegacyWallBudgetMs, 'contended legacy cleanup must remain inside the SessionEnd budget'); const owners = JSON.parse(await readFile(ownershipPath, 'utf8')).sessions; assert.equal(owners['contended-target-active'], owner); assert.equal(owners['contended-sibling-active'], sibling); assert.equal(histories.filter((sessionId) => owners[sessionId] === owner).length, 17);
   holder.stdin.end('release'); await new Promise((resolvePromise) => holder.once('exit', resolvePromise)); const persisted = await readFile(ownershipPath, 'utf8'); assert.doesNotThrow(() => JSON.parse(persisted)); assert.ok((await siblingClient.listSessions()).sessions.some((session) => session.sessionId === 'contended-sibling-active'));
 });
 

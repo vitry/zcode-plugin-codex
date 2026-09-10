@@ -40,6 +40,25 @@ test('Rescue launcher rejects setup, public commands, extras, and user text befo
   }
 });
 
+test('Rescue placement flags stay out of the launcher protocol; the prepared dispatch is unchanged', async () => {
+  // Placement is chosen inside the private preparation envelope, never through
+  // launcher argv — including the flags that select the queued acknowledgement.
+  for (const argv of [
+    ['invoke-prepared', 'rescue', '--background'],
+    ['invoke-prepared', 'rescue', '--wait'],
+    ['invoke-choice', 'rescue', 'fresh', '--background'],
+    ['invoke-choice', 'rescue', 'background'],
+  ]) {
+    let called = false;
+    await assert.rejects(runRescueLauncher(argv, async () => { called = true; }), { code: 'RESCUE_LAUNCHER_ARGUMENT_INVALID' });
+    assert.equal(called, false);
+  }
+  /** @type {string[][]} */
+  const calls = [];
+  await runRescueLauncher(['invoke-prepared', 'rescue'], async (received) => { calls.push(received); });
+  assert.deepEqual(calls, [['invoke-prepared', 'rescue']]);
+});
+
 test('Rescue launcher CLI preserves companion stdout and validation exit semantics', async () => {
   const result = await runChild(['setup']);
   assert.equal(result.code, 2);
