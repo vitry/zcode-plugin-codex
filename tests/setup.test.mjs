@@ -721,8 +721,46 @@ test('real source lifecycle remains ready after setup under its own isolated nam
   };
   assert.equal((await runCompanion(['setup'], { cwd: ctx.cwd, env })).status, 'ready');
   assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
-    type: 'role-status', role: 'zcode-rescue', status: 'ready',
+    type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' },
   });
+  const { createStateStore } = await import('../scripts/lib/state.mjs');
+  const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const reservation = { workspace: ctx.cwd, ownerTurnId: 'history-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } };
+  await store.reserveJob({ ...reservation, ownerSessionId: 'other-parent' });
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' },
+  });
+  const own = await store.reserveJob({ ...reservation, ownerSessionId: 'source-ready-session' });
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' },
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await writeFile(join(storage.directory, 'jobs', `${own.id}.json`), '{');
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'blocked' },
+  });
+});
+
+test('real role-status continuation observation fails closed when the state store seam faults', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  await recordSetupSession(ctx, 'source-continuation-seam-session', 'Configure this source namespace for the continuation seam fault check.');
+  const env = {
+    ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot, CODEX_THREAD_ID: 'source-continuation-seam-session',
+    CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+  };
+  assert.equal((await runCompanion(['setup'], { cwd: ctx.cwd, env })).status, 'ready');
+  for (const fault of ['method-missing', 'factory-throw']) {
+    let constructed = 0;
+    const createStateStore = () => {
+      constructed += 1;
+      if (fault === 'factory-throw') throw new Error('injected createStateStore fault');
+      return {};
+    };
+    assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env, dependencies: { createStateStore } }), {
+      type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'blocked' },
+    }, fault);
+    assert.equal(constructed, 1, fault);
+  }
 });
 
 test('real companion setup fails closed when private active-session proof is missing or ambiguous', async (t) => {

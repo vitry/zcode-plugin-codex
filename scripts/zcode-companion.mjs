@@ -99,7 +99,7 @@ export async function runCompanion(argv, runtime = {}) {
     return runSetup({ pluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
   if (parsed.command === 'role-status') {
-    let inspection; let inspectionStarted = false; let failure;
+    let inspection; let inspectionStarted = false; let failure; let provenParentSessionId;
     try {
       if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot, dataRoot, cwd, env }); }
       else {
@@ -111,6 +111,7 @@ export async function runCompanion(argv, runtime = {}) {
           ...(installed ? { workspaceBinding: 'preview' } : {}),
         });
         const session = await resolveRecordedSessionStart(dataRoot, installed ? activeTurn.originWorkspace ?? cwd : cwd, activeTurn.sessionId);
+        provenParentSessionId = activeTurn.sessionId;
         inspectionStarted = true;
         inspection = await inspectRescueRoleStatus({ pluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
@@ -122,7 +123,17 @@ export async function runCompanion(argv, runtime = {}) {
       : inspection?.status === 'inspection-unavailable'
         ? 'inspection-unavailable'
         : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'inspection-unavailable';
-    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: ROLE_REMEDIES[status] ?? '$zcode:setup' }) };
+    // Inspector injection alone is not owned-parent proof. Keep that seam
+    // deterministic and never reach ambient user state through a stub inspector.
+    // The observation is advisory-only and fail-closed: a faulted store factory
+    // or an unusable inspector degrades to blocked instead of failing preflight.
+    let continuation = { state: 'blocked' };
+    if (status === 'ready' && provenParentSessionId) {
+      try {
+        continuation = await (runtime.dependencies?.createStateStore ?? createStateStore)({ dataRoot }).inspectRescueContinuationPresence({ workspace: cwd, parentSessionId: provenParentSessionId });
+      } catch { /* advisory only: any observation fault stays blocked */ }
+    }
+    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? { continuation } : { remedy: ROLE_REMEDIES[status] ?? '$zcode:setup' }) };
   }
   const identity = createIdentityStore({ dataRoot });
   const store = (runtime.dependencies?.createStateStore ?? createStateStore)({ dataRoot });

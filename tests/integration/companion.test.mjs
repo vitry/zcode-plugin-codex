@@ -3605,8 +3605,8 @@ test('role-status rescue is bounded and returns before caller consumption, recon
       reserveJob: forbidden,
     },
   });
-  assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
-  assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n');
+  assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'blocked' } });
+  assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready","continuation":{"state":"blocked"}}\n');
 });
 
 test('linked worktree Role preview stays read-only and private prepare binds after TTY capability but before readiness', async () => {
@@ -3662,7 +3662,7 @@ test('linked worktree Role preview stays read-only and private prepare binds aft
   const roleResult = await installedRole(linked);
   assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
   const roleOutput = JSON.parse(roleResult.stdout);
-  assert.deepEqual(roleOutput, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(roleOutput, { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   assert.deepEqual(await readFile(activePath), activeBytesBeforeRole);
   assert.equal((await stat(activePath)).mtimeMs, activeStatBeforeRole.mtimeMs);
   assert.deepEqual((await readdir(join(context.dataRoot, 'workspaces'))).sort(), workspacePartitionsBeforeRole);
@@ -3765,7 +3765,7 @@ test('linked worktree Role preview stays read-only and private prepare binds aft
   assert.equal(loserReads, 0, 'second-target prepare must reject before private input reads');
   assert.deepEqual(await readFile(activePath), boundBytesBeforeLoser);
   const winnerRole = await installedRole(linked);
-  assert.deepEqual(JSON.parse(winnerRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(JSON.parse(winnerRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'execution' })).workspace, await realpath(linked));
   assert.equal((await createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({
     sessionId, turnId: 'late-bind-companion-turn', workspace: linked,
