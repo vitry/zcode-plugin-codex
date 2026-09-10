@@ -5,6 +5,10 @@ supersedes: stopped-rescue-choice-continuation-in-adr-0010
 
 # Bind a stopped Rescue child to its exact ZCode session
 
+## Current-parent continuation observation amendment (2026-09-11)
+
+Before each new preparation and inferred mode choice, Root reads `role-status rescue` continuation state for the current parent in the execution workspace. `none` proves absent evidence: ordinary project continuation starts an independent fresh operation in the existing worktree, preserving progress. Project continuity does not authorize cross-parent restoration. `present` is evidence only, not proof of resumability; exact retained selection and complete binding validation remain required. `blocked` or malformed/missing observation never authorizes an inferred fresh fallback. Explicit resume or same-operation constraints remain authoritative; explicit fresh and clear independent work retain their route under existing write guards. An active exact child is rejoined first without another preflight. This amendment changes inferred routing only; it does not change ownership, adoption, lifecycle, or executor validation and does not repair `EXECUTOR_STATE_MISMATCH`.
+
 ## Decision
 
 Root may send the constant `invoke-prepared rescue` assignment to the same stopped child after privately preparing a new turn. The durable binding keeps the original `anchorJobId` and advances `currentJobId` when the continuation job is durably reserved and published. If it queues and fails as the exact active-version-3 pre-running case below, rollback restores the prior binding. Otherwise the advancement remains authoritative after acceptance, running state, a task boundary, or the existing cancellation lifecycle. Those identifiers, the task, permissions, workspace identity, and executor provenance remain private plugin state and never enter a child assignment.

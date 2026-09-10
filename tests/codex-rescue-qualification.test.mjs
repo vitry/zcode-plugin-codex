@@ -14,6 +14,7 @@ import { createRescuePreparationStore, RESCUE_ENVELOPE_MAX_BYTES } from '../scri
 
 import {
   assertCodexRescueDisplayName,
+  assertContinuationRoute,
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
@@ -527,7 +528,7 @@ test('qualifies raw v3 origin-to-execution workspace authority and immutable gen
   ]);
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expectedWorkspace,
     activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
-    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } } });
   input.originIndexRecordBytes = `${JSON.stringify({
     version: 1, kind: 'active-turn-index', key: createHash('sha256').update(JSON.stringify([parentId, expectedWorkspace])).digest('hex'),
     sessionId: parentId, generationId, globalKey, originWorkspace: expectedWorkspace,
@@ -1631,6 +1632,56 @@ test('does not self-report generic compatibility and lets named metadata work on
   assert.equal(qualifyCodexRescueEvidence(named, options()).route, 'named');
 });
 
+test('ready continuation observation is closed and explicit fresh tolerates a blocked advisory', () => {
+  for (const continuation of [undefined, null, {}, { state: 'unknown' }, { state: 'none', childId: 'private' }, { state: ['none'] }]) {
+    const input = fixture();
+    preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', ...(continuation === undefined ? {} : { continuation }) })}\n`, exit_code: 0 });
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error.code === 'preflight-status-mismatch');
+  }
+  for (const state of ['none', 'present', 'blocked']) {
+    const input = fixture();
+    preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state } })}\n`, exit_code: 0 });
+    assert.equal(qualifyCodexRescueEvidence(input, options()).route, 'named');
+  }
+});
+
+test('inferred same-operation continuation requires present observation before its preparation', async () => {
+  for (const continuation of [undefined, null, {}, { state: 'none' }, { state: 'blocked' }, { state: 'present', extra: true }]) {
+    const input = preparedContinuationFixture('named');
+    const parent = JSON.parse(input.parentRolloutJson);
+    const observed = parent.find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'role-generation-2');
+    observed.payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', ...(continuation === undefined ? {} : { continuation }) })}\n`, exit_code: 0 });
+    input.parentRolloutJson = JSON.stringify(parent);
+    const code = ['none', 'blocked'].includes(continuation?.state) ? 'continuation-preflight-route' : 'continuation-preflight';
+    await assert.rejects(() => qualifyCodexRescuePreparedContinuationEvidence(input), (error) => error.code === code);
+  }
+});
+
+test('explicit resume remains authoritative after a none observation while inferred resume is still rejected', () => {
+  assertContinuationRoute('none', preparationEnvelope('explicit', 'resume', 'foreground'));
+  assertContinuationRoute('present', preparationEnvelope('explicit', 'resume', 'background'));
+  assertContinuationRoute('present', preparationEnvelope('proactive', 'resume', 'foreground'));
+  for (const state of ['none', 'present', 'blocked']) {
+    assertContinuationRoute(state, preparationEnvelope('explicit', 'fresh', 'foreground'));
+  }
+  for (const [state, source] of [['none', 'proactive'], ['blocked', 'proactive'], ['blocked', 'explicit']]) {
+    assert.throws(() => assertContinuationRoute(state, preparationEnvelope(source, 'resume', 'foreground')),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preflight-route-mismatch');
+  }
+});
+
+test('rejects an explicit no-choice targetless envelope after a none observation', () => {
+  // Entry source is not a mode choice: an explicit entry without the resume
+  // flag is a no-choice request, so `none` mandates its fresh null-target
+  // route instead of the old targetless resume routing.
+  assert.throws(() => assertContinuationRoute('none', preparationEnvelope('explicit', undefined, 'foreground')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preflight-route-mismatch');
+  assertContinuationRoute('none', preparationEnvelope('explicit', 'fresh', 'foreground'));
+  assertContinuationRoute('present', preparationEnvelope('explicit', undefined, 'foreground'));
+  assert.throws(() => assertContinuationRoute('blocked', preparationEnvelope('explicit', undefined, 'foreground')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preflight-route-mismatch');
+});
+
 test('requires exact Role readiness and one private same-handle preparation before spawn', () => {
   const cases = [
     { code: 'preflight-count', mutate: (input) => { removeParentCall(input, 'preflight-1'); } },
@@ -1638,7 +1689,7 @@ test('requires exact Role readiness and one private same-handle preparation befo
     { code: 'preflight-command-mismatch', mutate: (input) => { preflightEvent(input).payload.input = structuredExecResult(`${expectedPreflightCommand} && true`, 'preflight-1').payload.input; } },
     { code: 'preflight-output-link', mutate: (input) => { preflightOutput(input).payload.call_id = 'wrong-call'; } },
     { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'drift' })}\n`, exit_code: 0 }); } },
-    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 1 }); } },
+    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 1 }); } },
     { code: 'preparation-count', mutate: (input) => { removeParentCall(input, 'prepare-1'); } },
     { code: 'preparation-count', mutate: (input) => input.rollouts[0].splice(3, 0, structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true })) },
     { code: 'preparation-ready-count', mutate: (input) => { removeParentOutput(input, 'prepare-1'); } },
@@ -2626,6 +2677,8 @@ function preparedContinuationFixture(route, execution = 'foreground') {
   const preReservationBinding = { ...binding, currentJobId: anchorJobId, updatedAt: '2026-08-10T00:00:05.000Z' };
   const parent = [
     { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user', source: 'exec' } },
+    { ...structuredExecResult(expectedPreflightCommand, 'role-generation-1'), timestamp: '2026-08-10T00:00:00.100Z' },
+    { ...capturedResultEvent('role-generation-1', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.200Z' },
     { ...structuredExecResult(expectedPreparationCommand, 'prepare-1', { tty: true, env: { PATH: '/usr/bin' } }), timestamp: '2026-08-10T00:00:00.250Z' },
     { ...capturedResultEvent('prepare-1', { output: PREPARATION_READY, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
     { ...structuredPoll(71, 'prepare-write-1', `${JSON.stringify(preparationEnvelope('explicit', 'fresh', execution))}\n`), timestamp: '2026-08-10T00:00:00.500Z' },
@@ -2634,6 +2687,8 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath } } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ task_name: agentPath }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-1', agent_thread_id: childId, agent_path: agentPath } } },
+    { ...structuredExecResult(expectedPreflightCommand, 'role-generation-2'), timestamp: '2026-08-10T01:00:59.100Z' },
+    { ...capturedResultEvent('role-generation-2', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' } })}\n`, exit_code: 0 }), timestamp: '2026-08-10T01:00:59.200Z' },
     { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T01:01:00.500Z' },
@@ -2723,7 +2778,7 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
       { type: 'event_msg', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-original', agent_thread_id: childId, agent_path: restoredPath } } },
       { type: 'event_msg', turn_id: 'turn-original', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'item_completed', thread_id: parentId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-original', agent_thread_id: childId, agent_path: restoredPath } } },
       { ...structuredExecResult(roleCommand, 'role-restored', { workdir: executionWorkspace }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.100Z' },
-      { ...capturedResultEvent('role-restored', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.200Z' },
+      { ...capturedResultEvent('role-restored', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' } })}\n`, exit_code: 0 }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.200Z' },
       { ...structuredExecResult(prepareCommand, 'prepare-restored', { workdir: executionWorkspace, tty: true }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.300Z' },
       { ...capturedResultEvent('prepare-restored', { output: PREPARATION_READY, session_id: 91 }), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.400Z' },
       { ...structuredPoll(91, 'prepare-write-restored', `${JSON.stringify(preparationEnvelope)}\n`), turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.500Z' },
@@ -2770,7 +2825,8 @@ function restoredAppServerTranscript(thread) {
 const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
 function preparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
 function preparationEnvelope(source, resume, execution) {
-  return { version: 3, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume },
+  return { version: 3, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture',
+    options: resume === undefined ? { execution } : { execution, resume },
     continuationTarget: resume === 'resume' ? { agentPath } : null };
 }
 function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId, reactivation = null) {
@@ -2844,7 +2900,7 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
   input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
     activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
-    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } } });
   input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
     key: createHash('sha256').update(JSON.stringify([parentId, originWorkspace])).digest('hex'), sessionId: parentId,
     generationId, globalKey, originWorkspace })}\n`;
@@ -3026,7 +3082,7 @@ function parentPreparationEvents(prefix = '') {
   const handle = prefix ? 45 : 44;
   return [
     structuredExecResult(expectedPreflightCommand, `${prefix}preflight-1`),
-    capturedResultEvent(`${prefix}preflight-1`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    capturedResultEvent(`${prefix}preflight-1`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 0 }),
     structuredExecResult(expectedPreparationCommand, `${prefix}prepare-1`, { tty: true }),
     capturedResultEvent(`${prefix}prepare-1`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: handle }),
     structuredPoll(handle, `${prefix}prepare-write-1`, `${expectedPreparationPayload}\n`),

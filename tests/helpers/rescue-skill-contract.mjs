@@ -121,6 +121,14 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   const active = source.indexOf('Active exact child');
   const stopped = source.indexOf('Stopped exact same-operation child');
   const fresh = source.indexOf('Fresh or independent operation');
+  const preflight = source.indexOf('role-status rescue');
+  assert.ok(active < preflight && preflight < stopped, `${assertionPrefix}continuation observation must follow active-child rejoin and precede inferred stopped/fresh routing`);
+  const observation = source.slice(preflight, stopped);
+  assert.match(observation, /nested `continuation` object has exactly one key, `state`/);
+  assert.match(observation, /`none`[^\n]+`fresh`[^\n]+`continuationTarget: null`/);
+  assert.match(observation, /`present`[^\n]+not proof[^\n]+resumable/);
+  assert.match(observation, /`blocked`[^\n]+missing[^\n]+invalid[^\n]+not `none`/);
+  assert.match(observation, /explicit same-operation[^\n]+never silently fall back to fresh/i);
   assert.ok(active >= 0 && stopped > active && fresh > stopped, `${assertionPrefix}Rescue child-state precedence must be explicit and ordered`);
   const end = source.indexOf('\n## Entry classification', fresh);
   assert.ok(end > fresh, `${assertionPrefix}Rescue child-state block must precede entry classification`);

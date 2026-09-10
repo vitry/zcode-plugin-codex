@@ -421,7 +421,7 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
   const launcherEnv = { ...env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config) };
   const role = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'role-status', 'rescue'], { cwd: executionWorkspace, env: launcherEnv });
   assert.equal(role.code, 0, role.stderr || role.stdout);
-  assert.deepEqual(JSON.parse(role.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(JSON.parse(role.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   const afterRoleStat = await stat(activePath);
   const roleMutated = !beforeRole.equals(await readFile(activePath)) || beforeRoleStat.mtimeMs !== afterRoleStat.mtimeMs;
   const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: initialTask, options: { execution: 'foreground', resume: 'fresh', ...(model ? { model } : {}) } })}\n`;
