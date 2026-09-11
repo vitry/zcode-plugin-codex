@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import test from 'node:test';
+import { mock, test } from 'node:test';
 
 import { closeProtocolUntil, connectZCodeBroker, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
@@ -112,4 +112,129 @@ test('broker connect fails closed when an older broker does not acknowledge exis
     for (let turn = 0; turn < 20 && sockets.size; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
     assert.equal(sockets.size, 0);
   } finally { for (const socket of sockets) socket.destroy(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
+});
+
+function fakeProtocolChild() {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  return child;
+}
+
+const permissionOptions = [
+  { optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } },
+  { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } },
+];
+
+/** @param {string} sessionId @param {number} revision */
+function legacyCompletionLine(sessionId, revision) {
+  return JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId, revision, reason: 'prompt_completed' } });
+}
+
+/** @param {number} id @param {string} requestId @param {string} sessionId */
+function permissionLine(id, requestId, sessionId) {
+  return JSON.stringify({ id, method: 'interaction/requestPermission', params: { requestId, sessionId, toolCallId: `tool-${requestId}`, toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: permissionOptions } });
+}
+
+const flushTurnFrames = () => new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+/** @param {ZCodeProtocolClient} protocol @param {string} sessionId @param {number} id @param {string} requestId */
+async function allowPermissionAfterExpiry(protocol, sessionId, id, requestId) {
+  let handled = 0;
+  protocol.setPermissionHandler(() => { handled += 1; return { decision: 'allow' }; });
+  protocol.handleLine(permissionLine(id, requestId, sessionId));
+  await flushTurnFrames();
+  const response = JSON.parse(protocol.child.stdin.read().toString());
+  assert.deepEqual(response, { id, result: { decision: 'allow' } }, 'a permission request after cache expiry must still reach the handler');
+  assert.equal(handled, 1);
+}
+
+test('legacy completion cache expiry keeps an early-queued observed turn armed and permissions flowing', async () => {
+  const child = fakeProtocolChild(); const protocol = new ZCodeProtocolClient(child);
+  try {
+    protocol.beginTurn('session-legacy');
+    protocol.handleLine(legacyCompletionLine('session-legacy', 2));
+    mock.timers.enable({ apis: ['setTimeout'] });
+    protocol.armTurn('session-legacy', 1, 'input-legacy');
+    const observed = await protocol.observeCompletion('session-legacy');
+    assert.equal(observed.reason, 'prompt_completed');
+    mock.timers.tick(10 * 60_000);
+    assert.equal(protocol.turnState('session-legacy'), 'armed', 'cache expiry must not cancel a still-running turn');
+    await allowPermissionAfterExpiry(protocol, 'session-legacy', 99, 'perm-after-early-expiry');
+    assert.equal(protocol.closed, false, 'the connection must stay open');
+  } finally {
+    mock.timers.reset();
+    protocol.releaseTurn('session-legacy');
+  }
+});
+
+test('legacy completion cache expiry keeps a live-observed turn armed and permissions flowing', async () => {
+  const child = fakeProtocolChild(); const protocol = new ZCodeProtocolClient(child);
+  try {
+    protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+    const observed = protocol.observeCompletion('session-legacy');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    protocol.handleLine(legacyCompletionLine('session-legacy', 2));
+    assert.equal((await observed).reason, 'prompt_completed');
+    mock.timers.tick(10 * 60_000);
+    assert.equal(protocol.turnState('session-legacy'), 'armed', 'cache expiry must not cancel a still-running turn');
+    await allowPermissionAfterExpiry(protocol, 'session-legacy', 99, 'perm-after-live-expiry');
+    assert.equal(protocol.closed, false, 'the connection must stay open');
+  } finally {
+    mock.timers.reset();
+    protocol.releaseTurn('session-legacy');
+  }
+});
+
+test('legacy completion cache expiry drops the stale wake so a later wait times out on its own', async () => {
+  const child = fakeProtocolChild(); const protocol = new ZCodeProtocolClient(child);
+  try {
+    protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    protocol.handleLine(legacyCompletionLine('session-legacy', 2));
+    mock.timers.tick(10 * 60_000);
+    assert.equal(protocol.completed.size, 0, 'the cached legacy completion must be dropped on expiry');
+    assert.equal(protocol.completionExpiry.size, 0, 'the expiry timer must not linger');
+    assert.equal(protocol.turnState('session-legacy'), 'armed', 'bounded cache cleanup must not cancel the turn');
+    const waiting = protocol.waitForCompletion('session-legacy', 50);
+    const timingOut = assert.rejects(waiting, { code: 'ZCODE_COMPLETION_TIMEOUT' });
+    mock.timers.tick(50);
+    await timingOut;
+    assert.equal(protocol.turnState('session-legacy'), null, 'waitForCompletion keeps its own documented destructive timeout');
+    assert.equal(protocol.closed, false, 'the connection must stay open');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('re-queued legacy completions never arm a destructive expiry', async () => {
+  const child = fakeProtocolChild(); const protocol = new ZCodeProtocolClient(child);
+  try {
+    protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    protocol.handleLine(legacyCompletionLine('session-legacy', 2));
+    protocol.handleLine(legacyCompletionLine('session-legacy', 3));
+    const observed = await protocol.observeCompletion('session-legacy');
+    assert.equal(observed.revision, 3, 're-queue replaces the cached wake');
+    mock.timers.tick(10 * 60_000);
+    assert.equal(protocol.completed.size, 0, 'the final expiry still drops the cached wake');
+    assert.equal(protocol.turnState('session-legacy'), 'armed', 'no re-queued expiry may cancel the turn');
+    await allowPermissionAfterExpiry(protocol, 'session-legacy', 99, 'perm-after-requeue-expiry');
+    assert.equal(protocol.closed, false, 'the connection must stay open');
+  } finally {
+    mock.timers.reset();
+    protocol.releaseTurn('session-legacy');
+  }
+});
+
+test('explicit stop control still ends an armed legacy turn', () => {
+  const child = fakeProtocolChild(); const protocol = new ZCodeProtocolClient(child, { acceptBrokerControl: true });
+  protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+  protocol.handleLine(JSON.stringify({ method: 'broker/sessionStopped', params: { sessionId: 'session-legacy' } }));
+  assert.equal(protocol.turnState('session-legacy'), null, 'broker stop control must cancel the turn');
+  protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+  protocol.cancelTurn('session-legacy');
+  assert.equal(protocol.turnState('session-legacy'), null, 'explicit cancellation must end the turn');
+  protocol.beginTurn('session-legacy'); protocol.armTurn('session-legacy', 1, 'input-legacy');
+  protocol.releaseTurn('session-legacy');
+  assert.equal(protocol.turnState('session-legacy'), null, 'local release must end the turn');
+  assert.equal(protocol.closed, false);
 });

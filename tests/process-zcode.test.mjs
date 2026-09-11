@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import test from 'node:test';
+import { mock, test } from 'node:test';
 
 import { drainExitedProcessStreams, runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
 import { ZCodeClient } from '../scripts/lib/zcode-client.mjs';
@@ -383,39 +383,45 @@ test('releaseTurn aborts and clears permission task state without writing a stal
   assert.equal(child.stdin.readableLength, 0);
 });
 
-test('completion expiry cancels pending permission tasks before late resolution or rejection', async () => {
+test('legacy completion expiry drops only the stale wake and keeps pending permission work running', async () => {
   for (const outcome of ['resolve', 'reject']) {
     const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
     const protocol = new ZCodeProtocolClient(child); const failures = [];
     protocol.setCloseHandler((error) => failures.push(error));
     protocol.beginTurn('session-1'); protocol.armTurn('session-1', 1, 'input-1');
     const observed = protocol.observeCompletion('session-1');
-    const originalSetTimeout = globalThis.setTimeout; let expire;
-    globalThis.setTimeout = (callback, timeoutMs, ...args) => {
-      if (timeoutMs === 10 * 60_000) { expire = () => callback(...args); return { unref() {} }; }
-      return originalSetTimeout(callback, timeoutMs, ...args);
-    };
-    try { protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } })); }
-    finally { globalThis.setTimeout = originalSetTimeout; }
-    await observed;
-    assert.equal(typeof expire, 'function');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      protocol.handleLine(JSON.stringify({ method: 'state.updated', params: { scope: 'session', sessionId: 'session-1', revision: 2, reason: 'prompt_completed' } }));
+      await observed;
+      mock.timers.tick(10 * 60_000);
+      assert.equal(protocol.completed.size, 0, outcome);
+      assert.equal(protocol.completionExpiry.size, 0, outcome);
+      assert.equal(protocol.turnState('session-1'), 'armed', outcome);
 
-    let handlerSignal; let settle;
-    protocol.setPermissionHandler((_request, signal) => {
-      handlerSignal = signal;
-      return new Promise((resolve, reject) => { settle = outcome === 'resolve' ? () => resolve({ decision: 'deny' }) : () => reject(new Error('late rejection')); });
-    });
-    protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
-    await new Promise((resolve) => setImmediate(resolve));
-    expire();
-    assert.equal(handlerSignal.aborted, true, outcome);
-    assert.equal(protocol.turnState('session-1'), null, outcome);
-    for (const collection of [protocol.serverTasks, protocol.serverTaskControllers, protocol.serverTaskSessions, protocol.serverTasksByController, protocol.permissionRequestIds]) assert.equal(collection.size, 0, outcome);
-    settle();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(child.stdin.readableLength, 0, outcome);
-    assert.equal(protocol.closed, false, outcome);
-    assert.deepEqual(failures, [], outcome);
+      let handlerSignal; let settle;
+      protocol.setPermissionHandler((_request, signal) => {
+        handlerSignal = signal;
+        return new Promise((resolve, reject) => { settle = outcome === 'resolve' ? () => resolve({ decision: 'deny' }) : () => reject(new Error('late rejection')); });
+      });
+      protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(handlerSignal.aborted, false, outcome);
+      assert.equal(protocol.serverTaskSessions.size, 1, outcome);
+      settle();
+      await new Promise((resolve) => setImmediate(resolve));
+      const response = JSON.parse(child.stdin.read().toString());
+      if (outcome === 'resolve') assert.deepEqual(response, { id: 99, result: { decision: 'deny' } }, outcome);
+      else assert.deepEqual(response, { id: 99, error: { code: -32000, message: 'late rejection' } }, outcome);
+      for (const collection of [protocol.serverTasks, protocol.serverTaskControllers, protocol.serverTaskSessions, protocol.serverTasksByController]) assert.equal(collection.size, 0, outcome);
+      assert.equal(protocol.permissionRequestIds.size, 1, outcome);
+      assert.equal(protocol.turnState('session-1'), 'armed', outcome);
+      assert.equal(protocol.closed, false, outcome);
+      assert.deepEqual(failures, [], outcome);
+    } finally {
+      mock.timers.reset();
+      protocol.releaseTurn('session-1');
+    }
   }
 });
 
