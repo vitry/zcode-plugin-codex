@@ -368,11 +368,17 @@ test('routing precedence materializes only authoritative fresh or resume choices
   assert.match(source, /proactive[\s\S]+must include[\s\S]+(?:`fresh` or `resume`|`fresh` or `resume`)/i);
 });
 
-test('semantic candidate triage is explicit-only and proactive continuation never falls back to fresh', () => {
+test('parent continuation observation precedes inferred routing and preserves identity constraints', () => {
   const sources = [skill('rescue')];
   for (const source of sources) {
     assert.match(source, /(?:zero|0)[^\n]+(?:one|1)[^\n]+(?:more than one|>1)[^\n]+(?:triage|branches)[^\n]+(?:only|entirely)[^\n]+explicit no-choice/i);
     assert.match(source, /proactive clear continuation[\s\S]+exact retained canonical path[^\n]+unavailable[^\n]+(?:clarif|fail)[^\n]+never[^\n]+fresh(?:\/null| fallback)?/i);
+    assert.ok(source.indexOf('role-status rescue') < source.indexOf('## Entry classification'));
+    assert.match(source, /Project continuity is not operation identity/);
+    assert.match(source, /`none`[^\n]+`fresh`[^\n]+`continuationTarget: null`/);
+    assert.match(source, /`blocked`[^\n]+missing[^\n]+invalid[^\n]+not `none`/);
+    assert.match(source, /explicit same-operation[^\n]+never silently fall back to fresh/i);
+    assert.match(source, /`present`[^\n]+not proof[^\n]+resumable/);
   }
 });
 

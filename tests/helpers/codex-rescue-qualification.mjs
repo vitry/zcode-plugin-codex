@@ -206,7 +206,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   if (preparations.length !== 2 || preparations.some((call) => parentOutputs.filter((output) => output.payload.type === 'custom_tool_call_output' && output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-preparation-count', 'Captured continuation must contain two linked raw parent preparations.');
   const parentCalls = parent.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
   const preparationWrites = parentExecs.filter((event) => parseCapturedHostCall(event.payload.input).kind === 'write_stdin');
-  if (parentCalls.length !== 6 || preparationWrites.length !== 2
+  if (parentCalls.length !== 8 || preparationWrites.length !== 2
     || parentCalls.some((event) => event.payload.type === 'function_call' && !['spawn_agent', 'followup_task'].includes(event.payload.name))) mismatch('continuation-parent-events', 'Raw parent rollout contains an unaccounted host call.');
   const spawn = parseObject(spawns[0].payload.arguments, 'continuation-spawn-arguments'); const followup = parseObject(followups[0].payload.arguments, 'continuation-followup-arguments');
   const expectedMessage = input.route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
@@ -483,7 +483,7 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
     || Object.keys(Object.fromEntries(writeCall.host.envelope)).sort().join('\0') !== ['chars', 'session_id'].join('\0')) mismatch('restored-child-current-events', 'Restored Role and prepare host calls are not exact.');
   const outputFor = (call) => currentCustomOutputs.find((output) => output.payload.call_id === call.event.payload.call_id);
   const roleOutput = parseCapturedHostResult(outputFor(roleCall)?.payload?.output); const readyOutput = parseCapturedHostResult(outputFor(prepareCall)?.payload?.output); const preparedOutput = parseCapturedHostResult(outputFor(writeCall)?.payload?.output);
-  if (roleOutput.output !== `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n` || roleOutput.exit_code !== 0 || Object.hasOwn(roleOutput, 'session_id')
+  if (roleOutput.output !== `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' } })}\n` || roleOutput.exit_code !== 0 || Object.hasOwn(roleOutput, 'session_id')
     || readyOutput.output !== PREPARATION_READY_LINE || !Number.isSafeInteger(readyOutput.session_id) || Object.hasOwn(readyOutput, 'exit_code')
     || writeCall.host.envelope.get('session_id') !== readyOutput.session_id || preparedOutput.exit_code !== 0 || Object.hasOwn(preparedOutput, 'session_id')) mismatch('restored-child-directive', 'Restored Role readiness or TTY prepare handshake is invalid.');
   const chars = writeCall.host.envelope.get('chars'); let preparationEnvelope;
@@ -1748,7 +1748,7 @@ async function validateContinuationWorkspaceBinding(input, expected, active) {
     || roleStatus.activeBytesBefore !== transitions[1] || roleStatus.activeBytesAfter !== transitions[2]
     || roleStatus.activeBytesAfter !== roleStatus.activeBytesBefore
     || !Number.isFinite(roleStatus.mtimeBefore) || roleStatus.mtimeAfter !== roleStatus.mtimeBefore
-    || JSON.stringify(roleStatus.result) !== JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })) {
+    || JSON.stringify(roleStatus.result) !== JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })) {
     mismatch('continuation-role-preview', 'Raw Role preflight did not inspect the exact execution workspace.');
   }
   if (pending.status !== 'pending' || pending.executionWorkspace !== null
@@ -1916,9 +1916,21 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
   const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
   const prepares = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
   const writes = calls.filter(({ host }) => host.kind === 'write_stdin');
+  const preflights = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" role-status rescue'));
+  if (preflights.length !== 2) mismatch('continuation-preflight', 'Each preparation generation requires its own Role observation.');
   if (prepares.length !== 2 || writes.length !== 2) mismatch('continuation-preparation-protocol', 'The active parent turn must own exactly two prepare/write generations.');
   for (let generationIndex = 0; generationIndex < specifications.length; generationIndex += 1) {
     const specification = specifications[generationIndex]; const prepare = prepares[generationIndex]; const write = writes[generationIndex];
+    const preflight = preflights[generationIndex];
+    const observed = outputs.filter(({ event }) => event.payload.call_id === preflight.event.payload.call_id);
+    if (observed.length !== 1 || preflight.host.envelope.get('workdir') !== expected.workspace
+      || preflight.host.envelope.get('cmd') !== prepare.host.envelope.get('cmd').replace(/ prepare rescue$/u, ' role-status rescue')
+      || !(preflight.index < observed[0].index && observed[0].index < prepare.index)
+      || generationIndex > 0 && preflight.index <= writes[generationIndex - 1].index) mismatch('continuation-preflight', 'Continuation observation must precede its exact preparation.');
+    const observation = parseCapturedHostResult(observed[0].event.payload.output);
+    if (observation.exit_code !== 0 || Object.hasOwn(observation, 'session_id')) mismatch('continuation-preflight', 'Continuation observation must exit successfully.');
+    let status; try { status = JSON.parse(observation.output); } catch { mismatch('continuation-preflight', 'Continuation observation is malformed.'); }
+    const continuationState = assertReadyContinuation(status, 'continuation-preflight');
     if (prepare.host.envelope.get('tty') !== true || prepare.host.envelope.get('workdir') !== expected.workspace) mismatch('continuation-preparation-protocol', 'Preparation must use the exact TTY workspace envelope.');
     const readyOutput = outputs.filter(({ event }) => event.payload.call_id === prepare.event.payload.call_id);
     const ackOutput = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
@@ -1936,6 +1948,7 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     if (!chars.endsWith('\n') || chars.slice(0, -1).includes('\n')) mismatch('continuation-preparation-route', 'Preparation is not one LF-terminated envelope.');
     let envelope; try { envelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('continuation-preparation-route', 'Production preparation parser rejected the raw LF envelope.'); }
     if (envelope.source !== specification.source || envelope.options.resume !== specification.resume || (envelope.options.execution ?? 'foreground') !== expected.execution) mismatch('continuation-preparation-route', 'Preparation source or exact route is invalid.');
+    assertContinuationRoute(continuationState, envelope, 'continuation-preflight-route');
     const expectedTarget = generationIndex === 0 ? null : { agentPath: expected.agentPath };
     if (envelope.version !== 3 || !isDeepStrictEqual(envelope.continuationTarget, expectedTarget)) {
       mismatch('continuation-target-preparation', 'Preparation does not retain the exact linked lifecycle target.');
@@ -2074,6 +2087,30 @@ function assertParentIsolation(parent, options, forbiddenText) {
   }
 }
 
+function assertReadyContinuation(status, code = 'preflight-status-mismatch') {
+  assertExactKeys(status, ['continuation', 'role', 'status', 'type'], code);
+  if (status.type !== 'role-status' || status.role !== 'zcode-rescue' || status.status !== 'ready') {
+    mismatch(code, 'The readiness output does not report the Rescue Role ready.');
+  }
+  assertExactKeys(status.continuation, ['state'], code);
+  if (!['none', 'present', 'blocked'].includes(status.continuation.state)) mismatch(code, 'The continuation observation is invalid.');
+  return status.continuation.state;
+}
+
+export function assertContinuationRoute(state, envelope, code = 'preflight-route-mismatch') {
+  // An explicit `--resume` choice stays authoritative with `none`: the Host
+  // explains the missing current-parent continuity, the chosen mode stands,
+  // and the private prepare remains the activation authority. Entry source
+  // is not a mode choice — an explicit entry whose envelope omits the resume
+  // flag is a no-choice request that must route fresh with a null target —
+  // and only an inferred (proactive) resume requires a `present` observation
+  // before preparation.
+  if (envelope.options.resume !== 'fresh' && state !== 'present'
+    && !(state === 'none' && envelope.source === 'explicit' && envelope.options.resume === 'resume')) {
+    mismatch(code, 'Continuation requires observed current-parent evidence before preparation.');
+  }
+}
+
 function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   if (typeof options.expectedPreparationCommand !== 'string' || !options.expectedPreparationCommand
     || typeof options.expectedPreparationPayload !== 'string' || !options.expectedPreparationPayload) {
@@ -2104,10 +2141,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   const statusText = preflightResult.output.trim();
   let status;
   try { status = JSON.parse(statusText); } catch { mismatch('preflight-status-mismatch', 'The readiness output is not exact bounded JSON.'); }
-  assertExactKeys(status, ['role', 'status', 'type'], 'preflight-status-mismatch');
-  if (status.type !== 'role-status' || status.role !== 'zcode-rescue' || status.status !== 'ready') {
-    mismatch('preflight-status-mismatch', 'The readiness output does not report the Rescue Role ready.');
-  }
+  const continuationState = assertReadyContinuation(status);
 
   const preparations = execCalls.filter(({ host }) => host.envelope.get('cmd') === options.expectedPreparationCommand);
   if (preparations.length !== 1) mismatch('preparation-count', 'The parent rollout must contain exactly one private preparation process.');
@@ -2139,6 +2173,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
   assertParentPreparationTaskExclusivity(parent, write.event, payload.task, calls, outputs);
+  assertContinuationRoute(continuationState, payload);
   const writeOutputs = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
   if (writeOutputs.length !== 1) mismatch('preparation-ack-count', 'The private preparation write must expose exactly one linked terminal acknowledgement.');
   const acknowledged = parseCapturedHostResult(writeOutputs[0].event.payload.output);

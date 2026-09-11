@@ -488,7 +488,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     },
   });
   assert.equal(roleStatus.code, 0, roleStatus.stderr || roleStatus.stdout);
-  assert.deepEqual(JSON.parse(roleStatus.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(JSON.parse(roleStatus.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   assert.equal(roleStatus.internal, '');
   const workspaceEntries = await readdir(join(pluginData, 'workspaces'));
   assert.equal(workspaceEntries.length, 1);

@@ -652,7 +652,7 @@ test('captured exact task_2 qualification resumes the notLoaded original path an
         { type: 'event_msg', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'old-turn', item: { type: 'SubAgentActivity', kind: 'started', id: `spawn-${route}`, agent_thread_id: childThreadId, agent_path: agentPath } } },
         { type: 'event_msg', turn_id: 'old-turn', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'old-turn', item: { type: 'SubAgentActivity', kind: 'stopped', id: `stop-${route}`, agent_thread_id: childThreadId, agent_path: agentPath } } },
         { ...installedToolCall(`role-${route}`, installedExecInput(`${launcherCommand} role-status rescue`, { workdir: executionWorkspace })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.100Z' },
-        { ...installedToolOutput(`role-${route}`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.200Z' },
+        { ...installedToolOutput(`role-${route}`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' } })}\n`, exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.200Z' },
         { ...installedToolCall(`prepare-${route}`, installedExecInput(`${launcherCommand} prepare rescue`, { workdir: executionWorkspace, tty: true })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.300Z' },
         { ...installedToolOutput(`prepare-${route}`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 91 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.400Z' },
         { ...installedToolCall(`prepare-write-${route}`, installedPollInput(91, `${JSON.stringify(preparationEnvelope)}\n`)), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.500Z' },
@@ -1776,11 +1776,13 @@ async function captureInstalledPreparedContinuationEvidence(input) {
   const continuationParentTurnId = followup.turn_id;
   assert.ok(originalParentTurnId && continuationParentTurnId === originalParentTurnId, 'raw continuation capture requires one exact active parent turn');
 
+  const isRolePreflight = (event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
+    && event.payload.input.includes('exec_command') && event.payload.input.includes('role-status rescue');
   const isPreparation = (event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
     && event.payload.input.includes('exec_command') && event.payload.input.includes('prepare rescue');
   const isPreparationWrite = (event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
     && event.payload.input.includes('write_stdin') && event.payload.input.includes('version') && event.payload.input.includes('source');
-  const parentCalls = parent.filter((event) => isPreparation(event) || isPreparationWrite(event) || event === spawn || event === followup);
+  const parentCalls = parent.filter((event) => isRolePreflight(event) || isPreparation(event) || isPreparationWrite(event) || event === spawn || event === followup);
   const parentCallIds = new Set(parentCalls.map((event) => event.payload.call_id));
   const parentProjection = parent.filter((event) => event?.type === 'session_meta' || parentCalls.includes(event)
     || event === start || event === stop
@@ -2358,6 +2360,8 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
   const preReservationBinding = { ...binding, currentJobId: anchorJobId, updatedAt: '2026-08-10T00:00:05.000Z' };
   const parent = [
     { type: 'session_meta', payload: { id: parentSessionId, session_id: parentSessionId, thread_source: 'user', source: 'exec' } },
+    { ...installedToolCall('role-generation-1', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" role-status rescue', { workdir: workspace })), timestamp: '2026-08-10T00:00:00.100Z' },
+    { ...installedToolOutput('role-generation-1', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.200Z' },
     { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace, env: { PATH: '/usr/bin' } })), timestamp: '2026-08-10T00:00:00.250Z' },
     { ...installedToolOutput('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
     { ...installedToolCall('prepare-write-1', installedPreparationInput(71, `${JSON.stringify(installedContinuationEnvelope('explicit', 'fresh'))}\n`)), timestamp: '2026-08-10T00:00:00.500Z' },
@@ -2366,6 +2370,8 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'started', id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task' } } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ task_name: '/root/zcode_rescue_task' }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'item_completed', thread_id: parentSessionId, turn_id: 'turn-original', item: { type: 'SubAgentActivity', kind: 'stopped', id: 'stop-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task' } } },
+    { ...installedToolCall('role-generation-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" role-status rescue', { workdir: workspace })), timestamp: '2026-08-10T01:00:59.100Z' },
+    { ...installedToolOutput('role-generation-2', { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'present' } })}\n`, exit_code: 0 }), timestamp: '2026-08-10T01:00:59.200Z' },
     { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T01:01:00.500Z' },
@@ -2479,7 +2485,7 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   const roleBefore = await readFile(activePath, 'utf8'); const roleStatBefore = await stat(activePath);
   const roleResult = await runRawChild(process.execPath, [launcher, 'role-status', 'rescue'], { cwd: executionWorkspace, env: launcherEnv });
   assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
-  assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   const roleAfter = await readFile(activePath, 'utf8'); const roleStatAfter = await stat(activePath);
   const frame = `${JSON.stringify({ version: 3, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
   const prepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
@@ -2720,7 +2726,7 @@ function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
   input.authorityTransitionBytesJson = JSON.stringify([observed.raw.pending, observed.raw.unbound, observed.raw.unbound, observed.raw.bound]);
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expected.executionWorkspace,
     activeBytesBefore: observed.role.activeBytesBefore, activeBytesAfter: observed.role.activeBytesAfter, mtimeBefore: observed.role.mtimeBefore, mtimeAfter: observed.role.mtimeAfter,
-    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } } });
   input.originIndexRecordBytes = observed.raw.originIndex; input.executorRouteRecordBytes = observed.raw.route; input.executorRecordBytes = observed.raw.executor;
   input.bindingAuthorityBytes = observed.raw.authority; input.bindingPreReservationBytes = observed.raw.bindings[0]; input.bindingPartitionBytes = observed.raw.bindings[1];
   input.preparationRecordBytesJson = JSON.stringify(observed.raw.preparations); input.jobRecordBytesJson = JSON.stringify(observed.raw.jobs);
@@ -2886,7 +2892,7 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   const parent = [
     { type: 'session_meta', payload: { session_id: parentThreadId, id: parentThreadId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
     installedToolCall(`${name}-preflight`, installedExecInput(preflightCommand)),
-    installedToolOutput(`${name}-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    installedToolOutput(`${name}-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 0 }),
     installedToolCall(`${name}-prepare`, installedExecInput(preparationCommand, { tty: true })),
     installedToolOutput(`${name}-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: name === 'named' ? 171 : 181 }),
     installedToolCall(`${name}-prepare-write`, installedPreparationInput(name === 'named' ? 171 : 181, `${preparationPayload}\n`)),
@@ -3003,7 +3009,7 @@ function installedCapturedChoiceRoute(route, choice) {
   const parent = [
     structuredClone(route.fixture.rollouts[0][0]),
     installedToolCall(`${route.name}-choice-preflight`, installedExecInput(route.preflightCommand)),
-    installedToolOutput(`${route.name}-choice-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    installedToolOutput(`${route.name}-choice-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } })}\n`, exit_code: 0 }),
     installedToolCall(`${route.name}-choice-prepare`, installedExecInput(route.preparationCommand, { tty: true })),
     installedToolOutput(`${route.name}-choice-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: route.name === 'named' ? 191 : 192 }),
     installedToolCall(`${route.name}-choice-prepare-write`, installedPreparationInput(route.name === 'named' ? 191 : 192, `${route.preparationPayload}\n`)),
