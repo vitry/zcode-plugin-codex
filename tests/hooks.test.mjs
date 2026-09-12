@@ -18,7 +18,8 @@ import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeB
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { SESSION_START_ADDITIONAL_CONTEXT_LIMIT, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRecordedSessionStart, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, isOwnedSession, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRecordedSessionStart, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor, settleExactForwardingStop } from '../hooks/lib/hook-state.mjs';
+import { withFileLock } from '../scripts/lib/fs.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
@@ -863,6 +864,494 @@ test('an elapsed shared deadline defers SubagentStop rescue settlement instead o
   const stored = await store.readJob(cwd, running.id);
   assert.equal(stored.status, 'running', `no settlement stage may mutate the job after the deadline (was ${stored.status})`);
   assert.equal(stored.stopIntent, undefined, 'no stop intent may be persisted after the deadline');
+});
+
+// --- Task 2: settleExactForwardingStop conditional stop primitive ----------
+
+/** The full captured identity tuple of one routed fixture's active records. */
+async function exactStopExpected(fixture) {
+  const route = await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id);
+  const executor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  const forwardPath = join(fixture.originDirectory, (await readdir(fixture.originDirectory)).find((name) => name.startsWith('forward-')));
+  return {
+    expected: {
+      dataRoot: fixture.data, sessionId: route.parentSessionId, childTurnId: route.childTurnId, agentId: route.agentId, agentType: route.agentType,
+      originWorkspace: route.originWorkspace, parentGenerationId: route.parentGenerationId, parentTurnId: route.parentTurnId,
+      parentPermissionMode: route.parentPermissionMode, targetWorkspace: route.targetWorkspace, createdAt: route.createdAt,
+      ...(executor.ownerLifecycleEpoch === undefined ? {} : { ownerLifecycleEpoch: executor.ownerLifecycleEpoch, ownerLifecycleEpochStartedAt: executor.ownerLifecycleEpochStartedAt }),
+    },
+    route, executor, forwardPath,
+  };
+}
+
+/** Publish a successor SubagentStart generation child over the SAME agent-id
+ * executor file: a new parent caller turn (a new generation) starts a new
+ * child turn for the same agent id, which republishes the shared executor
+ * record while the old tuple's stop writes are still pending. */
+async function publishSuccessorGeneration(fixture, label) {
+  const identity = createIdentityStore({ dataRoot: fixture.data });
+  await identity.beginCallerTurn({ sessionId: fixture.caller.sessionId, turnId: `${fixture.caller.turnId}-${label}`, workspace: fixture.origin, permissionMode: fixture.caller.permissionMode, prompt: label, sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const successorCaller = await identity.resolveActiveTurn({ sessionId: fixture.caller.sessionId, workspace: fixture.target, workspaceBinding: 'claim' });
+  assert.notEqual(successorCaller.generationId, fixture.caller.generationId, 'the successor must be a NEW SubagentStart generation');
+  const successorStart = { ...fixture.start, turn_id: `${fixture.start.turn_id}-${label}` };
+  await markForwarding(fixture.data, successorStart, successorCaller);
+  return successorStart;
+}
+
+test('settleExactForwardingStop reconciles one exact tuple across workspaces and requires the stopped lookup', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-exact');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  assert.notEqual(expected.targetWorkspace, expected.originWorkspace, 'the fixture routes execution across workspaces');
+  const stopped = await settleExactForwardingStop(expected);
+  assert.deepEqual(stopped, { outcome: 'reconciled', reason: 'stopped' });
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, false, 'the forwarding marker is inactive');
+  const executor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  assert.equal(executor.active, false, 'the target executor is inactive');
+  assert.deepEqual(await resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { executor, executionWorkspace: await realpath(fixture.target) });
+  // A duplicate stop of the same tuple is idempotent: the stopped route and
+  // inactive executor bytes never change and the outcome stays reconciled.
+  // The forwarding marker is intentionally REWRITTEN on every settle (a fresh
+  // updatedAt on the same tuple — semantically idempotent, never byte-
+  // identical), so full byte-idempotency must not be assumed for it.
+  const routeBytes = await readFile(fixture.routePath, 'utf8'); const executorBytes = await readFile(fixture.executorPath, 'utf8');
+  const markerBefore = JSON.parse(await readFile(forwardPath, 'utf8'));
+  const again = await settleExactForwardingStop(expected);
+  assert.equal(again.outcome, 'reconciled');
+  assert.equal(await readFile(fixture.routePath, 'utf8'), routeBytes, 'a duplicate stop never rewrites the stopped route bytes');
+  assert.equal(await readFile(fixture.executorPath, 'utf8'), executorBytes, 'a duplicate stop never rewrites the inactive executor bytes');
+  const markerAfter = JSON.parse(await readFile(forwardPath, 'utf8'));
+  assert.equal(markerAfter.active, false, 'the rewritten forwarding marker stays inactive');
+  assert.equal(markerAfter.updatedAt >= markerBefore.updatedAt, true, 'the forwarding marker rewrite carries a fresh timestamp');
+  assert.equal(markerAfter.generationId, markerBefore.generationId, 'the rewritten forwarding marker keeps its tuple identity');
+});
+
+test('settleExactForwardingStop refuses an old tuple whose executor file a successor generation republished', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-successor-executor');
+  const { expected } = await exactStopExpected(fixture);
+  const successorStart = await publishSuccessorGeneration(fixture, 'executor-successor');
+  const successorExecutor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  assert.equal(successorExecutor.childTurnId, successorStart.turn_id, 'the successor owns the shared executor file now');
+  const stopped = await settleExactForwardingStop(expected);
+  assert.equal(stopped.outcome, 'superseded', 'a NEW SubagentStart generation must never be deactivated by the old tuple stop writes');
+  assert.deepEqual(JSON.parse(await readFile(fixture.executorPath, 'utf8')), successorExecutor, 'the successor executor bytes are unchanged');
+  // The old tuple's own records were already stopped before the executor
+  // conflict was detected: multiple file writes are not atomic, and the
+  // writes that did happen touched only the expected tuple's own records.
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, successorStart.session_id, successorStart.turn_id)).state, 'active', 'the successor route stays active');
+});
+
+test('settleExactForwardingStop refuses a successor generation republished over the old tuple route records', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-successor-route');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  // Republish the SAME (session, child turn, agent) record keys under a NEW
+  // generation: exactly the state a successor SubagentStart generation would
+  // own if it ever reused the old tuple's exact route/forward/executor keys.
+  const successorGenerationId = 'b'.repeat(64);
+  const successorTurnId = 'successor-parent-turn';
+  const successorCreatedAt = new Date().toISOString();
+  const successorRoute = { ...JSON.parse(await readFile(fixture.routePath, 'utf8')), parentGenerationId: successorGenerationId, parentTurnId: successorTurnId, createdAt: successorCreatedAt, updatedAt: successorCreatedAt, state: 'active' };
+  const successorForward = { ...JSON.parse(await readFile(forwardPath, 'utf8')), generationId: successorGenerationId, updatedAt: successorCreatedAt };
+  const successorExecutor = { ...JSON.parse(await readFile(fixture.executorPath, 'utf8')), parentGenerationId: successorGenerationId, parentTurnId: successorTurnId, createdAt: successorCreatedAt };
+  await writeFile(fixture.routePath, `${JSON.stringify(successorRoute, null, 2)}\n`);
+  await writeFile(forwardPath, `${JSON.stringify(successorForward, null, 2)}\n`);
+  await writeFile(fixture.executorPath, `${JSON.stringify(successorExecutor, null, 2)}\n`);
+  const stopped = await settleExactForwardingStop(expected);
+  assert.deepEqual(stopped, { outcome: 'superseded', reason: 'route-identity' });
+  assert.deepEqual(JSON.parse(await readFile(fixture.routePath, 'utf8')), successorRoute, 'the successor route bytes are unchanged');
+  assert.deepEqual(JSON.parse(await readFile(forwardPath, 'utf8')), successorForward, 'the successor forwarding bytes are unchanged');
+  assert.deepEqual(JSON.parse(await readFile(fixture.executorPath, 'utf8')), successorExecutor, 'the successor executor was never deactivated');
+});
+
+test('settleExactForwardingStop never deactivates a successor SubagentStart that races in between the staged locks', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-successor-race');
+  const { expected } = await exactStopExpected(fixture);
+  let release; let routeStoppedResolve; const routeStopped = new Promise((resolvePromise) => { routeStoppedResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+  const settling = settleExactForwardingStop({ ...expected, publicationSeam: async (point) => { if (point === 'after-route-stopped') { routeStoppedResolve(); await blocker; } } });
+  await routeStopped;
+  const successorStart = await publishSuccessorGeneration(fixture, 'race-successor');
+  const successorExecutor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  release();
+  const stopped = await settling;
+  assert.deepEqual(stopped, { outcome: 'superseded', reason: 'executor-identity' });
+  assert.deepEqual(JSON.parse(await readFile(fixture.executorPath, 'utf8')), successorExecutor, 'the racing successor executor bytes are unchanged');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, successorStart.session_id, successorStart.turn_id)).state, 'active');
+});
+
+test('settleExactForwardingStop refuses an executor republished under a different host lifecycle epoch', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-old-epoch');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  assert.equal(typeof expected.ownerLifecycleEpoch, 'string', 'the fixture executor carries its authorization epoch');
+  const successorStartedAt = '2026-09-01T00:00:00.000Z';
+  const successorEpochExecutor = { ...JSON.parse(await readFile(fixture.executorPath, 'utf8')), ownerLifecycleEpoch: hostLifecycleEpoch(expected.sessionId, successorStartedAt), ownerLifecycleEpochStartedAt: successorStartedAt };
+  await writeFile(fixture.executorPath, `${JSON.stringify(successorEpochExecutor, null, 2)}\n`);
+  const stopped = await settleExactForwardingStop(expected);
+  assert.deepEqual(stopped, { outcome: 'superseded', reason: 'executor-epoch' }, 'an old epoch must never deactivate a record the epoch no longer owns');
+  assert.deepEqual(JSON.parse(await readFile(fixture.executorPath, 'utf8')), successorEpochExecutor, 'the successor epoch executor bytes are unchanged');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped', 'the same-tuple route was stopped before the epoch conflict was detected');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, false, 'the same-tuple forwarding marker was written inactive before the epoch conflict was detected');
+});
+
+test('settleExactForwardingStop reports partial writes per stage and a retry finishes the same tuple', async (t) => {
+  const routeStage = await routedExecutorFixture(t, 'settle-stage-route');
+  const routeExpected = (await exactStopExpected(routeStage)).expected;
+  await assert.rejects(
+    settleExactForwardingStop({ ...routeExpected, publicationSeam: async (point) => { if (point === 'after-route-stopped') throw new Error('crashed after the route stage'); } }),
+    /crashed after the route stage/,
+  );
+  assert.equal((await resolveForwardingRoute(routeStage.data, routeStage.origin, routeStage.start.session_id, routeStage.start.turn_id)).state, 'stopped', 'the route stage wrote the stopped route');
+  assert.equal(JSON.parse(await readFile(routeStage.executorPath, 'utf8')).active, true, 'the executor stage never ran');
+  const routeRetry = await settleExactForwardingStop(routeExpected);
+  assert.deepEqual(routeRetry, { outcome: 'reconciled', reason: 'stopped' }, 'a retry finishes the same tuple partial updates');
+  assert.equal(JSON.parse(await readFile(routeStage.executorPath, 'utf8')).active, false);
+
+  const executorStage = await routedExecutorFixture(t, 'settle-stage-executor');
+  const executorExpected = (await exactStopExpected(executorStage)).expected;
+  await assert.rejects(
+    settleExactForwardingStop({ ...executorExpected, publicationSeam: async (point) => { if (point === 'after-executor-deactivated') throw new Error('crashed after the executor stage'); } }),
+    /crashed after the executor stage/,
+  );
+  assert.equal(JSON.parse(await readFile(executorStage.executorPath, 'utf8')).active, false, 'the executor stage wrote the inactive record before the crash');
+  const executorRetry = await settleExactForwardingStop(executorExpected);
+  assert.deepEqual(executorRetry, { outcome: 'reconciled', reason: 'stopped' }, 'a duplicate stop verifies the already-written tuple');
+});
+
+test('settleExactForwardingStop runs its validate callback between stages outside the file locks', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-validate');
+  const { expected } = await exactStopExpected(fixture);
+  const stages = []; let originLockAcquiredDuringValidate = false;
+  const stopped = await settleExactForwardingStop(expected, async (stage) => {
+    stages.push(stage);
+    if (stage === 'before-target-lock') {
+      await withFileLock(join(fixture.originDirectory, '.lock'), async () => { originLockAcquiredDuringValidate = true; }, { timeoutMs: 250 });
+    }
+  });
+  assert.deepEqual(stages, ['before-origin-lock', 'before-target-lock', 'before-verify']);
+  assert.equal(originLockAcquiredDuringValidate, true, 'validate runs outside every file lock');
+  assert.equal(stopped.outcome, 'reconciled');
+  // A validate rejection is the caller's own invalidation: the remaining
+  // stages never run and the executor keeps its published state.
+  const aborted = await routedExecutorFixture(t, 'settle-validate-abort');
+  const abortedExpected = (await exactStopExpected(aborted)).expected;
+  await assert.rejects(
+    settleExactForwardingStop(abortedExpected, async (stage) => { if (stage === 'before-target-lock') throw new Error('binding changed under us'); }),
+    /binding changed under us/,
+  );
+  assert.equal(JSON.parse(await readFile(aborted.executorPath, 'utf8')).active, true, 'an aborted validate never reaches the executor write');
+  assert.equal((await resolveForwardingRoute(aborted.data, aborted.origin, aborted.start.session_id, aborted.start.turn_id)).state, 'stopped');
+});
+
+test('settleExactForwardingStop returns reconciled only while the re-read records still agree', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-reread-gate');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  // A concurrent revival between the writes and the re-read keeps the outcome
+  // from ever claiming reconciled on unverified state.
+  const revived = await settleExactForwardingStop(expected, async (stage) => {
+    if (stage === 'before-verify') {
+      const marker = JSON.parse(await readFile(forwardPath, 'utf8'));
+      await writeFile(forwardPath, `${JSON.stringify({ ...marker, active: true }, null, 2)}\n`);
+    }
+  });
+  assert.equal(revived.outcome, 'partial', 'a revived forwarding marker fails the re-read agreement');
+  assert.notEqual(revived.reason, 'stopped');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, true, 'the revival was not overwritten by the verification');
+  const settled = await settleExactForwardingStop(expected);
+  assert.deepEqual(settled, { outcome: 'reconciled', reason: 'stopped' }, 'the next same-tuple pass finishes the partial updates');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, false);
+});
+
+test('settleExactForwardingStop rejects model-supplied or malformed stop identity before any write', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'settle-identity-guard');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  // Non-objects and unknown keys are never an internal identity.
+  await assert.rejects(settleExactForwardingStop(), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop(null), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop('stop'), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop([]), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop(Object.assign(Object.create(null), expected)), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // Any captured field requires the COMPLETE exact tuple.
+  const withoutCreatedAt = { ...expected }; delete withoutCreatedAt.createdAt;
+  await assert.rejects(settleExactForwardingStop(withoutCreatedAt), { code: 'EXECUTOR_ROUTE_INVALID' }, 'a partial exact tuple is rejected');
+  const withoutGeneration = { ...expected }; delete withoutGeneration.parentGenerationId;
+  await assert.rejects(settleExactForwardingStop(withoutGeneration), { code: 'EXECUTOR_ROUTE_INVALID' }, 'a partial exact tuple is rejected');
+  // The authorization epoch pair is part of EVERY exact tuple: a tuple that
+  // cannot prove its Host lifecycle epoch is never a settleable identity.
+  const withoutEpoch = { ...expected }; delete withoutEpoch.ownerLifecycleEpoch; delete withoutEpoch.ownerLifecycleEpochStartedAt;
+  await assert.rejects(settleExactForwardingStop(withoutEpoch), { code: 'EXECUTOR_ROUTE_INVALID' }, 'every exact tuple must pin its epoch pair');
+  const halfEpoch = { ...expected }; delete halfEpoch.ownerLifecycleEpochStartedAt;
+  await assert.rejects(settleExactForwardingStop(halfEpoch), { code: 'EXECUTOR_ROUTE_INVALID' }, 'an epoch half is rejected');
+  // The generation is null or a 64-hex string — never another type.
+  await assert.rejects(settleExactForwardingStop({ ...expected, parentGenerationId: 12345 }), { code: 'EXECUTOR_ROUTE_INVALID' }, 'a numeric generation is rejected');
+  await assert.rejects(settleExactForwardingStop({ ...expected, parentGenerationId: 'not-hex' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // Callback and budget types are validated, never trusted.
+  await assert.rejects(settleExactForwardingStop(expected, 'validate'), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, signal: 'now' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, signal: null, timeoutMs: 0 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, timeoutMs: 1.5 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, timeoutMs: -1 }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, publicationSeam: 'seam' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // Unbounded identity fields are rejected.
+  await assert.rejects(settleExactForwardingStop({ ...expected, sessionId: '' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, agentType: '' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await assert.rejects(settleExactForwardingStop({ ...expected, originWorkspace: '' }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  // None of these rejections wrote any state: the fixture stays fully active.
+  assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, true, 'rejections never deactivate the executor');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, true, 'rejections never write the forwarding marker');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'active', 'rejections never stop the route');
+});
+
+test('settleExactForwardingStop reconciles a legacy tuple without a route record and keeps the legacy authority guard', async () => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  // A pre-lifecycle caller turn: no generation, no epoch, and (below) no route
+  // record — the legacy tuple verifies by direct re-read, not the routed lookup.
+  await identity.beginCallerTurn({ sessionId: 'legacy-settle-parent', turnId: 'legacy-settle-parent-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: 'legacy settle' });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'legacy-settle-parent', workspace: cwd });
+  assert.equal(caller.generationId, undefined, 'the legacy caller carries no generation');
+  const start = { session_id: caller.sessionId, turn_id: 'legacy-settle-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'legacy-settle-child', agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  const directory = join((await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd })).directory, 'hook-state');
+  const names = await readdir(directory);
+  const executorPath = join(directory, names.find((name) => name.startsWith('executor-') && name.endsWith('.json')));
+  const forwardPath = join(directory, names.find((name) => name.startsWith('forward-')));
+  const legacy = JSON.parse(await readFile(executorPath, 'utf8')); delete legacy.parentGenerationId; delete legacy.originWorkspace;
+  await writeFile(executorPath, JSON.stringify(legacy));
+  await unlink(join(directory, names.find((name) => name.startsWith('route-'))));
+  const stopped = await settleExactForwardingStop({
+    dataRoot: data, sessionId: start.session_id, childTurnId: start.turn_id, agentId: start.agent_id, agentType: start.agent_type, originWorkspace: cwd,
+  });
+  assert.deepEqual(stopped, { outcome: 'reconciled', reason: 'legacy-stopped' }, 'the legacy tuple verifies without a routed stopped lookup');
+  assert.equal(JSON.parse(await readFile(executorPath, 'utf8')).active, false, 'the legacy executor is deactivated');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, false, 'the legacy forwarding marker is inactive');
+  assert.equal((await readdir(directory)).some((name) => name.startsWith('route-')), false, 'no route record is fabricated for a legacy tuple');
+
+  // The legacy authority guard: a route-less stop requires the pre-generation
+  // caller authority to still be alive.
+  const revoked = await workspace(); const revokedIdentity = createIdentityStore({ dataRoot: revoked.data });
+  await revokedIdentity.beginCallerTurn({ sessionId: 'legacy-revoked-parent', turnId: 'legacy-revoked-parent-turn', workspace: revoked.cwd, permissionMode: 'workspace-write', prompt: 'legacy revoked' });
+  const revokedCaller = await revokedIdentity.resolveActiveTurn({ sessionId: 'legacy-revoked-parent', workspace: revoked.cwd });
+  const revokedStart = { session_id: revokedCaller.sessionId, turn_id: 'legacy-revoked-child-turn', cwd: revoked.cwd, hook_event_name: 'SubagentStart', agent_id: 'legacy-revoked-child', agent_type: 'zcode-rescue' };
+  await markForwarding(revoked.data, revokedStart, revokedCaller);
+  const revokedDirectory = join((await resolveWorkspaceStorage({ dataRoot: revoked.data, workspace: revoked.cwd })).directory, 'hook-state');
+  const revokedNames = await readdir(revokedDirectory);
+  const revokedExecutorPath = join(revokedDirectory, revokedNames.find((name) => name.startsWith('executor-') && name.endsWith('.json')));
+  const revokedLegacy = JSON.parse(await readFile(revokedExecutorPath, 'utf8')); delete revokedLegacy.parentGenerationId; delete revokedLegacy.originWorkspace;
+  await writeFile(revokedExecutorPath, JSON.stringify(revokedLegacy));
+  await unlink(join(revokedDirectory, revokedNames.find((name) => name.startsWith('route-'))));
+  await revokedIdentity.endCallerTurn({ sessionId: revokedCaller.sessionId, turnId: revokedCaller.turnId, workspace: revoked.cwd });
+  await assert.rejects(
+    settleExactForwardingStop({ dataRoot: revoked.data, sessionId: revokedStart.session_id, childTurnId: revokedStart.turn_id, agentId: revokedStart.agent_id, agentType: revokedStart.agent_type, originWorkspace: revoked.cwd }),
+    { code: 'EXECUTOR_ROUTE_INVALID' },
+    'a route-less legacy stop requires its pre-generation caller authority',
+  );
+  assert.equal(JSON.parse(await readFile(revokedExecutorPath, 'utf8')).active, true, 'the guarded legacy executor is never deactivated');
+
+  // A route-less CURRENT-shape executor is equally guarded: the exact route is
+  // mandatory for records that carry generation authority. (Same-workspace
+  // execution, so the route-less stop actually finds the executor record.)
+  const currentGuard = await workspace(); const currentIdentity = createIdentityStore({ dataRoot: currentGuard.data });
+  await currentIdentity.beginCallerTurn({ sessionId: 'current-guard-parent', turnId: 'current-guard-parent-turn', workspace: currentGuard.cwd, permissionMode: 'workspace-write', prompt: 'current guard', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const currentCaller = await currentIdentity.resolveActiveTurn({ sessionId: 'current-guard-parent', workspace: currentGuard.cwd, workspaceBinding: 'claim' });
+  const currentStart = { session_id: currentCaller.sessionId, turn_id: 'current-guard-child-turn', cwd: currentGuard.cwd, hook_event_name: 'SubagentStart', agent_id: 'current-guard-child', agent_type: 'zcode-rescue' };
+  await markForwarding(currentGuard.data, currentStart, currentCaller);
+  const currentDirectory = join((await resolveWorkspaceStorage({ dataRoot: currentGuard.data, workspace: currentGuard.cwd })).directory, 'hook-state');
+  const currentExecutorPath = join(currentDirectory, (await readdir(currentDirectory)).find((name) => name.startsWith('executor-') && name.endsWith('.json')));
+  await unlink(join(currentDirectory, (await readdir(currentDirectory)).find((name) => name.startsWith('route-'))));
+  await assert.rejects(
+    settleExactForwardingStop({ dataRoot: currentGuard.data, sessionId: currentStart.session_id, childTurnId: currentStart.turn_id, agentId: currentStart.agent_id, agentType: currentStart.agent_type, originWorkspace: currentGuard.cwd }),
+    { code: 'EXECUTOR_ROUTE_INVALID' },
+    'a route-less current-shape executor requires its exact route',
+  );
+  assert.equal(JSON.parse(await readFile(currentExecutorPath, 'utf8')).active, true, 'the guarded current-shape executor is never deactivated');
+});
+
+test('settleExactForwardingStop classifies re-read record conflicts as terminal superseded verdicts', async (t) => {
+  // The route record is replaced by a successor identity after the writes.
+  const routeFixture = await routedExecutorFixture(t, 'reread-route-conflict');
+  const routeExpected = (await exactStopExpected(routeFixture)).expected;
+  let successorRoute = null;
+  const routeConflict = await settleExactForwardingStop(routeExpected, async (stage) => {
+    if (stage === 'before-verify') {
+      const current = JSON.parse(await readFile(routeFixture.routePath, 'utf8'));
+      successorRoute = { ...current, parentGenerationId: 'c'.repeat(64) };
+      await writeFile(routeFixture.routePath, `${JSON.stringify(successorRoute, null, 2)}\n`);
+    }
+  });
+  assert.deepEqual(routeConflict, { outcome: 'superseded', reason: 'route-record-changed' }, 'a route republished by a successor identity is terminal');
+  assert.deepEqual(JSON.parse(await readFile(routeFixture.routePath, 'utf8')), successorRoute, 'the successor route bytes were never rewritten by the verdict');
+
+  // The executor record is republished by a successor child turn.
+  const executorFixture = await routedExecutorFixture(t, 'reread-executor-conflict');
+  const executorExpected = (await exactStopExpected(executorFixture)).expected;
+  let successorExecutor = null;
+  const executorConflict = await settleExactForwardingStop(executorExpected, async (stage) => {
+    if (stage === 'before-verify') {
+      const current = JSON.parse(await readFile(executorFixture.executorPath, 'utf8'));
+      successorExecutor = { ...current, childTurnId: 'successor-child-turn' };
+      await writeFile(executorFixture.executorPath, `${JSON.stringify(successorExecutor, null, 2)}\n`);
+    }
+  });
+  assert.deepEqual(executorConflict, { outcome: 'superseded', reason: 'executor-record-changed' }, 'an executor republished by a successor child is terminal');
+  assert.deepEqual(JSON.parse(await readFile(executorFixture.executorPath, 'utf8')), successorExecutor, 'the successor executor bytes were never rewritten by the verdict');
+
+  // The forwarding marker is republished for another agent identity.
+  const forwardFixture = await routedExecutorFixture(t, 'reread-forward-conflict');
+  const { expected: forwardExpected, forwardPath } = await exactStopExpected(forwardFixture);
+  let successorMarker = null;
+  const forwardConflict = await settleExactForwardingStop(forwardExpected, async (stage) => {
+    if (stage === 'before-verify') {
+      const marker = JSON.parse(await readFile(forwardPath, 'utf8'));
+      successorMarker = { ...marker, agentId: 'successor-agent' };
+      await writeFile(forwardPath, `${JSON.stringify(successorMarker, null, 2)}\n`);
+    }
+  });
+  assert.deepEqual(forwardConflict, { outcome: 'superseded', reason: 'forward-record-changed' }, 'a forwarding marker republished for another agent is terminal');
+  assert.deepEqual(JSON.parse(await readFile(forwardPath, 'utf8')), successorMarker, 'the successor forwarding bytes were never rewritten by the verdict');
+});
+
+test('settleExactForwardingStop reports the distinguished partial reasons', async (t) => {
+  // A validate rejection at the first stage performs zero writes.
+  const earlyFixture = await routedExecutorFixture(t, 'partial-early-reject');
+  const { expected: earlyExpected, forwardPath: earlyForwardPath } = await exactStopExpected(earlyFixture);
+  await assert.rejects(
+    settleExactForwardingStop(earlyExpected, async (stage) => { if (stage === 'before-origin-lock') throw new Error('host evidence changed'); }),
+    /host evidence changed/,
+  );
+  assert.equal((await resolveForwardingRoute(earlyFixture.data, earlyFixture.origin, earlyFixture.start.session_id, earlyFixture.start.turn_id)).state, 'active', 'no route write happened');
+  assert.equal(JSON.parse(await readFile(earlyForwardPath, 'utf8')).active, true, 'no forwarding write happened');
+  assert.equal(JSON.parse(await readFile(earlyFixture.executorPath, 'utf8')).active, true, 'no executor write happened');
+
+  // A missing executor record under the target lock is a retryable partial
+  // that still finished the same-tuple route writes.
+  const absentFixture = await routedExecutorFixture(t, 'partial-executor-absent');
+  const absentExpected = (await exactStopExpected(absentFixture)).expected;
+  await unlink(absentFixture.executorPath);
+  const absent = await settleExactForwardingStop(absentExpected);
+  assert.deepEqual(absent, { outcome: 'partial', reason: 'executor-record-missing' });
+  assert.equal((await resolveForwardingRoute(absentFixture.data, absentFixture.origin, absentFixture.start.session_id, absentFixture.start.turn_id)).state, 'stopped', 'the same-tuple route writes completed');
+
+  // Two routes claiming one agent id fail the existing stopped lookup after
+  // the writes verify: never reconciled on an unscannable state.
+  const ambiguousFixture = await routedExecutorFixture(t, 'partial-stopped-lookup');
+  const ambiguousExpected = (await exactStopExpected(ambiguousFixture)).expected;
+  const ambiguous = await settleExactForwardingStop(ambiguousExpected, async (stage) => {
+    if (stage === 'before-verify') {
+      await writeFile(join(ambiguousFixture.originDirectory, 'route-duplicate.json'), await readFile(ambiguousFixture.routePath));
+    }
+  });
+  assert.deepEqual(ambiguous, { outcome: 'partial', reason: 'stopped-lookup' }, 'a failing stopped lookup never reports reconciled');
+});
+
+test('settleExactForwardingStop treats a missing exact route as retryable partial state, never a successor verdict', async (t) => {
+  // The captured tuple's route record vanished before the settlement ran: no
+  // successor identity was observed anywhere, so the outcome is retryable
+  // partial and the primitive writes nothing it cannot verify.
+  const fixture = await routedExecutorFixture(t, 'partial-route-absent');
+  const { expected, forwardPath } = await exactStopExpected(fixture);
+  await unlink(fixture.routePath);
+  const stopped = await settleExactForwardingStop(expected);
+  assert.deepEqual(stopped, { outcome: 'partial', reason: 'route-record-missing' }, 'an absent route is retryable partial, never superseded');
+  assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, true, 'nothing is deactivated without the route anchor');
+  assert.equal(JSON.parse(await readFile(forwardPath, 'utf8')).active, true, 'no forwarding marker is written without the route anchor');
+
+  // The verify stage applies the same absence rule: a route that disappears
+  // between the writes and the re-read is partial, never superseded.
+  const midflight = await routedExecutorFixture(t, 'partial-route-midflight');
+  const midflightExpected = (await exactStopExpected(midflight)).expected;
+  const midflightStopped = await settleExactForwardingStop(midflightExpected, async (stage) => {
+    if (stage === 'before-verify') await unlink(midflight.routePath);
+  });
+  assert.deepEqual(midflightStopped, { outcome: 'partial', reason: 'route-record-missing' }, 'a route disappearing mid-flight stays retryable partial');
+  assert.equal(JSON.parse(await readFile(midflight.executorPath, 'utf8')).active, false, 'the same-tuple executor write already completed before the disappearance');
+});
+
+/** One active child published for SAME-WORKSPACE execution, where the final
+ * stopped lookup reads the shared executor file directly (the early selected
+ * path) instead of validating a route against its target. */
+async function sameWorkspaceExecutorFixture(t, label) {
+  const { cwd: origin, data } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  await recordSession(data, { session_id: `${label}-parent`, cwd: origin, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: `${label}-parent`, turnId: `${label}-parent-turn`, workspace: origin, permissionMode: 'workspace-write', prompt: label, sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const caller = await identity.resolveActiveTurn({ sessionId: `${label}-parent`, workspace: origin, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: `${label}-child-turn`, cwd: origin, hook_event_name: 'SubagentStart', agent_id: `${label}-child`, agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  const originDirectory = join((await resolveWorkspaceStorage({ dataRoot: data, workspace: origin })).directory, 'hook-state');
+  const names = await readdir(originDirectory);
+  return {
+    origin, data, target: origin, start, caller, originDirectory, targetDirectory: originDirectory,
+    routePath: join(originDirectory, names.find((name) => name.startsWith('route-'))),
+    executorPath: join(originDirectory, names.find((name) => name.startsWith('executor-') && name.endsWith('.json'))),
+  };
+}
+
+test('settleExactForwardingStop reports superseded when the stopped lookup observes a successor executor', async (t) => {
+  // Same-workspace execution: the final lookup reads the shared executor file
+  // directly. A successor generation with the SAME agent id starts AND stops
+  // after the verify re-read and before the lookup, so only the lookup can
+  // observe it — its result must be compared against the captured tuple
+  // instead of being blessed as reconciled.
+  const fixture = await sameWorkspaceExecutorFixture(t, 'lookup-successor');
+  const { expected } = await exactStopExpected(fixture);
+  const executorPath = fixture.executorPath;
+  let successorExecutor = null; let successorTurnId = null;
+  const stopped = await settleExactForwardingStop({ ...expected, publicationSeam: async (point) => {
+    if (point !== 'before-stopped-lookup') return;
+    const identity = createIdentityStore({ dataRoot: fixture.data });
+    await identity.beginCallerTurn({ sessionId: fixture.caller.sessionId, turnId: `${fixture.caller.turnId}-successor`, workspace: fixture.origin, permissionMode: fixture.caller.permissionMode, prompt: 'lookup successor', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    const successorCaller = await identity.resolveActiveTurn({ sessionId: fixture.caller.sessionId, workspace: fixture.origin, workspaceBinding: 'claim' });
+    const successorStart = { ...fixture.start, turn_id: `${fixture.start.turn_id}-successor` };
+    successorTurnId = successorStart.turn_id;
+    await markForwarding(fixture.data, successorStart, successorCaller);
+    await markForwarding(fixture.data, { ...successorStart, hook_event_name: 'SubagentStop' });
+    successorExecutor = JSON.parse(await readFile(executorPath, 'utf8'));
+  } });
+  assert.deepEqual(stopped, { outcome: 'superseded', reason: 'stopped-lookup-identity' }, 'a successor observed by the stopped lookup is terminal, never reconciled');
+  assert.equal(successorExecutor.active, false, 'the successor started and stopped inside the observation window');
+  assert.equal(successorExecutor.childTurnId, successorTurnId);
+  assert.deepEqual(JSON.parse(await readFile(executorPath, 'utf8')), successorExecutor, 'the successor executor bytes stay intact');
+  assert.equal(JSON.parse(await readFile(executorPath, 'utf8')).childTurnId, successorTurnId, 'the successor owns the shared executor record after the verdict');
+});
+
+test('settleExactForwardingStop shares its timeout budget across the final lookup lock acquisitions', async (t) => {
+  // Cross-workspace lookup acquires the origin lock twice and the target lock
+  // once, sequentially. Two holders each release inside the per-acquisition
+  // stale remainder but their SUM exceeds the settlement budget: the settle
+  // must abort on the shared deadline instead of completing after overage.
+  const fixture = await routedExecutorFixture(t, 'shared-lookup-budget');
+  const { expected } = await exactStopExpected(fixture);
+  const budgetMs = 1_200;
+  const holders = [];
+  t.after(() => { for (const holder of holders) { try { holder.kill(); } catch { /* exited */ } } });
+  const settleStartedAt = Date.now();
+  const stopped = await settleExactForwardingStop({ ...expected, timeoutMs: budgetMs }, async (stage) => {
+    if (stage !== 'before-verify') return;
+    // Prove both holders hold their locks before the verification runs, then
+    // release the origin holder at +500ms and the target holder at +1300ms —
+    // past the shared deadline but inside each stale per-acquisition remainder.
+    const originHolder = spawn(process.execPath, [sharedLockHolder, join(fixture.originDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    holders.push(originHolder);
+    await new Promise((resolve) => originHolder.stdout.once('data', resolve));
+    const targetHolder = spawn(process.execPath, [sharedLockHolder, join(fixture.targetDirectory, '.lock')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    holders.push(targetHolder);
+    await new Promise((resolve) => targetHolder.stdout.once('data', resolve));
+    setTimeout(() => { try { originHolder.stdin.end(); } catch { /* exited */ } }, 500);
+    setTimeout(() => { try { targetHolder.stdin.end(); } catch { /* exited */ } }, 1_300);
+  });
+  const elapsedMs = Date.now() - settleStartedAt;
+  assert.deepEqual(stopped, { outcome: 'partial', reason: 'stopped-lookup' }, 'the lookup aborts on the shared deadline instead of completing after cumulative overage');
+  assert.ok(elapsedMs < 2_500, `the settlement must end on the shared budget instead of waiting out every stale per-acquisition remainder (took ${elapsedMs}ms)`);
+});
+
+test('the SubagentStop Hook path keeps its derived behavior when a successor executor owns the record', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'hook-successor-stop');
+  const successorStart = await publishSuccessorGeneration(fixture, 'hook-successor');
+  const successorExecutor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  await assert.doesNotReject(markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' }, undefined, { timeoutMs: 5_000 }));
+  assert.deepEqual(JSON.parse(await readFile(fixture.executorPath, 'utf8')), successorExecutor, 'the Hook stop never deactivates the successor executor');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, fixture.start.session_id, fixture.start.turn_id)).state, 'stopped', 'the old tuple route is still stopped');
+  assert.equal((await resolveForwardingRoute(fixture.data, fixture.origin, successorStart.session_id, successorStart.turn_id)).state, 'active');
 });
 
 test('direct executor resolver preserves workspace and lock infrastructure errors', async (t) => {

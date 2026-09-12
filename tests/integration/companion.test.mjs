@@ -7138,3 +7138,377 @@ test('Transfer carries five maximum-size messages through the managed broker wit
   const storage = await resolveWorkspaceStorage(context); const identities = (await readdir(join(storage.directory, 'broker'))).filter((name) => /^identity(?:-[a-f0-9]+)?\.json$/.test(name));
   assert.equal(identities.length, 2); assert.ok(identities.includes('identity.json'));
 });
+
+/** The identity shape of the real-entry prepare reconciliation incidents. */
+const incident = Object.freeze({
+  session: 'prepare-reconcile-parent',
+  spawnTurn: 'prepare-reconcile-parent-turn-1',
+  retryTurn: 'prepare-reconcile-parent-turn-2',
+  child: 'prepare-reconcile-child',
+  childPath: '/root/zcode_rescue_task',
+  childTurn: 'prepare-reconcile-child-turn',
+  zcodeSessionId: 'zs-prepare-reconcile',
+  sessionStartedAt: '2026-09-12T00:00:00.000Z',
+});
+
+/** Build the terminated-child incident behind the REAL prepare entry: one
+ * Host-owned writable Rescue whose Rescue child died without its SubagentStop
+ * Hook (its exact failed Host turn below, no SessionEnd receipt), leaving all
+ * three hook records (route, forwarding, executor) ACTIVE and the retrying
+ * parent on a LATER turn. The tracked job shape is configurable exactly as in
+ * the coordinator suite. The fake Codex app-server serves both the persisted
+ * child graph (thread/list discovery) and the exact failed terminal-turn
+ * evidence (thread/read); no planner or recovery seam is stubbed.
+ * @param {any} t @param {{placement?:string,job?:('succeeded'|'running')}} [options] */
+async function stuckRescueChildIncident(t, { placement = 'foreground', job = 'succeeded' } = {}) {
+  const context = await fixture();
+  const workspace = await realpath(context.workspace);
+  const { session, spawnTurn, retryTurn, child, childPath, childTurn, zcodeSessionId } = incident;
+  await recordParentSession(context, session);
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  // The real lifecycle order: SessionStart precedes UserPromptSubmit, and every
+  // parent turn proves the session ledger, so its caller carries the turn's
+  // SubagentStart generation and the recorded epoch.
+  await identity.beginCallerTurn({ sessionId: session, turnId: spawnTurn, workspace,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait establish the stuck rescue',
+    sessionStartedAt: incident.sessionStartedAt, sessionSource: 'startup', lifecycleResult: true });
+  const spawningCaller = await identity.resolveActiveTurn({ sessionId: session, workspace, workspaceBinding: 'claim' });
+  await markForwarding(context.dataRoot, {
+    session_id: session, turn_id: childTurn, cwd: workspace,
+    hook_event_name: 'SubagentStart', agent_id: child, agent_type: 'zcode-rescue',
+  }, spawningCaller);
+  const epoch = hostLifecycleEpoch(session, (await resolveRecordedSessionStart(context.dataRoot, workspace, session)).startedAt);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const reserved = await store.reserveFreshRescueJob({
+    workspace,
+    reservation: { workspace, ownerSessionId: session, ownerTurnId: spawnTurn, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { parentSessionId: session, parentTurnId: spawnTurn, agentId: child, agentType: 'zcode-rescue',
+      agentPath: childPath, workspace, parentPermissionMode: 'workspace-write' },
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
+  });
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
+  let tracked = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  tracked = await store.transitionJob(workspace, tracked.id, ['running'], 'running',
+    { inputId: 'accepted-input', startRevision: 1, beforeMessageIds: [] });
+  if (job === 'succeeded') tracked = await store.finishJob(workspace, tracked.id, ['running'], 'succeeded',
+    { resultArtifact: 'results/final-answer.json', exitCode: 0 });
+  // The retry that prepares the continuation runs on a LATER parent turn: the
+  // child died before its SubagentStop, so the parent moved on.
+  await identity.beginCallerTurn({ sessionId: session, turnId: retryTurn, workspace,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue the stuck rescue',
+    sessionStartedAt: incident.sessionStartedAt, sessionSource: 'startup', lifecycleResult: true });
+  const appRecord = join(context.directory, 'prepare-reconcile-app-server.jsonl'); await writeFile(appRecord, '');
+  const zcodeRecord = join(context.directory, 'prepare-reconcile-zcode.jsonl'); await writeFile(zcodeRecord, '');
+  const graphChild = rawCodexChild({ id: child, parentThreadId: session, cwd: workspace, status: { type: 'notLoaded' } });
+  const evidenceThread = { ...graphChild, turns: [{
+    id: childTurn,
+    items: [{ type: 'subAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: child, agentPath: childPath }],
+    itemsView: 'full', status: 'failed',
+    error: { message: '[redacted: host error text excluded]', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null, misalignment: null },
+    startedAt: 1789000000, completedAt: 1789000600, durationMs: 600000,
+  }] };
+  const env = { ...context.env, CODEX_THREAD_ID: session,
+    FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([graphChild]),
+    FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceThread),
+    FAKE_CODEX_RECORD: appRecord, FAKE_ZCODE_RECORD: zcodeRecord };
+  return { context, workspace, dataRoot: context.dataRoot, store, job: tracked, epoch, env, appRecord, zcodeRecord,
+    identity, ...incident };
+}
+
+/** The incident's own hook records, resolved by child identity.
+ * @param {string} dataRoot @param {string} workspace @param {string} childId */
+async function incidentHookRecords(dataRoot, workspace, childId) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const hookDirectory = join(storage.directory, 'hook-state');
+  const names = (await readdir(hookDirectory)).filter((name) => /^(route|forward|executor)-.*\.json$/u.test(name));
+  /** @type {{route:any,forward:any,executor:any,directory:string,storageDirectory:string}} */
+  const records = { route: null, forward: null, executor: null, directory: hookDirectory, storageDirectory: storage.directory };
+  for (const name of names) {
+    const record = JSON.parse(await readFile(join(hookDirectory, name), 'utf8'));
+    if (record.kind === 'executor-route' && record.agentId === childId) records.route = record;
+    else if (record.kind === 'forwarding' && record.agentId === childId) records.forward = record;
+    else if (record.kind === 'subagent-executor' && record.agentId === childId) records.executor = record;
+  }
+  if (records.route === null || records.forward === null || records.executor === null) {
+    throw new Error(`incomplete incident hook records for ${childId}`);
+  }
+  return records;
+}
+
+/** Every persisted preparation record for the context's data root and workspace. @param {string} dataRoot @param {string} workspace */
+async function preparedRecords(dataRoot, workspace) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const directory = join(storage.directory, 'invocations', 'prepared');
+  const names = (await readdir(directory).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+    .filter((name) => name.endsWith('.json'));
+  return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(directory, name), 'utf8'))));
+}
+
+/** The app-server request methods one prepare observed, in order. @param {string} appRecord */
+async function appServerMethods(appRecord) {
+  return (await readFile(appRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((frame) => typeof frame.method === 'string').map((frame) => frame.method);
+}
+
+function continuationFrame(task = 'continue the stuck rescue') {
+  return `${JSON.stringify({ version: 1, source: 'explicit', task, options: { execution: 'foreground', resume: 'resume' } })}\n`;
+}
+
+test('real-entry prepare reconciles the terminated Rescue child and follows up the original child without an engine send or spawn', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, store, job, env, appRecord, zcodeRecord, session, child, childTurn, childPath } = fixtureState;
+  // Incident precondition: three active records, terminal job, no receipt, and
+  // the same-operation continuation currently blocked by the stale records.
+  const before = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(before.route.state, 'active'); assert.equal(before.forward.active, true); assert.equal(before.executor.active, true);
+  const jobBefore = await store.readJob(workspace, job.id);
+  const bindingName = (await readdir(before.storageDirectory)).find((name) => name.startsWith('rescue-binding-session-'));
+  assert.ok(bindingName, 'the incident binding partition exists');
+  const bindingPath = join(before.storageDirectory, bindingName);
+  const bindingBefore = await readFile(bindingPath, 'utf8');
+
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) });
+
+  // The ORIGINAL child is prepared for followup — never a replacement spawn.
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
+    route: { version: 2, action: 'followup', target: childPath, assignment: 'zcode-rescue' } });
+  // Recovery reconciled the three stale records and the stopped lookup passes.
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'stopped'); assert.equal(after.forward.active, false); assert.equal(after.executor.active, false);
+  // The business winner is preserved: no engine send, no spawn, no job or binding change.
+  assert.equal(await readFile(zcodeRecord, 'utf8'), '', 'the engine is never started by prepare');
+  assert.deepEqual(await store.readJob(workspace, job.id), jobBefore);
+  assert.equal(await readFile(bindingPath, 'utf8'), bindingBefore);
+  // One consumable preparation whose activation reactivates the original child.
+  const records = await preparedRecords(dataRoot, workspace);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].activation.kind, 'reactivate');
+  assert.equal(records[0].activation.executorAgentId, child);
+  assert.equal(records[0].consumedAt, null);
+  // Two exact Host observations bracket the settlement; the original planner
+  // reran AFTER recovery (its discovery is the last app-server request).
+  const methods = await appServerMethods(appRecord);
+  assert.equal(methods.filter((method) => method === 'thread/read').length, 2);
+  assert.equal(methods.filter((method) => method === 'thread/list').length, 2);
+  assert.ok(methods.lastIndexOf('thread/list') > methods.lastIndexOf('thread/read'), 'the planner reran after recovery');
+  assert.ok(!methods.includes('session/send') && !methods.includes('session/create'));
+  void session; void childTurn;
+});
+
+test('real-entry prepare with a normally stopped child keeps the original flow with zero evidence reads', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, env, appRecord, child, childPath, session, childTurn } = fixtureState;
+  // The NORMAL path: the child's SubagentStop Hook arrived, so nothing is stuck.
+  await markForwarding(dataRoot, { session_id: session, turn_id: childTurn, cwd: workspace,
+    hook_event_name: 'SubagentStop', agent_id: child, agent_type: 'zcode-rescue' });
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
+    route: { version: 2, action: 'followup', target: childPath, assignment: 'zcode-rescue' } });
+  const methods = await appServerMethods(appRecord);
+  assert.equal(methods.filter((method) => method === 'thread/read').length, 0, 'a stopped child is never probed for terminal evidence');
+  assert.equal(methods.filter((method) => method === 'thread/list').length, 2, 'the coordinator probe and the planner each discover once');
+  assert.equal((await preparedRecords(dataRoot, workspace)).length, 1);
+});
+
+test('explicit fresh prepare skips recovery entirely and spawns the first free child', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, env, appRecord, child } = fixtureState;
+  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'start over instead', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([frame]) });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
+    route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task_2' } });
+  const methods = await appServerMethods(appRecord);
+  assert.equal(methods.filter((method) => method === 'thread/read').length, 0, 'a fresh request never reads Host evidence');
+  assert.equal(methods.filter((method) => method === 'thread/list').length, 1, 'only the planner discovers');
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active'); assert.equal(after.executor.active, true, 'no recovery write happens for fresh');
+});
+
+test('concurrent prepares of one continuation race to exactly one consumable preparation', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, env, child, childPath } = fixtureState;
+  const invocation = () => runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) });
+  const results = await Promise.allSettled([invocation(), invocation()]);
+  const fulfilled = results.filter((result) => result.status === 'fulfilled');
+  const rejected = results.filter((result) => result.status === 'rejected');
+  assert.equal(fulfilled.length, 1, `exactly one prepare wins (got ${JSON.stringify(results.map((result) => result.status))})`);
+  assert.deepEqual(fulfilled[0].value, { type: 'prepared', command: 'rescue',
+    route: { version: 2, action: 'followup', target: childPath, assignment: 'zcode-rescue' } });
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0].reason.code, 'RESCUE_PREPARATION_EXISTS');
+  const records = await preparedRecords(dataRoot, workspace);
+  assert.equal(records.length, 1, 'at most one consumable preparation exists');
+  assert.equal(records[0].consumedAt, null);
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'stopped'); assert.equal(after.executor.active, false, 'the shared stop settlement stays idempotent');
+});
+
+test('a successor SubagentStart landing inside recovery supersedes it before any stop write or preparation', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { context, workspace, dataRoot, store, job, env, child, session } = fixtureState;
+  const { reconcileRescueChildForPreparation } = await import('../../scripts/lib/rescue-child-reconciliation.mjs');
+  const { settleRescueChildOwnedJob } = await import('../../scripts/lib/recovery.mjs');
+  let successorLanded = false;
+  const invocationOptions = {
+    cwd: workspace, env, input: PassThrough.from([continuationFrame()]),
+    dependencies: {
+      reconcileRescueChildForPreparation: async (/** @type {any} */ input) => reconcileRescueChildForPreparation({ ...input, dependencies: {
+        settleOwnedJob: async (/** @type {any} */ settleInput, /** @type {string} */ jobId) => {
+          const settled = await settleRescueChildOwnedJob(settleInput, jobId);
+          // The successor parent turn and its SubagentStart land between the
+          // business settlement and the currency revalidation before stop writes.
+          await context.identity.beginCallerTurn({ sessionId: session, turnId: 'successor-parent-turn', workspace,
+            permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh successor turn',
+            sessionStartedAt: incident.sessionStartedAt, sessionSource: 'startup', lifecycleResult: true });
+          const active = await context.identity.resolveActiveTurn({ sessionId: session, workspace, workspaceBinding: 'claim' });
+          await markForwarding(dataRoot, { session_id: session, turn_id: 'successor-child-turn', cwd: workspace,
+            hook_event_name: 'SubagentStart', agent_id: 'successor-child', agent_type: 'zcode-rescue' }, active);
+          successorLanded = true;
+          return settled;
+        },
+      } }),
+    },
+  };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], invocationOptions), { code: 'RESCUE_CHILD_RECOVERY_SUPERSEDED' });
+  assert.equal(successorLanded, true);
+  const incidentRecords = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(incidentRecords.route.state, 'active', 'no stop write escapes a superseded recovery');
+  assert.equal(incidentRecords.executor.active, true);
+  const successorRecords = await incidentHookRecords(dataRoot, workspace, 'successor-child');
+  assert.equal(successorRecords.route.state, 'active', 'the successor generation is protected');
+  assert.equal(successorRecords.executor.active, true);
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), [], 'a failed recovery saves no preparation');
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
+test('unprovable Host evidence fails the real-entry prepare with the bounded evidence diagnostic and saves nothing', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, store, job, env, appRecord, child } = fixtureState;
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: workspace,
+    env: { ...env, FAKE_CODEX_ERROR: 'thread/read' }, input: PassThrough.from([continuationFrame()]) }),
+  (/** @type {any} */ error) => {
+    assert.equal(error.code, 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE');
+    assert.match(error.remedy, /not proven terminal/, 'insufficient evidence is distinguished from active execution');
+    assert.doesNotMatch(error.remedy, /Wait for the existing Rescue child/);
+    return true;
+  });
+  const methods = await appServerMethods(appRecord);
+  assert.equal(methods.filter((method) => method === 'thread/list').length, 1, 'a failed recovery never falls through to planning');
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active'); assert.equal(after.executor.active, true);
+  assert.deepEqual(await store.readJob(workspace, job.id), job);
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
+});
+
+test('unresolved foreground settlement blocks the real-entry prepare as pending while retaining the durable stop intent', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t, { job: 'running' });
+  const { workspace, dataRoot, store, job, env, child } = fixtureState;
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) }),
+    (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_RECOVERY_PENDING');
+      assert.match(error.remedy, /Retry the Rescue request/, 'pending settlement recommends a bounded retry');
+      assert.doesNotMatch(error.remedy, /Wait for the existing Rescue child/);
+      return true;
+    });
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelling', 'the coordination-loss stop persists its durable intent');
+  assert.equal(stored.stopIntent?.cause, 'host-coordination-loss');
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active', 'child records stay untouched while settlement is unresolved');
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), [], 'no preparation is saved over pending settlement');
+});
+
+test('ambiguous stuck children preserve the planner ambiguity diagnostic without any evidence read', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t, { job: 'succeeded' });
+  const { workspace, dataRoot, env, appRecord, identity, session, child } = fixtureState;
+  // A second stuck child on the same parent turn: two active executors are
+  // durable ambiguity, never a selection.
+  await markForwarding(dataRoot, { session_id: session, turn_id: 'second-child-turn', cwd: workspace,
+    hook_event_name: 'SubagentStart', agent_id: 'second-stuck-child', agent_type: 'zcode-rescue' },
+    await identity.resolveActiveTurn({ sessionId: session, workspace, workspaceBinding: 'claim' }));
+  const graph = [
+    rawCodexChild({ id: child, parentThreadId: session, cwd: workspace, status: { type: 'notLoaded' } }),
+    rawCodexChild({ id: 'second-stuck-child', parentThreadId: session, cwd: workspace, agentPath: '/root/zcode_rescue_task_2', status: { type: 'notLoaded' } }),
+  ];
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: workspace,
+    env: { ...env, FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify(graph) }, input: PassThrough.from([continuationFrame()]) }),
+  { code: 'RESCUE_CHILD_AMBIGUOUS' });
+  const methods = await appServerMethods(appRecord);
+  assert.equal(methods.filter((method) => method === 'thread/read').length, 0, 'ambiguity is rejected before any Host read');
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active');
+});
+
+test('a genuine caller abort during recovery propagates its own interruption without preparation or recovery writes', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, store, job, env, child } = fixtureState;
+  const { reconcileRescueChildForPreparation } = await import('../../scripts/lib/rescue-child-reconciliation.mjs');
+  const { settleRescueChildOwnedJob } = await import('../../scripts/lib/recovery.mjs');
+  const controller = new AbortController();
+  const reason = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGTERM.', { category: 'interruption', remedy: 'Retry the operation.' });
+  const invocationOptions = {
+    cwd: workspace, env, input: PassThrough.from([continuationFrame()]), signal: controller.signal,
+    dependencies: {
+      reconcileRescueChildForPreparation: async (/** @type {any} */ input) => reconcileRescueChildForPreparation({ ...input, signal: controller.signal, dependencies: {
+        settleOwnedJob: async (/** @type {any} */ settleInput, /** @type {string} */ jobId) => {
+          controller.abort(reason);
+          return settleRescueChildOwnedJob(settleInput, jobId);
+        },
+      } }),
+    },
+  };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], invocationOptions), (/** @type {any} */ error) => {
+    assert.equal(error.code, 'JOB_INTERRUPTED');
+    assert.equal(error.category, 'interruption');
+    return true;
+  });
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active', 'a caller abort writes nothing');
+  assert.equal(after.executor.active, true);
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
+test('a recovery-prepared continuation rejects an intervening binding advance at consume without consuming', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { context, workspace, dataRoot, store, env, child, childPath, session } = fixtureState;
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) });
+  assert.equal(prepared.route.action, 'followup');
+  // The exact binding advances after preparation, exactly as a concurrent
+  // successor continuation would: the pinned currentJobId goes stale.
+  const resolved = await store.resolveRescueBinding({ workspace, parentSessionId: session, executorAgentId: child,
+    executorAgentType: 'zcode-rescue', executorParentTurnId: incident.spawnTurn,
+    executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write' });
+  assert.equal(resolved.kind, 'bound');
+  await store.reserveBoundRescueContinuation({ workspace,
+    reservation: { workspace, ownerSessionId: session, ownerTurnId: incident.retryTurn, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: { agentId: child, agentType: 'zcode-rescue', agentPath: childPath, parentSessionId: session,
+      parentTurnId: incident.spawnTurn, parentPermissionMode: 'workspace-write', workspace },
+    operationId: resolved.binding.operationId });
+  const invokeRecord = join(context.directory, 'invoke-binding-drift.jsonl'); await writeFile(invokeRecord, '');
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: { ...env, CODEX_THREAD_ID: child, FAKE_ZCODE_RECORD: invokeRecord },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const records = await preparedRecords(dataRoot, workspace);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].consumedAt, null, 'stale exact binding proof must be rejected before consumption');
+  assert.equal(await readFile(invokeRecord, 'utf8'), '', 'no engine session is started over a stale binding');
+});
+
+test('role-status stays read-only advisory over a stuck Rescue child', async (t) => {
+  const fixtureState = await stuckRescueChildIncident(t);
+  const { workspace, dataRoot, env, child, session } = fixtureState;
+  const status = await runCompanion(['role-status', 'rescue'], { cwd: workspace, env,
+    dependencies: { inspectRescueRoleStatus: async () => ({ status: 'ready' }) } });
+  assert.equal(status.type, 'role-status');
+  assert.equal(status.status, 'ready');
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active', 'the advisory observation performs no recovery writes');
+  assert.equal(after.executor.active, true);
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
+  void session;
+});

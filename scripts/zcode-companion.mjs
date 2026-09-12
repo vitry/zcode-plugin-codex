@@ -24,6 +24,7 @@ import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/backg
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, rescueBindingAuthorityView, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './lib/rescue-binding.mjs';
+import { reconcileRescueChildForPreparation } from './lib/rescue-child-reconciliation.mjs';
 import { createRescueLifecycleReconciler } from './lib/rescue-lifecycle.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
@@ -642,6 +643,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd, workspaceBinding: 'claim' });
       await transport.writeReady();
       const envelope = await readRescuePreparationFrame(input, runtime.signal);
+      await reconcileStuckRescueChild({ dataRoot, caller, envelope, env, signal: runtime.signal, dependencies: runtime.dependencies });
       const planned = validatePlannedRescueActivation(await (runtime.dependencies?.planRescueActivation ?? planRescueActivation)({
         dataRoot, caller, envelope, appServerOptions: codexAppServerOptions(env, caller.originWorkspace ?? caller.workspace, runtime.signal),
       }));
@@ -920,6 +922,29 @@ async function resolvePreparedExecutionContext(dataRoot, ambientWorkspace, agent
     if (!(error instanceof PluginError) || !['EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_STATE_MISMATCH'].includes(error.code)) throw error;
     return resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, { continuation: true, durableProvenance: true });
   }
+}
+
+/**
+ * Bounded Rescue child loss recovery before prepare planning (the design's
+ * prepare-branch entry point): one terminated Rescue child's stale active
+ * records are reconciled — never planned around — so a resume or an
+ * already-resolved continuation request can follow up the ORIGINAL child. The
+ * coordinator is a no-op seam when nothing is stuck (fresh requests and
+ * non-continuation requests skip it without any read), and every failure is
+ * thrown here: a failed recovery never falls through to planning or to a
+ * preparation save, and the coordinator itself never invokes followup/spawn or
+ * starts ZCode — a reconciled outcome re-runs the original read-only planner
+ * below, under its full validation, before the ordinary preparation save.
+ * @param {{dataRoot:string,caller:any,envelope:any,env:NodeJS.ProcessEnv,signal?:AbortSignal,dependencies?:any}} input
+ */
+async function reconcileStuckRescueChild({ dataRoot, caller, envelope, env, signal, dependencies }) {
+  await (dependencies?.reconcileRescueChildForPreparation ?? reconcileRescueChildForPreparation)({
+    dataRoot,
+    caller,
+    envelope,
+    appServerOptions: codexAppServerOptions(env, caller.originWorkspace ?? caller.workspace, signal),
+    ...(signal === undefined ? {} : { signal }),
+  });
 }
 
 /** @param {unknown} value */
