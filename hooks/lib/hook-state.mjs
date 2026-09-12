@@ -1060,6 +1060,71 @@ export async function resolveRoutedStoppedForwardingExecutor(dataRoot, originWor
     durableProvenance: true,
   });
 }
+/**
+ * Return the exact identity of one PARTIALLY stopped forwarding child — the
+ * bounded recovery coordinator's own prior pass durably wrote its stopped
+ * route (and inactive forwarding marker) and died before deactivating the
+ * executor — so a retry can finish the same tuple's stop writes with
+ * `settleExactForwardingStop`. The exact single route for this agent must
+ * already be STOPPED and the executor at the route's target must still be
+ * ACTIVE with the route's exact identity: the inverse state combination of
+ * `resolveRoutedForwardingExecutor`, scanned with the same bounded route scan
+ * and the same validators. Any other shape — a fully stopped child, a pending
+ * or still-active route, a successor executor republished over the shared
+ * file, a missing or ambiguous route — rejects, so a successor's records can
+ * never be mistaken for this recovery's own partial writes. The executor's
+ * active-lifetime bound matches the stuck-active lookup.
+ */
+export async function resolvePartiallyStoppedForwardingExecutor(dataRoot, ambientWorkspace, agentId, options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
+    || Object.keys(options).some((option) => !['now', 'signal', 'timeoutMs'].includes(option))
+    || options.signal !== undefined && !(typeof AbortSignal === 'function' && options.signal instanceof AbortSignal)
+    || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The partial stop lookup options are invalid.');
+  }
+  let origin; let route;
+  try { origin = await readOnlyPaths(dataRoot, ambientWorkspace); }
+  catch (cause) {
+    if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
+    throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause);
+  }
+  if (!origin.existing) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
+  try { route = await withFileLock(origin.lock, async () => {
+    let entries; try { entries = await readPrivateDirectory(origin.directory, origin.directory, MAX_HOOK_STATE_RECORDS, { requirePrivatePermissions: true }); } catch (error) { throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private executor route records exist.', error); }
+    const routeEntries = entries.filter((entry) => entry.name.startsWith('route-') && entry.name.endsWith('.json'));
+    if (routeEntries.length > 1_024) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private executor route records exist.');
+    const routes = [];
+    for (const entry of routeEntries) {
+      if (!entry.isFile()) throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.');
+      let record; try { record = await readExecutorRoute(join(origin.directory, entry.name), origin.directory, true); } catch (error) { throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.', error); }
+      if (!validExecutorRoute(record, origin.workspacePath)) throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.');
+      if (record.agentId === agentId) routes.push(record);
+    }
+    if (routes.length === 0) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
+    if (routes.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'More than one private executor route claims this child identity.');
+    const timestamp = options.now === undefined ? Date.now() : new Date(options.now).getTime();
+    if (!Number.isFinite(timestamp) || timestamp < Date.parse(routes[0].createdAt) || timestamp < Date.parse(routes[0].updatedAt)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route has a future timestamp.');
+    if (routes[0].state !== 'stopped') throw executorError('EXECUTOR_STATE_MISMATCH', 'A partially stopped Rescue child requires its exact route to be stopped.');
+    return { ...routes[0] };
+  }, { createLayout: false, ...forwardingLockOptions(options) }); } catch (cause) {
+    if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route store is invalid.', cause);
+  }
+  let targetProbe;
+  // The target stage inherits the SAME lookup options as the origin scan —
+  // signal, timeout, and the injectable clock — so a contended target lock
+  // honors the caller's cancellation and remaining budget instead of the
+  // five-second default, and both stages apply one timestamp contract.
+  try { targetProbe = await probeForwardingExecutor(dataRoot, route.targetWorkspace, agentId, options, true); }
+  catch (cause) {
+    if (['EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_STATE_MISMATCH'].includes(cause?.code)) throw cause;
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route target is invalid.', cause);
+  }
+  if (targetProbe.kind !== 'selected') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route target is invalid.');
+  const executor = targetProbe.executor;
+  if (!executorMatchesRoute(executor, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match its executor.');
+  return { executor, executionWorkspace: executor.workspace, route };
+}
 async function probeForwardingExecutor(dataRoot, workspace, agentId, options, routed) {
   let store;
   try { store = routed ? await readOnlyPaths(dataRoot, workspace) : await paths(dataRoot, workspace); }

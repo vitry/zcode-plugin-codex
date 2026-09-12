@@ -383,6 +383,51 @@ export async function settleEndedRescueJob(input, jobId) {
 }
 
 /**
+ * Settle the exact Rescue job one terminated Rescue child owns, through the
+ * existing bounded settlement machinery (`settleEndedRescueJob` and the Rescue
+ * Lifecycle Reconciler it drives), with the established SubagentStop
+ * coordination-loss intent precedence: a matching-epoch SessionEnd receipt
+ * always authorizes the session-end stop (background placement included);
+ * without one, only a foreground placement carries Host Coordination Loss
+ * authority, and a live-session background Rescue is merely observed — never
+ * stopped. An existing durable stop intent keeps winning over any caller
+ * cause, unconfirmed remote control retains the durable cancelling guard
+ * instead of archiving, and a receipt published before the stop intent is
+ * persisted wins the cause. A terminal record keeps its winner and discharges
+ * its execution-reservation cleanup duty without any remote control. The
+ * bounded recovery budget (signal and/or timeoutMs) threads through every
+ * store seam — the job-cancellation lock draws the REMAINING budget rather
+ * than failing fast, so a contended concurrent settlement waits for the
+ * in-flight winner inside the same shared deadline — and the injected
+ * `createClient` stays the only remote seam.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,hostPlacement?:string,receiptMatched?:boolean,identity?:any,signal?:AbortSignal,timeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>}} input
+ * @param {string} jobId
+ * @returns {Promise<any>} the bounded settlement outcome (settlement evidence included)
+ */
+export async function settleRescueChildOwnedJob(input, jobId) {
+  const receiptMatched = input.receiptMatched === true;
+  return settleEndedRescueJob({
+    store: input.store,
+    dataRoot: input.dataRoot,
+    workspace: input.workspace,
+    ownerSessionId: input.ownerSessionId,
+    epoch: input.epoch ?? null,
+    lockTimeoutMs: input.timeoutMs ?? 0,
+    includeSettlementEvidence: true,
+    unavailableOutcome: 'retain',
+    revalidateReceiptBeforeStop: true,
+    intent: receiptMatched || input.hostPlacement !== 'foreground'
+      ? { kind: 'observe' }
+      : { kind: 'stop', cause: 'host-coordination-loss' },
+    sessionEndReceiptEvidence: receiptMatched ? 'matching' : 'older',
+    ...(input.identity === undefined ? {} : { identity: input.identity }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    createClient: input.createClient,
+  }, jobId);
+}
+
+/**
  * Perform the marked detached-runner cleanup duty for one selected record from
  * the SessionEnd settlement machinery: guarded, bounded termination owned by
  * `terminateMarkedRunnerTree`, CLOSED by the same-pass dead-root descendant

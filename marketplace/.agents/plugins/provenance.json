@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "67790fbfcaa8805dbd402263240b57daebc5ddb0",
-  "sourceSha": "67790fbfcaa8805dbd402263240b57daebc5ddb0",
+  "sourceRef": "6269c1854af57e6704c4c866cf2c696e1afdf7a0",
+  "sourceSha": "6269c1854af57e6704c4c866cf2c696e1afdf7a0",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "3f7e36ecee58d9c7c728025013fa58dde756a38edf388202c88a235187454e44",
+    "sha256": "a01f4e847f1dc045e44244494525e0ffd4b2b85b4482ef3414abbf19bdbc777e",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -78,8 +78,8 @@
       },
       {
         "path": "plugins/zcode/hooks/lib/hook-state.mjs",
-        "size": 108536,
-        "sha256": "e92b68bbbd699fda878585179598e986e02fc1956d1a528a584f69f16d220dab"
+        "size": 114069,
+        "sha256": "ebc75e646894774d5a5708f8234e73ab21e415a0aae96be40456869bc2f7d8cb"
       },
       {
         "path": "plugins/zcode/hooks/lib/session-end-budget.mjs",
@@ -628,8 +628,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/recovery.mjs",
-        "size": 101810,
-        "sha256": "45b947dc4000fefa6000c080bcf3e5d3177fe628d11e53b028bea3c2aeeef661"
+        "size": 104402,
+        "sha256": "7a69fa5eb4c118f2d7584acf56ee8044149099022981baeb37f2ab25da9682ad"
       },
       {
         "path": "plugins/zcode/scripts/lib/render.mjs",
@@ -640,6 +640,11 @@
         "path": "plugins/zcode/scripts/lib/rescue-binding.mjs",
         "size": 27013,
         "sha256": "33c4969134b82a1e1932d41dfd6785153452e58e77ed287c6899269db28cea82"
+      },
+      {
+        "path": "plugins/zcode/scripts/lib/rescue-child-reconciliation.mjs",
+        "size": 37862,
+        "sha256": "bc5815cfdb1e9e3a8151cd7d4eaf5126c687d82b9a1f23cb9a93c914d1d7df7b"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-execution-input.mjs",
@@ -673,8 +678,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-route-planner.mjs",
-        "size": 27674,
-        "sha256": "bd594e52a8144eea07bcfcecc18002d9278393e62a1302b81ce85e185c353a66"
+        "size": 28851,
+        "sha256": "bb498931a0e8aa8454ad538d6cdd0ba3a991e656cc76d90bdbaa39efcc5c16f7"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-runner.mjs",
