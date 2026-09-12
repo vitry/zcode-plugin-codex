@@ -1424,6 +1424,7 @@ test('recovery never settles a child routed to a different execution workspace t
   // rejects the child's foreign execution workspace before preparing.
   const caller = { sessionId: SESSION, turnId: RETRY_TURN, workspace: origin, originWorkspace: origin, permissionMode: 'workspace-write' };
   const seams = observationSeams({ workspace: origin, dataRoot }, incidentProof({ workspace: origin }));
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
   let settlements = 0;
   const wrappedSeams = {
     ...seams.dependencies,
