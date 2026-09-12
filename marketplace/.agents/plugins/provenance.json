@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "e3350b2163250e0594d621d8e6652ac160c1f487",
-  "sourceSha": "e3350b2163250e0594d621d8e6652ac160c1f487",
+  "sourceRef": "67790fbfcaa8805dbd402263240b57daebc5ddb0",
+  "sourceSha": "67790fbfcaa8805dbd402263240b57daebc5ddb0",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "02bd35bc1f5fad815e0234dcbd86c446c5b497c9a171d38863725d782c722218",
+    "sha256": "3f7e36ecee58d9c7c728025013fa58dde756a38edf388202c88a235187454e44",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -78,8 +78,8 @@
       },
       {
         "path": "plugins/zcode/hooks/lib/hook-state.mjs",
-        "size": 92618,
-        "sha256": "16d85389666b507da0a72d999f27ef9d6504d8a456499466ed351aeb8e9e759a"
+        "size": 108536,
+        "sha256": "e92b68bbbd699fda878585179598e986e02fc1956d1a528a584f69f16d220dab"
       },
       {
         "path": "plugins/zcode/hooks/lib/session-end-budget.mjs",

@@ -712,27 +712,226 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     return;
   }
 
-  let route;
+  // The SubagentStop Hook path shares the exact staged compare-and-set writes
+  // with the recovery-side settlement: same write order (exact route to
+  // stopped, forwarding to inactive, then the matching executor to inactive),
+  // same conditions, same results. The Hook derives its tuple from the exact
+  // route it finds under the origin lock and carries no recovery-side
+  // terminal-job prerequisite — that belongs to the recovery caller's own
+  // validate callback, never to this primitive.
+  await settleExactForwardingStop({
+    dataRoot,
+    sessionId: input.session_id,
+    childTurnId: input.turn_id,
+    agentId: input.agent_id,
+    agentType: input.agent_type,
+    originWorkspace: input.cwd,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(publicationSeam === undefined ? {} : { publicationSeam }),
+  });
+}
+
+/**
+ * Staged compare-and-set stop publication for ONE exact forwarding tuple —
+ * the shared write primitive behind the SubagentStop Hook path and the Rescue
+ * child loss recovery settlement. `expected` is validated internal identity
+ * captured from the caller's own durable records (never model-supplied input);
+ * `validate` is an internal callback invoked OUTSIDE every file lock so a
+ * recovery caller can recheck its caller/binding/job and captured Host
+ * evidence between stages (it is never model-supplied either). An exact tuple
+ * — any captured identity field — must pin its authorization epoch pair
+ * (`ownerLifecycleEpoch` + `ownerLifecycleEpochStartedAt`), so a record
+ * republished under a different Host lifecycle epoch is always a conflict;
+ * the Hook path passes no tuple fields and stays epoch-agnostic.
+ *
+ * Under each write lock the current record is compared against the expected
+ * tuple again, so a NEW SubagentStart generation — or any changed identity —
+ * can never be deactivated by an old tuple's stop writes. Lock order and
+ * bounds are the SubagentStop publication's own: the origin hook-state lock
+ * (exact stopped route + inactive forwarding marker) is acquired and released
+ * before the target hook-state lock (inactive executor); the two workspace
+ * locks are never held at once, no network calls happen inside any file lock,
+ * and the final record re-read plus the existing stopped lookup
+ * (`resolveRoutedStoppedForwardingExecutor`) also run outside both locks.
+ *
+ * Multiple file writes are NOT atomic, and the returned outcome says what is
+ * PROVEN rather than that one transaction committed:
+ * - `reconciled` — every record of the tuple verified on the re-read and, for
+ *   a routed tuple, the existing stopped lookup passed on it. A legacy tuple
+ *   (no route record) verifies its forwarding marker and executor directly.
+ * - `superseded` — a record under a write lock, on the re-read, or returned
+ *   by the final stopped lookup no longer matches the expected tuple: a
+ *   successor generation or changed identity owns it now. Absence alone is
+ *   never superseded. Writes already performed before the conflict are not
+ *   rolled back — they only ever touched the expected tuple's own records —
+ *   and the conflict is terminal for this tuple: a retry must never modify a
+ *   published successor.
+ * - `partial` — the same-tuple updates did not all verify (a stage failed
+ *   after some writes, a record is missing or unreadable — including the
+ *   captured tuple's route at the first read, where nothing that cannot be
+ *   verified is written — or the stopped lookup did not pass). A retry with
+ *   the SAME expected tuple may finish the same tuple's partial updates.
+ * @param {{dataRoot:string,sessionId:string,childTurnId:string,agentId:string,agentType:string,originWorkspace:string,parentGenerationId?:string|null,parentTurnId?:string,parentPermissionMode?:string,targetWorkspace?:string,createdAt?:string,ownerLifecycleEpoch?:string,ownerLifecycleEpochStartedAt?:string,signal?:AbortSignal,timeoutMs?:number,publicationSeam?:(point:string)=>any}} expected
+ * @param {((stage:'before-origin-lock'|'before-target-lock'|'before-verify')=>any)} [validate]
+ * @returns {Promise<{outcome:'reconciled'|'superseded'|'partial',reason:string}>}
+ */
+export async function settleExactForwardingStop(expected, validate) {
+  const invalid = () => executorError('EXECUTOR_ROUTE_INVALID', 'The exact forwarding stop identity is invalid.');
+  if (expected === null || typeof expected !== 'object' || Array.isArray(expected) || Object.getPrototypeOf(expected) !== Object.prototype
+    || Object.keys(expected).some((option) => !['dataRoot', 'sessionId', 'childTurnId', 'agentId', 'agentType', 'originWorkspace', 'parentGenerationId', 'parentTurnId', 'parentPermissionMode', 'targetWorkspace', 'createdAt', 'ownerLifecycleEpoch', 'ownerLifecycleEpochStartedAt', 'signal', 'timeoutMs', 'publicationSeam'].includes(option))
+    || typeof expected.dataRoot !== 'string' || expected.dataRoot.length === 0
+    || !boundedIdentifier(expected.sessionId) || !boundedIdentifier(expected.childTurnId)
+    || !boundedIdentifier(expected.agentId) || !boundedIdentifier(expected.agentType)
+    || !boundedWorkspace(expected.originWorkspace)
+    || validate !== undefined && typeof validate !== 'function'
+    || expected.publicationSeam !== undefined && typeof expected.publicationSeam !== 'function'
+    || expected.signal !== undefined && !(typeof AbortSignal === 'function' && expected.signal instanceof AbortSignal)
+    || expected.timeoutMs !== undefined && (!Number.isSafeInteger(expected.timeoutMs) || expected.timeoutMs < 0)) throw invalid();
+  // An exact tuple (any captured field present) must be COMPLETE: the partial
+  // comparison the Hook derives from the route it finds is only sound because
+  // the Hook owns the (session, child turn) record keys, and a recovery
+  // caller re-proving a captured tuple must pin the whole identity.
+  const exactTuple = expected.parentGenerationId !== undefined || expected.parentTurnId !== undefined
+    || expected.parentPermissionMode !== undefined || expected.targetWorkspace !== undefined || expected.createdAt !== undefined;
+  if (exactTuple && (expected.parentGenerationId === undefined
+    || expected.parentGenerationId !== null && (typeof expected.parentGenerationId !== 'string' || !/^[a-f0-9]{64}$/u.test(expected.parentGenerationId))
+    || !boundedIdentifier(expected.parentTurnId)
+    || !PERMISSION_MODES.includes(expected.parentPermissionMode)
+    || !boundedWorkspace(expected.targetWorkspace)
+    || !canonicalTimestamp(expected.createdAt))) throw invalid();
+  // The authorization epoch is part of the expected tuple: EVERY exact tuple
+  // pins its epoch pair, so a record republished under a different Host
+  // lifecycle epoch can never be deactivated by an old tuple's stop writes.
+  // The Hook path passes no tuple fields and stays epoch-agnostic; a derived
+  // tuple may still pin the pair explicitly.
+  const epochEnforced = exactTuple || expected.ownerLifecycleEpoch !== undefined || expected.ownerLifecycleEpochStartedAt !== undefined;
+  if (epochEnforced && (expected.ownerLifecycleEpoch === undefined || expected.ownerLifecycleEpochStartedAt === undefined
+    || !/^[a-f0-9]{64}$/u.test(expected.ownerLifecycleEpoch) || !canonicalTimestamp(expected.ownerLifecycleEpochStartedAt))) throw invalid();
+  // One shared budget governs every lock wait this settlement performs: each
+  // acquisition draws only the elapsed remainder of the caller's budget, so
+  // serialized contended waits fail bounded in total instead of each
+  // restarting the budget (the publication budget's derived-remainder rule).
+  const budgetStartedAtMs = expected.timeoutMs === undefined ? undefined : Date.now();
+  const budgetRemainingMs = () => expected.timeoutMs === undefined ? undefined : Math.max(0, expected.timeoutMs - (Date.now() - budgetStartedAtMs));
+  const lockOptions = () => {
+    const remaining = budgetRemainingMs();
+    return {
+      ...(expected.signal === undefined ? {} : { signal: expected.signal }),
+      ...(remaining === undefined ? {} : { timeoutMs: remaining }),
+    };
+  };
+  const stageValidate = async (stage) => { if (validate !== undefined) await validate(stage); };
+  const input = { session_id: expected.sessionId, turn_id: expected.childTurnId, agent_id: expected.agentId, agent_type: expected.agentType };
+  const origin = await paths(expected.dataRoot, expected.originWorkspace); const id = key('forward', expected.sessionId, expected.childTurnId);
+  const routeIdentityMatches = (route) => !exactTuple || (route.parentGenerationId === expected.parentGenerationId
+    && route.parentTurnId === expected.parentTurnId && route.parentPermissionMode === expected.parentPermissionMode
+    && route.targetWorkspace === expected.targetWorkspace && route.createdAt === expected.createdAt);
+  await stageValidate('before-origin-lock');
+  let route; let originOutcome = null; let supersededReason = null;
   await withFileLock(origin.lock, async () => {
-    route = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id), origin.directory).catch((error) => {
+    route = await readExecutorRoute(routePath(origin, expected.sessionId, expected.childTurnId), origin.directory).catch((error) => {
       if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') return null;
       throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop found an invalid exact executor route.', error);
     });
     if (route !== null && !validExecutorRoute(route, origin.workspacePath, input)) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop found an invalid exact executor route.');
+    // Absence of the captured tuple's route is retryable partial state — no
+    // successor identity was observed — so nothing is written that the
+    // settlement cannot verify, and a retry re-runs the whole settlement once
+    // the route reappears. Only a verified identity mismatch is terminal.
+    if (route === null && exactTuple) { originOutcome = { outcome: 'partial', reason: 'route-record-missing' }; return; }
+    if (route !== null && !routeIdentityMatches(route)) { originOutcome = { outcome: 'superseded', reason: 'route-identity' }; return; }
     const updatedAt = new Date().toISOString();
-    if (route !== null && route.state !== 'stopped') { route = { ...route, state: 'stopped', updatedAt }; await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route); }
-    await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId: route?.parentGenerationId ?? null, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt });
+    if (route !== null && route.state !== 'stopped') { route = { ...route, state: 'stopped', updatedAt }; await atomicWriteJson(routePath(origin, expected.sessionId, expected.childTurnId), route); }
+    await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: expected.sessionId, generationId: route?.parentGenerationId ?? null, turnId: expected.childTurnId, agentId: expected.agentId, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt });
   }, lockOptions());
-  const target = route === null ? origin : await paths(dataRoot, route.targetWorkspace);
-  const executorPath = join(target.directory, `executor-${key('executor', input.agent_id)}.json`);
+  if (originOutcome !== null) return originOutcome;
+  await expected.publicationSeam?.('after-route-stopped');
+  await stageValidate('before-target-lock');
+  const target = route === null ? origin : await paths(expected.dataRoot, route.targetWorkspace);
+  const executorPath = join(target.directory, `executor-${key('executor', expected.agentId)}.json`);
   await withFileLock(target.lock, async () => {
     let current; try { current = await readBoundedExecutor(executorPath); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
     if (!validExecutorRecord(current, target.workspacePath)) throw executorError('EXECUTOR_IDENTITY_INVALID', 'SubagentStop found an invalid exact executor record.');
     if (route === null && (!isLegacyExecutorRecord(current, target.workspacePath)
-      || !await legacyExecutorAuthorityExists(dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
-    if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type
-      && (route === null || executorMatchesRoute(current, route))) await atomicWriteJson(executorPath, { ...current, active: false });
+      || !await legacyExecutorAuthorityExists(expected.dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
+    if (!(current.agentId === expected.agentId && current.parentSessionId === expected.sessionId && current.childTurnId === expected.childTurnId && current.agentType === expected.agentType
+      && (route === null || executorMatchesRoute(current, route)))) { supersededReason = 'executor-identity'; return; }
+    if (epochEnforced && (current.ownerLifecycleEpoch !== expected.ownerLifecycleEpoch || current.ownerLifecycleEpochStartedAt !== expected.ownerLifecycleEpochStartedAt)) { supersededReason = 'executor-epoch'; return; }
+    await atomicWriteJson(executorPath, { ...current, active: false });
   }, lockOptions());
+  if (supersededReason !== null) return { outcome: 'superseded', reason: supersededReason };
+  await expected.publicationSeam?.('after-executor-deactivated');
+  await stageValidate('before-verify');
+  // The re-read and the stopped lookup run OUTSIDE both workspace locks. A
+  // deviation whose identity no longer matches the expected tuple is a
+  // published successor (superseded, terminal); any other unverified state
+  // stays retryable (partial) for the same tuple. A mid-publish read of a
+  // concurrent publication (transient ENOENT or stability window failure)
+  // is never a verdict, so every read failure lands on partial too.
+  const deviations = [];
+  if (route !== null) {
+    try {
+      const current = await readExecutorRoute(routePath(origin, expected.sessionId, expected.childTurnId), origin.directory);
+      if (!validExecutorRoute(current, origin.workspacePath, input) || !routeIdentityMatches(current)) deviations.push({ superseded: true, reason: 'route-record-changed' });
+      else if (current.state !== 'stopped') deviations.push({ superseded: false, reason: 'route-not-stopped' });
+    } catch { deviations.push({ superseded: false, reason: 'route-record-missing' }); }
+  }
+  try {
+    const marker = await readBoundedJsonFile(origin.directory, join(origin.directory, `forward-${id}.json`), MAX_EXECUTOR_ROUTE_BYTES);
+    if (marker?.kind !== 'forwarding' || marker.sessionId !== expected.sessionId || marker.turnId !== expected.childTurnId
+      || marker.agentId !== expected.agentId || marker.generationId !== (route?.parentGenerationId ?? null)
+      || marker.targetWorkspace !== (route?.targetWorkspace ?? origin.workspacePath)) deviations.push({ superseded: true, reason: 'forward-record-changed' });
+    else if (marker.active !== false) deviations.push({ superseded: false, reason: 'forward-active' });
+  } catch { deviations.push({ superseded: false, reason: 'forward-record-missing' }); }
+  let executorPresent = false;
+  try {
+    const current = await readBoundedExecutor(executorPath);
+    executorPresent = true;
+    if (!validExecutorRecord(current, target.workspacePath)
+      || !(current.agentId === expected.agentId && current.parentSessionId === expected.sessionId && current.childTurnId === expected.childTurnId && current.agentType === expected.agentType)
+      || route !== null && !executorMatchesRoute(current, route)
+      || epochEnforced && (current.ownerLifecycleEpoch !== expected.ownerLifecycleEpoch || current.ownerLifecycleEpochStartedAt !== expected.ownerLifecycleEpochStartedAt)) deviations.push({ superseded: true, reason: 'executor-record-changed' });
+    else if (current.active !== false) deviations.push({ superseded: false, reason: 'executor-active' });
+  } catch { deviations.push({ superseded: false, reason: 'executor-record-missing' }); }
+  if (deviations.length > 0) {
+    const conflict = deviations.find((deviation) => deviation.superseded);
+    return conflict === undefined ? { outcome: 'partial', reason: deviations[0].reason } : { outcome: 'superseded', reason: conflict.reason };
+  }
+  if (route === null) {
+    // A legacy tuple predates exact route records, so the routed stopped
+    // lookup has no route to scan: the direct re-read above is the proof.
+    return executorPresent ? { outcome: 'reconciled', reason: 'legacy-stopped' } : { outcome: 'partial', reason: 'executor-record-missing' };
+  }
+  await expected.publicationSeam?.('before-stopped-lookup');
+  try {
+    // The remaining timeout propagates as ONE absolute deadline signal shared
+    // by EVERY lock acquisition inside the lookup: a static remainder handed
+    // to each acquisition would let sequential contended waits each restart
+    // the full budget and exceed the settlement's shared deadline. A caller's
+    // own signal is honored unchanged; absence of both keeps withFileLock's
+    // five-second default.
+    const remaining = budgetRemainingMs();
+    const deadlineSignal = remaining === undefined ? undefined : AbortSignal.timeout(Math.min(remaining, MAX_ABORT_SIGNAL_TIMEOUT_MS));
+    const lookupSignal = deadlineSignal === undefined ? expected.signal
+      : expected.signal === undefined ? deadlineSignal : AbortSignal.any([expected.signal, deadlineSignal]);
+    const resolved = await resolveRoutedStoppedForwardingExecutor(expected.dataRoot, expected.originWorkspace, expected.agentId, lookupSignal === undefined ? {} : { signal: lookupSignal });
+    // The lookup observed an executor: it must be the captured tuple's own
+    // record. A successor with the same agent id that started and stopped
+    // after the re-read — same-workspace execution shares the executor file —
+    // would otherwise be blessed as reconciled despite the observed
+    // different generation. The returned record's schema and epoch coherence
+    // are already enforced by the lookup's own bounded probe; the epoch
+    // VALUES the tuple pins are compared here.
+    const expectedExecutorView = exactTuple
+      ? { agentId: expected.agentId, agentType: expected.agentType, parentSessionId: expected.sessionId, parentGenerationId: expected.parentGenerationId, parentTurnId: expected.parentTurnId, parentPermissionMode: expected.parentPermissionMode, childTurnId: expected.childTurnId, originWorkspace: expected.originWorkspace, targetWorkspace: expected.targetWorkspace, createdAt: expected.createdAt }
+      : route;
+    if (!executorMatchesRoute(resolved.executor, expectedExecutorView)
+      || epochEnforced && (resolved.executor.ownerLifecycleEpoch !== expected.ownerLifecycleEpoch || resolved.executor.ownerLifecycleEpochStartedAt !== expected.ownerLifecycleEpochStartedAt)) {
+      return { outcome: 'superseded', reason: 'stopped-lookup-identity' };
+    }
+  } catch { return { outcome: 'partial', reason: 'stopped-lookup' }; }
+  return { outcome: 'reconciled', reason: 'stopped' };
 }
 
 /**
