@@ -19,6 +19,9 @@ const MAX_ROLE_BYTES = 256;
 const MAX_USER_AGENT_BYTES = 4096;
 const MAX_VERSION_BYTES = 256;
 const SHUTDOWN_GRACE_MS = 1_000;
+const MAX_TURN_STATUS_BYTES = 128;
+/** Turn statuses the Host reports explicitly terminal for a finished turn. */
+const TERMINAL_TURN_STATUSES = ['completed', 'failed', 'interrupted'];
 const MAX_VALUE_DEPTH = 128;
 const MAX_VALUE_NODES = 100_000;
 const INITIALIZE_PARAMS = { clientInfo: { name: 'zcode-plugin-codex', title: 'ZCode plugin for Codex', version: '0.1.0' }, capabilities: null };
@@ -95,6 +98,82 @@ export async function readCodexThreadSpawnChildIdentity(threadId, options = {}) 
     if (!Object.hasOwn(result, 'thread')) throw malformed('Codex thread/read response omitted its thread.');
     return validateRawThreadSpawnChild(result.thread, undefined, threadId);
   });
+}
+
+/** Read exact terminal-turn evidence for one Rescue child from the Host app-server.
+ * Returns `{ child, observedTurnId, terminalStatus }` only when the child's Codex identity and
+ * thread-spawn provenance match the expected `childId`/`parentId`, the thread is not active, the
+ * returned turn chronology is provable, and the latest returned turn is explicitly terminal and
+ * correlates exactly with `expectedTurnId` (the Hook childTurnId). Canonical agent path, role, and
+ * cwd shapes are enforced here, but this signature carries no binding, so equality of
+ * `proof.child.agentPath/agentRole/cwd` with the persisted binding is NOT checked here: the Rescue
+ * reconciliation caller must compare them against the binding before any recovery write. Every
+ * other outcome — active threads, unknown or truncated data, duplicate or newer turns, unprovable
+ * chronology, insufficient correlation — rejects with `RESCUE_CHILD_EVIDENCE_UNAVAILABLE` instead
+ * of guessing. Message contents are never exposed. Internal Rescue evidence, not a public
+ * SpawnChild surface.
+ * @param {string} childId @param {string} parentId @param {string} expectedTurnId @param {AppServerOptions} [options]
+ * @returns {Promise<{child: SpawnChild, observedTurnId: string, terminalStatus: string}>}
+ */
+export async function readCodexRescueChildTurnEvidence(childId, parentId, expectedTurnId, options = {}) {
+  validateInput(childId, options); validateInput(parentId, options);
+  if (!validBoundedString(expectedTurnId, CODEX_THREAD_ID_MAX_BYTES)) throw inputError();
+  try {
+    // Host/schema gate: the structural fail-closed checks in rescueChildTurnEvidence are the
+    // intended version gate for turns evidence. Unlike thread/list's pre-0.141 parentThreadId
+    // silent-ignore defect, no version-specific turns-schema defect is evidenced, so no
+    // initializeResult version floor is asserted here; any unsupported thread or turn shape
+    // rejects as RESCUE_CHILD_EVIDENCE_UNAVAILABLE instead of guessing.
+    return await withAppServer(options, async (request, notify) => {
+      notify({ method: 'initialized', params: {} });
+      const result = await request('thread/read', { threadId: childId, includeTurns: true });
+      if (!plainObject(result) || !Object.hasOwn(result, 'thread')) throw evidenceUnavailable('Codex thread/read response omitted its thread.');
+      return rescueChildTurnEvidence(result.thread, childId, parentId, expectedTurnId);
+    });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE') throw error;
+    if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED' && error.category === 'interruption') throw error;
+    if (error instanceof PluginError) throw evidenceUnavailable('Codex could not serve exact terminal-turn evidence for the Rescue child.', error);
+    throw error;
+  }
+}
+
+/** Extract evidence from one raw `thread/read` thread; the caller compares agentPath, agentRole, and cwd to the binding.
+ * @param {unknown} thread @param {string} childId @param {string} parentId @param {string} expectedTurnId @returns {{child: SpawnChild, observedTurnId: string, terminalStatus: string}}
+ */
+function rescueChildTurnEvidence(thread, childId, parentId, expectedTurnId) {
+  let child;
+  try { child = sanitizeCodexThreadSpawnChild(thread, parentId, childId); } catch (error) {
+    throw evidenceUnavailable('Codex child evidence did not match the expected Rescue identity.', error);
+  }
+  if (child.status.type === 'active') throw evidenceUnavailable('Codex reports the Rescue child thread as still active.');
+  const turns = plainObject(thread) && Array.isArray(thread.turns) ? thread.turns : [];
+  if (turns.length === 0) throw evidenceUnavailable('Codex returned no child turns to correlate with the expected Rescue turn.');
+  /** @type {Set<string>} */ const seen = new Set();
+  for (const turn of turns) {
+    if (!plainObject(turn) || !safePlainValue(turn) || !validBoundedString(turn.id, CODEX_THREAD_ID_MAX_BYTES)
+      || !validBoundedString(turn.status, MAX_TURN_STATUS_BYTES)) throw evidenceUnavailable('Codex returned an invalid child turn record.');
+    if (seen.has(turn.id)) throw evidenceUnavailable('Codex returned duplicate child turn identities.');
+    seen.add(turn.id);
+  }
+  const latest = turns.at(-1);
+  // The Host's array ordering is not contractual. A single turn needs no chronology, but for
+  // multiple turns the returned timestamps must themselves prove oldest-first order; otherwise a
+  // newest-first or ambiguous payload could resolve evidence while a newer turn exists. Boundary
+  // consequence: the real interrupted shape carries null startedAt/completedAt, so a multi-turn
+  // history whose latest turn is interrupted can never prove chronology; interrupted-turn recovery
+  // is therefore limited to single-turn children or timestamped latest turns, by design.
+  for (let index = 1; index < turns.length; index += 1) {
+    const previous = turns[index - 1]; const current = turns[index];
+    if (!Number.isSafeInteger(previous.startedAt) || !Number.isSafeInteger(previous.completedAt) || !Number.isSafeInteger(current.startedAt)
+      || previous.startedAt >= current.startedAt || previous.completedAt > current.startedAt) {
+      throw evidenceUnavailable('Codex child turn chronology could not be proven for the returned turn order.');
+    }
+  }
+  if (!TERMINAL_TURN_STATUSES.includes(latest.status)) throw evidenceUnavailable('Codex did not report an explicitly terminal latest child turn.');
+  if (turns.slice(0, -1).some((turn) => !TERMINAL_TURN_STATUSES.includes(turn.status))) throw evidenceUnavailable('Codex returned a non-terminal child turn below the latest turn.');
+  if (latest.id !== expectedTurnId) throw evidenceUnavailable('The latest known child turn does not correlate with the expected Rescue turn.');
+  return { child, observedTurnId: latest.id, terminalStatus: latest.status };
 }
 
 /** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void,initializeResult:Record<string,any>)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @param {Record<string,unknown>} [initializeParams] @returns {Promise<T>} */
@@ -306,6 +385,14 @@ function inputError(rawReadDiagnostics = false) { return new PluginError('CODEX_
     ? 'Provide a bounded thread ID and positive protocol limits.' : 'Provide bounded identifiers and positive protocol limits.',
 }); }
 function metadataInvalid() { return new PluginError('CODEX_CHILD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
+/** @param {string} message @param {unknown} [cause] */
+function evidenceUnavailable(message, cause) {
+  return new PluginError('RESCUE_CHILD_EVIDENCE_UNAVAILABLE', message, {
+    category: 'protocol',
+    remedy: 'Treat the Rescue child as not proven terminal and do not recover without exact Host evidence.',
+    ...(cause === undefined ? {} : { cause }),
+  });
+}
 /** @param {unknown} reason */
 function interruptionError(reason) {
   return reason instanceof PluginError && reason.code === 'JOB_INTERRUPTED' && reason.category === 'interruption'

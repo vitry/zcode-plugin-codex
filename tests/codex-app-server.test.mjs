@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -11,6 +12,7 @@ import test from 'node:test';
 import {
   CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS,
   listCodexThreadSpawnChildren,
+  readCodexRescueChildTurnEvidence,
   readCodexThread,
   readCodexThreadSpawnChild,
   readCodexThreadSpawnChildIdentity,
@@ -20,6 +22,12 @@ import { PluginError } from '../scripts/lib/errors.mjs';
 
 const fake = fileURLToPath(new URL('./fixtures/fake-codex-app-server.mjs', import.meta.url));
 const validThread = { id: 'thread-1', ephemeral: false, turns: [] };
+const evidenceFixture = /** @type {any} */ (JSON.parse(readFileSync(
+  fileURLToPath(new URL('./fixtures/codex-rescue/child-terminal-evidence.json', import.meta.url)), 'utf8')));
+const EVIDENCE_PARENT_ID = '00000000-0000-7000-8000-000000000001';
+const EVIDENCE_CHILD_ID = '00000000-0000-7000-8000-000000000002';
+const EVIDENCE_TURN_ID = '00000000-0000-7000-8000-000000000003';
+const EVIDENCE_REDACTION_MARKERS = ['[redacted: host error text excluded]', 'usageLimitExceeded'];
 
 /** @param {Record<string,any>} [overrides] @returns {any} */
 function childThread(overrides = {}) {
@@ -547,4 +555,178 @@ test('termination has a finite reap deadline when an injected child never emits 
   assert.ok(Date.now() - started < 2_500); assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
   assert.equal(child.listenerCount('exit'), 0); assert.equal(child.listenerCount('error'), 0);
   assert.equal(child.stdout.listenerCount('data'), 0); assert.equal(child.stderr.listenerCount('data'), 0);
+});
+
+test('keeps the evidence fixture aligned with the synthetic test identities', () => {
+  assert.equal(evidenceFixture.codexVersion, '0.154.0');
+  assert.equal(evidenceFixture.identities.parentThreadId, EVIDENCE_PARENT_ID);
+  assert.equal(evidenceFixture.identities.childThreadId, EVIDENCE_CHILD_ID);
+  assert.equal(evidenceFixture.identities.expectedTurnId, EVIDENCE_TURN_ID);
+  assert.equal(evidenceFixture.thread.turns[0].id, EVIDENCE_TURN_ID);
+  assert.equal(evidenceFixture.thread.turns[0].status, 'failed');
+  assert.deepEqual(evidenceFixture.correlation.qualifyingTurnStatuses, ['completed', 'failed', 'interrupted']);
+});
+
+test('returns exact correlated terminal evidence for the incident-shaped failed child turn', async () => {
+  const { options, record } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceFixture.thread) });
+  const proof = await readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options);
+  assert.equal(proof.observedTurnId, EVIDENCE_TURN_ID);
+  assert.equal(proof.terminalStatus, 'failed');
+  assert.deepEqual(Object.keys(proof).sort(), ['child', 'observedTurnId', 'terminalStatus']);
+  assert.deepEqual(proof.child, {
+    id: EVIDENCE_CHILD_ID, parentThreadId: EVIDENCE_PARENT_ID,
+    agentPath: '/root/zcode_rescue_task_evidence', agentRole: 'zcode-rescue',
+    cwd: '/workspace/zcode-rescue-evidence', status: { type: 'notLoaded' },
+    createdAt: 1789000000, updatedAt: 1789000600,
+  });
+  const serialized = JSON.stringify(proof);
+  for (const marker of EVIDENCE_REDACTION_MARKERS) assert.equal(serialized.includes(marker), false, `evidence leaked ${marker}`);
+  const calls = await recordedCalls(record);
+  assert.deepEqual(calls.find((call) => call.method === 'thread/read').params, { threadId: EVIDENCE_CHILD_ID, includeTurns: true });
+  assert.equal(calls.find((call) => call.method === 'initialize').params.capabilities, null);
+});
+
+test('qualifies completed and interrupted turns and every non-active thread status', async (t) => {
+  for (const status of ['completed', 'interrupted']) await t.test(`terminal ${status} turn`, async () => {
+    const thread = structuredClone(evidenceFixture.thread);
+    thread.turns[0].status = status;
+    if (status === 'interrupted') { thread.turns[0].startedAt = null; thread.turns[0].completedAt = null; thread.turns[0].items = []; }
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(thread) });
+    const proof = await readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options);
+    assert.equal(proof.observedTurnId, EVIDENCE_TURN_ID);
+    assert.equal(proof.terminalStatus, status);
+  });
+  for (const threadStatus of ['notLoaded', 'idle', 'systemError']) await t.test(`non-active ${threadStatus} thread with terminal turn`, async () => {
+    const thread = structuredClone(evidenceFixture.thread);
+    thread.status = { type: threadStatus };
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(thread) });
+    const proof = await readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options);
+    assert.equal(proof.terminalStatus, 'failed');
+    assert.deepEqual(proof.child.status, { type: threadStatus });
+  });
+});
+
+test('rejects every uncorrelated or unprovable child evidence shape with unavailable evidence', async (t) => {
+  const NEWER_TURN_ID = '00000000-0000-7000-8000-0000000000ff';
+  /** @param {any} thread @param {string} [secret] */
+  const rejectsUnavailable = async (thread, secret = '') => {
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(thread) });
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE');
+      if (secret) assert.doesNotMatch(String(error.stack), new RegExp(secret));
+      return true;
+    });
+  };
+  /** @type {Array<[string,(thread:any)=>void,string]>} */
+  const cases = [
+    ['top-level parent drift', (thread) => { thread.parentThreadId = 'unproven-parent-thread'; }, 'unproven-parent-thread'],
+    ['provenance parent drift', (thread) => { thread.source.subAgent.thread_spawn.parent_thread_id = 'unproven-parent-thread'; }, 'unproven-parent-thread'],
+    ['child identity drift', (thread) => { thread.id = 'unproven-child-thread'; }, 'unproven-child-thread'],
+    ['agent path drift', (thread) => { thread.source.subAgent.thread_spawn.agent_path = '/root/../unproven-path'; }, 'unproven-path'],
+    ['active thread', (thread) => { thread.status = { type: 'active', activeFlags: ['waitingOnUserInput'] }; }, ''],
+    ['empty turns', (thread) => { thread.turns = []; }, ''],
+    ['missing turns', (thread) => { delete thread.turns; }, ''],
+    ['non-array turns', (thread) => { thread.turns = { id: EVIDENCE_TURN_ID }; }, ''],
+    ['unknown thread status', (thread) => { thread.status = { type: 'secret-status' }; }, 'secret-status'],
+    ['missing thread status', (thread) => { delete thread.status; }, ''],
+    ['case-different latest turn status', (thread) => { thread.turns[0].status = 'Completed'; }, ''],
+    ['unknown latest turn status', (thread) => { thread.turns[0].status = 'daydreaming'; }, 'daydreaming'],
+    ['non-terminal latest turn', (thread) => { thread.turns[0].status = 'inProgress'; }, ''],
+    ['duplicate turn identities', (thread) => { thread.turns = [thread.turns[0], { ...thread.turns[0], status: 'completed' }]; }, ''],
+    ['newer turn than expected', (thread) => { thread.turns = [...thread.turns, { id: NEWER_TURN_ID, status: 'completed', items: [], itemsView: 'full', startedAt: 1789000700, completedAt: 1789000800, durationMs: 100 }]; }, '0000000000ff'],
+    ['newest-first turn order', (thread) => { thread.turns = [{ id: NEWER_TURN_ID, status: 'completed', items: [], itemsView: 'full', startedAt: 1789000700, completedAt: 1789000800, durationMs: 100 }, thread.turns[0]]; }, '0000000000ff'],
+    ['non-terminal turn below the latest', (thread) => { thread.turns = [{ id: '00000000-0000-7000-8000-00000000000ee', status: 'inProgress', items: [], itemsView: 'full', startedAt: 1788999900, completedAt: 1788999950, durationMs: 50 }, thread.turns[0]]; }, ''],
+    ['malformed latest turn record', (thread) => { thread.turns[0].id = 42; }, ''],
+  ];
+  for (const [name, mutate, secret] of cases) await t.test(name, async () => {
+    const thread = structuredClone(evidenceFixture.thread); mutate(thread);
+    await rejectsUnavailable(thread, secret);
+  });
+});
+
+test('correlates the expected turn as latest when multi-turn chronology proves oldest-first order', async () => {
+  const thread = structuredClone(evidenceFixture.thread);
+  thread.turns = [
+    { id: '00000000-0000-7000-8000-0000000000aa', status: 'completed', items: [], itemsView: 'full', startedAt: 1788999900, completedAt: 1788999950, durationMs: 50 },
+    thread.turns[0],
+  ];
+  const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(thread) });
+  const proof = await readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options);
+  assert.equal(proof.observedTurnId, EVIDENCE_TURN_ID);
+  assert.equal(proof.terminalStatus, 'failed');
+});
+
+test('maps app-server response failures and timeouts to unavailable evidence with bounded diagnostics', async (t) => {
+  /** @type {Array<[string,Record<string,string>,Record<string,unknown>,string,string]>} */
+  const cases = [
+    ['remote response error', { FAKE_CODEX_ERROR: 'thread/read' }, {}, 'CODEX_THREAD_READ_FAILED', 'do-not-copy'],
+    ['truncated frame', { FAKE_CODEX_MALFORMED: 'thread/read' }, {}, 'CODEX_APP_SERVER_MALFORMED', ''],
+    ['oversized frame', { FAKE_CODEX_OVERSIZE: 'thread/read', FAKE_CODEX_OVERSIZE_BYTES: '2048' }, { maxLineBytes: 256 }, 'CODEX_APP_SERVER_FRAME_TOO_LARGE', ''],
+    ['deadline timeout', { FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 50 }, 'CODEX_APP_SERVER_TIMEOUT', ''],
+    ['disconnect', { FAKE_CODEX_DISCONNECT: 'thread/read' }, {}, 'CODEX_APP_SERVER_DISCONNECTED', ''],
+    ['spawn failure', {}, { spawn: () => { throw Object.assign(new Error('missing codex'), { code: 'ENOENT' }); } }, 'CODEX_APP_SERVER_SPAWN_FAILED', 'missing codex'],
+  ];
+  for (const [name, env, overrides, causeCode, secret] of cases) await t.test(name, async () => {
+    const { options } = await appOptions({ ...env, FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceFixture.thread) }, overrides);
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE');
+      assert.equal(error.cause?.code, causeCode);
+      const serialized = `${error.message}${error.remedy}${JSON.stringify(error.details)}${String(error.stack)}${String(error.cause?.stack ?? '')}`;
+      if (secret) assert.doesNotMatch(serialized, new RegExp(secret));
+      return true;
+    });
+  });
+  await t.test('stderr diagnostics stay bounded and redacted', async () => {
+    const { options } = await appOptions(
+      { FAKE_CODEX_ERROR: 'thread/read', FAKE_CODEX_STDERR_TEXT: ' token=super-secret ', FAKE_CODEX_STDERR_BYTES: '2000', FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceFixture.thread) }, { maxStderrBytes: 256 });
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE');
+      const tail = error.cause?.details?.stderrTail;
+      assert.ok(tail.length <= 256); assert.doesNotMatch(tail, /super-secret/); assert.match(tail, /REDACTED/);
+      return true;
+    });
+  });
+  await t.test('thread/read result without a thread', async () => {
+    const { options } = await appOptions({ FAKE_CODEX_OMIT_THREAD: '1', FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceFixture.thread) });
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_EVIDENCE_UNAVAILABLE');
+      return true;
+    });
+  });
+});
+
+test('rescue evidence honors signal cancellation and validates identifiers before spawn', async (t) => {
+  const interruption = () => new PluginError('JOB_INTERRUPTED', 'Recovery interrupted.', { category: 'interruption', remedy: 'Retry.' });
+  await t.test('pre-aborted signal does not spawn', async () => {
+    const controller = new AbortController(); const reason = interruption();
+    controller.abort(reason); let spawned = false;
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, {
+      signal: controller.signal, spawn: () => { spawned = true; throw new Error('must not spawn'); },
+    }), (error) => error === reason);
+    assert.equal(spawned, false);
+  });
+  await t.test('mid-flight signal interruption stays a cancellation, not evidence', async () => {
+    const controller = new AbortController(); const reason = interruption();
+    const { options, record } = await appOptions({ FAKE_CODEX_HANG: 'thread/read', FAKE_CODEX_THREAD_JSON: JSON.stringify(evidenceFixture.thread) }, { timeoutMs: 15_000, signal: controller.signal });
+    const promise = readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, options);
+    const deadline = Date.now() + 2_000;
+    while (!(await recordedCalls(record)).some((call) => call.method === 'thread/read') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort(reason);
+    await assert.rejects(promise, (error) => error === reason);
+  });
+  await t.test('untrusted abort reason is replaced', async () => {
+    const controller = new AbortController(); controller.abort('PRIVATE_ABORT_REASON');
+    await assert.rejects(readCodexRescueChildTurnEvidence(EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID, { signal: controller.signal }), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'JOB_INTERRUPTED');
+      assert.doesNotMatch(`${error.message}${error.remedy}${error.stack}`, /PRIVATE_ABORT_REASON/);
+      return true;
+    });
+  });
+  await t.test('invalid identifiers are validation errors before spawn', async () => {
+    const unspawnable = { spawn: () => { throw new Error('must not spawn'); } };
+    for (const [childId, parentId, turnId] of [['', EVIDENCE_PARENT_ID, EVIDENCE_TURN_ID], [EVIDENCE_CHILD_ID, '', EVIDENCE_TURN_ID], [EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, ''], [EVIDENCE_CHILD_ID, EVIDENCE_PARENT_ID, 'x'.repeat(513)]]) {
+      await assert.rejects(readCodexRescueChildTurnEvidence(childId, parentId, turnId, unspawnable), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
+    }
+    await assert.rejects(readCodexRescueChildTurnEvidence('ok', 'ok', 'ok', { ...unspawnable, timeoutMs: 0 }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
+  });
 });
