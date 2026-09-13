@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
-import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
 import {
   createRescuePreparationStore,
@@ -936,7 +935,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const childMeta = sessionMeta(child);
   const threadSpawn = childMeta.source?.subagent?.thread_spawn;
   validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix: '' });
-  validateForwarderChildEvents(child, options);
+  validateForwarderChildEvents(child);
 
   let route;
   let agentType;
@@ -958,13 +957,37 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   if (spawnIndex >= startIndex) mismatch('spawn-start-order', 'The linked child start must follow its spawn call.');
   assertParentPreparation(parent, spawnIndex, startIndex, { ...options, expectedTaskName: taskName });
 
-  const allChildCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const allChildOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
-  if (options.requireProgressRelay) {
-    const relayCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
-    const relayOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
-    validateCallOutputOwnership(relayCalls, relayOutputs, 'progress-relay-call-id');
+  // Global child host-call ownership precedes family splitting: an outer wait
+  // reusing an inner poll's call or output identity is an ambiguous transcript
+  // that can never certify terminal delivery, exactly as the choice path
+  // requires. Within-family duplicates and single mixed-family call/output
+  // pairs keep falling through to their family-specific rejection codes.
+  const callFamilies = new Map();
+  const outputFamilies = new Map();
+  for (const event of child.filter((candidate) => candidate?.type === 'response_item'
+    && ['custom_tool_call', 'function_call', 'custom_tool_call_output', 'function_call_output'].includes(candidate.payload?.type))) {
+    const id = boundedString(event.payload.call_id);
+    if (id === undefined) continue;
+    const families = event.payload.type.endsWith('_call') ? callFamilies : outputFamilies;
+    const family = event.payload.type.startsWith('custom') ? 'custom' : 'function';
+    const seen = families.get(id);
+    if (seen === undefined) families.set(id, family);
+    else if (seen !== family) {
+      mismatch('child-call-id-duplicate', 'Child host calls and outputs require globally unique call identities across tool families.');
+    }
   }
+
+  // Outer-cell continuation calls (`wait`) are validated separately from the
+  // one foreground execution and never count as inner polls.
+  const outerContinuationCallIds = new Set(child
+    .filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'wait')
+    .map((event) => event.payload.call_id));
+  const allChildCalls = child.filter((event) => event?.type === 'response_item'
+    && (event.payload?.type === 'custom_tool_call'
+      || event.payload?.type === 'function_call' && ['exec_command', 'write_stdin'].includes(event.payload.name)));
+  const allChildOutputs = child.filter((event) => event?.type === 'response_item'
+    && (event.payload?.type === 'custom_tool_call_output'
+      || event.payload?.type === 'function_call_output' && !outerContinuationCallIds.has(event.payload.call_id)));
   if (options.requireStatusSidecar) {
     const allHostCalls = child.filter((event) => event?.type === 'response_item'
       && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
@@ -973,12 +996,10 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
       mismatch('status-sidecar-call-id', 'The status sidecar requires a globally unique call ID.');
     }
   }
-  if (options.requireProgressRelay || options.requireStatusSidecar) {
-    const calls = child.filter((event) => event?.type === 'response_item'
-      && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
-    const outputs = child.filter((event) => event?.type === 'response_item'
-      && ['custom_tool_call_output', 'function_call_output'].includes(event.payload?.type));
-    validateCallOutputOwnership(calls, outputs, options.requireStatusSidecar ? 'status-sidecar-call-id' : 'progress-relay-call-id');
+  if (options.requireStatusSidecar) {
+    const calls = allChildCalls;
+    const outputs = allChildOutputs;
+    validateCallOutputOwnership(calls, outputs, 'status-sidecar-call-id');
   }
   const { statusCalls, statusOutputs, executionCalls, executionOutputs } = splitStatusSidecars(
     allChildCalls, allChildOutputs, options,
@@ -993,10 +1014,17 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   }
   const childOutputs = executionOutputs;
   if (childOutputs.length === 0) mismatch('child-output-count', 'The child rollout has no structured exec output.');
-  const execution = validateChildExecution(child, childCalls, childOutputs, options.expectedCommand, options.expectedWorkspace, {
-    expectedExitCode: 0, allowLegacyWithoutExit: true,
-  });
-  const relay = validateProgressRelays({ child, parent, execution, agentPath, startIndex, options });
+  const executionOptions = { expectedExitCode: 0, allowLegacyWithoutExit: true, allowDeferredContinuationTerminal: true };
+  const execution = validateChildExecution(child, childCalls, childOutputs, options.expectedCommand, options.expectedWorkspace, executionOptions);
+  const outerContinuations = validateOuterCellContinuations(child, execution, options, '', executionOptions);
+  const supervision = options.requireQuietSupervision
+    ? {
+        polls: assertQuietPollWaits(execution, options),
+        root: assertQuietRootSupervision(parent, options),
+        mailboxNotifications: countMailboxNotifications(child),
+        outerContinuations,
+      }
+    : null;
   const statusSidecarChecked = validateStatusSidecars({ child, statusCalls, statusOutputs, execution, options });
   if (options.requireStatusSidecar && !statusSidecarChecked) mismatch('status-sidecar-count', 'Required status evidence must contain one linked status sidecar.');
   assertSemanticProgress(execution.output, options.expectedSemanticProgress);
@@ -1024,12 +1052,27 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   for (const actual of [childFinal, childReturn, parentFinal, execFinal]) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
-  if (options.requireYieldedExecution && (execution.originalHandle === undefined || execution.pollCount < 1 || !Number.isSafeInteger(execution.terminalExitCode))) {
+  if ((options.requireYieldedExecution || options.requireQuietSupervision) && (execution.originalHandle === undefined || execution.pollCount < 1 || !Number.isSafeInteger(execution.terminalExitCode))) {
     mismatch('child-yielded-execution-required', 'Required native evidence does not contain a running handle, same-handle poll, and terminal exit code.');
   }
   const evidence = { parentThreadId, childThreadId, agentPath, taskName, agentType, route, publicOutput: execFinal,
     ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }),
-    ...(options.requireProgressRelay ? { progressRelayChecked: relay.checked } : {}),
+    ...(options.requireQuietSupervision ? {
+      terminalDeliveryChecked: true,
+      quietSupervisionChecked: true,
+      supervisionFacts: {
+        requestedInnerPolls: supervision.polls.requestedInnerPolls,
+        requestedOuterWaits: supervision.root.requestedOuterWaits,
+        requestedOuterContinuations: supervision.outerContinuations.requestedOuterContinuations,
+        mailboxNotifications: supervision.mailboxNotifications,
+        observedElapsedPollMs: supervision.polls.observedElapsedPollMs,
+        appliedPollYieldMs: supervision.polls.appliedPollYieldMs,
+        appliedInitialYieldMs: supervision.polls.appliedInitialYieldMs,
+        appliedRootWaitMs: supervision.root.appliedRootWaitMs,
+        appliedOuterContinuationYieldMs: supervision.outerContinuations.appliedOuterContinuationYieldMs,
+        rootWaitEvidence: supervision.root.rootWaitEvidence,
+      },
+    } : {}),
     ...(options.requireStatusSidecar ? { statusSidecarChecked } : {}),
     ...(options.requireYieldedExecution ? { yieldedExecution: {
       execCommandCount: execution.execCommandCount, pollCount: execution.pollCount,
@@ -1049,7 +1092,8 @@ function splitStatusSidecars(calls, outputs, options, codePrefix = '') {
     if (options.requireStatusSidecar) mismatch(code('status-sidecar-count'), 'Required status evidence has no fixed status command contract.');
     return { statusCalls: [], statusOutputs: [], executionCalls: calls, executionOutputs: outputs };
   }
-  const parsed = calls.map((event) => ({ event, host: parseCapturedHostCall(event.payload.input) }));
+  const parsed = calls.map(hostCallFromEvent)
+    .map((host, index) => ({ event: calls[index], host }));
   const execCommands = parsed.filter(({ host }) => host.kind === 'exec_command');
   const foreground = execCommands.filter(({ host }) => host.envelope.get('cmd') === options.expectedCommand);
   if (foreground.length !== 1) mismatch(codePrefix ? 'choice-command-count' : 'child-command-count', 'Required evidence does not identify one exact foreground Rescue execution.');
@@ -1077,7 +1121,7 @@ function validateStatusSidecars({ child, statusCalls, statusOutputs, execution, 
   if (!call.payload.call_id || new Set(ids).size !== ids.length || output.payload.call_id !== call.payload.call_id) {
     mismatch(code('status-sidecar-call-id'), 'The status sidecar requires a globally unique linked call ID.');
   }
-  const host = parseCapturedHostCall(call.payload.input);
+  const host = hostCallFromEvent(call);
   if (host.kind !== 'exec_command') mismatch(code('status-sidecar-command'), 'The status sidecar must be one constant direct command.');
   assertExecEnvelope(host.envelope, options.expectedStatusCommand, options.expectedWorkspace, code('status-sidecar-command'));
   const callIndex = child.indexOf(call); const outputIndex = child.indexOf(output);
@@ -1104,105 +1148,303 @@ function validateStatusSidecars({ child, statusCalls, statusOutputs, execution, 
   return true;
 }
 
-function validateProgressRelays({ child, parent, execution, agentPath, options, codePrefix = '', identitySets }) {
-  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
-  if (!options.requireProgressRelay) return { checked: false };
-  const sourceCallIds = new Set(execution.callIds);
-  const records = [];
-  for (const event of child) {
-    if (event?.payload?.type !== 'custom_tool_call_output' || !sourceCallIds.has(event.payload.call_id)) continue;
-    const result = parseCapturedHostResult(event.payload.output);
-    for (const completeLine of result.output.match(/[^\n]*\n/gu) ?? []) {
-      if (!completeLine.startsWith(RESCUE_RELAY_PREFIX)) continue;
-      let record;
-      try { record = parseRescueProgressRelay(completeLine); } catch { mismatch(code('progress-relay-record'), 'A Rescue relay line failed strict wire validation.'); }
-      records.push({ record, eventIndex: child.indexOf(event) });
-    }
+const QUIET_POLL_YIELD_MS = 300_000;
+const QUIET_ROOT_WAIT_MS = 600_000;
+const QUIET_INITIAL_YIELD_MS = 30_000;
+// The host outer-cell continuation tool (`wait`) documents a 10000 ms default
+// yield and an effective yield range up to 30000 ms.
+const QUIET_OUTER_CONTINUATION_YIELD_MS = 30_000;
+
+function quietSupervisionBounds(options) {
+  const poll = options.permittedPollYieldMs;
+  const root = options.permittedRootWaitMs;
+  const initial = options.permittedInitialYieldMs;
+  const outer = options.permittedOuterContinuationYieldMs;
+  // Bound evidence must represent a documented host clamp; arbitrary sub-second
+  // intervals are implausible as poll bounds and stay rejected.
+  if (poll !== undefined && (!Number.isSafeInteger(poll) || poll < 1_000 || poll > 300_000)) {
+    mismatch('quiet-supervision-bounds', 'The fixture tool-bound poll yield evidence is outside the plausible documented host clamp range (at least one second).');
   }
-  if (records.length === 0) mismatch(code('progress-relay-missing'), 'Required progress relay evidence is absent.');
-  for (let index = 0; index < records.length; index += 1) {
-    if (records[index].record.sequence !== index + 1) mismatch(code('progress-relay-sequence'), 'Rescue relay sequences must be strictly increasing from one.');
+  if (root !== undefined && (!Number.isSafeInteger(root) || root < 1_000 || root > 3_600_000)) {
+    mismatch('quiet-supervision-bounds', 'The fixture tool-bound Root wait evidence is outside the safe wait bound.');
   }
-  const calls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
-  if (calls.length !== records.length || calls.some((event) => event.payload.name !== 'send_message')) {
-    mismatch(code('progress-relay-count'), 'Each validated relay requires exactly one native send_message call.');
+  if (initial !== undefined && (!Number.isSafeInteger(initial) || initial < 1_000 || initial > 30_000)) {
+    mismatch('quiet-supervision-bounds', 'The fixture tool-bound initial exec yield evidence is outside the plausible documented host clamp range (at least one second).');
   }
-  const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
-  validateCallOutputOwnership(calls, outputs, code('progress-relay-call-id'));
-  const childMessages = [];
-  for (let index = 0; index < calls.length; index += 1) {
-    const call = calls[index]; const linked = outputs.find((event) => event.payload.call_id === call.payload.call_id);
-    const args = parseObject(call.payload.arguments, code('progress-relay-arguments'));
-    assertExactKeys(args, ['message', 'target'], code('progress-relay-keys'));
-    if (args.target !== '/root') mismatch(code('progress-relay-target'), 'A Rescue progress relay may target only /root.');
-    const expectedMessage = RESCUE_RELAY_MESSAGES[records[index].record.code];
-    if (args.message !== expectedMessage) mismatch(code('progress-relay-content'), 'A Rescue progress relay must use the fixed code-to-message map.');
-    if (linked.payload.output !== '') mismatch(code('progress-relay-output'), 'A Rescue relay tool output must remain empty.');
-    const callIndex = child.indexOf(call); const outputIndex = child.indexOf(linked);
-    if (callIndex <= records[index].eventIndex || outputIndex <= callIndex || outputIndex >= execution.terminalEventIndex) {
-      mismatch(code(index > 0 && callIndex > execution.terminalEventIndex ? 'progress-relay-after-terminal' : 'progress-relay-order'), 'A Rescue relay must follow its validated line and precede terminal exit.');
-    }
-    childMessages.push(expectedMessage);
+  if (outer !== undefined && (!Number.isSafeInteger(outer) || outer < 1_000 || outer > 30_000)) {
+    mismatch('quiet-supervision-bounds', 'The fixture tool-bound outer continuation yield evidence is outside the plausible documented wait tool clamp range (at least one second).');
   }
-  const parentMessages = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message'
-    && !event.payload.content?.some((item) => item?.type === 'input_text' && item.text?.startsWith('Message Type: FINAL_ANSWER\n')));
-  if (parentMessages.length !== childMessages.length) mismatch(code('progress-relay-parent-count'), 'The parent must observe exactly the linked Rescue relay messages.');
-  const messageIds = identitySets?.messageIds ?? new Set();
-  const turnAssociations = identitySets?.turnAssociations ?? new Set();
-  let segmentTurnId;
-  for (let index = 0; index < parentMessages.length; index += 1) {
-    const message = parentMessages[index];
-    if (message.payload.author !== agentPath) mismatch(code('progress-relay-author'), 'Parent relay evidence must originate from the exact Rescue child.');
-    const turnId = validateEncryptedParentRelay(message.payload, agentPath, messageIds, codePrefix);
-    if (segmentTurnId === undefined) {
-      if (turnAssociations.has(turnId)) mismatch(code('progress-relay-turn-association'), 'A Rescue logical child turn reused a foreign or prior turn association.');
-      segmentTurnId = turnId; turnAssociations.add(turnId);
-    } else if (turnId !== segmentTurnId) {
-      mismatch(code('progress-relay-turn-association'), 'Every Rescue relay in one logical child turn must retain the same turn association.');
-    }
-    const messageIndex = parent.indexOf(message); const wait = parent[messageIndex + 1]; const waitOutput = parent[messageIndex + 2];
-    if (wait?.payload?.type !== 'function_call' || wait.payload.name !== 'wait_agent'
-      || waitOutput?.payload?.type !== 'function_call_output' || waitOutput.payload.call_id !== wait.payload.call_id) {
-      mismatch(code('progress-relay-parent-wait'), 'Each parent relay update must be followed by a linked wait on the same Rescue child.');
-    }
-    const waitArgs = parseObject(wait.payload.arguments, code('progress-relay-parent-wait'));
-    assertExactKeys(waitArgs, ['timeout_ms'], code('progress-relay-parent-wait'));
-    if (waitArgs.timeout_ms !== 30000 || !boundedString(waitOutput.payload.output)) {
-      mismatch(code('progress-relay-parent-wait'), 'Each parent relay update must be followed by the fixed bounded wait.');
-    }
-  }
-  return { checked: true };
+  return { poll: poll ?? QUIET_POLL_YIELD_MS, root: root ?? QUIET_ROOT_WAIT_MS, initial: initial ?? QUIET_INITIAL_YIELD_MS, outer: outer ?? QUIET_OUTER_CONTINUATION_YIELD_MS };
 }
 
-function validateEncryptedParentRelay(payload, agentPath, messageIds, codePrefix = '') {
+/**
+ * Recognize the host pending-yield output shape and extract its runtime cell
+ * id. When a nested observation outlasts its outer code cell, the host yields
+ * the cell with the script-status header "Script running with cell ID <id>"
+ * plus only the partial output the wrapper streamed before yielding (possibly
+ * none). The completed host result JSON does not exist yet at that point, so a
+ * yielded output never parses as a host result — the result arrives later
+ * through the linked `wait` continuation output.
+ */
+function pendingCellIdFromOutput(output) {
+  if (!Array.isArray(output) || output.length < 1 || output.length > 2 || output[0]?.type !== 'input_text') return undefined;
+  const header = boundedString(output[0].text);
+  if (header === undefined || !header.startsWith('Script running with cell ID ')) return undefined;
+  const cellId = header.slice('Script running with cell ID '.length).split('\n')[0]?.trim();
+  if (!cellId) return undefined;
+  if (output.length === 2 && (output[1]?.type !== 'input_text' || boundedString(output[1].text) === undefined)) return undefined;
+  return cellId;
+}
+
+/**
+ * Validate outer-cell continuation calls against the host `wait` tool contract:
+ * when a long inner observation outlasts the outer code cell, the host yields
+ * the cell ("Script running with cell ID <id>") with the companion handle still
+ * running, and the child resumes only that cell with `wait({ cell_id,
+ * yield_time_ms, ... })`. Continuations pair one-to-one with their function
+ * outputs, must link to a preceding pending yielded cell tracked for the
+ * original host poll, use the wait tool's own longest permitted yield, and
+ * never count as inner polls.
+ *
+ * Resolution is a first-class step that runs in transcript order before any
+ * terminal-count enforcement: a completing wait output carries the pending
+ * poll's eventual host result — the same running handle while the companion
+ * lives, or its legitimate exit once the companion exits during the pending
+ * interval. A resolved result IS the original execution's result for every
+ * downstream check (terminal count and order, exit-code contract, normalized
+ * output stream). A continuation may only resolve its own linked pending cell
+ * (same cell id, correct output ordering, same running-handle lineage); an
+ * exit claimed while an inner poll still observes the running companion is a
+ * fabricated terminal signal and stays rejected.
+ */
+function validateOuterCellContinuations(child, execution, options, codePrefix = '', executionOptions = {}) {
   const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
-  assertExactKeys(payload, ['author', 'content', 'id', 'internal_chat_message_metadata_passthrough', 'recipient', 'type'], code('progress-relay-parent-content'));
-  if (payload.type !== 'agent_message' || payload.recipient !== '/root') mismatch(code('progress-relay-target'), 'Parent relay evidence must target only /root.');
-  const id = boundedString(payload.id); const metadata = payload.internal_chat_message_metadata_passthrough;
-  if (!id || !/^amsg_[A-Za-z0-9-]{16,96}$/u.test(id) || messageIds.has(id)) mismatch(code('progress-relay-call-id'), 'Parent relay message identity is absent, malformed, or reused.');
-  messageIds.add(id);
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) mismatch(code('progress-relay-call-id'), 'Parent relay turn linkage is absent.');
-  assertExactKeys(metadata, ['turn_id'], code('progress-relay-call-id'));
-  const turnId = boundedString(metadata.turn_id);
-  if (!turnId || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(turnId)) {
-    mismatch(code('progress-relay-turn-association'), 'Parent relay turn association is malformed.');
+  const childCode = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : `child-${suffix}`;
+  const bounds = quietSupervisionBounds(options);
+  const pendingCells = execution.pendingCells ?? [];
+  const calls = child.filter((event) => event?.type === 'response_item'
+    && event.payload?.type === 'function_call' && event.payload.name === 'wait');
+  if (calls.length === 0) {
+    if (pendingCells.length > 0) {
+      mismatch(code('outer-continuation-unresolved'), 'A yielded poll cell was never continued, so its pending host result arrived through no wait output.');
+    }
+    finalizeExecutionOutput(execution);
+    return { requestedOuterContinuations: 0, appliedOuterContinuationYieldMs: bounds.outer };
   }
-  if (!Array.isArray(payload.content) || payload.content.length !== 2) {
-    mismatch(Array.isArray(payload.content) && !payload.content.some((item) => item?.type === 'encrypted_content')
-      ? code('progress-relay-encrypted') : code('progress-relay-parent-content'), 'Parent relay evidence must contain only its route envelope and encrypted payload.');
+  const callIds = new Set(calls.map((call) => call.payload.call_id));
+  const linkedOutputs = child.filter((event) => event?.type === 'response_item'
+    && event.payload?.type === 'function_call_output' && callIds.has(event.payload.call_id));
+  validateCallOutputOwnership(calls, linkedOutputs, code('outer-continuation-call-id'));
+  const execIndex = child.indexOf(execution.execEvent);
+  const linkedByCall = new Map();
+  for (const call of calls) {
+    const args = parseObject(call.payload.arguments, code('outer-continuation-arguments'));
+    if (!args || typeof args !== 'object' || Array.isArray(args)
+      || !Object.keys(args).every((key) => ['cell_id', 'max_tokens', 'terminate', 'yield_time_ms'].includes(key))
+      || !boundedString(args.cell_id)
+      || args.max_tokens !== undefined && (!Number.isSafeInteger(args.max_tokens) || args.max_tokens < 1 || args.max_tokens > 100_000)
+      || args.terminate !== undefined && typeof args.terminate !== 'boolean') {
+      mismatch(code('outer-continuation-arguments'), 'The outer-cell continuation does not match the host wait tool contract (cell_id with optional yield_time_ms, max_tokens, terminate).');
+    }
+    if (!Number.isSafeInteger(args.yield_time_ms)) {
+      mismatch(code('quiet-supervision-outer-wait-evidence'), 'The outer-cell continuation omitted its requested wait-tool yield, so the longest permitted outer wait is unproven.');
+    }
+    if (options.requireQuietSupervision && args.yield_time_ms !== bounds.outer) {
+      mismatch(code('quiet-supervision-outer-wait-bound'), `The outer-cell continuation waited ${args.yield_time_ms} ms instead of the longest permitted ${bounds.outer} ms wait-tool yield; shorter waits require explicit fixture tool-bound evidence.`);
+    }
+    const callIndex = child.indexOf(call);
+    // Pending-cell evidence is tracked per original host poll: the yielded
+    // output precedes its continuation and excludes wait results.
+    const matched = pendingCells.find((cell) => cell.cellId === args.cell_id && cell.outputIndex < callIndex);
+    if (!matched) {
+      mismatch(code('outer-continuation-cell-id'), 'The outer-cell continuation does not link to a preceding pending yielded cell of an unresolved host poll.');
+    }
+    const linkedOutput = linkedOutputs.find((output) => output.payload.call_id === call.payload.call_id);
+    linkedByCall.set(call, { args, matched, linkedOutput, callIndex, linkedIndex: child.indexOf(linkedOutput) });
   }
-  const [envelope, encryptedPayload] = payload.content;
-  assertExactKeys(envelope, ['text', 'type'], code('progress-relay-envelope'));
-  if (envelope.type !== 'input_text'
-    || envelope.text !== `Message Type: MESSAGE\nTask name: /root\nSender: ${agentPath}\nPayload:\n`) {
-    mismatch(code('progress-relay-envelope'), 'Parent relay evidence has the wrong anchored route envelope.');
+  // Resolution pass in transcript order: each completing wait output resolves
+  // its linked pending cell and contributes the carried result to the original
+  // execution before any terminal-count or ordering enforcement runs.
+  for (const call of calls) {
+    const linked = linkedByCall.get(call);
+    validateContinuationCarriedResult(linked.linkedOutput, linked.args, execution, linked.matched, linked.linkedIndex, child, code, childCode, executionOptions);
   }
-  assertExactKeys(encryptedPayload, ['encrypted_content', 'type'], code('progress-relay-encrypted'));
-  if (encryptedPayload.type !== 'encrypted_content' || !encrypted(encryptedPayload.encrypted_content)
-    || Buffer.byteLength(encryptedPayload.encrypted_content, 'utf8') > MAX_TEXT_BYTES) {
-    mismatch(code('progress-relay-encrypted'), 'Parent relay evidence lacks one bounded opaque encrypted payload.');
+  for (const call of calls) {
+    const { callIndex, linkedIndex } = linkedByCall.get(call);
+    if (!(execIndex < callIndex && callIndex < linkedIndex && linkedIndex <= execution.terminalEventIndex)) {
+      mismatch(code('outer-continuation-order'), 'An outer-cell continuation must follow its yielded cell and precede (or itself carry) the terminal companion result.');
+    }
   }
-  return turnId;
+  if (pendingCells.some((cell) => !cell.resolved)) {
+    mismatch(code('outer-continuation-unresolved'), 'A yielded poll cell was never resolved by a completed wait continuation carrying its eventual host result.');
+  }
+  // Per-poll resolution ordering: an inner poll may not start while the
+  // observation it follows is still pending — the previous poll's yielded
+  // cell, or the yielded startup cell whose linked wait delivers the running
+  // handle, since the child cannot poll a handle it has not yet received. In
+  // both cases overlapping observations can never certify quiet supervision.
+  for (let index = 0; index < execution.polls.length; index += 1) {
+    const startupCell = index === 0 ? pendingCells.find((candidate) => candidate.startup === true) : undefined;
+    const previousCellId = index === 0 ? startupCell?.cellId : execution.polls[index - 1].pendingCellId;
+    if (previousCellId === undefined) continue;
+    const cell = pendingCells.find((candidate) => candidate.cellId === previousCellId);
+    if (cell?.resolved && child.indexOf(execution.polls[index].event) < cell.resolvedAtIndex) {
+      mismatch(code('outer-continuation-overlap'), index === 0
+        ? 'An inner poll started while the startup cell was still pending, so the child polled the original handle before its linked wait delivered it.'
+        : 'A new inner poll started while the previous poll\'s yielded cell was still pending, so the two observations overlap.');
+    }
+  }
+  // A wait result that claims the companion exit while a later inner poll still
+  // observes the running companion fabricates a terminal signal for an
+  // execution that has not exited.
+  if (execution.terminalEventIndex >= 0 && execution.polls.some((poll) => child.indexOf(poll.event) > execution.terminalEventIndex)) {
+    mismatch(code('outer-continuation-result-terminal'), 'The wait continuation claimed the companion exit while an inner poll still observed the running companion; terminal delivery must come from the execution path.');
+  }
+  if (execution.terminalCheckDeferred === true && execution.terminalCount !== 1) {
+    mismatch(childCode('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
+  }
+  finalizeExecutionOutput(execution);
+  return { requestedOuterContinuations: calls.length, appliedOuterContinuationYieldMs: bounds.outer };
+}
+
+/**
+ * Validate the result content carried by one continuation output before the
+ * pending cell may count as resolved. A wait that yields again only re-reports
+ * the same runtime cell id and leaves the cell pending; a completing wait must
+ * carry the well-formed host result of the original poll — bounded, exact-keyed
+ * JSON exposing either the same running handle or the terminal exit. A failed
+ * cell, an absent or malformed result, a changed handle, or a result claiming
+ * both handle and exit never resolves the pending poll and never certifies
+ * terminal delivery. The resolved result becomes the original execution's
+ * result: an exit updates the terminal state, and the carried output merges
+ * into the normalized stream at the continuation's transcript position.
+ */
+function validateContinuationCarriedResult(linkedOutput, args, execution, matched, linkedIndex, child, code, childCode, executionOptions) {
+  const output = linkedOutput.payload.output;
+  const stillPending = pendingCellIdFromOutput(output);
+  if (matched.resolved) {
+    mismatch(code('outer-continuation-result-shape'), 'A wait continuation observed an already-resolved yielded cell.');
+  }
+  if (stillPending !== undefined) {
+    if (stillPending !== args.cell_id) {
+      mismatch(code('outer-continuation-result-shape'), 'A still-running wait continuation reported a different runtime cell ID.');
+    }
+    return;
+  }
+  const header = boundedString(Array.isArray(output) ? output[0]?.text : undefined);
+  if (header !== undefined && /^Script (?:failed|terminated)\b/u.test(header)) {
+    mismatch(code('outer-continuation-result-failed'), 'The waited cell failed or was terminated instead of delivering its eventual host result.');
+  }
+  if (header !== undefined && header.startsWith('Script completed\n')
+    && (!Array.isArray(output) || output.length === 1 || boundedString(output[1]?.text)?.trim() === '')) {
+    mismatch(code('outer-continuation-result-missing'), 'The wait continuation completed the yielded cell without carrying its eventual host result.');
+  }
+  let result;
+  try { result = parseCapturedHostResult(output); } catch (error) {
+    if (!(error instanceof CodexRescueEvidenceMismatchError)) throw error;
+    mismatch(code('outer-continuation-result-shape'), 'The wait continuation did not carry a well-formed completed host result.');
+  }
+  const hasExit = Object.hasOwn(result, 'exit_code');
+  const hasHandle = Object.hasOwn(result, 'session_id');
+  if (hasExit && hasHandle) {
+    mismatch(code('outer-continuation-result-shape'), 'The resolved poll continuation claimed both a running handle and an exit code.');
+  }
+  if (hasExit) {
+    if (executionOptions.expectedExitCode !== undefined && result.exit_code !== executionOptions.expectedExitCode) {
+      mismatch(executionOptions.expectedExitCodeMismatchCode ?? childCode('terminal-exit-invalid'), 'The terminal exit code delivered through the linked continuation differs from the required child-turn contract.');
+    }
+    // The companion exited while the cell was yielded: the waited result is the
+    // original execution's terminal result, delivered through the linked wait.
+    execution.terminalCount = 1;
+    execution.terminalEventIndex = linkedIndex;
+    execution.terminalEvent = child[linkedIndex];
+    execution.terminalExitCode = result.exit_code;
+  } else {
+    if (!hasHandle || !Number.isSafeInteger(result.session_id) || result.session_id <= 0) {
+      mismatch(code('outer-continuation-result-handle'), 'The resolved poll continuation changed the original running handle.');
+    }
+    // A yielded startup cell has no printed handle yet: the resolution delivers
+    // the original running handle, which then identifies the companion for all
+    // subsequent polls.
+    if (execution.originalHandle === undefined) execution.originalHandle = result.session_id;
+    else if (result.session_id !== execution.originalHandle) {
+      mismatch(code('outer-continuation-result-handle'), 'The resolved poll continuation changed the original running handle.');
+    }
+  }
+  matched.resolved = true;
+  matched.resolvedAtIndex = linkedIndex;
+  matched.resolvedOutput = linkedOutput;
+  execution.outputEntries.push({ index: linkedIndex, item: { type: 'input_text', text: result.output } });
+}
+
+/**
+ * Qualify the requested wait parameters of the initial foreground exec_command
+ * and of every same-handle inner poll. Requested waits are read from parsed
+ * (never executed) call arguments; the actual elapsed waits are measured from
+ * trusted timestamps and reported separately, because hosts may clamp requested
+ * intervals in either direction.
+ */
+function assertQuietPollWaits(execution, options, codePrefix = '') {
+  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
+  const bounds = quietSupervisionBounds(options);
+  const execHost = hostCallFromEvent(execution.execEvent);
+  if (!execHost.envelope.has('yield_time_ms')) {
+    mismatch(code('quiet-supervision-initial-wait-evidence'), 'The initial foreground exec_command omitted its requested startup yield, so compliant supervision of the live interval is unproven.');
+  }
+  const requestedInitial = execHost.envelope.get('yield_time_ms');
+  if (requestedInitial !== bounds.initial) {
+    mismatch(code('quiet-supervision-initial-wait-bound'), `The initial exec_command requested ${requestedInitial} ms instead of the longest permitted ${bounds.initial} ms startup yield; shorter yields require explicit fixture tool-bound evidence.`);
+  }
+  let observedElapsedPollMs = 0;
+  for (const poll of execution.polls) {
+    if (!poll.host.envelope.has('yield_time_ms')) {
+      mismatch(code('quiet-supervision-wait-evidence'), 'A same-handle poll omitted its requested wait, so compliant quiet supervision of the live interval is unproven.');
+    }
+    const requested = poll.host.envelope.get('yield_time_ms');
+    if (requested !== bounds.poll) {
+      mismatch(code('quiet-supervision-wait-bound'), `The same-handle poll requested ${requested} ms instead of the longest permitted ${bounds.poll} ms wait; shorter waits require explicit fixture tool-bound evidence.`);
+    }
+    const start = eventTimestamp(poll.event);
+    // A poll resolved through an outer-cell continuation is observed until its
+    // resolving wait output: the elapsed interval spans the pre-yield slice
+    // plus the whole continuation, not just the slice before the host yielded
+    // the cell.
+    const resolvedCell = poll.pendingCellId === undefined ? undefined
+      : execution.pendingCells.find((cell) => cell.cellId === poll.pendingCellId);
+    const end = eventTimestamp(resolvedCell?.resolvedOutput ?? poll.output);
+    if (typeof start === 'bigint' && typeof end === 'bigint' && end >= start) observedElapsedPollMs += Number((end - start) / 1_000_000n);
+  }
+  return { requestedInnerPolls: execution.polls.length, observedElapsedPollMs, appliedPollYieldMs: bounds.poll, appliedInitialYieldMs: bounds.initial };
+}
+
+/** Reject Root liveness polling and require the long native wait (or bound-adapted equivalent). */
+function assertQuietRootSupervision(parent, options, { allowChildStateInspection = false } = {}) {
+  const bounds = quietSupervisionBounds(options);
+  const calls = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
+  if (calls.some((event) => event.payload.name === 'sleep'
+    || (!allowChildStateInspection && event.payload.name === 'list_agents'))) {
+    mismatch('quiet-supervision-root-liveness', 'Root issued an unforced sleep or liveness query instead of one long native wait on the exact rescue child.');
+  }
+  const waits = calls.filter((event) => event.payload.name === 'wait_agent');
+  for (const wait of waits) {
+    const args = parseObject(wait.payload.arguments, 'quiet-supervision-root-wait');
+    assertExactKeys(args, ['timeout_ms'], 'quiet-supervision-root-wait');
+    if (args.timeout_ms !== bounds.root) {
+      mismatch('quiet-supervision-root-wait', `Root waited ${args.timeout_ms} ms instead of the longest permitted ${bounds.root} ms native wait; shorter waits require explicit fixture tool-bound evidence.`);
+    }
+  }
+  return {
+    requestedOuterWaits: waits.length,
+    appliedRootWaitMs: bounds.root,
+    // Absent wait calls prove only a native child-completion wake, not verified
+    // long waits; surface the evidence kind so callers cannot conflate the two.
+    rootWaitEvidence: waits.length > 0 ? 'wait-agent' : 'native-completion-wake',
+  };
+}
+
+function countMailboxNotifications(child) {
+  return child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call'
+    && event.payload.name === 'send_message').length;
 }
 
 function safePublicProgressLine(value) {
@@ -1214,22 +1456,70 @@ function safePublicProgressLine(value) {
     });
 }
 
+/**
+ * The normalized stdout stream is assembled positionally: each captured item
+ * records its transcript index, so output resolved later through a linked wait
+ * continuation merges at its own transcript position instead of being lost or
+ * appended out of order.
+ */
+function finalizeExecutionOutput(execution) {
+  execution.output = execution.outputEntries
+    .map((entry, position) => ({ ...entry, position }))
+    .sort((a, b) => a.index - b.index || a.position - b.position)
+    .map((entry) => entry.item);
+}
+
+/**
+ * A startup cell that yielded before its wrapper printed the running handle
+ * binds that handle from its linked wait continuation, so polls observed after
+ * the delivery still validate against the original running handle in
+ * transcript order. Read-only pre-binding: every wait involved is still fully
+ * validated by the continuation resolution step, which then keeps the
+ * delivered handle for the whole execution.
+ */
+function startupContinuationHandle(child, calls, outputs) {
+  const execOutput = outputs.find((output) => output.payload.call_id === calls[0]?.payload.call_id);
+  if (pendingCellIdFromOutput(execOutput?.payload.output) === undefined) return undefined;
+  const waitCallIds = new Set(child.filter((event) => event?.type === 'response_item'
+    && event.payload?.type === 'function_call' && event.payload.name === 'wait' && boundedString(event.payload.call_id))
+    .map((event) => event.payload.call_id));
+  for (const event of child) {
+    if (event?.type !== 'response_item' || event.payload?.type !== 'function_call_output'
+      || !waitCallIds.has(event.payload.call_id)) continue;
+    if (pendingCellIdFromOutput(event.payload.output) !== undefined) continue;
+    if (!Array.isArray(event.payload.output) || event.payload.output.length !== 2) continue;
+    let result; try { result = JSON.parse(event.payload.output[1]?.text); } catch { continue; }
+    if (result && typeof result === 'object' && !Array.isArray(result)
+      && Number.isSafeInteger(result.session_id) && result.session_id > 0) return result.session_id;
+  }
+  return undefined;
+}
+
 function validateChildExecution(child, calls, outputs, expectedCommand, expectedWorkspace, options = {}) {
   const code = (suffix) => options.codePrefix ? `${options.codePrefix}-${suffix}` : `child-${suffix}`;
   const commandCountCode = options.commandCountCode ?? code('command-count');
   if (calls.length === 0 || calls.length > MAX_CHILD_POLLS + 1) {
     mismatch(commandCountCode, 'The child must use one exec_command and only bounded continuation polls.');
   }
-  if (calls.some((call) => call.payload.name !== 'exec')) mismatch(code('tool-name'), 'Every captured child host wrapper must use the exact exec tool name.');
-  const parsedCalls = calls.map((call) => parseCapturedHostCall(call.payload.input));
+  if (calls.some((call) => call.payload.name !== 'exec' && !['exec_command', 'write_stdin'].includes(call.payload.name))) {
+    mismatch(code('tool-name'), 'Every captured child host wrapper must use the exact exec tool name.');
+  }
+  const parsedCalls = calls.map(hostCallFromEvent);
   if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch(commandCountCode, 'The child started more than one companion process.');
   if (outputs.length !== calls.length) mismatch(code('output-count'), 'Every child host call must have exactly one linked structured output.');
   const callIds = validateCallOutputOwnership(calls, outputs, code('call-id'));
-  let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; let terminalExitCode; const normalized = []; const pollHandles = [];
+  let execCount = 0; let handle = startupContinuationHandle(child, calls, outputs); let terminalEventIndex = -1; let terminalCount = 0; let terminalExitCode; const outputEntries = []; const pollHandles = []; const polls = []; const pendingCells = [];
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index];
     const linked = outputs.filter((event) => event.payload.call_id === call.payload.call_id);
     if (linked.length !== 1) mismatch(code('output-link'), 'Every child host call must have exactly one linked output.');
+    // Family-aware ownership: a direct function_call may only answer through a
+    // function_call_output, and a custom_tool_call only through a
+    // custom_tool_call_output — mixed families cannot pair.
+    const expectedOutputType = call.payload.type === 'function_call' ? 'function_call_output' : 'custom_tool_call_output';
+    if (linked[0].payload.type !== expectedOutputType) {
+      mismatch(code('call-family-mismatch'), 'A child host output must belong to the same event family as its call.');
+    }
     const outputEvent = linked[0];
     const callIndex = child.indexOf(call); const outputIndex = child.indexOf(outputEvent);
     if (callIndex >= outputIndex) mismatch(code('output-order'), 'A linked child host output must follow its call.');
@@ -1248,16 +1538,30 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
       if (execCount !== 1 || handle === undefined) mismatch(code('handle-mismatch'), 'A continuation poll did not follow the original running handle.');
       assertPollEnvelope(host.envelope, handle, code);
       pollHandles.push(host.envelope.get('session_id'));
+      polls.push({ event: call, output: outputEvent, host });
     }
     if (host.legacy) {
       if (calls.length !== 1) mismatch(code('terminal-exit-missing'), 'A multi-call child execution must expose structured host results.');
       if (!Array.isArray(outputEvent.payload.output) || outputEvent.payload.output.length < 1 || outputEvent.payload.output.length > 8
         || outputEvent.payload.output.some((item) => item?.type !== 'input_text' || boundedString(item.text) === undefined)) mismatch(code('terminal-exit-missing'), 'The one-shot captured result is not terminal.');
-      normalized.push(...outputEvent.payload.output); terminalCount += 1; terminalEventIndex = outputIndex;
+      for (const item of outputEvent.payload.output) outputEntries.push({ index: outputIndex, item });
+      terminalCount += 1; terminalEventIndex = outputIndex;
+      continue;
+    }
+    // A yielded output proves the cell yielded before its result existed: the
+    // pending host result arrives later through the linked wait continuation
+    // output, so it is never parsed as a completed host result here. For the
+    // initial execution cell this is a startup continuation — the resolution
+    // delivers the original running handle (or the terminal result), and the
+    // same resolution machinery binds both.
+    const pendingCellId = pendingCellIdFromOutput(outputEvent.payload.output);
+    if (pendingCellId !== undefined) {
+      pendingCells.push({ cellId: pendingCellId, callIndex, outputIndex, resolved: false, startup: host.kind === 'exec_command' });
+      if (host.kind !== 'exec_command') polls[polls.length - 1].pendingCellId = pendingCellId;
       continue;
     }
     const result = parseCapturedHostResult(outputEvent.payload.output);
-    normalized.push({ type: 'input_text', text: result.output });
+    outputEntries.push({ index: outputIndex, item: { type: 'input_text', text: result.output } });
     const hasHandle = Object.hasOwn(result, 'session_id'); const hasExit = Object.hasOwn(result, 'exit_code');
     if (hasHandle === hasExit) mismatch(code('terminal-exit-missing'), 'A captured host result must expose either one running handle or one exit code.');
     if (hasHandle) {
@@ -1271,12 +1575,20 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
     }
   }
   if (execCount !== 1) mismatch(commandCountCode, 'The child must start exactly one companion process.');
-  if (terminalCount !== 1 || terminalEventIndex < 0) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
+  // A yielded cell whose companion has not exited yet defers the terminal-count
+  // check: the pending poll's eventual result — including its legitimate exit —
+  // may still arrive through the linked wait continuation, which must resolve
+  // it before quiet supervision is certified.
+  const terminalDeferred = options.allowDeferredContinuationTerminal === true && pendingCells.length > 0 && terminalCount === 0;
+  if (!terminalDeferred && (terminalCount !== 1 || terminalEventIndex < 0)) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
   if (options.expectedExitCode !== undefined && parsedCalls[0].legacy && !options.allowLegacyWithoutExit) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
-  return {
-    callIds, execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: normalized, pollCount: pollHandles.length,
-    pollHandles, terminalEventIndex, terminalEvent: child[terminalEventIndex], terminalExitCode,
+  const execution = {
+    callIds, execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: [], outputEntries, pollCount: pollHandles.length,
+    pollHandles, polls, pendingCells, terminalCount, terminalCheckDeferred: terminalDeferred,
+    terminalEventIndex, terminalEvent: child[terminalEventIndex], terminalExitCode,
   };
+  finalizeExecutionOutput(execution);
+  return execution;
 }
 
 function validateCallOutputOwnership(calls, outputs, errorCode) {
@@ -1300,6 +1612,11 @@ function assertPollEnvelope(envelope, expectedHandle, code = (suffix) => `child-
 }
 
 function parseCapturedHostResult(output) {
+  // Host results carry one script-status header: "Script completed" for a
+  // finished process. A yielded cell ("Script running with cell ID <id>") has
+  // no completed host result yet — its eventual result arrives through the
+  // linked wait continuation output, so a yielded header never parses as a
+  // host result here (see pendingCellIdFromOutput).
   if (!Array.isArray(output) || output.length !== 2 || output[0]?.type !== 'input_text' || output[1]?.type !== 'input_text'
     || !boundedString(output[0].text)?.startsWith('Script completed\n')) mismatch('child-result-shape', 'The host result does not match the captured Codex 0.147 output shape.');
   const text = boundedString(output[1].text); let result;
@@ -1453,40 +1770,54 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     && !(index > 0 && index < firstFinalIndex || index > firstFinalIndex && index < secondFinalIndex));
   if (outsideHostEvents.length > 0) mismatch('choice-child-execution-boundary', 'Every child host call and output must belong to exactly one logical execution before its final.');
   const initialEvents = child.slice(1, firstFinalIndex); const continuationEvents = child.slice(firstFinalIndex + 1, secondFinalIndex);
-  const callsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const outputsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  const callsIn = (events) => events.filter((event) => event?.type === 'response_item'
+    && (event.payload?.type === 'custom_tool_call'
+      || event.payload?.type === 'function_call' && ['exec_command', 'write_stdin'].includes(event.payload.name)));
+  const outputsIn = (events, excludedCallIds) => events.filter((event) => event?.type === 'response_item'
+    && (event.payload?.type === 'custom_tool_call_output'
+      || event.payload?.type === 'function_call_output' && !excludedCallIds.has(event.payload.call_id)));
   const segmentOptions = (expectedCommand) => ({ ...options, expectedCommand, requireStatusSidecar: false });
   const qualifySegment = (events, expectedCommand, codePrefix, executionOptions) => {
     const firstHost = events.find((event) => isChildHostEvent(event));
-    if (firstHost?.payload?.type !== 'custom_tool_call'
-      || parseCapturedHostCall(firstHost.payload.input).kind !== 'exec_command') {
+    const firstHostIsCall = firstHost !== undefined && ['custom_tool_call', 'function_call'].includes(firstHost.payload?.type);
+    if (!firstHostIsCall || hostCallFromEvent(firstHost).kind !== 'exec_command') {
       mismatch('choice-child-execution-boundary', 'Each logical child turn must begin by starting its one foreground execution.');
     }
-    const customCalls = callsIn(events); const customOutputs = outputsIn(events);
+    // Outer-cell continuation pairs are separated together and validated
+    // against the host wait tool contract, never counted as inner polls.
+    const outerWaitCallIds = new Set(events
+      .filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'wait')
+      .map((event) => event.payload.call_id));
+    const customCalls = callsIn(events); const customOutputs = outputsIn(events, outerWaitCallIds);
     const parts = splitStatusSidecars(customCalls, customOutputs, segmentOptions(expectedCommand), codePrefix);
-    const hasRelayHostEvent = events.some((event) => event?.type === 'response_item'
+    const hasFunctionHostEvent = events.some((event) => event?.type === 'response_item'
       && ['function_call', 'function_call_output'].includes(event.payload?.type));
-    if (hasRelayHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
+    if (hasFunctionHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
     const execution = validateChildExecution(events, parts.executionCalls, parts.executionOutputs, expectedCommand, options.expectedWorkspace, executionOptions);
-    if (!hasRelayHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
+    if (!hasFunctionHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
+    const outerContinuations = validateOuterCellContinuations(events, execution, options, codePrefix, executionOptions);
     const statusChecked = validateStatusSidecars({ child: events, statusCalls: parts.statusCalls, statusOutputs: parts.statusOutputs,
       execution, options: segmentOptions(expectedCommand), codePrefix });
-    return { execution, statusChecked };
+    return { execution, statusChecked, outerContinuations };
   };
-  const initial = qualifySegment(initialEvents, options.expectedInitialCommand, 'choice-initial', { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
-  const continuation = qualifySegment(continuationEvents, options.expectedChoiceCommand, 'choice-continuation', { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0 });
+  const initial = qualifySegment(initialEvents, options.expectedInitialCommand, 'choice-initial', { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit', allowDeferredContinuationTerminal: true });
+  const continuation = qualifySegment(continuationEvents, options.expectedChoiceCommand, 'choice-continuation', { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0, allowDeferredContinuationTerminal: true });
   const initialExecution = initial.execution; const continuationExecution = continuation.execution;
   assertNoChoiceCallIdReuse(initialEvents, continuationEvents, options);
 
   const returns = parent.filter((event) => isTerminalChildReturn(event, agentPath));
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
-  const initialParent = parent.slice(startIndex + 1, parent.indexOf(returns[0]));
-  const continuationParent = parent.slice(parent.indexOf(followupOutputs[0]) + 1, parent.indexOf(returns[1]));
-  const relayIdentitySets = { messageIds: new Set(), turnAssociations: new Set() };
-  const initialRelay = validateProgressRelays({ child: initialEvents, parent: initialParent, execution: initialExecution, agentPath,
-    options: segmentOptions(options.expectedInitialCommand), codePrefix: 'choice-initial', identitySets: relayIdentitySets });
-  const continuationRelay = validateProgressRelays({ child: continuationEvents, parent: continuationParent, execution: continuationExecution, agentPath,
-    options: segmentOptions(options.expectedChoiceCommand), codePrefix: 'choice-continuation', identitySets: relayIdentitySets });
+  const supervision = options.requireQuietSupervision
+    ? {
+        // The choice allowance for inspecting the exact child exists only as
+        // timeout-recovery evidence; without a timed-out wait it is unforced
+        // liveness polling and stays rejected.
+        root: assertQuietRootSupervision(parent, options, { allowChildStateInspection: timedOutWaitIndexes.length > 0 }),
+        initial: assertQuietPollWaits(initialExecution, options, 'choice-initial'),
+        continuation: assertQuietPollWaits(continuationExecution, options, 'choice-continuation'),
+        mailboxNotifications: countMailboxNotifications(child),
+      }
+    : null;
   const statusSidecarChecked = initial.statusChecked || continuation.statusChecked;
   if (options.requireStatusSidecar && !statusSidecarChecked) mismatch('choice-status-sidecar-count', 'Required choice evidence lacks a status sidecar in both logical segments.');
   const needsChoiceText = terminalOutputText(initialExecution.output, 'choice-needs-choice-output');
@@ -1531,7 +1862,23 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   assertParentIsolation(parent, options, options.forbiddenParentText ?? []);
   const evidence = {
     parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, taskName, choice: options.expectedChoice,
-    ...(options.requireProgressRelay ? { progressRelayChecked: initialRelay.checked && continuationRelay.checked } : {}),
+    ...(options.requireQuietSupervision ? {
+      terminalDeliveryChecked: true,
+      quietSupervisionChecked: true,
+      supervisionFacts: {
+        requestedInnerPolls: supervision.initial.requestedInnerPolls + supervision.continuation.requestedInnerPolls,
+        requestedOuterWaits: supervision.root.requestedOuterWaits,
+        requestedOuterContinuations: initial.outerContinuations.requestedOuterContinuations
+          + continuation.outerContinuations.requestedOuterContinuations,
+        mailboxNotifications: supervision.mailboxNotifications,
+        observedElapsedPollMs: supervision.initial.observedElapsedPollMs + supervision.continuation.observedElapsedPollMs,
+        appliedPollYieldMs: supervision.initial.appliedPollYieldMs,
+        appliedInitialYieldMs: supervision.initial.appliedInitialYieldMs,
+        appliedRootWaitMs: supervision.root.appliedRootWaitMs,
+        appliedOuterContinuationYieldMs: initial.outerContinuations.appliedOuterContinuationYieldMs,
+        rootWaitEvidence: supervision.root.rootWaitEvidence,
+      },
+    } : {}),
     ...(options.requireStatusSidecar ? { statusSidecarChecked } : {}),
     ...(options.includeExecutionFacts ? { executions: {
       initial: { execCommandCount: initialExecution.execCommandCount },
@@ -1543,7 +1890,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   return evidence;
 }
 
-function validateForwarderChildEvents(child, options) {
+function validateForwarderChildEvents(child) {
   for (let index = 0; index < child.length; index += 1) {
     const event = child[index];
     if (event?.type === 'session_meta') {
@@ -1554,13 +1901,18 @@ function validateForwarderChildEvents(child, options) {
       && event.payload.phase === 'final_answer') continue;
     if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call') continue;
     if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output') continue;
-    if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call'
-      && event.payload.name === 'send_message') continue;
-    if (event?.type === 'response_item' && event.payload?.type === 'function_call'
-      && ['exec', 'exec_command'].includes(event.payload.name)) {
-      mismatch('child-command-shape-mismatch', 'The child command used a tool-call shape not captured for Codex 0.147.');
+    if (event?.type === 'response_item' && event.payload?.type === 'function_call') {
+      if (event.payload.name === 'send_message') {
+        mismatch('quiet-supervision-progress-send', 'Quiet supervision forbids routine child-to-Root progress messages; native child completion delivers the terminal result.');
+      }
+      if (['exec_command', 'write_stdin'].includes(event.payload.name)) continue;
+      if (event.payload.name === 'wait') continue;
+      if (['exec', 'exec_command'].includes(event.payload.name)) {
+        mismatch('child-command-shape-mismatch', 'The child command used a tool-call shape not captured for Codex 0.147.');
+      }
+      mismatch('child-event-accounting', 'The forwarder child rollout contains an unaccounted event.');
     }
-    if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call_output') continue;
+    if (event?.type === 'response_item' && event.payload?.type === 'function_call_output') continue;
     mismatch('child-event-accounting', 'The forwarder child rollout contains an unaccounted event.');
   }
 }
@@ -1581,18 +1933,15 @@ function validateChildHostCallOwnership(events, statusCalls, codePrefix) {
   const callIds = calls.map((event) => boundedString(event.payload.call_id));
   const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
   const statusIds = new Set(statusCalls.map((event) => event.payload.call_id));
-  const relayPresent = calls.some((event) => event.payload.type === 'function_call') || outputs.some((event) => event.payload.type === 'function_call_output');
-  const errorCode = relayPresent ? `${codePrefix}-progress-relay-call-id`
-    : statusIds.size > 0 ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`;
+  const errorCode = statusIds.size > 0 ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`;
   if (callIds.some((id) => !id) || outputIds.some((id) => !id)
     || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length
     || callIds.length !== outputIds.length) mismatch(errorCode, 'Child host calls and outputs require unique one-to-one identities.');
   for (const call of calls) {
     const expectedType = call.payload.type === 'function_call' ? 'function_call_output' : 'custom_tool_call_output';
     if (outputs.filter((output) => output.payload.call_id === call.payload.call_id && output.payload.type === expectedType).length !== 1) {
-      mismatch(call.payload.type === 'function_call' ? `${codePrefix}-progress-relay-call-id`
-        : statusIds.has(call.payload.call_id) ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`,
-      'Each child host output must retain the call family and exact call identity.');
+      mismatch(statusIds.has(call.payload.call_id) ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`,
+        'Each child host output must retain the call family and exact call identity.');
     }
   }
   if (outputs.some((output) => !calls.some((call) => call.payload.call_id === output.payload.call_id
@@ -1606,8 +1955,7 @@ function assertNoChoiceCallIdReuse(initialEvents, continuationEvents, options) {
   const initialIds = new Set(calls(initialEvents).map((event) => event.payload.call_id));
   const reused = calls(continuationEvents).find((event) => initialIds.has(event.payload.call_id));
   if (!reused) return;
-  if (reused.payload.type === 'function_call') mismatch('choice-continuation-progress-relay-call-id', 'The continuation relay reused an earlier host call ID.');
-  const host = parseCapturedHostCall(reused.payload.input);
+  const host = hostCallFromEvent(reused);
   if (options.expectedStatusCommand && host.kind === 'exec_command' && host.envelope.get('cmd') !== options.expectedChoiceCommand) {
     mismatch('choice-continuation-status-sidecar-call-id', 'The continuation status sidecar reused an earlier host call ID.');
   }
@@ -2625,7 +2973,7 @@ function parseCapturedExecEnvelope(input) {
   return values;
 }
 
-function parseCapturedHostCall(input) {
+function parseCapturedHostCall(input, toolName) {
   const source = boundedString(input);
   if (!source) mismatch('child-command-encoding', 'The child host-call evidence is absent.');
   const structured = [
@@ -2639,7 +2987,19 @@ function parseCapturedHostCall(input) {
     if (source.indexOf(`tools.${kind}`, prefix.length) !== -1) mismatch('child-command-encoding', 'The child host call does not match the captured Codex 0.147 wrapper.');
     return { kind, envelope: parseTopLevelExecObject(source.slice(prefix.length, -suffix.length)), legacy: false };
   }
+  if (toolName === 'exec_command' || toolName === 'write_stdin') {
+    // Direct tool-call capture: the host recorded the terminal tool call
+    // itself, so the arguments are one exact JSON object instead of code.
+    let value; try { value = JSON.parse(source); } catch { mismatch('child-command-encoding', 'The direct terminal tool call arguments are not exact JSON.'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) mismatch('child-command-encoding', 'The direct terminal tool call arguments are not one object.');
+    return { kind: toolName, envelope: new Map(Object.entries(value)), legacy: false };
+  }
   return { kind: 'exec_command', envelope: parseCapturedExecEnvelope(input), legacy: true };
+}
+
+/** Parse one captured host call from either a code-mode wrapper or a direct tool call. */
+function hostCallFromEvent(event) {
+  return parseCapturedHostCall(event?.payload?.input ?? event?.payload?.arguments, event?.payload?.name);
 }
 
 function parseTopLevelExecObject(source) {

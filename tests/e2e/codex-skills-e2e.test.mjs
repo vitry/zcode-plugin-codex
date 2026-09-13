@@ -13,7 +13,7 @@ import test from 'node:test';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
-import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
+import { RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
@@ -198,9 +198,10 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
     const callEnd = success.indexOf(label === 'choice' ? '\n      );' : '\n    );');
     assert.ok(callEnd > 0, `${label} qualification call must have an exact bounded region`);
     const qualifierCall = success.slice(0, callEnd);
-    assert.match(qualifierCall, /requireProgressRelay:\s*true/u, `${label} qualification must require a fixed parent relay`);
+    assert.match(qualifierCall, /requireQuietSupervision:\s*true/u, `${label} qualification must require quiet supervision evidence`);
     assert.match(qualifierCall, /expectedStatusCommand/u, `${label} qualification must validate any optional bound status sidecar`);
-    assert.match(success, /progressRelayChecked/u, `${label} qualification must assert the fixed parent relay result`);
+    assert.match(success, /terminalDeliveryChecked/u, `${label} qualification must assert native terminal delivery`);
+    assert.match(success, /quietSupervisionChecked/u, `${label} qualification must assert the quiet supervision result`);
   }
   const guardMarker = label === 'choice'
     ? "if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {"
@@ -297,17 +298,6 @@ test('installed hook capture wrapper preserves raw stdin, stdout, stderr, exit, 
   const records = await readInstalledHookCaptures(captures);
   assert.equal(records.length, 1); assert.equal(Buffer.from(records[0].stdinBase64, 'base64').toString('utf8'), rawInput);
   assert.deepEqual(records[0].artifacts.map((artifact) => [artifact.path, Buffer.from(artifact.bytesBase64, 'base64').toString('utf8')]), [['consumed.json', '{"private":true}\n']]);
-});
-
-test('installed relay gate accepts only a strict fixed record paired with its root message', () => {
-  const relay = '[zcode-relay] {"version":1,"sequence":1,"phase":"starting","code":"started","observedAt":"2026-08-17T00:00:00.000Z"}\n';
-  const result = (output) => ({ payload: { type: 'custom_tool_call_output', output: JSON.stringify({ output }) } });
-  const send = (target, message) => ({ payload: { type: 'function_call', name: 'send_message', arguments: JSON.stringify({ target, message }) } });
-  assert.equal(installedRelayObserved([[result(`[zcode] PRIVATE detail\n${relay}`), send('/root', 'ZCode Rescue started.')]]), true);
-  assert.equal(installedRelayObserved([[result('[zcode] PRIVATE detail\n'), send('/root', 'ZCode Rescue started.')]]), false);
-  assert.equal(installedRelayObserved([[result(relay), send('/root/sibling', 'ZCode Rescue started.')]]), false);
-  assert.equal(installedRelayObserved([[result(relay), send('/root', '[zcode] PRIVATE detail')]]), false);
-  assert.equal(installedRelayObserved([[result(relay.replace('"sequence":1', '"sequence":0')), send('/root', 'ZCode Rescue started.')]]), false);
 });
 
 test('foreground Rescue gate lifecycle cleans an exact fake child that does not exit naturally', async () => {
@@ -504,14 +494,14 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const movedDisplayAboveGuard = source.replace(encryptedDisplay, '').replace(foregroundCatch + foregroundPredicate, foregroundCatch + encryptedDisplay + foregroundPredicate);
   assert.throws(() => assertInstalledRescueQualificationSource(movedDisplayAboveGuard), /foreground encrypted guard/u);
 
-  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assert.equal(error.evidence.progressRelayChecked, true);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n';
+  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assert.equal(error.evidence.quietSupervisionChecked, true);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n';
   const choiceCatch = '    } catch (error) {\n';
   const choicePredicate = "      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {\n";
   const movedChoiceChecksAboveGuard = source.replace(choiceEncryptedChecks, '').replace(choiceCatch + choicePredicate, choiceCatch + choiceEncryptedChecks + choicePredicate);
   assert.throws(() => assertInstalledRescueQualificationSource(movedChoiceChecksAboveGuard), /choice encrypted guard/u);
 
-  const missingForegroundRelayRequirement = source.replace('        requireProgressRelay: true,\n', '');
-  assert.throws(() => assertInstalledRescueQualificationSource(missingForegroundRelayRequirement), /foreground qualification must require a fixed parent relay/u);
+  const missingForegroundSupervisionRequirement = source.replace('        requireQuietSupervision: true,\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingForegroundSupervisionRequirement), /foreground qualification must require quiet supervision evidence/u);
   const missingChoiceStatusContract = source.replace('          expectedStatusCommand,\n', '');
   assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceStatusContract), /choice qualification must validate any optional bound status sidecar/u);
   const missingChoiceYieldedEvidence = source.replace('    const yielded = installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);\n', '');
@@ -607,8 +597,21 @@ test('synthetic captured qualification fixtures cover named and generic Codex 0.
   for (const route of routes) {
     const evidence = qualifyInstalledCapturedForeground(route);
     assert.equal(evidence.route, route.expectedEvidenceRoute);
-    assert.equal(evidence.progressRelayChecked, true);
+    assert.equal(evidence.terminalDeliveryChecked, true);
+    assert.equal(evidence.quietSupervisionChecked, true);
     assert.equal(evidence.statusSidecarChecked, true);
+    assert.deepEqual(evidence.supervisionFacts, {
+      requestedInnerPolls: 2,
+      requestedOuterWaits: 1,
+      requestedOuterContinuations: 0,
+      mailboxNotifications: 0,
+      observedElapsedPollMs: 2000,
+      appliedPollYieldMs: 300000,
+      appliedInitialYieldMs: 30000,
+      appliedRootWaitMs: 600000,
+      appliedOuterContinuationYieldMs: 30000,
+      rootWaitEvidence: 'wait-agent',
+    });
     assert.deepEqual(evidence.yieldedExecution, {
       execCommandCount: 1,
       pollCount: 2,
@@ -780,7 +783,8 @@ test('synthetic captured qualification fixtures cover named and generic exact-re
     for (const requested of ['resume']) {
       const choice = installedCapturedChoiceRoute(route, requested);
       const evidence = qualifyInstalledCapturedChoice(choice);
-      assert.equal(evidence.progressRelayChecked, true);
+      assert.equal(evidence.terminalDeliveryChecked, true);
+      assert.equal(evidence.quietSupervisionChecked, true);
       assert.equal(evidence.statusSidecarChecked, true);
       assert.deepEqual(evidence.executions, { initial: { execCommandCount: 1 }, continuation: { execCommandCount: 1 } });
       assert.deepEqual(installedChoiceYieldFacts(choice.fixture.rollouts, choice.childThreadId, choice.commands), {
@@ -1106,6 +1110,149 @@ test('installed choice qualification requires yielded same-handle terminal evide
   }
 });
 
+test('installed observation gates recognize direct tool calls identically to wrappers', () => {
+  // The observation gate must see a valid same-handle poll even when the child
+  // used direct exec_command/write_stdin calls instead of code-mode wrappers.
+  const command = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+  const directRollouts = [[
+    { type: 'session_meta', payload: { id: 'direct-child' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'direct-exec', arguments: JSON.stringify({ cmd: command, workdir: '/installed/workspace' }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'direct-exec', output: installedHostOutput({ output: 'partial\n', session_id: 41 }) } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', call_id: 'direct-poll', arguments: JSON.stringify({ session_id: 41, chars: '', yield_time_ms: 300000 }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'direct-poll', output: installedHostOutput({ output: 'still running\n', session_id: 41 }) } },
+  ]];
+  assert.deepEqual([...installedYieldedCommandPairs(directRollouts, command)],
+    ['direct-child:direct-exec:direct-poll']);
+  assert.deepEqual([...installedYieldedCommandPairs(installedChoiceYieldFixture().rollouts, installedChoiceYieldFixture().commands.initial)],
+    ['installed-choice-child:initial-exec:initial-poll', 'installed-choice-child:initial-exec:initial-terminal']);
+
+  // The installed choice execution facts must accept the same direct forms.
+  const direct = installedChoiceYieldFixture();
+  direct.rollouts[0] = direct.rollouts[0].map((event) => {
+    if (event?.payload?.type === 'custom_tool_call') {
+      let value; let name;
+      try { value = JSON.parse(event.payload.input.slice('const r = await tools.write_stdin('.length, -'); text(JSON.stringify(r))\n'.length)); name = 'write_stdin'; }
+      catch { value = parseInstalledToolInput(event.payload.input).value; name = 'exec_command'; }
+      return { type: 'response_item', payload: { type: 'function_call', name, call_id: event.payload.call_id, arguments: JSON.stringify(value) } };
+    }
+    if (event?.payload?.type === 'custom_tool_call_output') {
+      return { type: 'response_item', payload: { type: 'function_call_output', call_id: event.payload.call_id, output: event.payload.output } };
+    }
+    return event;
+  });
+  assert.deepEqual(installedChoiceYieldFacts(direct.rollouts, direct.childThreadId, direct.commands), {
+    initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+    continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+  });
+  // Identity checks keep working in direct form.
+  direct.rollouts[0].find((event) => event?.payload?.call_id === 'initial-terminal' && event.payload.type === 'function_call')
+    .payload.arguments = JSON.stringify({ session_id: 999, chars: '', yield_time_ms: 300000 });
+  assert.throws(() => installedChoiceYieldFacts(direct.rollouts, direct.childThreadId, direct.commands), /yielded same-handle terminal evidence/u);
+});
+
+test('installed observation keeps yielded polls and resolves their linked continuations', () => {
+  const initialSegment = (fixture) => {
+    const events = fixture.rollouts[0];
+    return events.slice(1, events.findIndex((event) => event?.payload?.phase === 'final_answer'));
+  };
+  const yieldedContinuation = () => {
+    const fixture = installedChoiceYieldFixture();
+    const events = fixture.rollouts[0];
+    // The initial segment's first poll outlasts its outer code cell: the host
+    // yields the cell with the handle still running and the child resumes that
+    // cell with the wait tool, whose output carries the poll's eventual result.
+    const pollOutput = events.find((event) => event?.payload?.call_id === 'initial-poll' && event.payload.type === 'custom_tool_call_output');
+    pollOutput.payload.output = [{ type: 'input_text', text: 'Script running with cell ID 1\nWall time 300.0 seconds\nOutput:\n' }];
+    events.splice(events.indexOf(pollOutput) + 1, 0,
+      { type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'initial-wait', arguments: JSON.stringify({ cell_id: '1', yield_time_ms: 30000 }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'initial-wait', output: installedHostOutput({ output: 'still running\n', session_id: 51 }) } });
+    return fixture;
+  };
+  // A yielded poll observed before its resolving wait still pairs, so the held
+  // completion gate cannot time out when observation starts after the yield.
+  const pendingOnly = yieldedContinuation();
+  pendingOnly.rollouts[0] = pendingOnly.rollouts[0].filter((event) => event?.payload?.call_id !== 'initial-terminal');
+  assert.deepEqual([...installedYieldedCommandPairs(pendingOnly.rollouts, pendingOnly.commands.initial)],
+    ['installed-choice-child:initial-exec:initial-poll']);
+
+  // Segment facts resolve the pending cell through its linked wait continuation.
+  const resolved = yieldedContinuation();
+  assert.deepEqual(installedYieldSegmentFacts(initialSegment(resolved), resolved.commands.initial, resolved.commands.status, 3),
+    { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 });
+
+  // The companion may exit while the cell is yielded: the terminal result then
+  // arrives through the linked wait output and stays the segment's terminal.
+  const throughWait = yieldedContinuation();
+  throughWait.rollouts[0] = throughWait.rollouts[0].filter((event) => event?.payload?.call_id !== 'initial-terminal');
+  throughWait.rollouts[0].find((event) => event?.payload?.call_id === 'initial-wait' && event.payload.type === 'function_call_output')
+    .payload.output = installedHostOutput({ output: 'terminal\n', exit_code: 3 });
+  assert.deepEqual(installedYieldSegmentFacts(initialSegment(throughWait), throughWait.commands.initial, throughWait.commands.status, 3),
+    { execCommandCount: 1, pollCount: 1, sameHandleChecked: true, terminalExitCode: 3 });
+
+  // Malformed continuations fail loudly instead of silently dropping the poll.
+  const unresolved = yieldedContinuation();
+  unresolved.rollouts[0] = unresolved.rollouts[0].filter((event) => event?.payload?.call_id !== 'initial-wait');
+  assert.throws(() => installedYieldSegmentFacts(initialSegment(unresolved), unresolved.commands.initial, unresolved.commands.status, 3), /unresolved/u);
+  const unlinked = yieldedContinuation();
+  unlinked.rollouts[0].find((event) => event?.payload?.call_id === 'initial-wait' && event.payload.type === 'function_call')
+    .payload.arguments = JSON.stringify({ cell_id: '9', yield_time_ms: 30000 });
+  assert.throws(() => installedYieldSegmentFacts(initialSegment(unlinked), unlinked.commands.initial, unlinked.commands.status, 3), /continuation/u);
+  const drifted = yieldedContinuation();
+  drifted.rollouts[0].find((event) => event?.payload?.call_id === 'initial-wait' && event.payload.type === 'function_call_output')
+    .payload.output = [{ type: 'input_text', text: 'Script running with cell ID 2\nWall time 30.0 seconds\nOutput:\n' }];
+  assert.throws(() => installedYieldSegmentFacts(initialSegment(drifted), drifted.commands.initial, drifted.commands.status, 3), /continuation/u);
+});
+
+test('installed observation resolves a yielded startup cell through its linked wait continuation', () => {
+  const startupContinuation = () => {
+    const fixture = installedChoiceYieldFixture();
+    const events = fixture.rollouts[0];
+    // The startup cell yields before the wrapper prints the handle: the linked
+    // wait resolution delivers the original running handle, and every later
+    // poll keeps addressing it.
+    const execOutput = events.find((event) => event?.payload?.call_id === 'initial-exec' && event.payload.type === 'custom_tool_call_output');
+    execOutput.payload.output = [{ type: 'input_text', text: 'Script running with cell ID 0\nWall time 30.0 seconds\nOutput:\n' }];
+    events.splice(events.indexOf(execOutput) + 1, 0,
+      { type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'initial-startup-wait', arguments: JSON.stringify({ cell_id: '0', yield_time_ms: 30000 }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'initial-startup-wait', output: installedHostOutput({ output: 'started\n', session_id: 51 }) } });
+    return fixture;
+  };
+  const fixture = startupContinuation();
+  // The observation gate pairs the startup exec with its same-handle polls
+  // through the delivered handle, so it cannot time out on a yielded startup.
+  assert.deepEqual([...installedYieldedCommandPairs(fixture.rollouts, fixture.commands.initial)],
+    ['installed-choice-child:initial-exec:initial-poll', 'installed-choice-child:initial-exec:initial-terminal']);
+  assert.deepEqual(installedChoiceYieldFacts(fixture.rollouts, fixture.childThreadId, fixture.commands), {
+    initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+    continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+  });
+
+  // A delivered handle that no poll addresses must stay rejected, and a
+  // startup cell without its resolution fails loudly.
+  const drifted = startupContinuation();
+  drifted.rollouts[0].find((event) => event?.payload?.call_id === 'initial-startup-wait' && event.payload.type === 'function_call_output')
+    .payload.output = installedHostOutput({ output: 'started\n', session_id: 999 });
+  assert.throws(() => installedChoiceYieldFacts(drifted.rollouts, drifted.childThreadId, drifted.commands), /yielded same-handle terminal evidence/u);
+  const unresolved = startupContinuation();
+  unresolved.rollouts[0] = unresolved.rollouts[0].filter((event) => event?.payload?.call_id !== 'initial-startup-wait');
+  assert.deepEqual([...installedYieldedCommandPairs(unresolved.rollouts, unresolved.commands.initial)], []);
+  assert.throws(() => installedChoiceYieldFacts(unresolved.rollouts, unresolved.childThreadId, unresolved.commands), /yielded same-handle terminal evidence/u);
+
+  // A poll observed before the startup resolution cannot address an undelivered
+  // handle: the transcript-order pass rejects the late startup wait.
+  const lateWait = startupContinuation();
+  const lateEvents = lateWait.rollouts[0];
+  const waitCall = lateEvents.find((event) => event?.payload?.call_id === 'initial-startup-wait' && event.payload.type === 'function_call');
+  const waitOutput = lateEvents.find((event) => event?.payload?.call_id === 'initial-startup-wait' && event.payload.type === 'function_call_output');
+  const firstPollOutput = lateEvents.find((event) => event?.payload?.call_id === 'initial-poll' && event.payload.type === 'custom_tool_call_output');
+  lateEvents.splice(lateEvents.indexOf(waitOutput), 1);
+  lateEvents.splice(lateEvents.indexOf(waitCall), 1);
+  lateEvents.splice(lateEvents.indexOf(firstPollOutput) + 1, 0, waitCall, waitOutput);
+  assert.deepEqual([...installedYieldedCommandPairs(lateWait.rollouts, lateWait.commands.initial)],
+    ['installed-choice-child:initial-exec:initial-poll', 'installed-choice-child:initial-exec:initial-terminal']);
+  assert.throws(() => installedChoiceYieldFacts(lateWait.rollouts, lateWait.childThreadId, lateWait.commands), /yielded same-handle terminal evidence/u);
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -1196,6 +1343,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
   await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
   const rescueArtifactObserver = await installRescueArtifactObserver(installedPluginRoot, installedDataRoot, temporary);
   Object.assign(env, rescueArtifactObserver.env);
+  const expectedLauncherCommand = `node "${installedPluginRoot}/skills/rescue/launcher.mjs"`;
+  const expectedCommand = `${expectedLauncherCommand} invoke-prepared rescue`;
   const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json'); const foregroundNonce = randomBytes(32).toString('hex');
   await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
   const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess, FAKE_ZCODE_PROCESS_NONCE: foregroundNonce };
@@ -1203,7 +1352,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     gatePath: foregroundGate, processPath: foregroundProcess, processNonce: foregroundNonce,
     launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for repaircanary. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result. Keep these private fixture labels out of the display name: privpromptcanary, privpathcanary, privworkcanary, privsesscanary, privjobcanary, privcapcanary. Also keep the independent command argument/option canary `--privargcanary` out of the display name.'], workspace, longEnv, 300_000),
     waitForGate: (signal) => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary', signal),
-    waitForObservation: (signal) => waitUntil(async () => installedRelayObserved(await loadCodexRollouts(codexHome).catch(() => [])), 60_000, 'installed foreground Rescue never emitted a strict fixed relay before completion', signal),
+    waitForObservation: (signal) => waitUntil(async () => installedYieldedCommandPairs(await loadCodexRollouts(codexHome).catch(() => []), expectedCommand).size > 0, 60_000, 'installed foreground Rescue never polled its original yielded handle before completion', signal),
     holdMs: 0,
   });
   if (foreground.endedBeforeGate) {
@@ -1215,8 +1364,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const expectedLauncherCommand = `node "${installedPluginRoot}/skills/rescue/launcher.mjs"`;
-  const expectedCommand = `${expectedLauncherCommand} invoke-prepared rescue`;
   const expectedPreflightCommand = `${expectedLauncherCommand} role-status rescue`;
   const expectedPreparationCommand = `${expectedLauncherCommand} prepare rescue`;
   const expectedPreparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: 'repaircanary', options: { execution: 'foreground', resume: 'fresh' } });
@@ -1240,7 +1387,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
         requireYieldedExecution: true,
-        requireProgressRelay: true,
+        requireQuietSupervision: true,
         expectedStatusCommand,
         statusPrivacyCanaries: RESCUE_DISPLAY_PRIVATE_SENTINELS,
         expectedSemanticProgress: {
@@ -1264,7 +1411,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assertInstalledRescueDisplay(evidence);
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     assert.equal(evidence.semanticProgressChecked, true);
-    assert.equal(evidence.progressRelayChecked, true);
+    assert.equal(evidence.terminalDeliveryChecked, true);
+    assert.equal(evidence.quietSupervisionChecked, true);
     assert.equal(evidence.yieldedExecution.execCommandCount, 1);
     assert.ok(evidence.yieldedExecution.pollCount >= 1);
     assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
@@ -1274,7 +1422,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
       assertInstalledRescueDisplay(error.evidence);
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
-      assert.equal(error.evidence.progressRelayChecked, true);
+      assert.equal(error.evidence.terminalDeliveryChecked, true);
+      assert.equal(error.evidence.quietSupervisionChecked, true);
       assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
       assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
       assert.equal(error.evidence.yieldedExecution.sameHandleChecked, true);
@@ -1368,7 +1517,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedPreparationPayload,
           expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
           includeExecutionFacts: true,
-          requireProgressRelay: true,
+          requireQuietSupervision: true,
           expectedStatusCommand,
           statusPrivacyCanaries: RESCUE_DISPLAY_PRIVATE_SENTINELS,
           forbiddenParentText: [
@@ -1382,12 +1531,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
       assertInstalledRescueDisplay(evidence);
       assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
       assert.equal(evidence.choice, choice);
-      assert.equal(evidence.progressRelayChecked, true);
+      assert.equal(evidence.terminalDeliveryChecked, true);
+      assert.equal(evidence.quietSupervisionChecked, true);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
         assertInstalledRescueDisplay(error.evidence);
-        assert.equal(error.evidence.progressRelayChecked, true);
+        assert.equal(error.evidence.quietSupervisionChecked, true);
         assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
@@ -2304,27 +2454,60 @@ async function loadCodexRollouts(codexHome) {
   }));
 }
 
-function installedRelayObserved(rollouts) {
-  const observedMessages = new Set();
-  const sentMessages = new Set();
-  for (const events of rollouts) {
-    for (const event of events) {
-      if (event?.payload?.type === 'custom_tool_call_output' && typeof event.payload.output === 'string') {
-        let result;
-        try { result = JSON.parse(event.payload.output); } catch { continue; }
-        if (typeof result?.output !== 'string') continue;
-        for (const line of result.output.match(/[^\n]*\n/gu) ?? []) {
-          if (!line.startsWith(RESCUE_RELAY_PREFIX)) continue;
-          try { observedMessages.add(RESCUE_RELAY_MESSAGES[parseRescueProgressRelay(line).code]); } catch { /* final qualification reports malformed evidence */ }
-        }
-      } else if (event?.payload?.type === 'function_call' && event.payload.name === 'send_message') {
-        let args;
-        try { args = JSON.parse(event.payload.arguments); } catch { continue; }
-        if (args?.target === '/root' && typeof args.message === 'string') sentMessages.add(args.message);
-      }
-    }
+/** Parse one host call from either a code-mode wrapper or a direct terminal tool call. */
+function parseInstalledHostCallEvent(event) {
+  const payload = event?.payload;
+  if (payload?.type === 'custom_tool_call') return parseInstalledToolInput(payload.input);
+  if (payload?.type === 'function_call' && ['exec_command', 'write_stdin'].includes(payload.name)) {
+    const value = JSON.parse(payload.arguments);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('tool input');
+    return { kind: payload.name, value };
   }
-  return [...observedMessages].some((message) => sentMessages.has(message));
+  // The host outer-cell continuation tool: its output resolves one pending
+  // yielded cell of an earlier poll.
+  if (payload?.type === 'function_call' && payload.name === 'wait') {
+    const value = JSON.parse(payload.arguments);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('tool input');
+    return { kind: 'wait', value };
+  }
+  throw new Error('tool input');
+}
+
+/** Decode every bounded host call (either family) with its linked host result. */
+function installedHostCalls(events) {
+  const outputs = new Map(events.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type))
+    .map((event) => [event.payload.call_id, event]));
+  const decoded = [];
+  for (const event of events) {
+    if (!['custom_tool_call', 'function_call'].includes(event?.payload?.type)) continue;
+    try {
+      const call = parseInstalledHostCallEvent(event);
+      const rawOutput = outputs.get(event.payload.call_id)?.payload.output;
+      let output; let pendingCellId;
+      if (rawOutput !== undefined) {
+        try { output = parseInstalledHostOutput(rawOutput); }
+        catch {
+          // A poll whose outer cell yielded has no completed host result yet:
+          // the pending cell stays observed and its eventual result arrives
+          // through the linked wait continuation output.
+          pendingCellId = installedPendingCellId(rawOutput);
+          if (pendingCellId === undefined) throw new Error('tool output');
+        }
+      }
+      decoded.push({ event, call, output, pendingCellId });
+    } catch { /* ignore unrelated or partially persisted calls */ }
+  }
+  return decoded;
+}
+
+/** Recognize the host pending-yield output shape and extract its runtime cell id. */
+function installedPendingCellId(output) {
+  if (!Array.isArray(output) || output.length < 1 || output.length > 2 || output[0]?.type !== 'input_text'
+    || typeof output[0].text !== 'string' || !output[0].text.startsWith('Script running with cell ID ')) return undefined;
+  const cellId = output[0].text.slice('Script running with cell ID '.length).split('\n')[0]?.trim();
+  if (!cellId) return undefined;
+  if (output.length === 2 && (output[1]?.type !== 'input_text' || typeof output[1].text !== 'string')) return undefined;
+  return cellId;
 }
 
 function installedYieldedCommandPairs(rollouts, command) {
@@ -2332,24 +2515,25 @@ function installedYieldedCommandPairs(rollouts, command) {
   for (const events of rollouts) {
     const threadId = events?.[0]?.payload?.id;
     if (typeof threadId !== 'string') continue;
-    const outputs = new Map(events.filter((event) => event?.payload?.type === 'custom_tool_call_output')
-      .map((event) => [event.payload.call_id, event.payload.output]));
-    for (let index = 0; index < events.length; index += 1) {
-      const event = events[index];
-      if (event?.payload?.type !== 'custom_tool_call') continue;
-      try {
-        const call = parseInstalledToolInput(event.payload.input);
-        if (call.kind !== 'exec_command' || call.value.cmd !== command) continue;
-        const result = parseInstalledHostOutput(outputs.get(event.payload.call_id));
-        if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) continue;
-        for (const later of events.slice(index + 1)) {
-          if (later?.payload?.type !== 'custom_tool_call') continue;
-          const poll = parseInstalledToolInput(later.payload.input);
-          if (poll.kind === 'write_stdin' && poll.value.session_id === result.session_id && poll.value.chars === '') {
-            pairs.add(`${threadId}:${event.payload.call_id}:${later.payload.call_id}`);
-          }
+    const decoded = installedHostCalls(events);
+    for (let index = 0; index < decoded.length; index += 1) {
+      const { event, call, output, pendingCellId } = decoded[index];
+      if (call.kind !== 'exec_command' || call.value.cmd !== command) continue;
+      let handleId = Number.isSafeInteger(output?.session_id) && output.session_id > 0 ? output.session_id : undefined;
+      if (handleId === undefined && pendingCellId !== undefined) {
+        // A yielded startup cell prints no handle: its linked wait resolution
+        // delivers the original running handle, and the later same-handle
+        // polls still pair with the startup exec call.
+        handleId = decoded.slice(index + 1).find((later) => later.call.kind === 'wait'
+          && later.call.value.cell_id === pendingCellId
+          && Number.isSafeInteger(later.output?.session_id) && later.output.session_id > 0)?.output.session_id;
+      }
+      if (handleId === undefined) continue;
+      for (const later of decoded.slice(index + 1)) {
+        if (later.call.kind === 'write_stdin' && later.call.value.session_id === handleId && later.call.value.chars === '') {
+          pairs.add(`${threadId}:${event.payload.call_id}:${later.event.payload.call_id}`);
         }
-      } catch { /* ignore unrelated or partially persisted calls */ }
+      }
     }
   }
   return pairs;
@@ -2913,12 +3097,10 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${publicOutput}`;
   const child = [
     { type: 'session_meta', payload: { session_id: parentThreadId, id: childThreadId, parent_thread_id: parentThreadId, cli_version: '0.147.0', thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: name === 'named' ? 'zcode-rescue' : null } } } } },
-    installedToolCall(`${name}-exec`, installedExecInput(command)),
-    installedToolOutput(`${name}-exec`, { output: `${semantic.start}\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handle }),
-    installedCapturedRelayCall(`${name}-relay-1`, 'started'), installedCapturedFunctionOutput(`${name}-relay-1`),
+    installedToolCall(`${name}-exec`, installedExecInput(command, { yield_time_ms: 30000 })),
+    installedToolOutput(`${name}-exec`, { output: `${semantic.start}\n`, session_id: handle }),
     installedToolCall(`${name}-poll-1`, installedPollInput(handle)),
-    installedToolOutput(`${name}-poll-1`, { output: `${installedCapturedRelayLine(2, 'investigating', 'tool-active')}\n`, session_id: handle }),
-    installedCapturedRelayCall(`${name}-relay-2`, 'tool-active'), installedCapturedFunctionOutput(`${name}-relay-2`),
+    installedToolOutput(`${name}-poll-1`, { output: 'still working\n', session_id: handle }),
     installedToolCall(`${name}-status`, installedExecInput(statusCommand)),
     installedToolOutput(`${name}-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
     installedToolCall(`${name}-poll-2`, installedPollInput(handle)),
@@ -2935,20 +3117,14 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
     installedToolOutput(`${name}-prepare-write`, { output: installedPreparedAck({ version: 1, action: 'spawn', taskName }), exit_code: 0 }),
     { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
     { type: 'event_msg', payload: { type: 'item_completed', thread_id: parentThreadId, turn_id: `${name}-turn`, item: { type: 'SubAgentActivity', id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } } },
-    installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
-    ...installedCapturedWait(`${name}-wait-1`, true),
-    installedCapturedParentRelay(agentPath, 'tool-active', name === 'named' ? 'b' : 'd', name === 'named' ? 'a' : 'c'),
-    ...installedCapturedWait(`${name}-wait-2`, false),
+    ...installedCapturedWait(`${name}-wait`, false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
   ];
   let offset = 1; const stamp = (event) => { event.timestamp = `2026-08-17T00:00:${String(offset++).padStart(2, '0')}.000Z`; };
-  for (const event of child.slice(1, 5)) stamp(event);
-  for (const event of parent.slice(5, 8)) stamp(event);
-  for (const event of child.slice(5, 9)) stamp(event);
-  for (const event of parent.slice(8, 11)) stamp(event);
-  for (const event of child.slice(9)) stamp(event);
-  for (const event of parent.slice(11)) stamp(event);
+  for (const event of parent.slice(1, 9)) stamp(event);
+  for (const event of child.slice(1)) stamp(event);
+  for (const event of parent.slice(9)) stamp(event);
   const fixture = { execFrames: [
     { type: 'thread.started', thread_id: parentThreadId }, { type: 'turn.started' },
     { type: 'item.completed', item: { id: `${name}-final`, type: 'agent_message', text: publicOutput } },
@@ -2964,7 +3140,7 @@ function qualifyInstalledCapturedForeground(route) {
     expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
     expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', `node "${route.installedRoot}/skills/rescue/launcher.mjs"`),
     expectedPublicOutput: route.publicOutput, expectedSemanticProgress: route.semantic,
-    requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
+    requireYieldedExecution: true, requireQuietSupervision: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: [route.semantic.start, route.semantic.terminal, 'raw output must stay private', 'reasoning must stay private'],
   });
@@ -3023,9 +3199,8 @@ function installedCapturedChoiceRoute(route, choice) {
   const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: `captured-${route.name}-session` }, choices: ['--resume', '--fresh'] })}\n`;
   const handles = route.name === 'named' ? [91, 92] : [93, 94];
   const initial = [
-    installedToolCall(`${route.name}-initial-exec`, installedExecInput(route.command)),
-    installedToolOutput(`${route.name}-initial-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handles[0] }),
-    installedCapturedRelayCall(`${route.name}-initial-relay`, 'started'), installedCapturedFunctionOutput(`${route.name}-initial-relay`),
+    installedToolCall(`${route.name}-initial-exec`, installedExecInput(route.command, { yield_time_ms: 30000 })),
+    installedToolOutput(`${route.name}-initial-exec`, { output: 'partial\n', session_id: handles[0] }),
     installedToolCall(`${route.name}-initial-status`, installedExecInput(route.statusCommand)),
     installedToolOutput(`${route.name}-initial-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
     installedToolCall(`${route.name}-initial-poll`, installedPollInput(handles[0])), installedToolOutput(`${route.name}-initial-poll`, { output: 'heartbeat\n', session_id: handles[0] }),
@@ -3033,9 +3208,8 @@ function installedCapturedChoiceRoute(route, choice) {
     { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
   ];
   const continuation = [
-    installedToolCall(`${route.name}-continuation-exec`, installedExecInput(choiceCommand)),
-    installedToolOutput(`${route.name}-continuation-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'running', 'model-active')}\n`, session_id: handles[1] }),
-    installedCapturedRelayCall(`${route.name}-continuation-relay`, 'model-active'), installedCapturedFunctionOutput(`${route.name}-continuation-relay`),
+    installedToolCall(`${route.name}-continuation-exec`, installedExecInput(choiceCommand, { yield_time_ms: 30000 })),
+    installedToolOutput(`${route.name}-continuation-exec`, { output: 'partial\n', session_id: handles[1] }),
     installedToolCall(`${route.name}-continuation-poll`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-poll`, { output: 'heartbeat\n', session_id: handles[1] }),
     installedToolCall(`${route.name}-continuation-terminal`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-terminal`, { output: `${route.publicOutput}\n`, exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
@@ -3051,13 +3225,11 @@ function installedCapturedChoiceRoute(route, choice) {
     installedToolCall(`${route.name}-choice-prepare-write`, installedPreparationInput(route.name === 'named' ? 191 : 192, `${route.preparationPayload}\n`)),
     installedToolOutput(`${route.name}-choice-prepare-write`, { output: installedPreparedAck({ version: 1, action: 'spawn', taskName: JSON.parse(spawn.payload.arguments).task_name }), exit_code: 0 }),
     spawn, start,
-    installedCapturedParentRelay(agentPath, 'started', route.name === 'named' ? 'e' : '1', route.name === 'named' ? 'e' : '1'),
     ...installedCapturedWait(`${route.name}-initial-wait`, false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
     { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: agentPath, message: followupMessage }) } },
     installedCapturedFunctionOutput(`${route.name}-followup`),
-    installedCapturedParentRelay(agentPath, 'model-active', route.name === 'named' ? 'f' : '2', route.name === 'named' ? 'f' : '2'),
     ...installedCapturedWait(`${route.name}-continuation-wait`, false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: secondEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
@@ -3074,11 +3246,6 @@ function installedCapturedChoiceRoute(route, choice) {
     continuation[0], continuation.at(-2), continuation.at(-1), parentReturns[1], parentFinals[1],
   ];
   timeline.forEach((event, index) => { event.timestamp = `2026-08-17T01:00:${String(index + 1).padStart(2, '0')}.000Z`; });
-  const parentRelays = parent.filter((event) => event?.payload?.content?.some((item) => item?.type === 'encrypted_content'));
-  initial[2].timestamp = '2026-08-17T01:00:01.100Z';
-  parentRelays[0].timestamp = '2026-08-17T01:00:01.200Z';
-  continuation[2].timestamp = '2026-08-17T01:00:08.100Z';
-  parentRelays[1].timestamp = '2026-08-17T01:00:08.200Z';
   return { ...route, fixture: { rollouts: [parent, child] }, parentThreadId, childThreadId, choice, choiceCommand, followupMessage,
     commands: { initial: route.command, continuation: choiceCommand, status: route.statusCommand } };
 }
@@ -3091,7 +3258,7 @@ function qualifyInstalledCapturedChoice(route) {
     expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', `node "${route.installedRoot}/skills/rescue/launcher.mjs"`),
     expectedPreflightCommand: route.preflightCommand, expectedFollowupMessage: route.followupMessage,
     expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
-    expectedPublicOutput: route.publicOutput, requireProgressRelay: true, requireStatusSidecar: true,
+    expectedPublicOutput: route.publicOutput, requireQuietSupervision: true, requireStatusSidecar: true,
     expectedStatusCommand: route.statusCommand, includeExecutionFacts: true,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: ['partial', 'heartbeat', 'raw output must stay private', 'reasoning must stay private'],
@@ -3112,13 +3279,9 @@ function installedCapturedRunningHandles(fixture) {
   return active;
 }
 
-function installedCapturedRelayLine(sequence, phase, code) { return `[zcode-relay] ${JSON.stringify({ version: 1, sequence, phase, code, observedAt: `2026-08-17T00:00:0${sequence}.000Z` })}`; }
-function installedCapturedRelayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
-function installedCapturedRelayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: installedCapturedRelayMessage(code) }) } }; }
 function installedCapturedFunctionOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
-function installedCapturedParentRelay(author, code, idMarker, turnMarker) { return { type: 'response_item', payload: { type: 'agent_message', id: `amsg_${idMarker.repeat(36)}`, author, recipient: '/root', content: [{ type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` }, { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` }], internal_chat_message_metadata_passthrough: { turn_id: `${turnMarker.repeat(8)}-${turnMarker.repeat(4)}-4${turnMarker.repeat(3)}-8${turnMarker.repeat(3)}-${turnMarker.repeat(12)}` } } }; }
 function installedCapturedWait(callId, timedOut) { return [
-  { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } },
+  { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 600000 }) } },
   { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ message: timedOut ? 'Wait timed out.' : 'Wait completed.', timed_out: timedOut }) } },
 ]; }
 function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
@@ -3136,31 +3299,79 @@ function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
 }
 
 function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expectedExitCode) {
-  const calls = events.filter((event) => event?.payload?.type === 'custom_tool_call');
-  const outputs = events.filter((event) => event?.payload?.type === 'custom_tool_call_output');
-  const decoded = calls.map((event) => ({ event, call: parseInstalledToolInput(event.payload.input) }));
+  const outputs = events.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
+  const linkedOutput = (callId) => {
+    const linked = outputs.filter((output) => output.payload.call_id === callId);
+    if (linked.length !== 1) throw new Error('link');
+    return linked[0];
+  };
+  const decoded = installedHostCalls(events);
+  const position = new Map(decoded.map((entry, index) => [entry.event, index]));
   const status = decoded.filter(({ call }) => call.kind === 'exec_command' && call.value.cmd === statusCommand);
   if (status.length > 1) throw new Error('status');
-  const foreground = decoded.filter(({ event }) => !status.some((entry) => entry.event === event));
-  if (foreground.length < 2 || foreground[0].call.kind !== 'exec_command' || foreground[0].call.value.cmd !== expectedCommand
-    || foreground.slice(1).some(({ call }) => call.kind !== 'write_stdin')) throw new Error('calls');
-  let handle; let terminalCount = 0; let terminalExitCode; let pollCount = 0;
-  for (const { event, call } of foreground) {
-    const linked = outputs.filter((output) => output.payload.call_id === event.payload.call_id);
-    if (linked.length !== 1) throw new Error('link');
-    const result = parseInstalledHostOutput(linked[0].payload.output);
-    if (call.kind === 'write_stdin') {
+  // Mirror of the qualifier's pending-cell stream: one transcript-order pass
+  // across the exec call, its polls, and the wait continuations. A yielded poll
+  // keeps its observed place and must be resolved by its linked wait
+  // continuation, whose carried result — the same running handle, or the
+  // legitimate terminal exit — is the poll's own result. Nothing is observed
+  // after the terminal.
+  const pendingCells = [];
+  let handle; let terminalCount = 0; let terminalExitCode; let pollCount = 0; let terminalAt; let execObserved = false;
+  const observation = decoded.filter(({ event }) => !status.some((entry) => entry.event === event));
+  if (observation.length < 2 || observation[0].call.kind !== 'exec_command' || observation[0].call.value.cmd !== expectedCommand) throw new Error('calls');
+  for (const { event, call, output, pendingCellId } of observation) {
+    const at = position.get(event);
+    if (terminalAt !== undefined) throw new Error('terminal');
+    if (call.kind === 'wait') {
+      const cell = typeof call.value.cell_id === 'string' && call.value.cell_id !== ''
+        ? pendingCells.find((candidate) => candidate.cellId === call.value.cell_id && !candidate.resolved && candidate.observedAt < at)
+        : undefined;
+      if (!cell) throw new Error('continuation');
+      const linked = linkedOutput(event.payload.call_id);
+      let result; let stillPending;
+      try { result = parseInstalledHostOutput(linked.payload.output); }
+      catch { stillPending = installedPendingCellId(linked.payload.output); }
+      if (result === undefined && stillPending === undefined) throw new Error('continuation');
+      if (stillPending !== undefined) {
+        if (stillPending !== call.value.cell_id) throw new Error('continuation');
+        continue;
+      }
+      if (Object.hasOwn(result, 'session_id') === Object.hasOwn(result, 'exit_code')) throw new Error('continuation');
+    if (Object.hasOwn(result, 'session_id')) {
+      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0
+        || handle !== undefined && result.session_id !== handle) throw new Error('continuation');
+      // A yielded startup cell has no printed handle yet: the resolution
+      // delivers the original running handle for all subsequent polls.
+      handle ??= result.session_id;
+    } else {
+      terminalCount += 1; terminalExitCode = result.exit_code; terminalAt = at;
+      if (result.exit_code !== expectedExitCode) throw new Error('terminal');
+    }
+      cell.resolved = true;
+      continue;
+    }
+    if (call.kind === 'exec_command') {
+      if (execObserved) throw new Error('calls');
+      execObserved = true;
+    } else {
       pollCount += 1;
       if (handle === undefined || call.value.session_id !== handle || call.value.chars !== '') throw new Error('handle');
     }
-    if (Object.hasOwn(result, 'session_id')) {
-      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0 || handle !== undefined && result.session_id !== handle) throw new Error('handle');
-      handle ??= result.session_id;
-    } else if (Object.hasOwn(result, 'exit_code')) {
-      terminalCount += 1; terminalExitCode = result.exit_code;
-      if (event !== foreground.at(-1).event) throw new Error('terminal');
+    if (pendingCellId !== undefined) {
+      pendingCells.push({ cellId: pendingCellId, resolved: false, observedAt: at });
+      continue;
+    }
+    const linked = outputs.filter((candidate) => candidate.payload.call_id === event.payload.call_id);
+    if (linked.length !== 1) throw new Error('link');
+    if (output === undefined) throw new Error('result');
+    if (Object.hasOwn(output, 'session_id')) {
+      if (!Number.isSafeInteger(output.session_id) || output.session_id <= 0 || handle !== undefined && output.session_id !== handle) throw new Error('handle');
+      handle ??= output.session_id;
+    } else if (Object.hasOwn(output, 'exit_code')) {
+      terminalCount += 1; terminalExitCode = output.exit_code; terminalAt = at;
     } else throw new Error('result');
   }
+  if (pendingCells.some((cell) => !cell.resolved)) throw new Error('unresolved');
   if (handle === undefined || pollCount < 1 || terminalCount !== 1 || terminalExitCode !== expectedExitCode) throw new Error('terminal');
   return { execCommandCount: 1, pollCount, sameHandleChecked: true, terminalExitCode };
 }
@@ -3168,7 +3379,7 @@ function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expe
 function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
 function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
 function installedExecInput(cmd, fields = {}) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace', ...fields })}); text(JSON.stringify(r))\n`; }
-function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 30000 } : {}) })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 300000 } : {}) })}); text(JSON.stringify(r))\n`; }
 function installedPreparationInput(sessionId, chars) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n`; }
 function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
 function parseInstalledToolInput(source) {
