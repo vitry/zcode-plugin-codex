@@ -80,7 +80,7 @@ ZCode 支持时，child 会订阅 online conversation progress，并用结构化
 
 若已接受的 online frame 始终不可用，Rescue 可以按不高于心跳的频率回退读取已经通过 schema 校验的 session snapshot。该回退严格限定在已持久确认的当前 turn，只输出 allowlist 内的工具状态，不输出命令或 query。它绝不读取原始 ZCode 日志，也不输出 assistant 正文或推理、任意工具输入/输出、错误或 metadata、原始路径、文件或 patch 内容、标识符、环境值或授权材料。进度观测不具权威性：失败只会一次性降级为 lifecycle-only 更新，不改变 job 的成功结果。companion 完成后的独立、带 revision guard 的 session read 仍是权威终态结果。
 
-被选中的 Rescue 子 agent 会从结构化 ZCode 事件显示 cc-style 语义进度。root 收到的是固定的粗粒度存活更新，而不是原始子 agent 输出。这些更新只用于保持对原子 agent 的等待，本身只具观察性：进度和 status 永远不能证明完成；只有原始前台进程的终态退出和最终 stdout 才能证明完成。原始 PTY 数据、工具输出、文件内容、reasoning、凭据和 capabilities 永远不会 relay 到 root。
+被选中的 Rescue 子 agent 会从结构化 ZCode 事件显示 cc-style 语义进度。前台 Rescue 把详细进度记录在 child terminal 和持久 job 状态中。child 返回原始命令的终态公开输出，原生 child 完成机制会通知 Root。常规进度和心跳消息不会转发给 Root。显式 status 依然可用；前台执行会保持附着，直到终态完成或被中断。只有原始前台进程的终态退出和最终 stdout 才能证明完成。插件的长等待仍受 host 限制与更高优先级指令约束：当 host 早于请求时长返回等待时，Root 与 child 会在同一 child 和原始 handle 上继续等待，而不是轮询。原始 PTY 数据、工具输出、文件内容、reasoning、凭据和 capabilities 永远不会 relay 到 root。
 
 仅在这个被选中的 Rescue 子 agent 内，精确去除首尾空白后的 `zcode status`、`$zcode:status` 和 `/zcode:status` 才会检查只绑定到该子 agent 的 job。这个 bound status sidecar 不接受 job ID 或选项，不能选择其他 job，也绝不会启动或替换原始前台执行。上表中的公开 `$zcode:status` 仍用于普通 durable job 的 owner-scoped 控制。
 
@@ -127,7 +127,7 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 若 ZCode 可能已接受 turn 后前台或后台响应丢失，恢复会通过同一个 durable job 的 `$zcode:status`、`$zcode:result`、owned-job reconciliation、持久 session read 和 result artifact 完成。恢复保持一次 send：绝不自动重发 prompt、调用 `session/create`、回滚已接受 turn，或把响应丢失解释为 fresh。
 
-前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。现有有界 pipeline 成功派发的每个已接受安全语义进度事件，也会追加到私有、持久、便于人阅读的 `workspaces/<workspace-hash>/jobs/<job-id>.log`，它与 `<job-id>.json` 相邻；job 的 `progressPreview` 仍只保留最近 4 条。精确 owner 的详细 `$zcode:status <job-id>` 会显示进度预览、阶段和最后活动时间，以及 `Log: <absolute-private-path>`。例如：
+前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。现有有界 pipeline 成功派发的每个已接受安全语义进度事件，也会追加到私有、持久、便于人阅读的 `workspaces/<workspace-hash>/jobs/<job-id>.log`，它与 `<job-id>.json` 相邻；job 的 `progressPreview` 仍只保留最近 4 条。精确 owner 的详细 `$zcode:status <job-id>` 会显示进度预览、阶段和最后活动时间，以及 `Log: <absolute-private-path>`。所有这些详细 stderr、心跳、日志和预览输出都服务于 child terminal、用户和显式 status 查看；它们记录在持久 job 状态中，不会作为常规进度消息转发给 Root。例如：
 
 ```text
 $zcode:rescue --wait 修复失败的测试

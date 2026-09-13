@@ -64,7 +64,10 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(english, /exact persisted ZCode session/i);
   assert.match(english, /does not claim to (?:stop|kill).{0,100}detached grandchildren/i);
   assert.match(english, /Rescue child.{0,160}cc-style semantic progress/is);
-  assert.match(english, /root.{0,160}fixed coarse liveness updates/is);
+  assert.match(english, /native child completion notifies Root/);
+  assert.match(english, /Routine progress and heartbeat messages are not forwarded to Root\./);
+  assert.match(english, /long waits remain subject to host bounds/);
+  assert.doesNotMatch(english, /fixed coarse liveness updates/);
   assert.match(english, /terminal exit.{0,120}final stdout/is);
   assert.match(english, /zcode status.{0,120}\$zcode:status.{0,120}\/zcode:status/is);
   assert.match(english, /no job ID or option/is);
@@ -81,7 +84,10 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(chinese, /精确持久化的 ZCode session/);
   assert.match(chinese, /不(?:声称|保证)(?:停止|终止|杀死).{0,100}detached grandchildren/i);
   assert.match(chinese, /Rescue 子 agent.{0,160}cc-style 语义进度/is);
-  assert.match(chinese, /root.{0,160}固定的粗粒度存活更新/is);
+  assert.match(chinese, /原生 child 完成机制会通知 Root/);
+  assert.match(chinese, /常规进度和心跳消息不会转发给 Root/);
+  assert.match(chinese, /长等待仍受 host 限制/);
+  assert.doesNotMatch(chinese, /固定的粗粒度存活更新/);
   assert.match(chinese, /终态退出.{0,120}最终 stdout/is);
   assert.match(chinese, /zcode status.{0,120}\$zcode:status.{0,120}\/zcode:status/is);
   assert.match(chinese, /不接受 job ID 或选项/is);
