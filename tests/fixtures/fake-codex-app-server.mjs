@@ -76,6 +76,7 @@ async function handleLine(line) {
   if (request.method === 'thread/read') {
     if (process.env.FAKE_CODEX_DEEP_NOTIFICATION_DEPTH) writeDeepFrame('{"method":"thread/status/changed","params":', Number(process.env.FAKE_CODEX_DEEP_NOTIFICATION_DEPTH), '}');
     if (process.env.FAKE_CODEX_DEEP_RESPONSE_DEPTH) { writeDeepFrame(`{"id":${request.id},"result":{"thread":`, Number(process.env.FAKE_CODEX_DEEP_RESPONSE_DEPTH), '}}'); return; }
+    if (process.env.FAKE_CODEX_OMIT_THREAD === '1') { write({ id: request.id, result: {} }); return; }
     let thread;
     if (process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES) {
       const count = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_COUNT ?? 1); const bytes = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES);

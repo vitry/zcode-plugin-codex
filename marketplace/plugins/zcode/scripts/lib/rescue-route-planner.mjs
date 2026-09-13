@@ -13,7 +13,7 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const BASE_TASK_NAME = 'zcode_rescue_task';
 const BASE_AGENT_PATH = `/root/${BASE_TASK_NAME}`;
-const MAX_CHILDREN = 1024;
+export const MAX_RESCUE_CHILDREN = 1024;
 const MAX_ORDINAL = 9999;
 const MAX_DIRECTIVE_BYTES = 2048;
 const TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
@@ -55,8 +55,8 @@ export async function planRescueActivation(input) {
     if (/** @type {any} */ (error)?.code === 'CODEX_CHILD_METADATA_INVALID') throw plannerError('CODEX_CHILD_METADATA_INVALID');
     throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   }
-  if (!Array.isArray(children) || children.length > MAX_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
-  const hostChildren = validateChildren(children, input.caller.sessionId);
+  if (!Array.isArray(children) || children.length > MAX_RESCUE_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
+  const hostChildren = validateRescueChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
   let candidateChildren = hostChildren;
@@ -71,8 +71,7 @@ export async function planRescueActivation(input) {
   }
   const provenCandidates = []; const persistedCandidates = []; let ineligibleCandidate = false;
   for (const host of candidateChildren) {
-    const hostClass = classifyHost(host);
-    if (hostClass === 'occupancy') continue;
+    if (classifyRescueChildHost(host) === 'occupancy') continue;
     let resolved;
     try { resolved = await resolveStoppedExecutor(input.dataRoot, host.cwd, host.id); }
     catch (error) {
@@ -219,8 +218,16 @@ export function validateRescueRouteDirective(value) {
   return directive;
 }
 
-/** @param {any} input */
-function validatePlannerInput(input) {
+/**
+ * The shared caller-and-envelope validity core for the Rescue selection seams
+ * (the read-only planner and the recovery coordinator): one exact caller
+ * identity, one private envelope whose version, continuation target, and
+ * resume coupling agree. The planner adds its own read-only seam checks on
+ * top; the coordinator adds its recovery seams.
+ * @param {any} input
+ * @returns {boolean}
+ */
+export function validRescueSelectionRequest(input) {
   const caller = input?.caller;
   const continuationTarget = input?.envelope?.continuationTarget;
   const hasContinuationTarget = plain(input?.envelope)
@@ -232,13 +239,18 @@ function validatePlannerInput(input) {
       : input?.envelope?.version === 3
         ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
         : false;
-  if (!plain(input) || typeof input.dataRoot !== 'string' || input.dataRoot.length === 0 || !plain(caller)
-    || !safeId(caller.sessionId) || !safeId(caller.turnId) || typeof caller.workspace !== 'string' || caller.workspace.length === 0
-    || caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0)
-    || !PERMISSION_MODES.includes(caller.permissionMode) || !plain(input.envelope) || !plain(input.envelope.options)
-    || input.envelope.options.resume !== undefined && !['fresh', 'resume'].includes(input.envelope.options.resume)
-    || !validTarget
-    || hasContinuationTarget && continuationTarget !== null && input.envelope.options.resume !== 'resume'
+  return plain(input) && typeof input.dataRoot === 'string' && input.dataRoot.length > 0 && plain(caller)
+    && safeId(caller.sessionId) && safeId(caller.turnId) && typeof caller.workspace === 'string' && caller.workspace.length > 0
+    && !(caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0))
+    && PERMISSION_MODES.includes(caller.permissionMode) && plain(input.envelope) && plain(input.envelope.options)
+    && !(input.envelope.options.resume !== undefined && !['fresh', 'resume'].includes(input.envelope.options.resume))
+    && validTarget
+    && !(hasContinuationTarget && continuationTarget !== null && input.envelope.options.resume !== 'resume');
+}
+
+/** @param {any} input */
+function validatePlannerInput(input) {
+  if (!validRescueSelectionRequest(input)
     || input.listChildren !== undefined && typeof input.listChildren !== 'function'
     || input.resolveStoppedExecutor !== undefined && typeof input.resolveStoppedExecutor !== 'function'
     || input.resolveBinding !== undefined && typeof input.resolveBinding !== 'function'
@@ -260,8 +272,13 @@ function validPathContinuationTarget(value) {
   return sameKeys(target, ['agentPath']) && validAgentPath(target.agentPath);
 }
 
-/** @param {any[]} children @param {string} parentId */
-function validateChildren(children, parentId) {
+/**
+ * Sanitize one complete Codex child discovery result against the exact parent
+ * and reject duplicate child identities. Shared by the read-only planner and
+ * the recovery coordinator so child-candidate validation has one source.
+ * @param {any[]} children @param {string} parentId
+ */
+export function validateRescueChildren(children, parentId) {
   const ids = new Set(); const paths = new Set(); const result = [];
   for (const value of children) {
     let child;
@@ -273,8 +290,16 @@ function validateChildren(children, parentId) {
   return result;
 }
 
-/** @param {any} host */
-function classifyHost(host) {
+/**
+ * Classify one discovered child for Rescue eligibility: 'occupancy' children
+ * (unmanaged agent paths or unapproved Roles) are never Rescue candidates;
+ * 'named' is the installed zcode-rescue Role and 'generic' the qualified
+ * compatibility route. Shared by the read-only planner and the recovery
+ * coordinator so child eligibility has one source.
+ * @param {any} host
+ * @returns {('occupancy'|'named'|'generic')}
+ */
+export function classifyRescueChildHost(host) {
   if (!directManagedPath(host.agentPath)) return 'occupancy';
   if (host.agentRole === 'zcode-rescue') return 'named';
   if (host.agentRole === null) return 'generic';

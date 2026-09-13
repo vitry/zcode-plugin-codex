@@ -1094,6 +1094,31 @@ test('a non-Rescue agent_type SubagentStop is a quiet no-op', async (t) => {
   assert.equal((await store.readJob(canonicalWorkspace, job.id)).status, 'running', 'the live foreground Rescue is untouched');
 });
 
+test('a delayed old Rescue child stop never deactivates a successor generation child in real hooks', async (t) => {
+  const ctx = await fixture(t);
+  const { canonicalWorkspace } = await recordSessionStartEpoch(ctx, 'successor-gen-owner');
+  await beginRescueTurn(ctx, 'successor-gen-owner', canonicalWorkspace);
+  // The old generation child starts; its stop event stays pending.
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'successor-gen-owner', turn_id: 'turn-child', cwd: canonicalWorkspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'gen-child', agent_type: 'zcode-rescue' });
+  // A NEW SubagentStart generation: a new parent caller turn, then the SAME
+  // agent id starts a new child turn and republishes the shared executor file.
+  await hook(ctx, 'user-prompt-hook.mjs', { session_id: 'successor-gen-owner', turn_id: 'turn-2', cwd: canonicalWorkspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'successor generation turn' });
+  await createIdentityStore({ dataRoot: ctx.dataRoot }).resolveActiveTurn({ sessionId: 'successor-gen-owner', workspace: canonicalWorkspace, workspaceBinding: 'claim' });
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'successor-gen-owner', turn_id: 'turn-2-child', cwd: canonicalWorkspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'gen-child', agent_type: 'zcode-rescue' });
+  const hookStateDirectory = join((await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: canonicalWorkspace })).directory, 'hook-state');
+  const executorPath = join(hookStateDirectory, `executor-${createHash('sha256').update(JSON.stringify(['executor', 'gen-child'])).digest('hex')}.json`);
+  const successorExecutor = JSON.parse(await readFile(executorPath, 'utf8'));
+  assert.equal(successorExecutor.childTurnId, 'turn-2-child', 'the successor generation owns the shared executor record');
+  // The OLD tuple's stop fires late.
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'successor-gen-owner', turn_id: 'turn-child', cwd: canonicalWorkspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'gen-child', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null });
+  assert.deepEqual(JSON.parse(await readFile(executorPath, 'utf8')), successorExecutor, 'the old tuple stop never deactivates the successor executor');
+  // The successor's own stop still settles its own record.
+  await hook(ctx, 'subagent-hook.mjs', { session_id: 'successor-gen-owner', turn_id: 'turn-2-child', cwd: canonicalWorkspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'gen-child', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null });
+  const settled = JSON.parse(await readFile(executorPath, 'utf8'));
+  assert.equal(settled.active, false, 'the successor generation stop deactivates its own executor');
+  assert.equal(settled.childTurnId, 'turn-2-child');
+});
+
 
 // --- Task 7: reconciler-owned local runner termination at real hooks -------
 

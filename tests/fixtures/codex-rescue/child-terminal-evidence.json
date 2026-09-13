@@ -1,0 +1,107 @@
+{
+  "codexVersion": "0.154.0",
+  "sourceSchema": {
+    "method": "thread/read",
+    "request": { "threadId": "<identities.childThreadId>", "includeTurns": true },
+    "userAgent": "zcode-plugin-codex/0.154.0 (Mac OS 26.5.2; arm64) dumb (zcode-plugin-codex; 0.1.0)",
+    "capturedAt": "2026-09-12",
+    "origin": "Read-only app-server read of the Rescue child thread from the 2026-09-12 forwarder usage-limit incident (log/2026-09-12-t2-resume-executor-state-mismatch.txt, log/2026-09-12T093512+0800-t2-forwarder-usage-limit.txt). All identities are synthetic; prompts, message contents, and full host error texts are excluded."
+  },
+  "correlation": {
+    "hookChildTurnId": "SubagentStart hook input turn_id, persisted as subagent-executor.childTurnId",
+    "hostTurnId": "thread/read result.thread.turns[].id",
+    "hookAgentId": "subagent-executor.agentId equals result.thread.id",
+    "hookParentSessionId": "subagent-executor.parentSessionId equals result.thread.parentThreadId and result.thread.source.subAgent.thread_spawn.parent_thread_id",
+    "hookParentTurnId": "subagent-executor.parentTurnId equals the child turn_context root_turn_id",
+    "qualifyingTurnStatuses": ["completed", "failed", "interrupted"],
+    "verified": true,
+    "notes": [
+      "The incident child thread returned exactly one turn whose id equals the persisted executor childTurnId; the turn reports status failed with codexErrorInfo usageLimitExceeded while the thread-level status is only notLoaded, so thread status alone never proves terminality.",
+      "The completed and interrupted turn statuses were verified from other real local threads through the same app-server 0.154.0 schema; interrupted turns may carry null startedAt, null completedAt, and no items.",
+      "Turn correlation requires exact id equality with the persisted childTurnId on the latest returned turn; timestamps never substitute for turn identity.",
+      "The Host returned turns oldest-first in real multi-turn records, but ordering is not contractual: a single turn is accepted outright, and multiple turns must prove oldest-first order through monotonic startedAt and completedAt, so ambiguous orderings such as newest-first payloads fail closed as evidence unavailable.",
+      "Boundary consequence of that chronology proof: because every turn before the last must carry integer startedAt and completedAt, a multi-turn history whose latest turn is the real interrupted shape (null timestamps) can never prove chronology; interrupted-turn recovery is therefore limited to single-turn children or timestamped latest turns, a deliberate fail-closed boundary permitted by the evidence rules.",
+      "Structural fail-closed checks are the intended Host/schema version gate for turns evidence: any unsupported thread or turn shape yields evidence unavailable, and no separate version floor is asserted beyond the plugin's existing thread/list support checks."
+    ]
+  },
+  "identities": {
+    "parentThreadId": "00000000-0000-7000-8000-000000000001",
+    "childThreadId": "00000000-0000-7000-8000-000000000002",
+    "expectedTurnId": "00000000-0000-7000-8000-000000000003"
+  },
+  "thread": {
+    "id": "00000000-0000-7000-8000-000000000002",
+    "environments": null,
+    "extra": null,
+    "sessionId": "00000000-0000-7000-8000-000000000004",
+    "forkedFromId": null,
+    "parentThreadId": "00000000-0000-7000-8000-000000000001",
+    "preview": "",
+    "ephemeral": false,
+    "section": null,
+    "sectionEnteredAt": null,
+    "projectId": null,
+    "historyMode": "paginated",
+    "modelProvider": "openai",
+    "model": "synthetic",
+    "reasoningEffort": "low",
+    "createdAt": 1789000000,
+    "updatedAt": 1789000600,
+    "recencyAt": 1789000600,
+    "status": { "type": "notLoaded" },
+    "path": "/home/synthetic/.codex/sessions/2026/09/12/rollout-2026-09-12T00-00-00-00000000-0000-7000-8000-000000000002.jsonl",
+    "cwd": "/workspace/zcode-rescue-evidence",
+    "cliVersion": "0.154.0",
+    "originator": "synthetic",
+    "source": {
+      "subAgent": {
+        "thread_spawn": {
+          "parent_thread_id": "00000000-0000-7000-8000-000000000001",
+          "depth": 1,
+          "agent_path": "/root/zcode_rescue_task_evidence",
+          "agent_nickname": "synthetic",
+          "agent_role": "zcode-rescue"
+        }
+      }
+    },
+    "canAcceptDirectInput": null,
+    "threadSource": "subagent",
+    "agentNickname": "synthetic",
+    "agentRole": "zcode-rescue",
+    "gitInfo": { "sha": "0000000000000000000000000000000000000000", "branch": "main", "originUrl": null },
+    "name": null,
+    "daybreakEnabled": null,
+    "turns": [
+      {
+        "id": "00000000-0000-7000-8000-000000000003",
+        "items": [
+          {
+            "type": "subAgentActivity",
+            "id": "synthetic-activity-item-1",
+            "kind": "started",
+            "agentThreadId": "00000000-0000-7000-8000-000000000002",
+            "agentPath": "/root/zcode_rescue_task_evidence"
+          },
+          {
+            "type": "subAgentActivity",
+            "id": "synthetic-activity-item-2",
+            "kind": "interacted",
+            "agentThreadId": "00000000-0000-7000-8000-000000000002",
+            "agentPath": "/root/zcode_rescue_task_evidence"
+          }
+        ],
+        "itemsView": "full",
+        "status": "failed",
+        "error": {
+          "message": "[redacted: host error text excluded]",
+          "codexErrorInfo": "usageLimitExceeded",
+          "additionalDetails": null,
+          "misalignment": null
+        },
+        "startedAt": 1789000000,
+        "completedAt": 1789000600,
+        "durationMs": 600000
+      }
+    ]
+  }
+}

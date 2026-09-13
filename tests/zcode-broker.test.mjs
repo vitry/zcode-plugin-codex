@@ -11,6 +11,7 @@ import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { isValidBrokerLaunchSignature } from '../scripts/lib/process.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { ensureZCodeBroker, recordedWorkspaceBrokerPids, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
@@ -104,7 +105,7 @@ test('writeBrokerIdentity rejects an unbounded or malformed launch signature', a
   }
 });
 
-test('recordedWorkspaceBrokerPids races the entire broker-lock acquisition against the caller budget', { timeout: 2_000 }, async () => {
+test('recordedWorkspaceBrokerPids races the entire broker-lock acquisition against the caller budget', { timeout: scaleTestTimeout(2_000) }, async () => {
   const fixture = await workspaceWithBrokerIdentity('zcode-broker-lookup-lock-stall-');
   try {
     const started = Date.now();
@@ -123,7 +124,7 @@ test('recordedWorkspaceBrokerPids races the entire broker-lock acquisition again
   }
 });
 
-test('recordedWorkspaceBrokerPids bounds a stalled broker-directory scan at the caller budget', { timeout: 2_000 }, async () => {
+test('recordedWorkspaceBrokerPids bounds a stalled broker-directory scan at the caller budget', { timeout: scaleTestTimeout(2_000) }, async () => {
   const fixture = await workspaceWithBrokerIdentity('zcode-broker-lookup-readdir-');
   try {
     const started = Date.now();
@@ -218,7 +219,7 @@ test('holdResolvedLock release resolves only once the lock is fully released and
   }
 });
 
-test('recordedWorkspaceBrokerPids bounds a stalled identity read at the caller budget', { timeout: 2_000 }, async () => {
+test('recordedWorkspaceBrokerPids bounds a stalled identity read at the caller budget', { timeout: scaleTestTimeout(2_000) }, async () => {
   const fixture = await workspaceWithBrokerIdentity('zcode-broker-lookup-readfile-');
   try {
     const started = Date.now();
