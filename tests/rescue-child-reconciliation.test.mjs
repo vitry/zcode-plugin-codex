@@ -13,6 +13,7 @@ import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { scaleTestTimeout } from './helpers/test-timeouts.mjs';
 
 const SESSION = 'reconcile-parent';
 const SPAWN_TURN = 'reconcile-parent-turn-1';
@@ -1514,6 +1515,13 @@ test('an active generic sibling does not produce RESCUE_CHILD_AMBIGUOUS when the
   assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, false);
 });
 
+/** A frozen recovery clock: the production shared budget never binds while
+ * every stage keeps its real five-second window. Used only by heavy
+ * real-filesystem fixtures (linked git worktrees) on slow shared runners,
+ * where total pipeline wall time is not what the test is about — the budget
+ * mechanics are covered by the dedicated tests with explicit fake clocks. */
+const frozenRecoveryClock = () => 0;
+
 /** A cross-workspace running foreground Rescue: SessionStart record at the
  * origin repo, the child routed to (and the binding, job, and executor at) the
  * linked worktree, and the preparing caller running in that worktree. */
@@ -1576,6 +1584,7 @@ test('cross-workspace recovery reads the caller session epoch from the origin wo
   const wrappedSeams = {
     ...seams.dependencies,
     settleOwnedJob: async (input, jobId) => { settlements += 1; return settleRescueChildOwnedJob(input, jobId); },
+    now: frozenRecoveryClock,
   };
   const outcome = await reconcileRescueChildForPreparation({
     dataRoot: fixture.dataRoot,
@@ -1592,7 +1601,7 @@ test('cross-workspace recovery reads the caller session epoch from the origin wo
   assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.origin, SESSION, CHILD_TURN)).state, 'stopped');
   assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, false);
   assert.equal(seams.hostReads.length, 2);
-});
+}, { timeout: scaleTestTimeout(45_000) });
 
 test('a genuinely missing origin session record still fails closed as superseded', async (t) => {
   const { reconcileRescueChildForPreparation } = await import('../scripts/lib/rescue-child-reconciliation.mjs');
