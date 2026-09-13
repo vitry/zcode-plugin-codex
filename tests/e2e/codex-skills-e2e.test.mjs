@@ -918,6 +918,30 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.equal(sends.length, 2); assert.equal(new Set(sends.map((call) => call.params.sessionId)).size, 1);
   assert.ok(observed.preparationHistory.length >= 2); assert.ok(observed.bindingHistory.length >= 2); assert.ok(observed.jobs.length >= 2);
   assert.equal(JSON.stringify(observed.hostCalls).includes('installed-observer-private-sentinel'), false);
+  // Foreground terminal delivery through the actual direct Rescue CLI entry:
+  // detailed [zcode] progress survives on stderr, no [zcode-relay] line is
+  // delivered to any terminal stream, the terminal stdout is exactly the
+  // public result, and the durable job preview/log still hold accepted progress.
+  const acceptedProgress = ['ZCode is generating a response.', 'ZCode started a tool call.', 'ZCode completed a tool call.'];
+  for (const invocation of observed.rescueDelivery.invocations) {
+    assert.equal(invocation.stdout, 'observer result\n', 'direct Rescue CLI must return the exact terminal public stdout');
+    assert.doesNotMatch(invocation.stderr, new RegExp(`^.*${escapeRegExp(RESCUE_RELAY_PREFIX)}`, 'mu'), 'direct Rescue CLI must not deliver progress relay lines');
+    for (const message of acceptedProgress) {
+      assert.match(invocation.stderr, new RegExp(`^\\[zcode\\] ${escapeRegExp(message)}$`, 'mu'), `detailed stderr progress must survive: ${message}`);
+    }
+  }
+  const deliveryJobs = observed.rescueDelivery.jobArtifacts
+    .filter((artifact) => artifact.path.endsWith('.json'))
+    .map((artifact) => JSON.parse(artifact.bytes))
+    .filter((job) => job.ownerSessionId === observerExpected.parentSessionId);
+  const deliveryLogs = observed.rescueDelivery.jobArtifacts.filter((artifact) => artifact.path.endsWith('.log')).map((artifact) => artifact.bytes);
+  assert.ok(deliveryJobs.length >= 2, 'both direct Rescue CLI jobs must persist durable records');
+  assert.ok(deliveryLogs.length >= 2, 'both direct Rescue CLI jobs must persist durable logs');
+  assert.ok(deliveryJobs.every((job) => Array.isArray(job.progressPreview) && job.progressPreview.some((message) => acceptedProgress.includes(message))),
+    `durable job previews must contain accepted progress: ${JSON.stringify(deliveryJobs.map((job) => job.progressPreview))}`);
+  for (const message of acceptedProgress) {
+    assert.ok(deliveryLogs.some((bytes) => bytes.includes(message)), `durable job log must contain accepted progress: ${message}`);
+  }
   assert.deepEqual(observed.cleanedPaths.filter((path) => observed.remainingPaths.includes(path)), []);
   for (const mutate of [
     (value) => { value.hostCalls[2].workspace = executionWorkspace; },
@@ -2510,6 +2534,9 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   const invokeNodeOptions = `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(brokerProcessObserver).href}`.trim();
   const persistedChild = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', cwd: originWorkspace });
   const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result', FAKE_CODEX_THREAD_JSON: JSON.stringify(persistedChild),
+    // Structured progress notifications are emitted before the terminal
+    // completion so the CLI's progress pipeline is observed end-to-end.
+    FAKE_ZCODE_PROGRESS: '1',
     NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
   const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
@@ -2605,6 +2632,11 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
     cleanup: { ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipAfterBytes, owners: brokerOwnersAfter,
       configPresent: remainingPaths.includes(brokerStartup[0].configPath), identityPresent: remainingPaths.includes(brokerIdentityPath) } }];
   const relativeArtifactPath = (path) => relative(canonicalDataRoot, path).split(process.platform === 'win32' ? '\\' : '/').join('/');
+  const jobsSegment = `${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`;
+  const rescueJobArtifacts = finalArtifacts
+    .filter((artifact) => artifact.path.includes(jobsSegment) && /\.(json|log)$/u.test(basename(artifact.path)))
+    .map((artifact) => ({ path: relativeArtifactPath(artifact.path), bytes: artifact.bytes }))
+    .sort((left, right) => left.path.localeCompare(right.path));
   const artifactLocations = [
     { role: 'executor-route', path: relativeArtifactPath(routePath), bytes: routeArtifact.bytes },
     { role: 'forwarding', path: relativeArtifactPath(forwardPath), bytes: forwardArtifact.bytes },
@@ -2621,7 +2653,11 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
     hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
       { command: 'invoke-prepared rescue', workspace: originWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
       { command: 'invoke-prepared rescue', workspace: originWorkspace, stdout: secondInvoke.stdout }],
-    peer, preparationHistory, bindingHistory, jobs, brokerHistory, cleanedPaths, remainingPaths };
+    peer, preparationHistory, bindingHistory, jobs, brokerHistory, cleanedPaths, remainingPaths,
+    rescueDelivery: {
+      invocations: [firstInvoke, secondInvoke].map(({ stdout, stderr }) => ({ stdout, stderr })),
+      jobArtifacts: rescueJobArtifacts,
+    } };
 }
 
 function assertInstalledWorkspaceBoundObservation(observed, expected) {
