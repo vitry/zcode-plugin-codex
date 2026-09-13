@@ -681,9 +681,15 @@ test('bounds the business settlement stage and maps its budget expiry onto the p
     settleOwnedJob: async (input, jobId) => { settlements += 1; return settleRescueChildOwnedJob(input, jobId); },
     createClient: async () => ({
       // The control channel never answers within the recovery budget: only the
-      // stage window can end the wait. The unref'd fallback keeps the test
-      // process able to drain even while the coordinator is unbounded.
-      readSession: () => new Promise((resolve) => { const timer = setTimeout(resolve, 30_000); timer.unref?.(); }),
+      // stage window can end the wait. The fallback must stay referenced so the
+      // event loop survives the hang until the shared-budget abort ends the
+      // stage — with nothing referenced, Node 22.13's runner sees the drained
+      // loop and cancels the test — and t.after clears it so the file process
+      // never lingers on the fallback.
+      readSession: () => new Promise((resolve) => {
+        const timer = setTimeout(resolve, 30_000);
+        t.after(() => { clearTimeout(timer); });
+      }),
       stopSession: async () => { seams.remoteStops.push(true); },
       close: async () => {},
     }),
@@ -927,7 +933,13 @@ test('concurrent recovery over nonterminal foreground work waits inside the shar
     const seams = observationSeams(fixture, proof, {
       readSnapshot: (state) => {
         if (!state.stopped) return undefined;
-        return new Promise((resolve) => { const timer = setTimeout(() => resolve(succeededReread('the rescue finished on its own')), 300); timer.unref?.(); });
+        // The slowed reread must stay referenced (t.after clears it) so the
+        // loop cannot drain while both recoveries wait inside the shared
+        // budget on Node 22.13's runner.
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(succeededReread('the rescue finished on its own')), 300);
+          t.after(() => { clearTimeout(timer); });
+        });
       },
     });
     return {
@@ -1012,9 +1024,14 @@ test('a budget expiry during the receipt stage surfaces the bounded outcome inst
   const budgetSeams = {
     ...seams.dependencies,
     settleOwnedJob: async (input, jobId) => { settlements += 1; return settleRescueChildOwnedJob(input, jobId); },
-    // The receipt read never answers within the shared budget; the unref'd
-    // fallback keeps the test process able to drain while the stage waits.
-    readReceipt: () => new Promise((resolve) => { const timer = setTimeout(() => resolve(null), 30_000); timer.unref?.(); }),
+    // The receipt read never answers within the shared budget: the fallback
+    // must stay referenced so the loop survives the hang until the shared-budget
+    // abort ends the stage (a drained loop makes Node 22.13's runner cancel the
+    // test), and t.after clears it so the file process never lingers.
+    readReceipt: () => new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), 30_000);
+      t.after(() => { clearTimeout(timer); });
+    }),
   };
   const startedAt = Date.now();
   const outcome = await reconcileRescueChildForPreparation({
@@ -1191,7 +1208,14 @@ test('a budget expiry during the partial-executor lookup surfaces the bounded ev
   const forward = JSON.parse(await readFile(fixture.forwardPath, 'utf8'));
   await writeFile(fixture.forwardPath, `${JSON.stringify({ ...forward, active: false }, null, 2)}\n`);
   const seams = observationSeams(fixture, incidentProof(fixture));
-  seams.dependencies.resolvePartialExecutor = () => new Promise((resolve) => { const timer = setTimeout(resolve, 30_000); timer.unref?.(); });
+  // The lookup never answers within the shared budget: the fallback must stay
+  // referenced so the loop survives the hang until the budget abort ends the
+  // stage (a drained loop makes Node 22.13's runner cancel the test), and
+  // t.after clears it so the file process never lingers on the fallback.
+  seams.dependencies.resolvePartialExecutor = () => new Promise((resolve) => {
+    const timer = setTimeout(resolve, 30_000);
+    t.after(() => { clearTimeout(timer); });
+  });
   const startedAt = Date.now();
   const outcome = await reconcileRescueChildForPreparation({
     dataRoot: fixture.dataRoot,
