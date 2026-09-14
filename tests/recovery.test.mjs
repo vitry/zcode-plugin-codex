@@ -2623,6 +2623,279 @@ test('SessionEnd settles a claimed queued marked runner as intent -> kill -> acq
   await cleanupRecoveryFixture(fixture);
 });
 
+// ---------------------------------------------------------------------------
+// Task 4: the recovery/SessionEnd adapters supply the SAME upstream-generation
+// continuity attestation the management adapter does (spec 2026-09-14 section
+// 4.2): the broker's serving-generation stamp observed with the joined
+// pre-stop snapshot must answer the stop and the reread, and only a QUALIFIED
+// acknowledgement may settle `cancelled` WITHOUT a final assistant report —
+// behind the marked runner's completed termination/sweep and the guarded
+// lease-acquiring publication. Evidence lives in one attempt only: a crash
+// after the acknowledgement leaves no replayable receipt.
+// ---------------------------------------------------------------------------
+
+/** The incident shape for the marked-runner fixtures: idle, the current turn's
+ * unfinished assistant, no final report. @param {string} inputId */
+function idleUnfinishedCurrentTurn(inputId) {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [
+    { info: { role: 'user', messageId: inputId }, parts: [{ type: 'text', text: 'task' }] },
+    { info: { role: 'assistant', messageId: `answer-${inputId}`, parentMessageId: inputId }, parts: [{ type: 'text', text: 'partial without a finish' }] },
+  ] };
+}
+
+/**
+ * One stamped recovery control client over a marked-runner fixture, modeling
+ * the BROKER's serving-generation contract exactly like the production
+ * ZCodeClient: every session/read records the protocol generation that served
+ * it (exposed through readServingGeneration) and session/stop carries its own
+ * `brokerProtocolGeneration` stamp. Sequenced by read index; `reads` defaults
+ * to the qualified no-report settlement (joined active turn, pre-stop read
+ * after the intent persists, then the idle-unfinished reread).
+ * @param {any} job @param {{reads?:Array<()=>any>,readGenerations?:Array<string|null>,stopGeneration?:string|null,stopError?:Error}} [options]
+ */
+function stampedSessionEndClient(job, options = {}) {
+  const generation = 'a'.repeat(32);
+  const reads = options.reads ?? [
+    () => activeCurrentTurn(job.inputId),
+    () => activeCurrentTurn(job.inputId),
+    () => idleUnfinishedCurrentTurn(job.inputId),
+  ];
+  const readGenerations = options.readGenerations ?? reads.map(() => generation);
+  const stopGeneration = options.stopGeneration ?? generation;
+  let readsIssued = 0;
+  let stops = 0;
+  let lastReadGeneration = null;
+  return {
+    readServingGeneration: () => lastReadGeneration,
+    readSession: async (sessionId) => {
+      assert.equal(sessionId, job.zcodeSessionId);
+      const index = readsIssued; readsIssued += 1;
+      const snapshot = reads[Math.min(index, reads.length - 1)]();
+      lastReadGeneration = readGenerations[Math.min(index, readGenerations.length - 1)] ?? null;
+      return snapshot;
+    },
+    stopSession: async (sessionId) => {
+      assert.equal(sessionId, job.zcodeSessionId); stops += 1;
+      if (options.stopError) throw options.stopError;
+      return stopGeneration === null ? {} : { brokerProtocolGeneration: stopGeneration };
+    },
+    close: async () => {},
+    readCount: () => readsIssued,
+    stopCount: () => stops,
+  };
+}
+
+test('a qualified SessionEnd acknowledgement without a final report settles behind sweep, guard revalidation, and lease acquisition', async () => {
+  const fixture = await context();
+  const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'no-report-qualified' });
+  const events = [];
+  const wrapped = {
+    ...store,
+    transitionJob: async (/** @type {any} */ ...args) => {
+      const [, id, , next, patch] = args;
+      if (id === job.id && next === 'cancelling' && patch?.stopIntent) events.push('persist-intent');
+      return store.transitionJob(...args);
+    },
+    finishJob: async (/** @type {any} */ ...args) => {
+      const [, id, , next] = args;
+      if (id === job.id && next === 'cancelled') events.push('publish-cancelled');
+      return store.finishJob(...args);
+    },
+  };
+  let client;
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    terminateProcessTree: async (/** @type {number} */ pid) => { events.push(`kill:${pid}`); },
+    sweepDeadRootDescendants: async () => { events.push('sweep'); return { kind: 'clean' }; },
+    createClient: async (current) => (client ??= stampedSessionEndClient(current)) }, job.id);
+  assert.equal(outcome.kind, 'confirmed-cancellation');
+  assert.equal(outcome.job.status, 'cancelled');
+  assert.equal(outcome.job.stopCause, 'session-end');
+  assert.equal(outcome.job.resultArtifact, undefined, 'no success artifact is fabricated for a no-report cancellation');
+  assert.ok(outcome.job.finishedAt, 'the no-report cancelled winner carries a completion time');
+  assert.equal(client.stopCount(), 1, 'exactly one exact stop through the managed control path');
+  assert.equal(client.readCount(), 3, 'the joined read, the pre-stop read, and the one bounded reread share the acquired client');
+  assert.deepEqual(events, ['persist-intent', 'sweep', 'publish-cancelled'],
+    'persist-before-control held: the durable stop intent precedes the stop, and the completed-clean sweep (the free lease never signals the dead recorded pid) precedes the lease-acquiring cancelled publication');
+  assert.equal(endedObligationSettled(outcome), true, 'the settled no-report winner discharges the receipt');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a no-report SessionEnd settlement retains the cancelling guard when the cleanup duty exhausts its budget', async () => {
+  const fixture = await context();
+  const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'no-report-budget' });
+  let cancelledFinishes = 0;
+  const wrapped = {
+    ...store,
+    finishJob: async (/** @type {any} */ ...args) => {
+      if (args[3] === 'cancelled') cancelledFinishes += 1;
+      return store.finishJob(...args);
+    },
+  };
+  let client;
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    // The duty's absolute local deadline is already spent: the pass may run the
+    // remote settlement but never claims a cleanup it did not finish.
+    deadlineMs: Date.now() - 1,
+    terminateProcessTree: async () => { throw new Error('the budget-expired duty never dispatches a kill'); },
+    sweepDeadRootDescendants: async () => { throw new Error('the budget-expired duty never runs the sweep'); },
+    createClient: async (current) => (client ??= stampedSessionEndClient(current)) }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard');
+  assert.equal(outcome.job.status, 'cancelling');
+  assert.equal(client.stopCount(), 1, 'the qualified stop still ran; only the settlement was gated on the cleanup');
+  assert.equal(cancelledFinishes, 0, 'no cancelled publication over an incomplete cleanup');
+  assert.match(outcome.job.lastCancelError ?? '', /remains unresolved after the stop acknowledgement/,
+    'the bounded retention diagnostic is the visible retry evidence');
+  // The durable cancelling intent already delegates the stop (receipt
+  // semantics); the WRITABLE GUARD itself stays retained and blocking.
+  await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'budget-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'no cancelled publication over an incomplete cleanup');
+  void endedObligationSettled;
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a crash after the qualified acknowledgement leaves no replayable receipt: the next pass cannot reuse it', async () => {
+  const fixture = await context();
+  const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'crash-after-ack' });
+  // Pass 1: the qualified acknowledgement completes the remote procedure, but
+  // the cancelled publication write fails with a genuine storage error — the
+  // process would have crashed right before the durable write.
+  let failCancelledFinish = true;
+  const wrapped = {
+    ...store,
+    finishJob: async (/** @type {any} */ ...args) => {
+      if (args[3] === 'cancelled' && failCancelledFinish) {
+        failCancelledFinish = false;
+        throw new PluginError('ATOMIC_WRITE_FAILED', 'crash before the durable cancelled write', { category: 'storage', remedy: 'retry' });
+      }
+      return store.finishJob(...args);
+    },
+  };
+  let firstClient;
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const first = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+    createClient: async (current) => (firstClient ??= stampedSessionEndClient(current)) }, job.id);
+  assert.equal(first.kind, 'retained-writable-guard');
+  assert.equal(first.job.status, 'cancelling', 'the acknowledgement alone never terminalizes');
+  assert.equal(firstClient.stopCount(), 1);
+  // Nothing replayable was persisted: the durable record carries the stop
+  // intent only — no acknowledgement receipt of any shape.
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal('stopAcknowledged' in persisted, false, 'no persisted acknowledgement field exists to replay');
+  assert.deepEqual(Object.keys(persisted.stopIntent).sort(), ['cause', 'requestedAt', 'version'],
+    'the durable stop intent is the only persisted cancellation evidence');
+  // Pass 2 (exactly what a fresh process observes): the remote turn is already
+  // idle-unfinished — THIS attempt never observed the current turn executing,
+  // so its own stop evidence cannot qualify, the previous attempt's in-memory
+  // acknowledgement died with it, and the record stays unresolved.
+  let secondClient;
+  const second = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+    createClient: async (current) => (secondClient = stampedSessionEndClient(current, {
+      reads: [() => idleUnfinishedCurrentTurn(current.inputId), () => idleUnfinishedCurrentTurn(current.inputId)],
+    })) }, job.id);
+  assert.equal(second.kind, 'retained-writable-guard',
+    'the next attempt cannot settle on the previous attempt\'s in-memory acknowledgement');
+  assert.equal(second.job.status, 'cancelling', 'it may remain unresolved instead of inventing durable confirmation');
+  assert.equal(secondClient.stopCount(), 0, 'the idle non-active turn is never re-stopped by this pass');
+  // The durable cancelling intent already delegates the stop (receipt
+  // semantics); the WRITABLE GUARD itself stays retained and blocking.
+  await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-crash-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the unresolved no-report guard keeps blocking writable admission');
+  void endedObligationSettled;
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('the next pass may reobserve the active turn and re-stop to settle the no-report cancellation', async () => {
+  const fixture = await context();
+  const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'reobserve-after-crash' });
+  let failCancelledFinish = true;
+  const wrapped = {
+    ...store,
+    finishJob: async (/** @type {any} */ ...args) => {
+      if (args[3] === 'cancelled' && failCancelledFinish) {
+        failCancelledFinish = false;
+        throw new PluginError('ATOMIC_WRITE_FAILED', 'crash before the durable cancelled write', { category: 'storage', remedy: 'retry' });
+      }
+      return store.finishJob(...args);
+    },
+  };
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const first = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+    createClient: async (current) => stampedSessionEndClient(current) }, job.id);
+  assert.equal(first.kind, 'retained-writable-guard');
+  // Pass 2 reobserves the current turn executing (the retry shape: cancelling
+  // with a persisted intent performs the pre-stop read), issues its OWN exact
+  // stop over the same serving generation, and settles through its own
+  // evidence — never through pass 1's dead in-memory acknowledgement.
+  let secondClient;
+  const second = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+    createClient: async (current) => (secondClient = stampedSessionEndClient(current, {
+      reads: [
+        () => activeCurrentTurn(current.inputId),
+        () => activeCurrentTurn(current.inputId),
+        () => idleUnfinishedCurrentTurn(current.inputId),
+      ],
+    })) }, job.id);
+  assert.equal(second.kind, 'confirmed-cancellation');
+  assert.equal(second.job.status, 'cancelled');
+  assert.equal(second.job.stopCause, 'session-end');
+  assert.equal(secondClient.stopCount(), 1, 'pass 2 issued its own one exact stop');
+  assert.equal(secondClient.readCount(), 3, 'joined read, retry pre-stop read, and the bounded reread');
+  assert.equal(endedObligationSettled(second), true);
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('repeated recovery passes keep the no-report winner and never reuse one job\'s evidence for another', async () => {
+  const fixture = await context();
+  const workspaceA = await realpath(fixture.workspace);
+  await mkdir(join(fixture.root, 'workspace-b'));
+  const workspaceB = await realpath(join(fixture.root, 'workspace-b'));
+  const first = await markedRunnerRescue(fixture, { status: 'running', agent: 'idempotent-a', workspace: workspaceA });
+  const secondJob = await markedRunnerRescue(fixture, { status: 'running', agent: 'idempotent-b', workspace: workspaceB, session: 'zs-marked-b' });
+  let clientsCreated = 0;
+  let firstClient;
+  let secondClient;
+  const { settleEndedRescueJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const base = (/** @type {any} */ store, /** @type {string} */ workspace) => ({ store, dataRoot: fixture.dataRoot, workspace,
+    ownerSessionId: 'owner', epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+    createClient: async (current) => {
+      clientsCreated += 1;
+      return workspace === workspaceA ? (firstClient ??= stampedSessionEndClient(current)) : (secondClient ??= stampedSessionEndClient(current));
+    } });
+  const settledA = await settleEndedRescueJob(base(first.store, workspaceA), first.job.id);
+  const settledB = await settleEndedRescueJob(base(secondJob.store, workspaceB), secondJob.job.id);
+  assert.equal(settledA.kind, 'confirmed-cancellation');
+  assert.equal(settledB.kind, 'confirmed-cancellation');
+  assert.equal(settledA.job.status, 'cancelled');
+  assert.equal(settledB.job.status, 'cancelled');
+  const winnerA = await first.store.readJob(workspaceA, first.job.id);
+  // The repeated pass on the terminal marked claim re-runs only its cleanup
+  // duty: no new client, no new stop, no republished winner.
+  const repeated = await settleEndedRescueJob(base(first.store, workspaceA), first.job.id);
+  assert.equal(repeated.kind, 'confirmed-cancellation');
+  assert.equal(clientsCreated, 2, 'each job acquired exactly one control client: no evidence crossed jobs');
+  assert.equal(firstClient.stopCount() + secondClient.stopCount(), 2, 'one exact stop per job, never reused');
+  const after = await first.store.readJob(workspaceA, first.job.id);
+  assert.equal(after.status, 'cancelled');
+  assert.equal(after.finishedAt, winnerA.finishedAt, 'the repeated pass never rewrites the winner');
+  assert.equal(endedObligationSettled(repeated), true);
+  await cleanupRecoveryFixture(fixture);
+});
+
 test('a proven-free lease never authorizes signaling the recorded runner pid', async () => {
   const fixture = await context();
   // A live unrelated process recorded as the runner pid while the lease is

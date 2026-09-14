@@ -993,6 +993,85 @@ test('competing SessionEnd and orphan recovery elect exactly one terminal settle
 // discharges.
 // ---------------------------------------------------------------------------
 
+/** One claimed RUNNING MARKED detached-runner Host-owned Rescue with a durable
+ * accepted turn boundary — the no-report settlement shape: a background runner
+ * whose recorded pid is already gone (its exact lease is free unless a test
+ * holds it) and whose remote turn is still executing. */
+async function markedRunningRunner(input, agent, options = {}) {
+  const executor = exactExecutor(input.workspace, agent);
+  const reserved = await input.store.reserveFreshRescueJob({
+    workspace: input.workspace,
+    reservation: { workspace: input.workspace, ownerSessionId: executor.parentSessionId,
+      ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor,
+    lifecycle: { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'background' },
+    executionInput: { version: 1, task: 'bounded private task' } });
+  const worker = { childPid: 999_999_999, workerLeaseId: options.workerLeaseId ?? 'f'.repeat(64) };
+  const claimed = await input.store.claimJobWorkerForExecution(input.workspace, reserved.job.id, worker);
+  let running = await input.store.transitionJob(input.workspace, claimed.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), ...worker, zcodeSessionId: options.zcodeSessionId ?? `remote-${agent}`,
+  });
+  running = await input.store.transitionJob(input.workspace, running.id, ['running'], 'running', {
+    inputId: `input-${agent}`, startRevision: 7, beforeMessageIds: ['historical'],
+  });
+  return { job: running, workerLeaseId: worker.workerLeaseId };
+}
+
+/** The incident shape: idle, the current turn's unfinished assistant, no final
+ * report — attributable to the accepted turn but never a terminal message.
+ * @param {string} inputId */
+function idleUnfinishedTurn(inputId) {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 9 }, messages: [
+    { info: { role: 'user', messageId: inputId }, parts: [{ type: 'text', text: 'task' }] },
+    { info: { role: 'assistant', messageId: `assistant-${inputId}`, parentMessageId: inputId }, parts: [{ type: 'text', text: 'partial without a finish' }] },
+  ] };
+}
+
+/**
+ * One stamped SessionEnd control client modeling the BROKER's
+ * serving-generation contract exactly like the production ZCodeClient: every
+ * session/read records the protocol generation that served it (exposed through
+ * readServingGeneration), and the session/stop response carries its own
+ * `brokerProtocolGeneration` stamp. Sequenced by read index; `reads` defaults
+ * to the qualified no-report settlement (joined active turn, pre-stop read
+ * after the intent persists, then the idle-unfinished reread),
+ * `readGenerations` sequences the per-read stamps, `stopGeneration` names the
+ * generation answering the stop, and `stopError` models a failed stop.
+ * @param {any} value @param {{reads?:Array<()=>any>,readGenerations?:Array<string|null>,stopGeneration?:string|null,stopError?:Error}} [options]
+ */
+function stampedClient(value, options = {}) {
+  const generation = 'a'.repeat(32);
+  const reads = options.reads ?? [
+    () => activeTurn(value.inputId),
+    () => activeTurn(value.inputId),
+    () => idleUnfinishedTurn(value.inputId),
+  ];
+  const readGenerations = options.readGenerations ?? reads.map(() => generation);
+  const stopGeneration = options.stopGeneration ?? generation;
+  let readsIssued = 0;
+  let stops = 0;
+  let lastReadGeneration = null;
+  return {
+    readServingGeneration: () => lastReadGeneration,
+    readSession: async (sessionId) => {
+      assert.equal(sessionId, value.zcodeSessionId);
+      const index = readsIssued; readsIssued += 1;
+      const snapshot = reads[Math.min(index, reads.length - 1)]();
+      lastReadGeneration = readGenerations[Math.min(index, readGenerations.length - 1)] ?? null;
+      return snapshot;
+    },
+    stopSession: async (sessionId) => {
+      assert.equal(sessionId, value.zcodeSessionId); stops += 1;
+      if (options.stopError) throw options.stopError;
+      return stopGeneration === null ? {} : { brokerProtocolGeneration: stopGeneration };
+    },
+    close: async () => {},
+    readCount: () => readsIssued,
+    stopCount: () => stops,
+  };
+}
+
 /** One claimed queued MARKED detached-runner Host-owned Rescue. */
 async function markedQueuedRunner(input, agent, childPid = 999_999_999) {
   const executor = exactExecutor(input.workspace, agent);
@@ -1064,6 +1143,136 @@ test('a delegated cancelling marked job discharges its receipt yet keeps blockin
   await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'next-turn', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
     'receipt discharge never releases the writable guard: admission stays blocked until authoritative settlement');
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: SessionEnd settles a QUALIFIED exact-runtime stop acknowledgement
+// WITHOUT a final assistant report (spec 2026-09-14 sections 4.2-4.4) — but
+// only behind positive applicable-cleanup evidence: the marked detached
+// runner's completed termination/sweep and the guarded lease-acquiring
+// publication. An unmarked record's no-op cleanup is never exit evidence, a
+// failed stop never settles on its own, and the one bounded reread that
+// independently confirms the current turn's interruption substitutes for the
+// acknowledgement.
+// ---------------------------------------------------------------------------
+
+test('SessionEnd settles a qualified acknowledged stop without a final report behind the marked-runner cleanup', async () => {
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked, workerLeaseId } = await markedRunningRunner(input, 'no-report-child');
+  assert.ok(workerLeaseId);
+  const events = [];
+  const wrapped = {
+    ...input.store,
+    finishJob: async (...args) => {
+      if (args[1] === marked.id && args[3] === 'cancelled') events.push('publish-cancelled');
+      return input.store.finishJob(...args);
+    },
+  };
+  let client;
+  const settlement = await settleOutcome({ ...input, store: wrapped,
+    terminateProcessTree: async (/** @type {number} */ pid) => { events.push(`kill:${pid}`); },
+    sweepDeadRootDescendants: async () => { events.push('sweep'); return { kind: 'clean' }; },
+  }, async (current) => (client = stampedClient(current)));
+  const stored = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(settlement.kind, 'confirmed-cancellation');
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end', 'the persisted session-end stop intent labels the no-report winner');
+  assert.ok(stored.finishedAt, 'the no-report cancelled winner carries a completion time');
+  assert.equal(stored.resultArtifact, undefined, 'no success artifact is fabricated for a no-report cancellation');
+  assert.equal(endedObligationSettled(settlement), true, 'the settled no-report winner discharges the receipt');
+  assert.equal(client.stopCount(), 1, 'exactly one exact stop through the managed control path');
+  assert.equal(client.readCount(), 3, 'the joined read, the pre-stop read, and the one bounded reread share the acquired client');
+  assert.deepEqual(events, ['sweep', 'publish-cancelled'],
+    'the completed-clean sweep (a free lease never signals the dead recorded pid) precedes the cancelled publication');
+  // Guard release is durable: a new writable reservation is admitted again.
+  const released = await input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-no-report', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
+  assert.equal(released.status, 'queued');
+});
+
+test('a qualified SessionEnd stop acknowledgement never settles an unmarked record without a final report', async () => {
+  const input = await fixture(); const value = await job(input);
+  let client;
+  const settlement = await settleOutcome(input, async (current) => (client = stampedClient(current)));
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(settlement.kind, 'retained-writable-guard');
+  assert.equal(stored.status, 'cancelling');
+  assert.equal(client.stopCount(), 1, 'the qualified stop still ran over the exact control path');
+  // The unbound fixture carries no lifecycle trio, so the retained guard keeps
+  // no diagnostic — the durable cancelling status alone is the retry evidence.
+  assert.equal(stored.lastCancelError, undefined);
+  assert.equal(endedObligationSettled(settlement), false, 'unmarked is not foreground-exit evidence: the receipt stays pending');
+  await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'unmarked-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the cancelling writable guard is retained');
+});
+
+test('SessionEnd settles a failed stop when one bounded reread independently confirms the current turn interruption', async () => {
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked } = await markedRunningRunner(input, 'failed-stop-interrupted-child');
+  let client;
+  const settlement = await settleOutcome({ ...input,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async (current) => (client = stampedClient(current, {
+    stopError: new Error('the stop channel failed'),
+    reads: [
+      () => activeTurn(current.inputId),
+      () => activeTurn(current.inputId),
+      () => coherentTerminal(current.inputId, 'stopped', 'cancelled'),
+    ],
+  })));
+  const stored = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(settlement.kind, 'confirmed-cancellation');
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end');
+  assert.equal(client.stopCount(), 1, 'the failed stop is still the one exact stop attempt this pass');
+  assert.equal(client.readCount(), 3, 'the joined read, the pre-stop read, and the one bounded failed-stop probe reread');
+  assert.equal(endedObligationSettled(settlement), true);
+});
+
+test('the no-report SessionEnd publication refuses while the exact worker lease is held by a live claim', async () => {
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked, workerLeaseId } = await markedRunningRunner(input, 'no-report-held-lease-child');
+  /** @type {number[]} */ const kills = [];
+  let client;
+  const settlement = await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace,
+    jobId: marked.id, workerLeaseId }, () => settleOutcome({ ...input,
+    terminateProcessTree: async (/** @type {number} */ pid) => { kills.push(pid); },
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async (current) => (client = stampedClient(current))));
+  assert.equal(settlement.kind, 'retained-writable-guard',
+    'an external SessionEnd publisher may not publish over a claim a live holder still owns');
+  assert.equal(settlement.job.status, 'cancelling');
+  assert.equal(client.stopCount(), 1, 'the qualified stop still ran; only the guarded publication was refused');
+  assert.deepEqual(kills, [999_999_999], 'the held lease drove the guarded kill decision while the holder kept the claim');
+  assert.equal(endedObligationSettled(settlement), true,
+    'the durable cancelling intent already delegates the stop to the next pass; the writable guard itself stays retained');
+  await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'held-lease-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
+});
+
+test('a repeated SessionEnd pass after the no-report settlement reports the settled boundary without new remote control', async () => {
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked } = await markedRunningRunner(input, 'no-report-repeat-child');
+  let client; let clients = 0;
+  const first = await settleOutcome({ ...input,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async (current) => { clients += 1; return (client = stampedClient(current)); });
+  assert.equal(first.kind, 'confirmed-cancellation');
+  const winner = await input.store.readJob(input.workspace, marked.id);
+  const second = await settleOutcome({ ...input,
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async () => { clients += 1; throw new Error('a settled boundary never re-opens remote control'); });
+  assert.deepEqual(second, { kind: 'no-active-job', job: null }, 'the settled no-report winner is the durable boundary');
+  assert.equal(clients, 1);
+  assert.equal(client.stopCount(), 1, 'no second exact stop was ever issued');
+  const after = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(after.status, 'cancelled');
+  assert.equal(after.finishedAt, winner.finishedAt, 'the repeated pass never rewrites the winner');
 });
 
 // ---------------------------------------------------------------------------
