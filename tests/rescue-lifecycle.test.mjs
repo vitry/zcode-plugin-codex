@@ -17,20 +17,40 @@ const HOST_STATES = ['active', 'idle', 'notLoaded', 'systemError', 'absent'];
  * `events`, and a live `stopCalls` counter for fixture-style assertions.
  *
  * `remote` selects the post-stop reread evidence ('unreadable', 'pending',
- * 'running' = still active/attributable, or a terminal classification).
+ * 'running' = still active/attributable, 'idle-empty' = inactive pending (the
+ * unfinished current turn with no final report), 'unattributable' = readable
+ * but not attributable to the current turn (runtime/session identity
+ * mismatch), or a terminal classification).
  * `loadRemote` selects the initial joined evidence ('none', 'unavailable',
  * 'unreadable', 'idle-empty' = inactive pending, 'unattributable' = active but
  * not attributable, 'running' = active/attributable, or a terminal
  * classification).
+ * `stopUpstream` selects the upstream protocol generation the stop response
+ * attests: 'same' = the qualified exact-runtime acknowledgement (the pre-stop
+ * read, stop, and reread share one upstream generation with no runtime
+ * reconstruction), 'replaced' = the same session ID answered over a replaced
+ * upstream generation, and undefined = today's bare acknowledgement carrying
+ * no continuity proof at all.
+ * `terminateRunner` additionally accepts the retention duty outcomes
+ * ('pending', 'unproven', 'budget-expired') so worker cleanup evidence stays a
+ * separate fixture input from the stop response and the remote state.
+ * `stopFailureReread` selects the evidence one bounded same-attempt reread
+ * observes AFTER A FAILED STOP — independent terminal interruption evidence
+ * attributable to the current turn, the only permitted substitute for the
+ * stop acknowledgement (spec 4.2): 'interrupted' = a terminal interrupted
+ * snapshot; undefined = no independent post-failure evidence was obtained.
+ * It is its own evidence dimension: the acknowledged-stop reread (`remote`)
+ * never reports it, and the two are never merged into one boolean.
  *
  * @param {{ events?: string[], host?: string, placement?: 'foreground'|'background', receipt?: 'matching'|'older'|null,
- *   remote?: 'succeeded'|'failed'|'interrupted'|'pending'|'unreadable'|'running',
+ *   remote?: 'succeeded'|'failed'|'interrupted'|'pending'|'unreadable'|'idle-empty'|'unattributable'|'running',
  *   loadRemote?: 'none'|'unavailable'|'unreadable'|'succeeded'|'failed'|'interrupted'|'idle-empty'|'unattributable'|'running',
- *   stopAcknowledged?: boolean, jobStatus?: 'queued'|'running'|'cancelling', persistedStopCause?: string,
+ *   stopAcknowledged?: boolean, stopUpstream?: 'same'|'replaced', stopFailureReread?: 'interrupted',
+ *   jobStatus?: 'queued'|'running'|'cancelling', persistedStopCause?: string,
  *   winner?: 'succeeded'|'failed'|'cancelled', winnerStopCause?: string, staleAt?: 'revalidate', staleWinner?: string,
  *   persistConflict?: string, archiveOutcome?: 'failed', hostOwned?: boolean, acceptedSession?: boolean,
  *   bindingCurrent?: boolean, permissionMatch?: boolean,
- *   terminateRunner?: 'record'|'throws', abortController?: AbortController, rereadAbort?: boolean }} [overrides]
+ *   terminateRunner?: 'record'|'throws'|'pending'|'unproven'|'budget-expired', abortController?: AbortController, rereadAbort?: boolean }} [overrides]
  */
 function fixtureAdapters(overrides = {}) {
   const options = {
@@ -39,6 +59,7 @@ function fixtureAdapters(overrides = {}) {
   };
   const events = overrides.events ?? [];
   let stopCalls = 0;
+  let lastStopAcknowledged = null;
   const stopIntent = (cause) => ({ version: 1, cause, requestedAt: REQUESTED_AT });
   const persistedIntent = options.persistedStopCause ? stopIntent(options.persistedStopCause) : undefined;
 
@@ -99,7 +120,15 @@ function fixtureAdapters(overrides = {}) {
     stopExactTurn: async () => {
       events.push('stop-exact-turn');
       stopCalls += 1;
-      return options.stopAcknowledged ? { acknowledged: true } : { acknowledged: false, error: new Error('stop not acknowledged') };
+      if (!options.stopAcknowledged) {
+        lastStopAcknowledged = false;
+        return { acknowledged: false, error: new Error('stop not acknowledged') };
+      }
+      lastStopAcknowledged = true;
+      // The upstream-generation attestation rides on the stop response: only
+      // 'same' is the qualified exact-runtime acknowledgement; 'replaced' and
+      // the absent default carry no qualifying continuity proof.
+      return { acknowledged: true, ...(options.stopUpstream ? { upstreamGeneration: options.stopUpstream } : {}) };
     },
     rereadRemote: async () => {
       events.push('reread-remote');
@@ -108,8 +137,17 @@ function fixtureAdapters(overrides = {}) {
         options.abortController?.abort(reason);
         throw reason;
       }
+      // Independent interruption evidence after a FAILED stop is its own
+      // dimension: the reread reports it only for the failed-stop attempt, so
+      // it substitutes for the acknowledgement without ever being merged into
+      // the acknowledged-stop reread mode below.
+      if (lastStopAcknowledged === false && options.stopFailureReread === 'interrupted') {
+        return { kind: 'evidence', classification: 'interrupted', active: false, attributable: true };
+      }
       if (options.remote === 'unreadable') return { kind: 'unreadable', error: new Error('remote state could not be reread') };
       if (options.remote === 'pending') return { kind: 'evidence', classification: 'pending', active: true, attributable: true };
+      if (options.remote === 'idle-empty') return { kind: 'evidence', classification: 'pending', active: false, attributable: true };
+      if (options.remote === 'unattributable') return { kind: 'evidence', classification: 'pending', active: false, attributable: false };
       return { kind: 'evidence', classification: options.remote, active: false, attributable: true };
     },
     publishWinner: async (joined, specification) => {
@@ -135,7 +173,10 @@ function fixtureAdapters(overrides = {}) {
     adapters.terminateMarkedRunner = async () => {
       events.push('terminate-marked-runner');
       if (options.terminateRunner === 'throws') throw new Error('injected runner cleanup failure');
-      return { kind: 'settled' };
+      // 'record' names the completed-clean sweep; every other configured value
+      // is that exact retention duty outcome, so cleanup evidence stays a
+      // separate fixture input from the stop response and the remote state.
+      return { kind: options.terminateRunner === 'record' ? 'settled' : options.terminateRunner };
     };
   }
 
@@ -686,4 +727,143 @@ test('outcomes never expose private session, binding, capability, or path eviden
   assert.doesNotMatch(serialized, /job-private-reference/);
   assert.doesNotMatch(serialized, /workspace\/repo/);
   assert.doesNotMatch(serialized, /capability/);
+});
+
+// ---------------------------------------------------------------------------
+// Interrupt cancellation settlement (spec 2026-09-14, sections 4.2-4.4): an
+// explicitly cancelled Host-managed writable Rescue may settle to `cancelled`
+// after a QUALIFIED exact-runtime stop acknowledgement plus verified executor
+// cleanup, WITHOUT a final assistant report. Qualification needs a valid
+// pre-stop current-turn snapshot from this attempt, the stop and reread over
+// the same upstream protocol generation without runtime reconstruction, and
+// successful cleanup. Every failure or uncertainty path below stays
+// `cancelling` with the writable guard retained.
+// ---------------------------------------------------------------------------
+
+test('a qualified exact-runtime stop acknowledgement settles cancelled without a final report', async () => {
+  const events = [];
+  // Valid pre-stop current-turn snapshot (the joined read shows the current
+  // turn active and attributable), stop acknowledged {} over the same upstream
+  // generation, one reread showing the unfinished current turn with no final
+  // report, and the completed-clean marked-runner sweep.
+  const fixture = fixtureAdapters({ events, loadRemote: 'running', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+    'acknowledgement plus verified cleanup settles the cancellation procedure without a final assistant report');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.filter((event) => event === 'reread-remote').length, 1, 'exactly one bounded reread after the stop');
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+  assert.ok(events.indexOf('terminate-marked-runner') < events.indexOf('publish-cancelled'),
+    'verified executor cleanup precedes the cancelled publication');
+  assert.equal(events.includes('publish-succeeded'), false);
+  // The decision-level fixture has no session-send/resume/create seam to
+  // observe; the real no-send/no-resume pin lives at the Task 3 composition
+  // seam in tests/job-control.test.mjs.
+});
+
+test('a persisted cancelling job settles through a qualified stop acknowledgement on the status retry', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, jobStatus: 'cancelling', persistedStopCause: 'user',
+    host: 'active', placement: 'foreground', receipt: null, loadRemote: 'running', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true });
+  assert.equal(fixture.stopCalls, 1);
+  assert.deepEqual(events, ['revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+  assert.equal(events.includes('persist-stop-intent'), false, 'the replayed durable intent mints no new one');
+});
+
+test('a failed stop stays cancelling even after verified executor cleanup leaves the remote outcome unknown', async () => {
+  const events = [];
+  const fixture = fixtureAdapters({ events, loadRemote: 'running', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record', stopAcknowledged: false });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+    'worker exit and a clean local sweep are not substitutes for the stop acknowledgement');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.some((event) => event.startsWith('publish-')), false);
+  assert.ok(events.includes('terminate-marked-runner') && events.includes('retain-unresolved'));
+});
+
+test('independently confirmed current-turn interruption settles cancelled despite a failed stop', async () => {
+  const events = [];
+  // The stop itself fails, but one bounded same-attempt reread independently
+  // observes the terminal interrupted snapshot attributable to the current
+  // turn — the only evidence that may substitute for the stop acknowledgement
+  // (spec 4.2), and still only behind the completed-clean sweep.
+  const fixture = fixtureAdapters({ events, loadRemote: 'running', stopAcknowledged: false,
+    stopFailureReread: 'interrupted', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+    'independent terminal interruption evidence substitutes for the failed stop acknowledgement');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.filter((event) => event === 'reread-remote').length, 1,
+    'one bounded reread observes the interruption despite the failed stop');
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+  assert.ok(events.indexOf('terminate-marked-runner') < events.indexOf('publish-cancelled'),
+    'the required cleanup still precedes the cancelled publication');
+});
+
+test('an acknowledged stop over a replaced upstream or without continuity proof cannot qualify', async () => {
+  for (const stopUpstream of [undefined, 'replaced']) {
+    const events = [];
+    const fixture = fixtureAdapters({ events, loadRemote: 'running', remote: 'idle-empty',
+      stopUpstream, terminateRunner: 'record' });
+    const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `${String(stopUpstream)}: the same session ID on a replaced upstream generation, or a bare acknowledgement with no continuity proof, never settles without a report`);
+    assert.equal(fixture.stopCalls, 1, String(stopUpstream));
+    assert.equal(events.some((event) => event.startsWith('publish-')), false, String(stopUpstream));
+  }
+});
+
+test('an acknowledged stop with pending, failed, or unproven cleanup keeps the guard', async () => {
+  for (const terminateRunner of ['pending', 'throws', 'unproven', 'budget-expired']) {
+    const events = [];
+    const fixture = fixtureAdapters({ events, loadRemote: 'running', remote: 'idle-empty',
+      stopUpstream: 'same', terminateRunner });
+    const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `${terminateRunner}: only the completed-clean sweep permits the no-report settlement`);
+    assert.equal(fixture.stopCalls, 1, terminateRunner);
+    assert.ok(events.includes('terminate-marked-runner'), terminateRunner);
+    assert.equal(events.some((event) => event.startsWith('publish-')), false, terminateRunner);
+  }
+});
+
+test('contrary post-stop evidence retains cancelling over the acknowledged stop', async () => {
+  for (const [remote, why] of [['pending', 'the reread still shows the current turn executing'],
+    ['unattributable', 'the reread is not attributable to the current turn (identity mismatch)']]) {
+    const events = [];
+    const fixture = fixtureAdapters({ events, loadRemote: 'running', remote, stopUpstream: 'same', terminateRunner: 'record' });
+    const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `${why}: acknowledgement cannot override contrary evidence`);
+    assert.equal(fixture.stopCalls, 1, why);
+    assert.equal(events.some((event) => event.startsWith('publish-')), false, why);
+  }
+});
+
+test('a failed initial read still attempts the exact stop, but the empty response cannot qualify', async () => {
+  // Spec 5.4: a read failure must not unconditionally skip the stop for a
+  // session with exact stop authority — the best-effort stop still runs; it
+  // just cannot qualify for the no-report settlement without valid pre-stop
+  // current-turn evidence.
+  const events = [];
+  const fixture = fixtureAdapters({ events, loadRemote: 'unreadable', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.equal(fixture.stopCalls, 1, 'the authorized exact stop is still attempted after the initial read failure');
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+    'without a valid pre-stop current-turn snapshot the empty stop response cannot qualify');
+  assert.equal(events.some((event) => event.startsWith('publish-')), false);
+
+  // A load that never joined remote evidence at all retains the same way.
+  const noneEvents = [];
+  const noneFixture = fixtureAdapters({ events: noneEvents, loadRemote: 'none', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  assert.deepEqual(await createRescueLifecycleReconciler(noneFixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace }),
+    { kind: 'unresolved-stop', status: 'cancelling' }, 'none');
+  assert.equal(noneEvents.some((event) => event.startsWith('publish-')), false, 'none');
 });
