@@ -35,17 +35,20 @@ const HOST_STATES = ['active', 'idle', 'notLoaded', 'systemError', 'absent'];
  * ('pending', 'unproven', 'budget-expired') so worker cleanup evidence stays a
  * separate fixture input from the stop response and the remote state.
  * `stopFailureReread` selects the evidence one bounded same-attempt reread
- * observes AFTER A FAILED STOP — independent terminal interruption evidence
- * attributable to the current turn, the only permitted substitute for the
- * stop acknowledgement (spec 4.2): 'interrupted' = a terminal interrupted
- * snapshot; undefined = no independent post-failure evidence was obtained.
- * It is its own evidence dimension: the acknowledged-stop reread (`remote`)
- * never reports it, and the two are never merged into one boolean.
+ * observes AFTER A FAILED STOP — independent terminal evidence attributable
+ * to the current turn (spec 4.2): 'interrupted' = a terminal interrupted
+ * snapshot, the only permitted substitute for the failed stop's
+ * acknowledgement; 'failed' = a terminal engine failure snapshot, which may
+ * NOT substitute (a failed stop cannot claim the natural failure as its
+ * stop-caused race winner); undefined = no independent post-failure evidence
+ * was obtained. It is its own evidence dimension: the acknowledged-stop
+ * reread (`remote`) never reports it, and the two are never merged into one
+ * boolean.
  *
  * @param {{ events?: string[], host?: string, placement?: 'foreground'|'background', receipt?: 'matching'|'older'|null,
  *   remote?: 'succeeded'|'failed'|'interrupted'|'pending'|'unreadable'|'idle-empty'|'unattributable'|'running',
  *   loadRemote?: 'none'|'unavailable'|'unreadable'|'succeeded'|'failed'|'interrupted'|'idle-empty'|'unattributable'|'running',
- *   stopAcknowledged?: boolean, stopUpstream?: 'same'|'replaced', stopFailureReread?: 'interrupted',
+ *   stopAcknowledged?: boolean, stopUpstream?: 'same'|'replaced', stopFailureReread?: 'interrupted'|'failed',
  *   jobStatus?: 'queued'|'running'|'cancelling', persistedStopCause?: string,
  *   winner?: 'succeeded'|'failed'|'cancelled', winnerStopCause?: string, staleAt?: 'revalidate', staleWinner?: string,
  *   persistConflict?: string, archiveOutcome?: 'failed', hostOwned?: boolean, acceptedSession?: boolean,
@@ -137,12 +140,14 @@ function fixtureAdapters(overrides = {}) {
         options.abortController?.abort(reason);
         throw reason;
       }
-      // Independent interruption evidence after a FAILED stop is its own
-      // dimension: the reread reports it only for the failed-stop attempt, so
-      // it substitutes for the acknowledgement without ever being merged into
-      // the acknowledged-stop reread mode below.
-      if (lastStopAcknowledged === false && options.stopFailureReread === 'interrupted') {
-        return { kind: 'evidence', classification: 'interrupted', active: false, attributable: true };
+      // Independent terminal evidence after a FAILED stop is its own
+      // dimension: the reread reports it only for the failed-stop attempt.
+      // 'interrupted' substitutes for the acknowledgement; 'failed' is the
+      // natural engine failure the failed stop may never claim as its own
+      // race winner — the two are never merged into the acknowledged-stop
+      // reread mode below.
+      if (lastStopAcknowledged === false && (options.stopFailureReread === 'interrupted' || options.stopFailureReread === 'failed')) {
+        return { kind: 'evidence', classification: options.stopFailureReread, active: false, attributable: true };
       }
       if (options.remote === 'unreadable') return { kind: 'unreadable', error: new Error('remote state could not be reread') };
       if (options.remote === 'pending') return { kind: 'evidence', classification: 'pending', active: true, attributable: true };
@@ -805,6 +810,28 @@ test('independently confirmed current-turn interruption settles cancelled despit
     'the required cleanup still precedes the cancelled publication');
 });
 
+test('a natural engine failure observed after a failed stop is never claimed as the stop-caused race winner', async () => {
+  const events = [];
+  // The stop itself fails and the one bounded reread observes a terminal
+  // ENGINE FAILURE attributable to the current turn. Only independently
+  // confirmed INTERRUPTION substitutes for a failed stop's acknowledgement
+  // (spec 4.2): the natural failure keeps its own semantics — the next pass
+  // publishes it from its initial joined read — and this pass retains the
+  // guard behind the cleanup duty.
+  const fixture = fixtureAdapters({ events, loadRemote: 'running', stopAcknowledged: false,
+    stopFailureReread: 'failed', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+    'a failed stop cannot claim a post-stop engine terminal failure as its stop-caused race winner');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.filter((event) => event === 'reread-remote').length, 1,
+    'the bounded failed-stop reread still runs and observes the natural failure');
+  assert.ok(events.includes('terminate-marked-runner') && events.includes('retain-unresolved'),
+    'the cleanup duty still runs before the retained guard');
+  assert.equal(events.some((event) => event.startsWith('publish-')), false,
+    'the natural failure is published by the next pass from its initial read, never rewritten as cancellation here');
+});
+
 test('an acknowledged stop over a replaced upstream or without continuity proof cannot qualify', async () => {
   for (const stopUpstream of [undefined, 'replaced']) {
     const events = [];
@@ -843,6 +870,32 @@ test('contrary post-stop evidence retains cancelling over the acknowledged stop'
     assert.equal(fixture.stopCalls, 1, why);
     assert.equal(events.some((event) => event.startsWith('publish-')), false, why);
   }
+});
+
+test('a qualified acknowledgement settles cancelled over an unreadable reread, while a bare acknowledgement retains', async () => {
+  // Spec 4.4: a reread READ FAILURE no longer independently vetoes a path
+  // that already holds complete qualifying cancellation evidence — the
+  // qualified exact-runtime acknowledgement plus the completed-clean sweep
+  // publish cancelled without a final report.
+  const qualifiedEvents = [];
+  const qualified = fixtureAdapters({ events: qualifiedEvents, loadRemote: 'running', remote: 'unreadable',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  assert.deepEqual(await createRescueLifecycleReconciler(qualified.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace }),
+    { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+    'the completed cancellation procedure is not vetoed by an unreadable reread');
+  assert.equal(qualified.stopCalls, 1);
+  assert.equal(qualifiedEvents.filter((event) => event === 'reread-remote').length, 1, 'exactly one bounded reread');
+  assert.ok(qualifiedEvents.indexOf('terminate-marked-runner') < qualifiedEvents.indexOf('publish-cancelled'),
+    'verified executor cleanup still precedes the cancelled publication');
+
+  // Control: the same unreadable reread under a BARE acknowledgement (no
+  // continuity proof) keeps today's retention — the relaxation is exactly the
+  // qualified evidence, never the read failure itself.
+  const bare = fixtureAdapters({ loadRemote: 'running', remote: 'unreadable', terminateRunner: 'record' });
+  assert.deepEqual(await createRescueLifecycleReconciler(bare.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace }),
+    { kind: 'unresolved-stop', status: 'cancelling' },
+    'without the qualified acknowledgement the unreadable reread still retains the guard');
+  assert.equal(bare.stopCalls, 1);
 });
 
 test('a failed initial read still attempts the exact stop, but the empty response cannot qualify', async () => {

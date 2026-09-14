@@ -21,6 +21,20 @@ import { HOST_PLACEMENTS, STOP_CAUSES } from './rescue-binding.mjs';
  * has the next bounded pass as its retry authority. Callers that never supply
  * the seam (attached foreground management) keep the pre-Task-7 settlement
  * exactly.
+ *
+ * The reconciler also owns the interrupt-cancellation settlement policy (spec
+ * 2026-09-14, sections 4.2-4.4): a QUALIFIED exact-runtime stop
+ * acknowledgement — this attempt's valid pre-stop current-turn snapshot plus
+ * the adapter-attested upstream-generation continuity of its read, stop, and
+ * reread over one uninterrupted managed control path — may publish
+ * `cancelled` WITHOUT a final assistant report, but only behind POSITIVE
+ * applicable-cleanup evidence and never over contrary remote activity. A
+ * failed stop never terminalizes on its own; only one bounded same-attempt
+ * reread that independently confirms the current turn's terminal
+ * interruption may substitute for the acknowledgement. All of this evidence
+ * lives in the current attempt alone: it is never persisted, never replayed
+ * across processes or passes, and never derived from lastCancelError, old
+ * logs, reconstructed idle state, or persisted receipts.
  */
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -76,9 +90,12 @@ async function reconcile(adapters, request) {
     }
     return racedOutcome(joined.winner, joined);
   }
-  if (cause !== null) return stopAndSettle(adapters, joined, cause, request.signal);
+  if (cause !== null) return stopAndSettle(adapters, joined, cause, request.signal, { explicitCancellation: request.intent.kind === 'stop' });
   if (joined.job?.status === 'cancelling' && joined.stopIntent) {
-    return stopAndSettle(adapters, joined, joined.stopIntent.cause, request.signal);
+    // The replayed durable cancelling intent is explicit cancellation
+    // authority in its own right (the user's persisted stop), not a
+    // derived observation cause.
+    return stopAndSettle(adapters, joined, joined.stopIntent.cause, request.signal, { explicitCancellation: true });
   }
   return observeSettle(adapters, joined);
 }
@@ -115,8 +132,9 @@ function stopCauseFor(joined, intent) {
  * or escapes as a throw: the pass ends in the retained guard so the adapter
  * consumes only its own remaining local budget.
  * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal]
+ * @param {{explicitCancellation?: boolean}} [attempt] whether this pass carries the explicit cancellation procedure's own authority
  */
-async function stopAndSettle(adapters, joined, cause, signal) {
+async function stopAndSettle(adapters, joined, cause, signal, attempt) {
   signal?.throwIfAborted();
   if (!joined.stopIntent) {
     const persisted = await adapters.persistStopIntent(joined, cause, { signal });
@@ -147,7 +165,7 @@ async function stopAndSettle(adapters, joined, cause, signal) {
     // through its durable stop intent; legacy records authorize through their
     // durable cancelling transition instead.
     if (joined.hostOwned !== false && !joined.stopIntent) throw invalidStopIntentPersistence();
-    return await settleRemoteEvidence(adapters, joined, cause, signal, undefined, runnerCleanup);
+    return await settleRemoteEvidence(adapters, joined, cause, signal, undefined, runnerCleanup, undefined, attempt);
   } catch (error) {
     // Only a genuine budget/caller abort that outran the durable decision
     // converges here: the local cleanup keeps its independent remaining budget
@@ -160,23 +178,34 @@ async function stopAndSettle(adapters, joined, cause, signal) {
 }
 
 /**
- * Elect and publish one winner from the joined remote evidence. Terminal
- * evidence settles directly — natural success publishes the authoritative
- * result and a stop-requested interruption or failure is claimed by the stop
- * cause — while attributable active evidence proceeds to the exact remote stop
- * and reread. Anything unreadable, unavailable, or non-attributable retains
- * the guard. Every remote-control exit performs the optional marked-runner
- * cleanup BEFORE any publication, and its outcome gates the settlement: only
- * a `settled` duty (kill decision plus a completed-clean same-pass sweep) or
- * an `unmarked` record may publish a terminal winner or archive an unavailable
- * executor — every other outcome retains the guard (no terminal publication,
- * no exclusion release) so the durable cancelling/queued-stop evidence re-arms
+ * Elect and publish one winner from the joined remote evidence in the
+ * mandated decision order: an existing terminal winner settles first, then
+ * coherent natural terminal evidence (success before stop, or observed in the
+ * one bounded post-stop reread) publishes under the existing cleanup rules,
+ * then an explicit current-turn interruption settles cancelled behind the
+ * gated cleanup, then a QUALIFIED exact-runtime stop acknowledgement settles
+ * the no-report cancellation (spec 4.2 path 2) behind POSITIVE applicable
+ * cleanup, and everything else retains the guard. Anything unreadable,
+ * unavailable, or non-attributable retains unless the qualified
+ * acknowledgement already completed the cancellation procedure (spec 4.4: a
+ * reread read failure no longer independently vetoes it). Every
+ * remote-control exit performs the optional marked-runner cleanup BEFORE any
+ * publication, and its outcome gates the settlement: only a `settled` duty
+ * (kill decision plus a completed-clean same-pass sweep) or an `unmarked`
+ * record may publish a terminal winner or archive an unavailable executor —
+ * every other outcome retains the guard (no terminal publication, no
+ * exclusion release) so the durable cancelling/queued-stop evidence re-arms
  * the duty on the next bounded pass, which then publishes the same durable
- * winner behind its own clean sweep. The pass that attempts no remote control
- * (evidence `none`) defers the duty to the pass that does.
- * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard] @param {{done: boolean, outcome: string|null}} [runnerCleanup]
+ * winner behind its own clean sweep. The no-report settlement is stricter
+ * still: only `settled` verifies applicable executor cleanup (`unmarked`
+ * must never imply a foreground executor exited). The pass that attempts no
+ * remote control (evidence `none`) defers the duty to the pass that does.
+ * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard]
+ * @param {{done: boolean, outcome: string|null}} [runnerCleanup]
+ * @param {StopResponseEvidence|undefined} [stopEvidence] this attempt's stop-response evidence; undefined before any stop this pass
+ * @param {{explicitCancellation?: boolean}|undefined} [attempt] the pass's cancellation authority
  */
-async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true, outcome: 'skipped' }) {
+async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true, outcome: 'skipped' }, stopEvidence = undefined, attempt = undefined) {
   signal?.throwIfAborted();
   const remote = joined.remote;
   // No remote control was attempted on this pass: neither terminate nor
@@ -192,9 +221,12 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     const settled = await adapters.settleUnavailableExecutor(joined, { error: remote.error }, { signal });
     return settledOutcome(settled, joined);
   }
-  if (remote.kind === 'unreadable') {
+  if (remote.kind === 'unreadable' && guard !== undefined && !qualifiedExactRuntimeAcknowledgement(stopEvidence)) {
+    // A post-stop reread that could not be read retains the guard exactly as
+    // before UNLESS the qualified acknowledgement already completed the
+    // cancellation procedure (the settlement branch below, spec 4.4).
     await runRunnerCleanup(adapters, joined, runnerCleanup);
-    return retainedOutcome(adapters, joined, remote.error, signal);
+    return retainedOutcome(adapters, joined, stopRetentionDiagnostic(stopEvidence, remote.error), signal);
   }
   if (remote.classification === 'succeeded') {
     // Natural success: the cleanup duty runs BEFORE the durable winner so a
@@ -217,6 +249,16 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     return publishedOutcome(winner, joined);
   }
   if (remote.classification === 'interrupted' || remote.classification === 'failed') {
+    if (stopEvidence?.acknowledged === false && remote.classification !== 'interrupted') {
+      // A FAILED stop never claims a post-stop engine terminal failure as its
+      // stop-caused race winner (spec 4.2): without an acknowledgement, only
+      // independently confirmed INTERRUPTION substitutes. The natural failure
+      // keeps its own semantics — the next pass publishes it from its initial
+      // joined read through the pre-stop failure branch — so this pass simply
+      // retains behind the gated cleanup duty.
+      await runRunnerCleanup(adapters, joined, runnerCleanup);
+      return retainedOutcome(adapters, joined, stopRetentionDiagnostic(stopEvidence, unresolvedStopError()), signal);
+    }
     const publish = () => adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), classification: remote.classification, snapshot: remote.snapshot }, { signal });
     if (guard === undefined && remote.classification === 'interrupted') {
       // First-level interrupted evidence precedes any stop attempt: the gated
@@ -234,13 +276,35 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     const winner = await publish();
     return publishedOutcome(winner, joined);
   }
-  if (!(remote.active && remote.attributable)) {
-    await runRunnerCleanup(adapters, joined, runnerCleanup);
-    return retainedOutcome(adapters, joined, undefined, signal);
+  if (guard !== undefined && qualifiedExactRuntimeAcknowledgement(stopEvidence)
+    && ((remote.kind === 'evidence' && remote.attributable === true && remote.active !== true) || remote.kind === 'unreadable')) {
+    // Qualified exact-runtime stop acknowledgement, one reread performed
+    // (spec 4.2 path 2 / 4.4): coherent natural success already settled above,
+    // and explicit contrary evidence — the current turn still executing, or a
+    // reread not attributable to it (runtime/session identity mismatch) —
+    // falls through to the retained guard below, because an acknowledgement
+    // never overrides contrary evidence. What remains is the incident shape:
+    // the unfinished current turn with no final report, or a reread READ
+    // FAILURE (which no longer independently vetoes a completed cancellation
+    // procedure). That settles `cancelled` without a report — but only behind
+    // POSITIVE applicable-cleanup evidence, never an implied executor exit.
+    const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
+    if (!cleanupVerifiesExecutorCleanup(cleanup)) return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+    const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), noFinalReport: true }, { signal });
+    return publishedOutcome(winner, joined);
   }
-  if (guard !== undefined) {
+  if (remote.kind === 'unreadable') {
+    // Spec 5.4: a FAILED INITIAL READ must not unconditionally skip the exact
+    // stop for a session with exact stop authority — the authorized stop below
+    // is still attempted. It just cannot qualify for the no-report settlement:
+    // without a valid pre-stop current-turn snapshot the empty stop response
+    // carries no qualifying evidence (stopResponseEvidence below).
+  } else if (!(remote.active && remote.attributable)) {
     await runRunnerCleanup(adapters, joined, runnerCleanup);
-    return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+    return retainedOutcome(adapters, joined, stopRetentionDiagnostic(stopEvidence, undefined), signal);
+  } else if (guard !== undefined) {
+    await runRunnerCleanup(adapters, joined, runnerCleanup);
+    return retainedOutcome(adapters, joined, stopRetentionDiagnostic(stopEvidence, unresolvedStopError()), signal);
   }
   const revalidated = await adapters.revalidateGeneration(joined, { signal });
   if (revalidated?.kind === 'stale') {
@@ -254,9 +318,28 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
   signal?.throwIfAborted();
   const stopping = { ...joined, job: revalidated?.job ?? joined.job };
   const stop = await adapters.stopExactTurn(stopping, { signal, guard: revalidated?.guard });
+  const evidence = stopResponseEvidence(stop, preStopCurrentTurnSnapshot(joined.remote));
   if (!stop?.acknowledged) {
-    // A failed stop never skips the local termination duty; the retained guard
-    // keeps the remote uncertainty durable for the next bounded pass.
+    // A failed stop never terminalizes on its own: worker exit, broker
+    // unreachability, session inactivity, or a clean local sweep are not
+    // substitutes for the acknowledgement (spec 4.2). But the explicit
+    // cancellation procedure's own passes — an explicit stop request or the
+    // replay of a persisted cancelling intent, over an execution shape whose
+    // applicable cleanup this reconciler can verify — perform ONE bounded
+    // reread: a terminal interrupted snapshot independently confirmed for the
+    // current turn is the only evidence that may substitute for the
+    // acknowledgement, and it settles through the same post-stop election as
+    // an acknowledged stop's interruption evidence. A natural engine failure
+    // observed by that reread never substitutes (see the race-winner guard
+    // below); coherent natural success keeps its own precedence there.
+    // Derived-authority observation passes keep today's retained guard; their
+    // next pass then observes the terminal interruption directly on its
+    // initial joined read.
+    if (attempt?.explicitCancellation === true && typeof adapters.terminateMarkedRunner === 'function') {
+      const failureReread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
+      return settleRemoteEvidence(adapters, { ...stopping, remote: failureReread }, stopCauseOf(stopping, cause), signal,
+        revalidated?.guard ?? null, runnerCleanup, evidence, attempt);
+    }
     await runRunnerCleanup(adapters, stopping, runnerCleanup);
     return retainedOutcome(adapters, stopping, stop?.error, signal);
   }
@@ -275,7 +358,8 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     return publishedOutcome(winner, stopping);
   }
   const reread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
-  return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal, revalidated?.guard ?? null, runnerCleanup);
+  return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal,
+    revalidated?.guard ?? null, runnerCleanup, evidence, attempt);
 }
 
 /** @typedef {('settled'|'unmarked'|'unproven'|'not-proven'|'budget-expired'|'pending'|'skipped')} RunnerCleanupOutcome */
@@ -325,6 +409,98 @@ async function runRunnerCleanup(adapters, joined, state) {
  */
 function cleanupAllowsSettlement(outcome) {
   return outcome === 'settled' || outcome === 'unmarked' || outcome === 'unproven' || outcome === 'skipped';
+}
+
+/**
+ * The current attempt's stop-response evidence (spec 4.2), derived ONCE at the
+ * stop site and threaded only within that attempt — never persisted, never
+ * replayed across passes or processes. It stays SEPARATE from runner-cleanup
+ * outcomes and from the remote read's current-turn identity evidence, and it
+ * never renames `acknowledged` into a `stopped` claim: a stop response is a
+ * handling acknowledgement, and only the discriminated `qualification` names
+ * whether this exact response may support the no-report settlement. The
+ * adapter contract supplies `upstreamGeneration` as INTERNAL continuity
+ * evidence — the attestation that the pre-stop read, the stop, and the reread
+ * shared one uninterrupted upstream protocol generation on the exact managed
+ * control path (adapters derive it from one never-reconnected protocol
+ * connection plus the existing generation/turn-boundary validation, never
+ * from JavaScript object identity); it must never cross the public outcome
+ * seam.
+ * @typedef {{acknowledged: false, error?: unknown}
+ *   |{acknowledged: true, qualification: 'none'}
+ *   |{acknowledged: true, qualification: 'exact-runtime', upstreamGeneration: 'same', preStopCurrentTurnSnapshot: true}} StopResponseEvidence
+ */
+/**
+ * Normalize one stop-adapter response plus the attempt's pre-stop snapshot
+ * validity into the StopResponseEvidence union. A bare acknowledgement (no
+ * continuity attestation), a replaced upstream generation answered under the
+ * same session ID, or a stop whose attempt never obtained a valid pre-stop
+ * current-turn snapshot yields NO qualification — the empty `{}` response
+ * cannot settle a cancellation without a report.
+ * @param {any} stop @param {boolean} preStopSnapshot
+ * @returns {StopResponseEvidence}
+ */
+function stopResponseEvidence(stop, preStopSnapshot) {
+  if (stop?.acknowledged !== true) {
+    return stop?.error === undefined ? { acknowledged: false } : { acknowledged: false, error: stop.error };
+  }
+  return preStopSnapshot && stop.upstreamGeneration === 'same'
+    ? { acknowledged: true, qualification: 'exact-runtime', upstreamGeneration: 'same', preStopCurrentTurnSnapshot: true }
+    : { acknowledged: true, qualification: 'none' };
+}
+
+/**
+ * Whether the stop-response evidence is the QUALIFIED exact-runtime
+ * acknowledgement: acknowledged over the same upstream protocol generation as
+ * this attempt's valid pre-stop current-turn snapshot.
+ * @param {any} evidence
+ */
+function qualifiedExactRuntimeAcknowledgement(evidence) {
+  return evidence?.acknowledged === true && evidence.qualification === 'exact-runtime';
+}
+
+/**
+ * The bounded retention diagnostic for one unresolved post-stop pass: a
+ * FAILED stop keeps its own observed error as the durable retry evidence
+ * (the retained cancelling guard's visible lastCancelError), exactly as the
+ * pre-probe behavior; an acknowledged stop's residual uncertainty keeps the
+ * caller-supplied fallback. Pre-stop passes (no stop evidence yet) always
+ * keep the fallback.
+ * @param {StopResponseEvidence|undefined} stopEvidence @param {unknown} fallback
+ * @returns {unknown}
+ */
+function stopRetentionDiagnostic(stopEvidence, fallback) {
+  if (stopEvidence !== undefined && stopEvidence.acknowledged === false) {
+    return stopEvidence.error !== undefined ? stopEvidence.error : unresolvedStopError();
+  }
+  return fallback;
+}
+
+/**
+ * Whether this attempt's pre-stop read is itself the valid current-turn
+ * snapshot the no-report settlement requires (spec 4.2): exact evidence
+ * attributable to the current turn while it was still executing, observed in
+ * THIS attempt — never a persisted receipt, an old log, a reconstructed
+ * runtime's idle state, or the absence of a report. A failed initial read
+ * provides no snapshot, so its empty stop response can never qualify.
+ * @param {any} remote
+ */
+function preStopCurrentTurnSnapshot(remote) {
+  return remote?.kind === 'evidence' && remote.active === true && remote.attributable === true;
+}
+
+/**
+ * Whether a runner-cleanup outcome supplies the POSITIVE applicable-cleanup
+ * evidence the no-report settlement requires (spec 4.3): only the
+ * completed-clean marked-runner sweep (`settled` — kill decision plus a
+ * same-pass dead-root descendant sweep). `unmarked` is deliberately NOT
+ * accepted — no marked claim does not mean a foreground executor exited — and
+ * neither are `unproven`, `skipped`, exhausted budgets, nor pending sweeps;
+ * those retain the guard so the next bounded pass re-arms the duty.
+ * @param {string|null} outcome
+ */
+function cleanupVerifiesExecutorCleanup(outcome) {
+  return outcome === 'settled';
 }
 
 /**
