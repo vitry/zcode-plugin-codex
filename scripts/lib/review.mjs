@@ -7,14 +7,14 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
-import { createJobController, revalidateBoundRescueStop, withJobCancellationLock } from './job-control.mjs';
+import { createJobController, publishOwnerHeldNoReportCancellation, revalidateBoundRescueStop, withJobCancellationLock } from './job-control.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord } from './rescue-binding.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
-import { awaitCurrentTurnTerminal, selectCurrentTurnAssistant } from './turn-terminal.mjs';
+import { awaitCurrentTurnTerminal, hasCurrentTurnActivity, selectCurrentTurnAssistant } from './turn-terminal.mjs';
 import { publicErrorMessage } from './public-text.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
@@ -25,6 +25,51 @@ const READ_TOOLS = /^(read|inspect|search|list|find|glob|grep|git(?:[-_ ]?(?:sta
 const MUTATING_TOOLS = /(write|edit|patch|delete|remove|create|exec|shell|command|install|move|rename|commit|push)/i;
 const OPTIONAL_PROGRESS_FENCE_MS = 250;
 const SUBSCRIPTION_BASELINE_FENCE_MS = 100;
+/** The bounded budget for the interruption path's own pre-stop evidence read
+ * (spec 4.2): the same bound the cancellation election applies to its retry
+ * pre-stop read — a stalled read must never block the exact stop. */
+const FOREGROUND_PRESTOP_READ_BUDGET_MS = 1_000;
+
+/**
+ * The foreground executor's BOUNDED control-evidence retention for its
+ * no-report finalization claim (spec 4.2): sequences this process's
+ * session/reads and session/stops and keeps ONLY the evidence the
+ * qualification reads — the latest read that preceded the latest stop (the
+ * pre-stop current-turn snapshot and its serving-generation stamp), the
+ * latest observation read or read failure, and one stamp per stop. A pending
+ * turn polls every reconcile interval with no completion deadline; retaining
+ * every conversation snapshot would accumulate thousands of duplicates until
+ * execution exits. Exported as the composition seam for the retention policy;
+ * `executeJob` drives it through its own control wrappers.
+ * @returns {{seq:number, stops:Array<{seq:number, generation:string|null}>, lastPreStopRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null, lastRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null, observeRead:(read:{snapshot?:any, error?:unknown, generation:string|null})=>number, observeStop:(generation:string|null)=>number}}
+ */
+export function createForegroundControlEvidence() {
+  return {
+    seq: 0,
+    stops: [],
+    lastPreStopRead: null,
+    lastRead: null,
+    /** @param {{snapshot?:any, error?:unknown, generation:string|null}} read */
+    observeRead(read) {
+      this.seq += 1;
+      // The read being replaced was the latest observation BEFORE the latest
+      // stop — exactly the pre-stop evidence the qualification reads — so it
+      // is promoted before the new observation takes the live slot. Whenever
+      // a post-stop observation exists (the only case that can qualify), the
+      // slot therefore holds the latest pre-stop snapshot.
+      const latestStop = this.stops[this.stops.length - 1];
+      if (this.lastRead && (latestStop === undefined || this.lastRead.seq < latestStop.seq)) this.lastPreStopRead = this.lastRead;
+      this.lastRead = { seq: this.seq, ...read };
+      return this.seq;
+    },
+    /** @param {string|null} generation */
+    observeStop(generation) {
+      this.seq += 1;
+      this.stops.push({ seq: this.seq, generation });
+      return this.seq;
+    },
+  };
+}
 const REVIEW_OUTPUT_SCHEMA = await loadReviewOutputSchema();
 
 /** @param {any} request @param {any} permissionSnapshot @param {string} command */
@@ -64,6 +109,59 @@ export async function executeJob(input) {
   let output;
   let appliedFinalization = false;
   let progressCleaned = false;
+  /** The foreground executor's own no-report finalization claim (spec 2026-09-14
+   * section 4.3): set only by its internal finalization flow after its own stop
+   * was acknowledged WITH the same qualification management reconciliation
+   * requires (spec 4.2), and consumed only AFTER the cleanup below stopped
+   * sending and CONFIRMED the release of its original transport turn.
+   * @type {{workerLeaseId:string,childPid:number,stopCause:string}|null} */
+  let foregroundNoReportClaim = null;
+  /** The accepted turn boundary (spec 4.2 pre-stop attribution reference),
+   * captured once the send admission is durable. @type {any} */
+  let acceptedTurnBoundary = null;
+  /** The executor's own control-path evidence for its no-report finalization
+   * claim (spec 4.2): the session/reads and session/stops this process issued
+   * for the accepted turn, sequenced and stamped with BOUNDED retention (the
+   * latest pre-stop read, the latest observation, one stamp per stop), so the
+   * claim can prove the SAME upstream protocol generation served a valid
+   * pre-stop current-turn snapshot, the stop, and the final observation
+   * reread — never the bare fact that some stop response returned. */
+  const foregroundControlEvidence = createForegroundControlEvidence();
+  /** One evidence-carrying session/read: the snapshot plus the broker's
+   * serving-generation stamp observed with it (null when the serving path
+   * proves none — which can never qualify continuity).
+   * @param {string} id */
+  const observeReadSession = async (id) => {
+    try {
+      const snapshot = await client.readSession(id);
+      foregroundControlEvidence.observeRead({ snapshot,
+        generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
+      return snapshot;
+    } catch (error) {
+      foregroundControlEvidence.observeRead({ error, generation: null });
+      throw error;
+    }
+  };
+  /** One bounded, evidence-carrying pre-stop read for the interruption
+   * finalization path (spec 4.2): an interruption can land after send
+   * acceptance but BEFORE the reconciliation loop performed any read (no
+   * terminal wake yet), and the no-report qualification must not depend on a
+   * prior completion wake — so the executor obtains its own pre-stop
+   * current-turn snapshot, paired with its serving-generation stamp, before
+   * the exact stop is issued. Skipped when evidence already exists; an
+   * unreadable or timed-out read never blocks the exact stop.
+   * @returns {Promise<void>} */
+  const boundedPreStopEvidenceRead = async () => {
+    const preStopSessionId = sessionId;
+    if (acceptedTurnBoundary === null || preStopSessionId === undefined) return;
+    if (foregroundControlEvidence.lastRead) return;
+    try {
+      await new Promise((resolvePre) => {
+        const timer = setTimeout(() => resolvePre(undefined), FOREGROUND_PRESTOP_READ_BUDGET_MS);
+        Promise.resolve().then(() => observeReadSession(preStopSessionId)).then(() => resolvePre(undefined), () => resolvePre(undefined)).finally(() => clearTimeout(timer));
+      });
+    } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+  };
   /** @type {any} */ let jobLog;
   let jobLogCleaned = false;
   /** @type {any} */ let observedBoundStop;
@@ -234,6 +332,7 @@ export async function executeJob(input) {
     running = admission.running; const sent = admission.sent;
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
+    acceptedTurnBoundary = turnBoundary;
     try {
       const sessionDescriber = await createSessionProgressDescriber({ workspace, turnBoundary });
       reporter.activateAcceptedBoundary({ readSnapshot: () => client.readSession(activeSessionId), describer: sessionDescriber });
@@ -244,7 +343,7 @@ export async function executeJob(input) {
       : client.waitForCompletion.bind(client);
     const legacyWake = waitForCompletionOrAbort(observeLegacyCompletion(activeSessionId), input.signal);
     const terminal = await awaitCurrentTurnTerminal({
-      legacyWake, conversationObserver, readSnapshot: () => client.readSession(activeSessionId), turnBoundary, signal: input.signal,
+      legacyWake, conversationObserver, readSnapshot: () => observeReadSession(activeSessionId), turnBoundary, signal: input.signal,
     });
     await cleanupProgress(terminal.kind);
     const finalSnapshot = terminal.snapshot;
@@ -331,10 +430,15 @@ export async function executeJob(input) {
         } catch { /* retain the writable guard when the known no-send session cannot be stopped */ }
       } else if (backgroundInterruptRetainsTurn(job) === false) {
         let cancellationPublicationApplied = false;
+        let ownStopAcknowledged = false;
         const cancellation = createJobController({
           store: input.store, dataRoot,
-          stopSession: (id) => client.stopSession(id),
-          readSession: (id) => client.readSession(id),
+          stopSession: async (id) => {
+            const stopped = await client.stopSession(id); ownStopAcknowledged = true;
+            foregroundControlEvidence.observeStop(stopped && typeof stopped === 'object' && typeof stopped.brokerProtocolGeneration === 'string' ? stopped.brokerProtocolGeneration : null);
+            return stopped;
+          },
+          readSession: (id) => observeReadSession(id),
           publishSucceededSnapshot: async ({ job: cancelling, snapshot, turnBoundary }) => {
             const result = extractFinalResult(snapshot, cancelling.command, turnBoundary);
             const publication = await publishSuccessfulResultWithLockHeld({
@@ -348,12 +452,34 @@ export async function executeJob(input) {
         });
         // An unrequested interruption of this attached foreground companion is
         // host coordination loss — only an explicit Cancel may record `user`.
+        // The bounded pre-stop evidence read above runs FIRST so the
+        // no-report qualification has its pre-stop current-turn snapshot even
+        // when the interruption landed before any reconciliation read.
+        await boundedPreStopEvidenceRead();
         const cancellationWinner = await cancellation.cancel(workspace, job.id, job.ownerSessionId, job.stopIntent?.cause ?? hostInterruptStopCause()).catch(() => null);
         if (cancellationWinner?.status === 'succeeded' && cancellationWinner.resultArtifact) {
           try {
             output = { job: cancellationWinner, result: await readResultArtifact({ dataRoot, workspace, artifact: cancellationWinner.resultArtifact }) };
             appliedFinalization = cancellationPublicationApplied; primaryError = undefined;
           } catch (artifactError) { primaryError = artifactError; }
+        }
+        // The executor's OWN no-report finalization claim: ONLY when its own
+        // stop over its own control client was acknowledged over the SAME
+        // upstream protocol generation that served this attempt's valid
+        // pre-stop current-turn snapshot, and the final observation read after
+        // that stop showed no contrary evidence — the SAME qualification the
+        // management reconciliation derives from the broker stamps (spec
+        // 4.2/4.4; spec section 3: every entry point shares the decision
+        // rules). The election's retained uncertainty alone never qualifies: a
+        // reread still showing active execution, or content not attributable
+        // to the accepted turn, means remote work may remain and the guard
+        // stays for the next bounded pass.
+        const ownWorkerLeaseId = input.workerLeaseId;
+        const ownChildPid = input.childPid;
+        if (ownStopAcknowledged && typeof ownWorkerLeaseId === 'string' && typeof ownChildPid === 'number' && Number.isSafeInteger(ownChildPid)
+          && foregroundNoReportQualified(foregroundControlEvidence, acceptedTurnBoundary)) {
+          foregroundNoReportClaim = { workerLeaseId: ownWorkerLeaseId, childPid: ownChildPid,
+            stopCause: job.stopIntent?.cause ?? hostInterruptStopCause() };
         }
       }
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
@@ -377,15 +503,40 @@ export async function executeJob(input) {
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
   let releaseError;
+  let turnReleaseConfirmed = false;
   if (sessionId && typeof client.releaseTurn === 'function') {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      try { await client.releaseTurn(sessionId); releaseError = undefined; break; }
+      try { await client.releaseTurn(sessionId); turnReleaseConfirmed = true; releaseError = undefined; break; }
       catch (cleanupError) { releaseError = cleanupError; }
     }
   }
   if (releaseError) {
     await jobLog?.appendBlock('Cleanup diagnostic', 'ZCode turn release cleanup was incomplete.', Date.now() + OPTIONAL_PROGRESS_FENCE_MS).catch(() => {});
     if (!primaryError && output?.job?.status !== 'succeeded') primaryError = releaseError;
+  }
+  if (foregroundNoReportClaim && !turnReleaseConfirmed) {
+    // The transport release above is part of the internal finalization
+    // evidence (spec 4.3: the executor "released its original transport
+    // turn"): an unresolved or failed release is incomplete cleanup, so the
+    // owner-held publication never runs — the cancelling guard stays with the
+    // bounded interruption error for the next bounded pass.
+    foregroundNoReportClaim = null;
+  }
+  if (foregroundNoReportClaim) {
+    // The executor's OWN owner-held no-report publication (spec 4.3): the
+    // internal finalization evidence now exists — it stopped sending (the
+    // interrupted turn will never send again), it just CONFIRMED the release
+    // of its original transport turn, and it is in its exit path still holding
+    // its worker claim — so it may settle its qualified acknowledged stop
+    // without a final report WITHOUT reacquiring its own lease and without
+    // being reachable by any external caller (the helper gates on this process
+    // being the recorded executor). Contention or invalid identity keeps the
+    // durable winner.
+    const claim = foregroundNoReportClaim; foregroundNoReportClaim = null;
+    await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+      await publishOwnerHeldNoReportCancellation({ store: input.store, dataRoot, workspace }, { ...job, zcodeSessionId: sessionId }, claim.stopCause,
+        { workerLeaseId: claim.workerLeaseId, childPid: claim.childPid });
+    }).catch(() => { /* a retained guard stays with the bounded interruption error */ });
   }
   try { await client.close(); }
   catch {
@@ -397,6 +548,47 @@ export async function executeJob(input) {
   await cleanupJobLog();
   if (primaryError) throw primaryError;
   return output;
+}
+
+/** The projection statuses that mean the current turn is still executing —
+ * the same active set the cancellation observation treats as unresolved. */
+const FOREGROUND_ACTIVE_PROJECTION_STATUSES = new Set(['running', 'waiting', 'paused']);
+
+/** The bounded hex shape of one broker serving-generation stamp; anything else
+ * proves no generation and can never qualify upstream continuity.
+ * @param {unknown} value */
+function boundedGenerationStamp(value) {
+  return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
+}
+
+/**
+ * Whether the executor's own control evidence qualifies its no-report
+ * finalization claim — the SAME qualification management reconciliation
+ * derives from the broker stamps (spec 4.2/4.4): the LAST stop this process
+ * issued must carry a serving-generation stamp equal to the stamp of the last
+ * read BEFORE that stop, that pre-stop snapshot must be attributable to the
+ * accepted turn, and the final read after the stop must show NO contrary
+ * evidence — a readable reread still executing the turn, or content not
+ * attributable to it, refuses the claim (an acknowledgement never overrides
+ * contrary evidence). An unreadable final reread does not veto by itself
+ * (spec 4.4), but a post-stop observation read attempt must exist.
+ * @param {{seq:number, stops:Array<{seq:number, generation:string|null}>, lastPreStopRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null, lastRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null}} evidence
+ * @param {any} boundary the accepted turn boundary
+ */
+function foregroundNoReportQualified(evidence, boundary) {
+  if (!boundary) return false;
+  const lastStop = evidence.stops[evidence.stops.length - 1];
+  const stopGeneration = boundedGenerationStamp(lastStop?.generation);
+  if (stopGeneration === null) return false;
+  const lastPreStop = evidence.lastPreStopRead;
+  if (!lastPreStop || boundedGenerationStamp(lastPreStop.generation) !== stopGeneration) return false;
+  if (!hasCurrentTurnActivity(lastPreStop.snapshot, boundary)) return false;
+  const lastRead = evidence.lastRead;
+  if (!lastRead || lastRead.seq <= lastStop.seq) return false; /* no post-stop observation attempt */
+  if (lastRead.snapshot === undefined) return true; /* the final reread failed: readable contrary evidence is absent (spec 4.4) */
+  if (boundedGenerationStamp(lastRead.generation) !== stopGeneration) return false;
+  return hasCurrentTurnActivity(lastRead.snapshot, boundary)
+    && !FOREGROUND_ACTIVE_PROJECTION_STATUSES.has(lastRead.snapshot?.projection?.status);
 }
 
 /** @param {Promise<unknown>} operation @param {number} deadline */

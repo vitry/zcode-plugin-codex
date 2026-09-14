@@ -238,3 +238,23 @@ test('explicit stop control still ends an armed legacy turn', () => {
   assert.equal(protocol.turnState('session-legacy'), null, 'local release must end the turn');
   assert.equal(protocol.closed, false);
 });
+
+test('a failed protocol connection is permanently closed and proves no continuity', async () => {
+  const first = new ZCodeProtocolClient(fakeProtocolChild());
+  const second = new ZCodeProtocolClient(fakeProtocolChild());
+  try {
+    // Socket-level continuity is bounded but NEVER upstream-generation proof:
+    // the broker can reconstruct its engine behind one unchanged client
+    // connection, which is why continuity attestation derives from the
+    // broker's serving-generation stamps instead (see zcode-broker.mjs). No
+    // socket-token primitive exists to be mistaken for generation proof.
+    assert.equal('connectionToken' in first, false);
+    assert.equal(first.closed, false);
+    first.fail(new Error('transport reset mid-attempt'));
+    assert.equal(first.closed, true, 'a failed connection can serve no further request');
+    assert.equal(second.closed, false);
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});

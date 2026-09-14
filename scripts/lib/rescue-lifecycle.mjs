@@ -204,6 +204,7 @@ async function stopAndSettle(adapters, joined, cause, signal, attempt) {
  * @param {{done: boolean, outcome: string|null}} [runnerCleanup]
  * @param {StopResponseEvidence|undefined} [stopEvidence] this attempt's stop-response evidence; undefined before any stop this pass
  * @param {{explicitCancellation?: boolean}|undefined} [attempt] the pass's cancellation authority
+ * @returns {Promise<any>}
  */
 async function settleRemoteEvidence(adapters, joined, cause, signal, guard = undefined, runnerCleanup = { done: true, outcome: 'skipped' }, stopEvidence = undefined, attempt = undefined) {
   signal?.throwIfAborted();
@@ -337,11 +338,11 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // initial joined read.
     if (attempt?.explicitCancellation === true && typeof adapters.terminateMarkedRunner === 'function') {
       const failureReread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
-      return settleRemoteEvidence(adapters, { ...stopping, remote: failureReread }, stopCauseOf(stopping, cause), signal,
-        revalidated?.guard ?? null, runnerCleanup, evidence, attempt);
+      return stopAttemptedOutcome(settleRemoteEvidence(adapters, { ...stopping, remote: failureReread }, stopCauseOf(stopping, cause), signal,
+        revalidated?.guard ?? null, runnerCleanup, evidence, attempt));
     }
     await runRunnerCleanup(adapters, stopping, runnerCleanup);
-    return retainedOutcome(adapters, stopping, stop?.error, signal);
+    return stopAttemptedOutcome(retainedOutcome(adapters, stopping, stop?.error, signal));
   }
   if (isPlainObject(stop.preExistingTerminal)) {
     // A terminal outcome observed by the adapter BEFORE issuing the stop keeps
@@ -350,16 +351,40 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // — and never over an unproven sweep.
     const evidence = stop.preExistingTerminal;
     const cleanup = await runRunnerCleanup(adapters, stopping, runnerCleanup);
-    if (!cleanupAllowsSettlement(cleanup)) return retainedOutcome(adapters, stopping, undefined, signal);
+    if (!cleanupAllowsSettlement(cleanup)) return stopAttemptedOutcome(retainedOutcome(adapters, stopping, undefined, signal));
     const winner = await adapters.publishWinner(stopping, evidence.classification === 'succeeded'
       ? { status: 'succeeded', classification: 'succeeded', snapshot: evidence.snapshot }
       : { status: 'failed', classification: 'failed', snapshot: evidence.snapshot,
           message: 'ZCode reported a terminal error before the stop could be attempted.' }, { signal });
-    return publishedOutcome(winner, stopping);
+    return stopAttemptedOutcome(publishedOutcome(winner, stopping));
   }
   const reread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
-  return settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal,
-    revalidated?.guard ?? null, runnerCleanup, evidence, attempt);
+  return stopAttemptedOutcome(settleRemoteEvidence(adapters, { ...stopping, remote: reread }, stopCauseOf(stopping, cause), signal,
+    revalidated?.guard ?? null, runnerCleanup, evidence, attempt));
+}
+
+/**
+ * Mark one stop-pass outcome as produced AFTER this pass exercised the exact
+ * remote-stop seam (`stopExactTurn` was reached — acknowledged, failed, or
+ * superseded by a pre-existing terminal it observed at the stop site).
+ * INTERNAL reconciliation-evidence field for the cancellation election: a
+ * nonterminal retention alone does NOT prove a stop was attempted (an
+ * attributable idle snapshot with an unfinished assistant retains before any
+ * stop), and the election may only defer its own one remote stop attempt to a
+ * shared pass that actually attempted one. The marker is attached as a
+ * NON-ENUMERABLE field so the outcome's pinned public-projected shape (and
+ * every consumer that does not opt into this internal evidence) is unchanged,
+ * and it never crosses the public outcome seam.
+ * @param {any} outcome the stop-pass outcome, or the PROMISE of one (every
+ *   call site wraps an awaited async seam result)
+ * @returns {Promise<any>}
+ */
+async function stopAttemptedOutcome(outcome) {
+  const settled = await outcome;
+  if (settled === null || typeof settled !== 'object' || settled.kind === 'settled-terminal') return settled;
+  const marked = { ...settled };
+  Object.defineProperty(marked, 'remoteStopAttempted', { value: true, enumerable: false });
+  return marked;
 }
 
 /** @typedef {('settled'|'unmarked'|'unproven'|'not-proven'|'budget-expired'|'pending'|'skipped')} RunnerCleanupOutcome */
@@ -422,10 +447,12 @@ function cleanupAllowsSettlement(outcome) {
  * adapter contract supplies `upstreamGeneration` as INTERNAL continuity
  * evidence — the attestation that the pre-stop read, the stop, and the reread
  * shared one uninterrupted upstream protocol generation on the exact managed
- * control path (adapters derive it from one never-reconnected protocol
- * connection plus the existing generation/turn-boundary validation, never
- * from JavaScript object identity); it must never cross the public outcome
- * seam.
+ * control path (adapters derive it from the BROKER's serving-generation
+ * stamps on the read and stop responses — the broker can lazily reconstruct
+ * its upstream engine behind one unchanged client socket, so neither socket
+ * continuity nor JavaScript object identity is proof — and the no-report
+ * publication re-verifies the reread's stamp against the same generation); it
+ * must never cross the public outcome seam.
  * @typedef {{acknowledged: false, error?: unknown}
  *   |{acknowledged: true, qualification: 'none'}
  *   |{acknowledged: true, qualification: 'exact-runtime', upstreamGeneration: 'same', preStopCurrentTurnSnapshot: true}} StopResponseEvidence

@@ -17,7 +17,7 @@ import { hostOwnedStopIntentPatch } from '../scripts/lib/rescue-binding.mjs';
 import { createRescueLifecycleReconciler } from '../scripts/lib/rescue-lifecycle.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
-import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld } from '../scripts/lib/review.mjs';
+import { executeJob as executeJobProduction, publishSuccessfulResultWithLockHeld, writeResultArtifact } from '../scripts/lib/review.mjs';
 import { createManagementRescueReconcile, runCompanion } from '../scripts/zcode-companion.mjs';
 import { boundedSnapshotFixture, captured0165TurnRow, conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
@@ -3257,6 +3257,931 @@ test('management reconciliation terminates the live marked runner before reporti
   } finally {
     try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the reconciliation */ }
     await rm(root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Interrupt cancellation settlement at the MANAGEMENT COMPOSITION seam (spec
+// 2026-09-14, sections 4.2-4.4): a qualified exact-runtime stop acknowledgement
+// — this attempt's valid pre-stop current-turn snapshot, the stop over the same
+// uninterrupted managed control path, one reread — plus the completed-clean
+// marked-runner sweep may publish `cancelled` WITHOUT a final assistant report,
+// but only through the dedicated guarded publication (exact worker lease,
+// identity and stopIntent revalidation, CAS). Every uncertainty or rejection
+// path below retains the cancelling writable guard.
+// ---------------------------------------------------------------------------
+
+/** The current turn still executing: the valid pre-stop snapshot shape. @param {string} inputId */
+function activeCurrentTurnSnapshot(inputId) {
+  return { projection: { status: 'running' }, runtime: { stateRevision: 2 }, messages: [completedUser(inputId)] };
+}
+
+/** The incident shape: idle, the current turn's unfinished assistant, no final report. @param {string} inputId */
+function idleUnfinishedTurnSnapshot(inputId) {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser(inputId), {
+    info: { role: 'assistant', messageId: `assistant-${inputId}`, parentMessageId: inputId }, parts: [{ type: 'text', text: 'partial without a finish' }],
+  }] };
+}
+
+/** Terminal current-turn interruption evidence (a written stop-cause report). @param {string} inputId */
+function interruptedTurnSnapshot(inputId) {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser(inputId), {
+    info: { role: 'assistant', messageId: `assistant-${inputId}`, parentMessageId: inputId, finish: 'cancelled' }, parts: [{ type: 'text', text: 'stopped' }],
+  }] };
+}
+
+/**
+ * One management control client over one live broker connection, sequenced by
+ * read index exactly like a real settlement attempt and modeling the BROKER's
+ * serving-generation stamp contract: every session/read records the protocol
+ * generation that served it (surfaced through readServingGeneration exactly
+ * like the production ZCodeClient strips and records the broker's
+ * `brokerProtocolGeneration` stamp), and the session/stop response carries its
+ * own stamp. `readGenerations` sequences the per-read stamps (default: one
+ * unchanged generation), `stopGeneration` names the generation answering the
+ * stop (a DIFFERENT value models the same session ID answered by a REPLACED
+ * upstream generation — the reconstructed-runtime shape), and
+ * `unstamped: true` models a serving path that proves no generation at all.
+ * `onStop`/`onReread` model concurrent durable mutations landing mid-attempt.
+ * @param {{reads?:Array<()=>any>, readGenerations?:Array<string|null>, stopGeneration?:string|null, unstamped?:boolean, onStop?:()=>Promise<void>, onReread?:()=>Promise<void>}} [options]
+ */
+function noReportControlClient(options = {}) {
+  const inputId = 'input-no-report';
+  const generation = 'a'.repeat(32);
+  const reads = options.reads ?? [
+    () => activeCurrentTurnSnapshot(inputId),
+    () => activeCurrentTurnSnapshot(inputId),
+    () => idleUnfinishedTurnSnapshot(inputId),
+  ];
+  const readGenerations = options.readGenerations ?? reads.map(() => (options.unstamped ? null : generation));
+  const stopGeneration = options.unstamped ? null : options.stopGeneration ?? generation;
+  /** @type {string[]} */ const calls = [];
+  /** @type {string[]} */ const violations = [];
+  let stops = 0;
+  let rereadHookFired = false;
+  /** @type {string|null} */ let lastReadGeneration = null;
+  const client = {
+    // The production client's socket-level continuity token: CONSTANT across a
+    // broker-side upstream reconstruction (the client connection survives the
+    // engine retirement), which is exactly why socket continuity alone cannot
+    // prove upstream-generation continuity.
+    upstreamConnectionToken: () => 'client-socket-live',
+    readServingGeneration: () => lastReadGeneration,
+    readSession: async () => {
+      calls.push('read');
+      const index = calls.filter((call) => call === 'read').length - 1;
+      if (!rereadHookFired && index >= 2 && index === reads.length - 1) { rereadHookFired = true; await options.onReread?.(); }
+      const snapshot = reads[Math.min(index, reads.length - 1)]();
+      lastReadGeneration = readGenerations[Math.min(index, readGenerations.length - 1)] ?? null;
+      return snapshot;
+    },
+    stopSession: async () => { calls.push('stop'); stops += 1; await options.onStop?.(); return stopGeneration === null ? {} : { brokerProtocolGeneration: stopGeneration }; },
+    createSession: async () => { violations.push('create'); throw new Error('no runtime may be created to manufacture settlement evidence'); },
+    resumeSession: async () => { violations.push('resume'); throw new Error('no runtime may be resumed to manufacture settlement evidence'); },
+    send: async () => { violations.push('send'); throw new Error('no task may be sent to manufacture settlement evidence'); },
+    close: async () => { calls.push('close'); },
+  };
+  return { client, calls: () => [...calls], violations, stops: () => stops };
+}
+
+/**
+ * One Host-managed writable Rescue in the settlement shape: a marked detached
+ * runner whose recorded pid is already gone (its exact lease is free unless a
+ * test holds it), a durable accepted turn boundary, and — unless `running` —
+ * the persisted user stop intent an explicit cancellation owns. `unmarked`
+ * selects the attached foreground record instead (no runner marker: an
+ * unmarked record is never a process-group target and never implies exit).
+ * @param {{unmarked?:boolean, running?:boolean}} [options]
+ */
+async function noReportSettlementFixture(options = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-no-report-settlement-'));
+  const dataRoot = join(root, 'data');
+  await mkdir(join(root, 'workspace'));
+  const workspace = await realpath(join(root, 'workspace'));
+  const store = createStateStore({ dataRoot });
+  // The recorded broker identity keeps the (POSIX-irrelevant) Windows sweep
+  // lookup resolved; the recorded pid is dead either way.
+  await recordSweepBrokerIdentity(dataRoot, workspace);
+  const agentId = `no-report-child-${Math.random().toString(16).slice(2, 8)}`;
+  const executor = hostOwnedExecutor(workspace, agentId);
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor,
+    lifecycle: { ownerLifecycleEpoch: 'b'.repeat(64), executionOwner: 'host-child', hostPlacement: options.unmarked ? 'foreground' : 'background' },
+    ...(options.unmarked ? {} : { executionInput: { version: 1, task: 'bounded private task' } }) });
+  const workerLeaseId = 'f'.repeat(64);
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-no-report', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'running', { inputId: 'input-no-report', startRevision: 1, beforeMessageIds: [] });
+  if (!options.running) {
+    await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(reserved.job, 'user'));
+  }
+  return { root, dataRoot, workspace, store, reserved, executor, workerLeaseId };
+}
+
+/**
+ * Bind the real management reconciler to one fixture with the supplied control
+ * client, exactly the composition runCompanion wires for the cancel election.
+ * @param {{dataRoot:string,workspace:string,store:any,reserved:any}} fixture @param {{client:any,violations:string[],stops:()=>number,calls:()=>string[]}} control
+ */
+/** Compose the real management reconciliation over one fixture and control
+ * client, optionally injecting the reconciler's termination seam.
+ * @param {any} fixture @param {any} control @param {{terminateProcessTree?:(pid:number,options:Record<string,unknown>)=>Promise<unknown>}} [options] */
+function managementReconcileFor(fixture, control, options = {}) {
+  let createdClients = 0;
+  const reconcileRescueLifecycle = createManagementRescueReconcile({
+    store: fixture.store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'session-a',
+    createClient: async () => { createdClients += 1; return control.client; },
+    createRescueLifecycleReconciler,
+    ...(options.terminateProcessTree ? { terminateProcessTree: options.terminateProcessTree } : {}),
+  });
+  return {
+    reconcileStop: (/** @type {{kind:'stop',cause:string}|{kind:'observe'}} */ intent = { kind: 'stop', cause: 'user' }) => reconcileRescueLifecycle({
+      intent, authority: { ownerSessionId: 'session-a' }, workspace: fixture.workspace, selector: { jobId: fixture.reserved.job.id } }),
+    createdClients: () => createdClients,
+  };
+}
+
+test('a qualified exact-runtime stop acknowledgement settles management cancellation without a final report', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient();
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+      `the qualified acknowledgement plus verified cleanup settles without a final assistant report: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'exactly one exact stop through the managed control path');
+    assert.deepEqual(control.violations, [], 'no session create/resume/send is ever used to manufacture settlement evidence');
+    assert.equal(reconcile.createdClients(), 1, 'the joined read, stop, and reread share one acquired control client');
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(winner.status, 'cancelled');
+    assert.equal(winner.stopCause, 'user');
+    assert.ok(winner.finishedAt, 'the cancelled winner carries a completion time');
+    assert.equal(winner.resultArtifact, undefined, 'no success artifact is fabricated for a no-report cancellation');
+    // Guard release is durable: a new writable reservation is admitted again.
+    await fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'after-no-report-release' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('the same session answered over a replaced upstream generation never qualifies the acknowledgement', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({
+    // The joined read is served by generation 1; the broker's upstream engine
+    // is then reconstructed, and the stop response carries the REPLACEMENT
+    // generation's stamp — the same session ID answering over a replaced
+    // upstream protocol generation.
+    stopGeneration: 'b'.repeat(32),
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `a stop response from a replaced upstream carries no continuity proof: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the exact stop is still attempted over the live path');
+    assert.equal(reconcile.createdClients(), 1);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-replaced-upstream' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a reconstructed upstream generation with failing reads cannot qualify an acknowledged stop', async () => {
+  const fixture = await noReportSettlementFixture();
+  const inputId = 'input-no-report';
+  const control = noReportControlClient({
+    // The incident hazard the stamp must close: the upstream engine dies AFTER
+    // the joined pre-stop snapshot (generation 1), the broker retires it and
+    // lazily reconstructs a fresh engine (generation 2), and BOTH post-join
+    // reads throw — while the fresh engine's controller-less session/stop
+    // returns {} stamped with the replacement generation. The acknowledgement
+    // must not qualify: the stop never reached the executor that owned the
+    // original turn, and the unreadable reread cannot veto what was never
+    // qualified evidence (spec 4.2).
+    reads: [
+      () => activeCurrentTurnSnapshot(inputId),
+      () => { throw new Error('session/read failed against the retired upstream'); },
+      () => { throw new Error('session/read failed against the reconstructed upstream'); },
+    ],
+    readGenerations: ['a'.repeat(32), null, null],
+    stopGeneration: 'b'.repeat(32),
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `the reconstructed runtime's empty stop response cannot settle without the original executor: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the exact stop is still attempted');
+    assert.equal(reconcile.createdClients(), 1, 'the reads and stop reuse the one acquired client');
+    assert.deepEqual(control.violations, []);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-reconstructed-upstream' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a reread answered by a replaced upstream generation never qualifies the no-report settlement', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({
+    // The joined read and the stop both carry generation 1's stamp — the stop
+    // itself is continuous — but the broker reconstructs its upstream BETWEEN
+    // the stop and the reread, and the REPLACEMENT generation (2) serves the
+    // readable reread. Spec 4.2 requires the read, the stop, AND the reread to
+    // share one upstream protocol generation: a reread from a replaced
+    // generation cannot close the continuity chain, so the no-report
+    // publication must refuse and the guard stays cancelling.
+    readGenerations: ['a'.repeat(32), 'a'.repeat(32), 'b'.repeat(32)],
+    stopGeneration: 'a'.repeat(32),
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `a reread from a replaced upstream generation breaks the attempt's continuity chain: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the exact stop still ran and was acknowledged by the same generation');
+    assert.equal(reconcile.createdClients(), 1, 'the reads and stop reuse the one acquired client');
+    assert.deepEqual(control.violations, []);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-reread-replaced-upstream' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a serving path that proves no upstream generation never qualifies the no-report settlement', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({ unstamped: true });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `an entry point whose control path cannot establish generation continuity stays cancelling: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a failed initial read with a persisted stop intent still attempts the exact stop but cannot settle without a report', async () => {
+  const fixture = await noReportSettlementFixture();
+  const inputId = 'input-no-report';
+  const control = noReportControlClient({ reads: [
+    () => { throw new Error('session/read failed before the stop'); },
+    () => idleUnfinishedTurnSnapshot(inputId),
+    () => idleUnfinishedTurnSnapshot(inputId),
+  ] });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `without a valid pre-stop current-turn snapshot the empty stop response cannot qualify: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the authorized exact stop is still attempted after the initial read failure');
+    assert.equal(reconcile.createdClients(), 1, 'the stop and reread reuse the one acquired client: no new-broker fallback');
+    assert.deepEqual(control.violations, []);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-failed-read' }), { code: 'WRITABLE_JOB_EXISTS' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('the no-report publication is rejected while the exact worker lease stays held by a live claim', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient();
+  const reconcile = managementReconcileFor(fixture, control);
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    jobId: fixture.reserved.job.id, workerLeaseId: fixture.workerLeaseId, timeoutMs: 0 },
+  () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `an external publisher may not publish over a claim a live holder still owns: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the qualified stop still ran; only the publication was guarded');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-held-lease' }), { code: 'WRITABLE_JOB_EXISTS' });
+  } finally {
+    releaseHolder();
+    await holder;
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('another publisher durable success wins the no-report publication race and is preserved', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({
+    onStop: async () => {
+      await fixture.store.finishJob(fixture.workspace, fixture.reserved.job.id, ['cancelling'], 'succeeded',
+        { resultArtifact: `results/${fixture.reserved.job.id}-race.md`, exitCode: 0 });
+    },
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.equal(outcome.kind, 'settled-terminal');
+    assert.equal(outcome.status, 'succeeded', `the durable success raced during the stop attempt is preserved: ${JSON.stringify(outcome)}`);
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(winner.status, 'succeeded');
+    assert.equal(winner.resultArtifact, `results/${fixture.reserved.job.id}-race.md`);
+    await assert.rejects(fixture.store.finishJob(fixture.workspace, fixture.reserved.job.id, ['cancelling'], 'cancelled', { exitCode: null }),
+      (error) => error instanceof PluginError, 'the late cancellation publication cannot overwrite the durable success winner');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a stale binding generation at the no-report publication retains cancelling instead of publishing', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({
+    onReread: async () => {
+      // The binding advances between the stop and the guarded publication: the
+      // exact generation the attempt validated is no longer current.
+      await fixture.store.closeRescueBindingForChild({ workspace: fixture.workspace, parentSessionId: 'session-a',
+        executorAgentId: fixture.executor.agentId, operationId: fixture.reserved.binding.operationId, reason: 'cancel' });
+    },
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `a wrong binding generation never authorizes the no-report publication: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(retained.status, 'cancelling', 'no unauthorized cancelled publication over an advanced binding');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('an unmarked foreground record never settles the no-report path and is never a termination target', async () => {
+  const fixture = await noReportSettlementFixture({ unmarked: true });
+  const control = noReportControlClient();
+  /** @type {{pid:number}[]} */ const terminated = [];
+  const reconcile = managementReconcileFor(fixture, control, {
+    // The direct spy at the reconciler's own termination seam: an unmarked
+    // attached foreground record names NO signalable process, so the guarded
+    // duty must reach the kill decision without ever dispatching one.
+    terminateProcessTree: async (/** @type {number} */ pid) => { terminated.push({ pid }); },
+  });
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `unmarked is not foreground-exit evidence: external management cannot supply the attached executor's own finalization: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1);
+    assert.deepEqual(terminated, [], 'the unmarked foreground executor is never a process-tree termination target');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-unmarked' }), { code: 'WRITABLE_JOB_EXISTS' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('terminal interruption evidence with a report keeps the authoritative publication free of the new lease guard', async () => {
+  const fixture = await noReportSettlementFixture();
+  const inputId = 'input-no-report';
+  const control = noReportControlClient({ reads: [
+    () => interruptedTurnSnapshot(inputId),
+    () => interruptedTurnSnapshot(inputId),
+    () => interruptedTurnSnapshot(inputId),
+  ] });
+  const reconcile = managementReconcileFor(fixture, control);
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    jobId: fixture.reserved.job.id, workerLeaseId: fixture.workerLeaseId, timeoutMs: 0 },
+  () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.equal(outcome.kind, 'settled-terminal');
+    assert.equal(outcome.status, 'cancelled',
+      `the authoritative terminal path publishes through today's semantics even while the exact lease is held: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 0, 'already-terminal evidence never issues a second stop');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelled');
+  } finally {
+    releaseHolder();
+    await holder;
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a late result after the no-report cancellation wins its CAS boundary and cannot overwrite the winner', async () => {
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient();
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const settled = await reconcile.reconcileStop();
+    assert.equal(settled.status, 'cancelled');
+    await assert.rejects(fixture.store.finishJob(fixture.workspace, fixture.reserved.job.id, ['cancelling'], 'succeeded', { resultArtifact: 'results/late.md', exitCode: 0 }),
+      (error) => error instanceof PluginError, 'the expected-statuses CAS rejects a late result over the cancelled winner');
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(winner.status, 'cancelled');
+    assert.equal(winner.resultArtifact, undefined);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('the cancel election shares the reconciler decision and settles a first cancel in one command', async () => {
+  const fixture = await noReportSettlementFixture({ running: true });
+  const control = noReportControlClient();
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => {
+        // Exactly the seam runCompanion wires for the cancel-side controller:
+        // the reconciler owns the stop; the election's own stop handler must
+        // never be reached once the shared decision settles.
+        return request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' });
+      },
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => { throw new Error('the election observation is not the authority once the reconciler settles'); },
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for the no-report settlement'); } });
+    const winner = await controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a');
+    assert.equal(winner.status, 'cancelled');
+    assert.equal(winner.stopCause, 'user');
+    assert.ok(winner.finishedAt);
+    assert.equal(electionStops, 0, 'the election never issues its own stop once the shared decision owns the settlement');
+    assert.equal(control.stops(), 1, 'exactly one exact stop over the managed control path');
+    assert.deepEqual(control.violations, []);
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelled');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('the cancel election never duplicates the reconciler retry pass stop in one command', async () => {
+  // The RETRY shape: the record is already cancelling with its persisted stop
+  // intent when the cancel command arrives, and the shared reconciler pass —
+  // the same seam runCompanion wires — joins the remote turn and issues THIS
+  // command's one exact stop attempt, which a replaced upstream generation
+  // answers without continuity. The election must report the bounded retained
+  // outcome and never issue a SECOND remote stop inside the same command.
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient({ stopGeneration: 'b'.repeat(32) });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => { throw new Error('the election observation is not the authority once the shared pass ran'); },
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained stop'); } });
+    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+    assert.equal(control.stops(), 1, 'exactly one exact stop this command: the shared retry pass owns it');
+    assert.equal(electionStops, 0, 'the election never duplicates the shared pass\'s stop in the retry shape');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling',
+      'the unresolved stop keeps the durable cancelling guard');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The FOREGROUND EXECUTOR's own owner-held no-report publication (spec
+// 2026-09-14 section 4.3): after its internal finalization flow stopped
+// sending, released its original transport turn, and entered its exit path —
+// still holding its original worker claim — the executor may settle its own
+// acknowledged stop WITHOUT a final report through a publication no external
+// caller can reach. Contention returns the durable winner; invalid identity
+// retains cancelling.
+// ---------------------------------------------------------------------------
+
+/** The foreground fixture's current-turn snapshot at the accepted boundary
+ * revision (4): idle with the current turn's unfinished assistant — the
+ * no-report settlement shape that never classifies. */
+function foregroundIdleUnfinishedSnapshot() {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 4 }, messages: [completedUser('input-foreground-no-report'), {
+    info: { role: 'assistant', messageId: 'assistant-input-foreground-no-report', parentMessageId: 'input-foreground-no-report' }, parts: [{ type: 'text', text: 'partial without a finish' }],
+  }] };
+}
+
+/** The still-executing shape: attributable to the accepted turn but ACTIVE —
+ * contrary evidence a no-report settlement must never publish over. */
+function foregroundActiveSnapshot() {
+  return { projection: { status: 'running' }, runtime: { stateRevision: 4 }, messages: [completedUser('input-foreground-no-report')] };
+}
+
+/**
+ * One attached foreground Rescue executor mid-turn: an unmarked record claimed
+ * by THIS process (the real runner claims with process.pid), a durable accepted
+ * turn boundary, and a control client whose legacy completion wakes the
+ * executor's own reconciliation loop — the caller interrupts AFTER the first
+ * post-boundary read (`firstRead` resolves then), exactly like a real mid-turn
+ * interruption. Default reads keep the no-report settlement shape (idle, the
+ * current turn's unfinished assistant, no terminal evidence) served by ONE
+ * stable broker generation stamped on every read and stop response, and the
+ * transport release succeeds — the qualified internal-finalization shape.
+ * `snapshot` replaces the per-read snapshot (still-active or mismatched
+ * shapes), `readGeneration`/`stopGeneration` model a broker-side upstream
+ * replacement between the read and the stop, `releaseTurnFails` leaves the
+ * original transport turn unreleased, `holdCompletion` keeps the legacy
+ * completion wake pending (the caller interrupts before any reconciliation
+ * read — release it with `releaseCompletion()`), `onStop` models a concurrent
+ * durable mutation landing during the executor's own stop, and
+ * `claimChildPid` records a non-self executor pid (a detached child).
+ * @param {{onStop?:()=>Promise<void>, workerLeaseId?:string, claimChildPid?:number, snapshot?:()=>any, readGeneration?:string, stopGeneration?:string, releaseTurnFails?:boolean, holdCompletion?:boolean}} [options]
+ */
+async function foregroundExecutorFixture(options = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-foreground-no-report-'));
+  const dataRoot = join(root, 'data');
+  await mkdir(join(root, 'workspace'));
+  const workspace = await realpath(join(root, 'workspace'));
+  const store = createStateStore({ dataRoot });
+  const agentId = `foreground-child-${Math.random().toString(16).slice(2, 8)}`;
+  const reserved = await store.reserveFreshRescueJob({ workspace,
+    reservation: { workspace, ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+    executor: hostOwnedExecutor(workspace, agentId),
+    lifecycle: { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+  const workerLeaseId = options.workerLeaseId ?? 'e'.repeat(64);
+  const claimChildPid = options.claimChildPid ?? process.pid;
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: claimChildPid, workerLeaseId });
+  /** @type {string[]} */ const events = [];
+  let stops = 0;
+  const readGeneration = options.readGeneration ?? 'a'.repeat(32);
+  const stopGeneration = options.stopGeneration ?? readGeneration;
+  const snapshot = options.snapshot ?? foregroundIdleUnfinishedSnapshot;
+  /** @type {string|null} */ let lastReadGeneration = null;
+  let waitStarted = () => {};
+  const waiting = new Promise((resolve) => { waitStarted = () => resolve(undefined); });
+  /** @type {(value?:any)=>void} */ let releaseCompletion = () => {};
+  let firstReadStarted = () => {};
+  const firstRead = new Promise((resolve) => { firstReadStarted = () => resolve(undefined); });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'foreground executor interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-foreground-no-report' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-foreground-no-report', stateRevision: 4 }),
+    // The 0.16.5 legacy completion wakes the executor's own reconciliation
+    // loop, which keeps reading the still-pending turn until the interruption
+    // lands — the real shape of a mid-turn interrupt.
+    waitForCompletion: () => {
+      waitStarted();
+      if (options.holdCompletion === true) return new Promise((resolve) => { releaseCompletion = resolve; });
+      return Promise.resolve();
+    },
+    readSession: async () => { firstReadStarted(); lastReadGeneration = readGeneration; return snapshot(); },
+    readServingGeneration: () => lastReadGeneration,
+    stopSession: async () => { stops += 1; await options.onStop?.(); return { brokerProtocolGeneration: stopGeneration }; },
+    ...(options.releaseTurnFails
+      ? { releaseTurn: async () => { events.push('release'); throw new Error('turn release refused'); } }
+      : { releaseTurn: async () => { events.push('release'); } }),
+    close: async () => {},
+  };
+  return { root, dataRoot, workspace, store, reserved, claimed, workerLeaseId, client, events, stops: () => stops, waiting, firstRead, releaseCompletion, interruption };
+}
+
+test('the foreground executor settles its own no-report cancellation owner-held after releasing its transport turn', { timeout: 8_000 }, async () => {
+  const fixture = await foregroundExecutorFixture();
+  const { store } = fixture;
+  /** @type {string[]} */ const timeline = [];
+  const recording = { ...store, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {any} */ patch = {}) => {
+    const applied = await store.finishJob(workspaceArg, jobIdArg, expected, next, patch);
+    if (next === 'cancelled') timeline.push('publish-cancelled');
+    return applied;
+  } };
+  fixture.client.releaseTurn = async () => { timeline.push('release'); };
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: recording,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const settled = await store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(settled.status, 'cancelled', 'the executor published its own acknowledged stop without a final report');
+    assert.equal(settled.stopCause, 'host-coordination-loss', 'the unrequested interruption keeps its bounded host cause');
+    assert.ok(settled.finishedAt);
+    assert.equal(settled.resultArtifact, undefined);
+    assert.equal(fixture.stops(), 1, 'exactly one stop — the executor\'s own');
+    assert.ok(timeline.includes('release') && timeline.includes('publish-cancelled'),
+      `both the transport release and the owner-held publication were observed: ${JSON.stringify(timeline)}`);
+    assert.ok(timeline.indexOf('release') < timeline.indexOf('publish-cancelled'),
+      `the owner-held publication runs only after the original transport turn is released: ${JSON.stringify(timeline)}`);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('foreground owner-held publication returns the durable winner a concurrent publisher already settled', { timeout: 8_000 }, async () => {
+  const fixture = await foregroundExecutorFixture({
+    onStop: async () => {
+      const resultArtifact = await writeResultArtifact({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, contents: 'raced winner' });
+      await fixture.store.finishJob(fixture.workspace, fixture.claimed.id, ['cancelling'], 'succeeded',
+        { resultArtifact, exitCode: 0 });
+    },
+  });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    const output = await execution;
+    assert.equal(output.job.status, 'succeeded', 'the durable success raced during the executor\'s own stop is preserved');
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(winner.status, 'succeeded');
+    assert.equal(winner.resultArtifact, `results/${fixture.claimed.id}.md`);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('an invalid foreground claim never publishes the owner-held no-report cancellation', { timeout: 8_000 }, async () => {
+  // The durable record names a DETACHED child executor (999_999_999) while
+  // this in-process finalization flow runs in its supervisor: the internal
+  // owner-held path must refuse — the publishing process is not the recorded
+  // executor, so it never gains owner-held standing (spec 4.3: internal
+  // finalization evidence originates in the executor's OWN process).
+  const fixture = await foregroundExecutorFixture({ claimChildPid: 999_999_999 });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: 999_999_999, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'invalid identity retains the cancelling guard instead of publishing');
+    assert.equal(fixture.stops(), 1, 'the executor\'s own stop still ran; only the publication is refused');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a still-active post-stop reread never lets the foreground executor publish its own cancellation', { timeout: 15_000 }, async () => {
+  // The observation reread keeps showing the current turn STILL EXECUTING for
+  // the accepted boundary: the stop response alone is never qualified
+  // evidence (spec 4.2/4.4 — an acknowledgement cannot override contrary
+  // evidence), so the executor's internal finalization must retain the
+  // cancelling guard and leave the writable guard in place.
+  const fixture = await foregroundExecutorFixture({ snapshot: foregroundActiveSnapshot });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'a reread still showing active execution retains the cancelling guard');
+    assert.ok(fixture.stops() >= 1, 'the exact stop was still attempted');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-still-active' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the writable guard is NOT released while remote work remains active');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a replaced upstream serving generation never lets the foreground executor publish its own cancellation', { timeout: 15_000 }, async () => {
+  // The pre-stop reads are served by generation A, but the stop response
+  // carries the REPLACEMENT generation's stamp (B) — the broker reconstructed
+  // its upstream between the read and the stop. The same-session empty stop
+  // response never reached the executor that owned the original turn, so the
+  // internal finalization must not settle (spec 4.2, same rule as management).
+  const fixture = await foregroundExecutorFixture({ readGeneration: 'a'.repeat(32), stopGeneration: 'b'.repeat(32) });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'a stop answered by a replaced upstream generation retains the cancelling guard');
+    assert.ok(fixture.stops() >= 1);
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-replaced-generation' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the writable guard is NOT released over a replaced generation');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a failed transport release never lets the foreground executor publish its own cancellation', { timeout: 15_000 }, async () => {
+  // Both releaseTurn attempts fail: the executor's internal finalization
+  // evidence (spec 4.3) must include "released its original transport turn" —
+  // an unresolved release is incomplete cleanup, so the owner-held
+  // publication is gated off and the guard stays.
+  const fixture = await foregroundExecutorFixture({ releaseTurnFails: true });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'an unresolved transport release retains the cancelling guard');
+    assert.equal(fixture.stops(), 1, 'the stop still ran; only the publication is gated');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-release-failed' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the writable guard survives a failed release');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('an interruption before any control read still settles the owner-held no-report cancellation', { timeout: 15_000 }, async () => {
+  // The interruption lands after send acceptance but BEFORE the executor's
+  // reconciliation loop performed any read (the legacy completion never woke):
+  // the internal finalization must obtain its own bounded pre-stop
+  // evidence-carrying read BEFORE stopping, so the qualification (spec 4.2
+  // pre-stop current-turn attribution + generation continuity) never depends
+  // on a prior completion wake.
+  const fixture = await foregroundExecutorFixture({ holdCompletion: true });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.waiting; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const settled = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(settled.status, 'cancelled', 'the executor obtained its own pre-stop evidence and settled its qualified acknowledged stop');
+    assert.equal(settled.stopCause, 'host-coordination-loss');
+    assert.equal(fixture.stops(), 1, 'exactly one stop — the executor\'s own');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('the foreground control-evidence retention stays bounded across a long pending turn', async () => {
+  // A pending turn polls every reconcile interval without a completion
+  // deadline: far more observations than any bound, each a full conversation
+  // snapshot. The retention must keep ONLY what the no-report qualification
+  // reads — the latest pre-stop read, the latest observation, and one stamp
+  // per stop — so a long-lived turn cannot accumulate duplicates until it
+  // exits.
+  const { createForegroundControlEvidence } = await import('../scripts/lib/review.mjs');
+  const evidence = createForegroundControlEvidence();
+  const generation = 'a'.repeat(32);
+  const polls = 5_000;
+  let lastPreStopSnapshot;
+  for (let index = 0; index < polls; index += 1) {
+    lastPreStopSnapshot = { projection: { status: 'running' }, runtime: { stateRevision: index }, messages: [] };
+    evidence.observeRead({ snapshot: lastPreStopSnapshot, generation });
+  }
+  const stopSeq = evidence.observeStop(generation);
+  const postSnapshots = [];
+  for (let index = 0; index < 3; index += 1) {
+    postSnapshots.push({ projection: { status: 'idle' }, runtime: { stateRevision: polls + index }, messages: [] });
+    evidence.observeRead({ snapshot: postSnapshots[index], generation });
+  }
+  assert.ok(evidence.lastPreStopRead && evidence.lastRead, 'retention keeps exactly the qualification\'s two read slots');
+  assert.equal(evidence.stops.length, 1, 'one stamp per stop is retained');
+  assert.deepEqual(evidence.stops, [{ seq: stopSeq, generation }]);
+  assert.equal(evidence.lastPreStopRead.snapshot, lastPreStopSnapshot, 'the latest pre-stop snapshot survives for the qualification');
+  assert.equal(evidence.lastRead.snapshot, postSnapshots[2], 'the latest post-stop observation survives');
+  assert.equal(evidence.lastRead.seq, polls + 4);
+});
+
+test('the owner-held publication is unreachable for a process that is not the recorded executor', async () => {
+  const fixture = await noReportSettlementFixture();
+  try {
+    const before = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    const { publishOwnerHeldNoReportCancellation } = await import('../scripts/lib/job-control.mjs');
+    // An external management process copies the claim from the durable record:
+    // it is not the recorded executor pid, so the internal path refuses.
+    const refused = await publishOwnerHeldNoReportCancellation({ store: fixture.store, dataRoot: fixture.dataRoot, workspace: fixture.workspace },
+      before, 'user', { workerLeaseId: fixture.workerLeaseId, childPid: 999_999_999 });
+    assert.equal(refused.status, 'cancelling', 'a foreign process never publishes through the owner-held path');
+    // Even the recorded executor pid cannot publish once its lease is free:
+    // owner-held standing exists only while the claim is held.
+    const released = await publishOwnerHeldNoReportCancellation({ store: fixture.store, dataRoot: fixture.dataRoot, workspace: fixture.workspace },
+      before, 'user', { workerLeaseId: fixture.workerLeaseId, childPid: process.pid });
+    assert.equal(released.status, 'cancelling', 'a free lease means the executor already exited: the external guarded path owns publication after that');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a reconciler retention without a stop attempt never suppresses the election stop in one command', async () => {
+  // The RETRY shape with an attributable idle-unfinished remote snapshot: the
+  // shared reconciler pass retains WITHOUT attempting the exact stop (spec 4.2
+  // keeps that snapshot for settlement, but the durable stop intent still owes
+  // a remote stop attempt). Nonterminal retention is not proof of a stop
+  // attempt, so the election must NOT defer to the shared pass here — it must
+  // issue its own exact stop.
+  const fixture = await noReportSettlementFixture();
+  const idleRead = () => idleUnfinishedTurnSnapshot('input-no-report');
+  const control = noReportControlClient({ reads: [idleRead, idleRead, idleRead] });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => idleRead(),
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained stop'); } });
+    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+    assert.equal(control.stops(), 0, 'the shared pass retained without attempting the exact stop');
+    assert.equal(electionStops, 1, 'the election MUST still attempt its own exact stop when the shared pass retained without one');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling',
+      'the unresolved stop keeps the durable cancelling guard');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-no-stop-suppression' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a retained shared stop never lets the election publish failed from its pre-stop read', { timeout: 15_000 }, async () => {
+  // The shared reconciler pass acknowledged its exact stop but RETAINED the
+  // durable guard on incomplete runner cleanup (the held lease dispatches the
+  // kill decision, and the verified kill sequence reports survivors — no
+  // 'settled' cleanup evidence exists). Any failure the election's retry
+  // pre-stop read now observes is POST-stop evidence — publishing it as a
+  // natural pre-stop engine failure would misclassify the stop-caused race
+  // winner and release the writable guard over an unproven runner sweep. The
+  // unresolved shared stop must be handled BEFORE the election's pre-stop
+  // read/publication branch: no terminal outcome through that path, the
+  // cancelling guard stays, and the durable intent re-arms the next pass.
+  const fixture = await noReportSettlementFixture();
+  const failedRead = () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser('input-no-report'), {
+    info: { role: 'assistant', messageId: 'assistant-input-no-report', parentMessageId: 'input-no-report', error: { message: 'post-stop engine failure' } },
+    parts: [{ type: 'text', text: 'failed without finishing' }],
+  }] });
+  const control = noReportControlClient();
+  // The incomplete verified kill sequence: the kill dispatched but reported
+  // surviving verified descendants — the duty outcome is never `settled`.
+  const incompleteKill = async () => ({ completed: false, pending: [999_999_999] });
+  const reconcile = managementReconcileFor(fixture, control, { terminateProcessTree: incompleteKill });
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  // The live held lease is what dispatches the kill decision at all: a free
+  // lease proves the recorded pid no longer names that worker and is never
+  // signaled (the duty would settle through the clean dead-root sweep).
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    jobId: fixture.reserved.job.id, workerLeaseId: fixture.workerLeaseId, timeoutMs: 0 },
+  () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      terminateProcessTree: incompleteKill,
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => failedRead(),
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained shared stop'); } });
+    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' },
+      'the unresolved shared stop keeps the bounded retry error instead of a terminal settlement');
+    assert.equal(control.stops(), 1, 'the shared pass attempted the one exact stop');
+    assert.equal(electionStops, 0, 'the election never duplicates the shared pass stop in one command');
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(retained.status, 'cancelling', 'a post-stop failure observed by the election read must never publish failed');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-shared-retained-prestop' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained over the unproven runner sweep');
+  } finally {
+    releaseHolder();
+    await holder;
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a genuine pre-stop engine failure without a shared stop attempt still publishes failed from the election read', async () => {
+  // The legitimate path the retained-shared-stop guard must keep reachable:
+  // the shared reconciler pass retained WITHOUT attempting any stop (the
+  // attributable idle-unfinished joined read), so the election's retry
+  // pre-stop read observes a GENUINE pre-existing engine failure — the turn
+  // errored before any stop was ever attempted — and its natural-failure
+  // publication keeps its own semantics, releasing the writable guard.
+  const fixture = await noReportSettlementFixture();
+  const idleRead = () => idleUnfinishedTurnSnapshot('input-no-report');
+  const failedRead = () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser('input-no-report'), {
+    info: { role: 'assistant', messageId: 'assistant-input-no-report', parentMessageId: 'input-no-report', error: { message: 'engine failure before any stop' } },
+    parts: [{ type: 'text', text: 'failed without finishing' }],
+  }] });
+  const control = noReportControlClient({ reads: [idleRead, idleRead, idleRead] });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => failedRead(),
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a failure'); } });
+    const winner = await controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a');
+    assert.equal(winner.status, 'failed', 'a genuine pre-stop engine failure keeps its own failure semantics');
+    assert.deepEqual(winner.error, { message: 'ZCode reported a terminal error before the stop could be attempted.' });
+    assert.equal(control.stops(), 0, 'no remote stop is attempted over an already-failed turn');
+    assert.equal(electionStops, 0, 'the election read alone proves the pre-existing failure');
+    await fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'after-legitimate-failure-release' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }
 });
 

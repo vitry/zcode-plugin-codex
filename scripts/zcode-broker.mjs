@@ -798,7 +798,16 @@ export class ZCodeBroker {
           if (frame.method === 'v4/conversation/unsubscribe') { this.conversationSubscriptions.delete(unsubscribeRecord.key); if (!this.retireConversationSubscription(protocol, unsubscribeRecord)) throw brokerInputError(); }
           if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); const stopCommitted = this.settleAcknowledgedStop(frame.params.sessionId, protocol, stoppedGeneration); if (!stopCommitted) throw brokerInputError(); this.consumeTerminalWinner(frame.params.sessionId, protocol, stoppedGeneration); await this.cleanupAcknowledgedStopSubscriptions(protocol, this.detachSessionSubscriptions(frame.params.sessionId), OWNER_RELEASE_REQUEST_MS); if (this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
           if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
-          if (frame.method === 'session/stop' || frame.method === 'v4/conversation/unsubscribe') result = {};
+          // Serving-generation stamps (spec 2026-09-14 section 4.2): the read
+          // result carries the id of the protocol generation that served it
+          // (the client strips the field before engine-snapshot validation),
+          // and the stop result IS the stamp — an empty stop response plus the
+          // generation that produced it. Both are written only after the
+          // serving protocol was proven still current, and never when no
+          // generation is provable (the client treats that as no continuity).
+          if (frame.method === 'session/read' && typeof this.protocolGeneration === 'string') result = { ...result, brokerProtocolGeneration: this.protocolGeneration };
+          if (frame.method === 'session/stop') result = typeof this.protocolGeneration === 'string' ? { brokerProtocolGeneration: this.protocolGeneration } : {};
+          if (frame.method === 'v4/conversation/unsubscribe') result = {};
           if (frame.method === 'v4/conversation/subscribe') result = { ack: { subscriptionId: result.ack.subscriptionId, mode: result.ack.mode, logEpoch: result.ack.logEpoch } };
           if (frame.method === 'session/updateRuntimeModelConfig') {
             if (!boundedUpstreamObject(result)) throw brokerInputError();
@@ -947,7 +956,17 @@ export class ZCodeBroker {
     try {
       if (this.closing) throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' });
       if (this.retiredProtocolGeneration) throw protocolRetiring();
-      this.protocol = protocol; this.conversationSubscriptionGeneration = { protocol, retiredIds: new Map() };
+      this.protocol = protocol;
+      // One opaque VALUE identity for THIS engine protocol generation: the
+      // broker stamps it on the session/read and session/stop responses it
+      // serves, so a client can prove the same upstream protocol generation
+      // carried its pre-stop read and its stop (spec 2026-09-14 section 4.2)
+      // even though the broker may lazily reconstruct the upstream behind an
+      // unchanged client socket. Internal continuity evidence only: the stamp
+      // never names a session, an owner, or a capability, and a retired
+      // generation's stamp is never re-minted.
+      this.protocolGeneration = randomBytes(16).toString('hex');
+      this.conversationSubscriptionGeneration = { protocol, retiredIds: new Map() };
       protocol.subscribe((message) => {
       if (message.method === 'broker/sessionStopped') return;
       if (message.method === 'v4/conversation/frame') { this.routeConversationFrame(protocol, message); return; }
@@ -975,7 +994,7 @@ export class ZCodeBroker {
     for (const [sessionId, active] of this.activeSessionSockets) if (active.socket?.writable) writeLocal(active.socket, { method: 'broker/sessionStopped', params: { sessionId } });
     this.activeSessions.clear(); this.activeSessionSockets.clear(); for (const [sessionId, evidence] of this.terminalWinnerEvidence) if (evidence.protocol === protocol) this.terminalWinnerEvidence.delete(sessionId); this.admittingSessions.clear(); for (const [sessionId, stopping] of this.stoppingSessions) if (!stopping.ownerRelease) this.stoppingSessions.delete(sessionId); this.conversationSubscriptions.clear(); this.orphanRetryPromise = null; this.pendingConversationTopics.clear();
     for (const [id, pending] of this.permissionPending) { clearTimeout(pending.timer); this.retirePermissionResponse(id, pending.socket); pending.resolve(offeredDeny(pending.request)); }
-    this.permissionPending.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown();
+    this.permissionPending.clear(); this.protocol = null; this.protocolGeneration = null; this.protocolPromise = null; this.scheduleIdleShutdown();
     for (const [token, capturedProtocol] of this.ownerCommitTokens) if (capturedProtocol === protocol) this.ownerCommitTokens.delete(token);
     let resolveClose;
     retired.closePromise = new Promise((resolvePromise) => { resolveClose = resolvePromise; });
@@ -1174,7 +1193,7 @@ export class ZCodeBroker {
     const startingProtocol = this.protocolPromise; let retired = this.protocol ? this.clearProtocolGeneration(this.protocol) : this.retiredProtocolGeneration;
     if (!retired && startingProtocol) { const spawned = await startingProtocol.catch(() => null); if (spawned && this.protocol === spawned) retired = this.clearProtocolGeneration(spawned); else retired = this.retiredProtocolGeneration; }
     if (retired) await retired.closePromise;
-    const closeError = retired?.error; this.protocol = null; this.protocolPromise = null;
+    const closeError = retired?.error; this.protocol = null; this.protocolGeneration = null; this.protocolPromise = null;
     const releaseOutcomes = await Promise.allSettled(startingReleaseTasks); const releaseError = releaseOutcomes.find((outcome) => outcome.status === 'rejected')?.reason;
     await Promise.allSettled([...this.localTasks]);
     await closingServer;
