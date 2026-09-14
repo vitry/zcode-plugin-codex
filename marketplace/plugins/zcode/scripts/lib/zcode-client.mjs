@@ -33,7 +33,7 @@ export class ZCodeClient {
   /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] @param {boolean} [advertiseExactTurnRelease] */
   constructor(protocol, workspace, workspaceBound = false, advertiseExactTurnRelease = true) {
     this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound;
-    this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.exactTurnRelease = workspaceBound && advertiseExactTurnRelease ? null : false;
+    this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); this.readGenerations = new Map(); this.exactTurnRelease = workspaceBound && advertiseExactTurnRelease ? null : false;
     /** @type {Promise<void>|null} */
     this.exactTurnReleaseProbe = null;
     this.armedBoundaries = new Map();
@@ -93,7 +93,23 @@ export class ZCodeClient {
     return { ...result, inputId };
   }
 
-  /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
+  /** @param {string} sessionId */ async readSession(sessionId) {
+    requireSessionId(sessionId);
+    const result = await this.protocol.request('session/read', { sessionId });
+    // The broker stamps the upstream protocol generation that actually served
+    // this read BESIDE the engine snapshot (see ZCodeBroker). Strip it before
+    // schema validation — the engine snapshot contract never includes it — and
+    // record it as this client's serving-generation observation for the
+    // session: the value cancellation-settlement attestation compares against
+    // the stop response's stamp. A serving path that proves no generation
+    // (a direct protocol connection, a stamp-less broker) records null, which
+    // can never qualify continuity.
+    const { brokerProtocolGeneration, ...snapshot } = result ?? {};
+    validateSnapshot(snapshot, sessionId, this.expectedWorkspace(sessionId), 'session/read');
+    this.sessionCatalogs.set(sessionId, snapshot.settings.model);
+    this.readGenerations.set(sessionId, boundedServingGeneration(brokerProtocolGeneration));
+    return snapshot;
+  }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
   /** @param {string} sessionId @param {number} [timeoutMs] */
@@ -105,7 +121,8 @@ export class ZCodeClient {
       if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId);
       if (this.armedBoundaries.get(sessionId) === boundary) this.armedBoundaries.delete(sessionId);
       if (this.deferredReleaseBoundaries.get(sessionId) === boundary) this.deferredReleaseBoundaries.delete(sessionId);
-      return {};
+      const generation = boundedServingGeneration(result.brokerProtocolGeneration);
+      return generation === null ? {} : { brokerProtocolGeneration: generation };
     } catch (error) {
       if (this.stopIntents.get(sessionId) === boundary) this.stopIntents.delete(sessionId);
       if (boundary && this.deferredReleaseBoundaries.get(sessionId) === boundary && this.armedBoundaries.get(sessionId) === boundary) this.scheduleDeferredExactTurnRelease(sessionId, boundary);
@@ -178,6 +195,14 @@ export class ZCodeClient {
   scheduleDeferredExactTurnRelease(sessionId, boundary) { setImmediate(() => { if (this.deferredReleaseBoundaries.get(sessionId) !== boundary || this.stopIntents.get(sessionId) === boundary || this.armedBoundaries.get(sessionId) !== boundary) return; this.deferredReleaseBoundaries.delete(sessionId); void this.releaseExactTurn(sessionId, boundary).catch(() => {}); }); }
   async ensureExactTurnReleaseCapability() { if (!this.workspaceBound || this.exactTurnRelease !== null) return; this.exactTurnReleaseProbe ??= requestBrokerHealth(this, undefined, true).then((result) => { this.exactTurnRelease = result.capabilities?.exactTurnRelease === true; }, (error) => { this.exactTurnReleaseProbe = null; throw error; }); await this.exactTurnReleaseProbe; }
   /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
+  /** The upstream protocol generation that served this client's most recent
+   * session/read for one session (the broker's stamp, recorded per response —
+   * null when the serving path proved no generation). Internal
+   * cancellation-settlement evidence only: never a public identifier, never
+   * persisted, and never proof by itself — consumers compare it against the
+   * stop response's own stamp to derive upstream-generation continuity.
+   * @param {string} sessionId */
+  readServingGeneration(sessionId) { requireSessionId(sessionId); return this.readGenerations.get(sessionId) ?? null; }
   /** @param {string} sessionId @param {{connectionId:string,clientMode:'desktop-continuous'|'web-remote-replayable'}} options */
   async subscribeConversation(sessionId, options) {
     requireSessionId(sessionId);
@@ -587,6 +612,10 @@ function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode cli
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }
 /** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
 function validateSnapshot(value, sessionId, workspace, method) { if (!snapshotValid(value, sessionId, workspace)) throw outputError(method); }
+/** The bounded hex shape of the broker's serving-generation stamp (16-64 hex
+ * characters — the broker mints 32): anything else is NO proven generation and
+ * must fail continuity closed. @param {unknown} value */
+function boundedServingGeneration(value) { return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null; }
 /** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method @param {boolean} allowInitialEmpty */
 function validateSettingsResult(value, sessionId, workspace, method, allowInitialEmpty) { if (!(allowInitialEmpty ? validSettingsSnapshot : snapshotValid)(value, sessionId, workspace)) throw outputError(method); }
 /** @param {string} method */
