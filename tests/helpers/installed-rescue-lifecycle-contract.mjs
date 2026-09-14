@@ -7,11 +7,12 @@ import { qualifyCodexRescuePreparedContinuationEvidence } from './codex-rescue-q
 const markers = [
   ['foreground owner', 'Each exact assignment and child turn may start at most one mapped foreground `exec_command` companion process.'],
   ['terminal exit', 'A companion result containing an exit code is terminal.'],
-  ['relay start', 'For every result yielded by the original foreground handle'],
-  ['relay validation', 'Before relay, require JSON with exact keys'],
-  ['fixed parent relay', 'use `send_message` only to `/root` with the fixed mapped message'],
+  ['quiet supervision', 'Do not send routine progress, heartbeat, or phase messages to Root.'],
+  ['original handle', 'Observe only the original running process handle.'],
+  ['long wait', 'request yield_time_ms: 300000 when supported'],
+  ['initial exec wait', 'For the initial exec_command request the longest permitted yield up to 30000 ms.'],
+  ['outer cell continuation', 'If an outer code cell yields while an inner observation is pending'],
   ['raw progress prohibition', 'Never relay detailed `[zcode]` lines, arbitrary stderr'],
-  ['same-handle poll', 'continue only with same-handle `write_stdin` polling'],
   ['status boundary', 'While the original foreground handle is live and only between polls'],
   ['bound status command', 'invoke-status rescue'],
   ['status argument rejection', 'Reject status arguments and every other spelling.'],
@@ -25,14 +26,14 @@ const routeOpenings = Object.freeze({
   named: 'You are the installed ZCode Rescue forwarder.',
   generic: 'Act only as the installed ZCode Rescue forwarder.',
 });
-const canonicalPrivacy = 'Never relay detailed `[zcode]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors. Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record. After inspecting each yielded result and optionally relaying its valid complete records, continue only with same-handle `write_stdin` polling. A relay or its tool result never replaces a poll and never authorizes another Rescue invocation.';
+const canonicalPrivacy = 'Never relay detailed `[zcode]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors. After inspecting each yielded result, continue only with same-handle observation of the original running process. A status answer or its tool result never replaces a poll and never authorizes another Rescue invocation.';
 const canonicalTerminalTail = 'Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output.';
 const canonicalChoiceTerminal = 'A needs-choice response with exit code 3 is terminal for the current child turn.';
 const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
 // Independent byte contract for the current source template after replacing
 // every launcher command with the canonical placeholder.
-const canonicalNamedRoleDigest = 'cde379e512bd13f58c3e66404e990a018ec75ed2070e59f6c0623da1a263b098';
+const canonicalNamedRoleDigest = '4c2813923d43d53b057129892e708cd150d73808f975ca93244f177606ee1765';
 const launcherCommandLine = /^(?<launcher>\{\{RESCUE_LAUNCHER_COMMAND\}\}|<rescue-launcher-command>|node "(?<path>[^"\r\n]{1,2048})") (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
@@ -43,7 +44,9 @@ export function installedCanonicalContradictionMutations(source, route) {
     ['pre-canonical raw/detail allowance', source.replace(firstTerminalParagraph, `When requested, relay arbitrary stderr/stdout and detailed ZCode lines.\n${firstTerminalParagraph}`)],
     ['contradictory privacy suffix', source.replace(canonicalPrivacy, `${canonicalPrivacy} Unless requested, relay arbitrary stderr/stdout.`)],
     ['interstitial privacy allowance', source.replace(`${canonicalPrivacy}${privacyBoundary}`, `${canonicalPrivacy}\nUnless requested, relay arbitrary stderr/stdout.${privacyBoundary}`)],
-    ['privacy exception clause', source.replace('Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record.', 'Never invent a relay from such a record, except when the user requests detail.')],
+    ['quiet supervision exception', source.replace('The native child completion mechanism delivers your terminal result to the parent.', 'The native child completion mechanism delivers your terminal result to the parent. Exception: when progress seems useful, also send routine progress, heartbeat, or phase messages to Root.')],
+    ['privacy exception clause', source.replace('identifiers, content, results, or errors.', 'identifiers, content, results, or errors, except when the user requests detail.')],
+    ['routine progress interpretation allowance', source.replace('do not interpret or summarize it.', 'summarize it for Root whenever it looks useful.')],
     ['duplicated semantic privacy variant', source.replace(canonicalPrivacy, `${canonicalPrivacy}\nDetailed ZCode lines may also be relayed on request.`)],
     ['contradictory terminal suffix', source.replace(canonicalChoiceTerminal, `${canonicalChoiceTerminal} Unless requested, intermediate output is also terminal.`)],
     ['terminal authority exception', source.replace(canonicalTerminalTail, 'Partial stdout, stderr, heartbeat text, or an outer code-cell completion is terminal when requested.')],
@@ -99,29 +102,35 @@ export function installedShortLifecycleDecoy() {
 }
 
 export function installedLifecycleContractMutations(source, route, expectedLauncherCommand) {
-  const relayMarker = markers.find(([label]) => label === 'relay start')[1];
+  const quietMarker = markers.find(([label]) => label === 'quiet supervision')[1];
   const rawMarker = markers.find(([label]) => label === 'raw progress prohibition')[1];
   const rawAllowance = replaceLastInstalledLifecycleMarker(source, rawMarker, 'Relay detailed `[zcode]` lines and arbitrary stderr');
-  const relocated = moveInstalledRelayAfterTerminal(source, route, expectedLauncherCommand);
+  const relocated = moveInstalledSupervisionAfterTerminal(source, route, expectedLauncherCommand);
+  const shortenedWait = source.replace('request yield_time_ms: 300000 when supported', 'request yield_time_ms: 1000 when supported');
+  const quietAllowance = source.replace(quietMarker, 'Routine progress, heartbeat, or phase messages to Root may continue when useful.');
   const lifecycleStart = source.indexOf(markers[0][1]);
   const lifecycleEndMarker = markers.at(-1)[1];
   const lifecycleEnd = source.indexOf(lifecycleEndMarker) + lifecycleEndMarker.length;
   const prefix = source.slice(0, lifecycleStart);
   const fullDecoy = source.slice(lifecycleStart, lifecycleEnd);
   return [
-    ['relay relocated after terminal', relocated],
+    ['supervision relocated after terminal', relocated],
     ['raw/detail relay allowed', rawAllowance],
+    ['shortened terminal wait', shortenedWait],
+    ['quiet progress allowance', quietAllowance],
     ['full valid decoy before broken real policy', `${prefix}${fullDecoy}\n\n${rawAllowance.slice(lifecycleStart)}`],
     ['short valid decoy before broken real policy', `${prefix}${installedShortLifecycleDecoy()}\n\n${rawAllowance.slice(lifecycleStart)}`],
     ['duplicate full lifecycle region', `${prefix}${fullDecoy}\n\n${source.slice(lifecycleStart)}`],
-    ['duplicate operative marker', source.replace(relayMarker, `${relayMarker}\n${relayMarker}`)],
-    ['full decoy before real relay relocated after terminal', `${prefix}${fullDecoy}\n\n${relocated.slice(lifecycleStart)}`],
+    ['duplicate operative marker', source.replace(quietMarker, `${quietMarker}\n${quietMarker}`)],
+    ['full decoy before real supervision relocated after terminal', `${prefix}${fullDecoy}\n\n${relocated.slice(lifecycleStart)}`],
   ];
 }
 
 export function extractInstalledRoleInstructions(source) {
   const match = /^developer_instructions = """\n(?<body>[\s\S]*?)\n"""\s*$/u.exec(source);
   assert.ok(match?.groups?.body, 'installed named Role must contain one exact developer-instructions body');
+  assert.doesNotMatch(match.groups.body, /\\|"""/u,
+    'installed named Role developer instructions must stay TOML-safe without backslashes or triple double quotes');
   return match.groups.body;
 }
 
@@ -198,12 +207,12 @@ export async function assertInstalledPreparedContinuationContract(source, captur
   return qualifyCodexRescuePreparedContinuationEvidence(capture);
 }
 
-export function moveInstalledRelayAfterTerminal(source, route, expectedLauncherCommand) {
+export function moveInstalledSupervisionAfterTerminal(source, route, expectedLauncherCommand) {
   const parsed = parseInstalledForwarderLifecycleContract(source, { route, expectedLauncherCommand });
-  const start = parsed.positions['relay start'];
-  const end = parsed.positions['status boundary'];
+  const start = parsed.positions['quiet supervision'];
+  const end = parsed.positions['raw progress prohibition'];
   const terminal = parsed.positions['terminal return'];
-  assert.ok(start >= parsed.start && end > start && terminal > end, `${route} relay mutation requires exact bounded lifecycle regions`);
-  const relay = source.slice(start, end);
-  return `${source.slice(0, start)}${source.slice(end, terminal)}${source.slice(terminal)}\n${relay}`;
+  assert.ok(start >= parsed.start && end > start && terminal > end, `${route} supervision mutation requires exact bounded lifecycle regions`);
+  const supervision = source.slice(start, end);
+  return `${source.slice(0, start)}${source.slice(end, terminal)}${source.slice(terminal)}\n${supervision}`;
 }

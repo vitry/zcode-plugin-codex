@@ -31,7 +31,6 @@ import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, re
 import { cancelJob as cancelRecoveryJob, completeEndedJob, endedRemoteEvidence, failJob as failRecoveryJob, reconcileOwnedJobs, runnerCleanupDuty, scavengeWritableJobs, unavailableOrReadableEvidence, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
-import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { RESCUE_RUNNER_SUBCOMMAND, spawnRescueRunner } from './lib/rescue-runner.mjs';
 import { RESCUE_RUNNER_VERSION, queuedRescueAcknowledgement, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
@@ -2434,7 +2433,6 @@ export async function deliverCompletionNotice(output, rendered, dependencies = {
 export async function runCompanionCli(argv = process.argv.slice(2)) {
   /** @type {any} */ let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const rescueRunner = entry === RESCUE_RUNNER_SUBCOMMAND; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const boundStatusDirect = argv.length === 2 && entry === 'invoke-status' && argv[1] === 'rescue';
-  const rescueDirect = direct && argv[1] === 'rescue';
   // The detached runner is a background process: it must never read the fd3
   // authorization envelope, install foreground signal handling, or publish a
   // protected internal response — its selector is dispatched first.
@@ -2444,7 +2442,6 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
     const foregroundProgress = worker || rescueRunner ? {} : {
       ...(entry === 'prepare' ? { input: process.stdin, preparationTransport: { writeReady: (/** @type {string} */ line) => process.stdout.write(line) } } : {}),
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
-      ...(rescueDirect ? { progressRelayWriter: (/** @type {{sequence:number,phase:string,code:string,observedAt:string}} */ record) => process.stderr.write(serializeRescueProgressRelay(record)) } : {}),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
       ...(signalController ? { signal: signalController.signal } : {}),
     };

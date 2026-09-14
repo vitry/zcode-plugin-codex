@@ -297,7 +297,9 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   );
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
-  assert.match(installedRescue, /Relay is liveness only and never completion/);
+  assert.match(installedRescue, /Do not send routine progress, heartbeat, or phase messages to Root/);
+  assert.match(installedRescue, /The native child completion mechanism delivers your terminal result to the parent/);
+  assert.doesNotMatch(installedRescue, /\[zcode-relay\]/);
   assert.match(installedRescue, /Never relay detailed `\[zcode\]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors/);
   assert.match(installedRescue, /invoke-status rescue/);
   assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);

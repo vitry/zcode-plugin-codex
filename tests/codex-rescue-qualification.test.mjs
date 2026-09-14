@@ -1125,51 +1125,478 @@ test('required yielded qualification exposes only non-sensitive execution facts'
   );
 });
 
-test('qualifies validated preterminal Rescue relays and an observational bound status sidecar', () => {
-  const input = relayedYieldedFixture({ withStatus: true });
-  const evidence = qualifyCodexRescueEvidence(input, options({
-    requireYieldedExecution: true,
-    requireProgressRelay: true,
-    requireStatusSidecar: true,
-    expectedStatusCommand,
-  }));
-  assert.equal(evidence.progressRelayChecked, true);
-  assert.equal(evidence.statusSidecarChecked, true);
+test('quiet supervision qualifies long inner waits, outer-cell continuations, and native terminal delivery', () => {
+  const evidence = qualifyCodexRescueEvidence(supervisedYieldedFixture(), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.deepEqual(evidence.supervisionFacts, {
+    requestedInnerPolls: 2,
+    requestedOuterWaits: 1,
+    requestedOuterContinuations: 0,
+    mailboxNotifications: 0,
+    observedElapsedPollMs: 2,
+    appliedPollYieldMs: 300000,
+    appliedInitialYieldMs: 30000,
+    appliedRootWaitMs: 600000,
+    appliedOuterContinuationYieldMs: 30000,
+    rootWaitEvidence: 'wait-agent',
+  });
   assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
   assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
-  assert.doesNotMatch(JSON.stringify(evidence), /PRIVATE|\/repo|invoke-status|session_id/);
+
+  // A 300000 ms inner poll outlasting its outer code cell yields the cell; the
+  // child continues only that cell with the `wait` continuation tool at the
+  // longest permitted wait, then the same-handle observation resumes.
+  const continued = outerContinuationYieldedFixture();
+  const continuationEvidence = qualifyCodexRescueEvidence(continued, options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(continuationEvidence.quietSupervisionChecked, true);
+  assert.equal(continuationEvidence.terminalDeliveryChecked, true);
+  assert.deepEqual(continuationEvidence.supervisionFacts, {
+    requestedInnerPolls: 2,
+    requestedOuterWaits: 1,
+    requestedOuterContinuations: 1,
+    mailboxNotifications: 0,
+    observedElapsedPollMs: 2,
+    appliedPollYieldMs: 300000,
+    appliedInitialYieldMs: 30000,
+    appliedRootWaitMs: 600000,
+    appliedOuterContinuationYieldMs: 30000,
+    rootWaitEvidence: 'wait-agent',
+  });
+  assert.equal(continuationEvidence.yieldedExecution.pollCount, 2);
+  assert.equal(continuationEvidence.yieldedExecution.terminalExitCode, 0);
 });
 
-test('Rescue relay qualification rejects untrusted routing, content, ordering, and terminal substitution', () => {
+test('quiet supervision rejects unbounded, unlinked, and malformed outer-cell continuations', () => {
+  const supervised = (mutate) => {
+    const input = outerContinuationYieldedFixture();
+    mutate(input.rollouts[1]);
+    return input;
+  };
+  const waitCall = (child) => child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call');
   const cases = [
-    { code: 'progress-relay-target', mutate: ({ child }) => { relayCalls(child)[0].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('started') }); } },
-    { code: 'progress-relay-content', mutate: ({ child }) => { relayCalls(child)[0].payload.arguments = JSON.stringify({ target: '/root', message: 'PRIVATE raw stderr' }); } },
-    { code: 'progress-relay-sequence', mutate: ({ child }) => { setCapturedOutput(child, 'poll-1', `${relayLine(1, 'investigating', 'tool-active')}\n`, 41); } },
-    { code: 'progress-relay-order', mutate: ({ child }) => { const relay = relayCalls(child)[0]; child.splice(child.indexOf(relay), 1); child.splice(1, 0, relay); } },
-    { code: 'progress-relay-after-terminal', mutate: ({ child }) => { const relay = relayCalls(child).at(-1); const output = relayOutputs(child).at(-1); child.splice(child.indexOf(relay), 1); child.splice(child.indexOf(output), 1); child.splice(-1, 0, relay, output); } },
-    { code: 'progress-relay-author', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.author = '/root/sibling'; } },
-    { code: 'progress-relay-envelope', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content[0].text = parentRelayMessages(parent)[0].payload.content[0].text.replace('Task name: /root\n', 'Task name: /root/sibling\n'); } },
-    { code: 'progress-relay-encrypted', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content.pop(); } },
-    { code: 'progress-relay-encrypted', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content[1].encrypted_content = 'short'; } },
-    { code: 'progress-relay-parent-content', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content.push({ type: 'input_text', text: 'PRIVATE extra plaintext' }); } },
-    { code: 'progress-relay-call-id', mutate: ({ child }) => { relayOutputs(child)[0].payload.type = 'custom_tool_call_output'; } },
-    { code: 'progress-relay-call-id', mutate: ({ child }) => { child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
-    { code: 'progress-relay-call-id', mutate: ({ parent }) => { const messages = parentRelayMessages(parent); messages[1].payload.id = messages[0].payload.id; } },
-    { code: 'progress-relay-turn-association', mutate: ({ parent }) => { parentRelayMessages(parent)[1].payload.internal_chat_message_metadata_passthrough.turn_id = relayTurnId('b'); } },
-    { code: 'progress-relay-turn-association', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.internal_chat_message_metadata_passthrough.turn_id = 'malformed'; } },
-    { code: 'progress-relay-output', mutate: ({ child }) => { relayOutputs(child)[0].payload.output = 'not empty'; } },
-    { code: 'progress-relay-call-id', mutate: ({ child }) => { const call = relayCalls(child)[0]; const output = relayOutputs(child)[0]; call.payload.call_id = 'poll-1'; output.payload.call_id = 'poll-1'; } },
-    { code: 'progress-relay-parent-wait', mutate: ({ parent }) => { const call = parent.find((event) => event?.payload?.name === 'wait_agent' && event.payload.call_id === 'relay-wait-1'); const output = parent.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'relay-wait-1'); parent.splice(parent.indexOf(call), 1); parent.splice(parent.indexOf(output), 1); } },
-    { code: 'public-output-mismatch', mutate: ({ child }) => { child.find((event) => event?.payload?.phase === 'final_answer').payload.message = JSON.stringify({ type: 'bound-status', status: 'running' }); } },
+    // The legacy standalone timeout shape is not the host wait tool contract.
+    { code: 'outer-continuation-arguments', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ timeout_ms: 300000 }); } },
+    { code: 'outer-continuation-arguments', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '1', yield_time_ms: 30000, nested: {} }); } },
+    { code: 'quiet-supervision-outer-wait-evidence', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '1', yield_time_ms: '30000' }); } },
+    { code: 'quiet-supervision-outer-wait-evidence', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '1' }); } },
+    // The outer continuation uses the wait tool's own bound, not the inner poll bound.
+    { code: 'quiet-supervision-outer-wait-bound', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '1', yield_time_ms: 1000 }); } },
+    { code: 'quiet-supervision-outer-wait-bound', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '1', yield_time_ms: 300000 }); } },
+    { code: 'outer-continuation-cell-id', mutate: (child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '9', yield_time_ms: 30000 }); } },
   ];
   for (const { code, mutate } of cases) {
-    const input = relayedYieldedFixture(); mutate({ child: input.rollouts[1], parent: input.rollouts[0] });
     assert.throws(
-      () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireProgressRelay: true })),
+      () => qualifyCodexRescueEvidence(supervised(mutate), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
       code,
     );
   }
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervised((child) => {
+      child.splice(child.findIndex((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output'), 1);
+    }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-call-id',
+  );
+});
+
+test('quiet supervision resolves a pending poll cell through chained wait continuations', () => {
+  const input = outerContinuationYieldedFixture();
+  const child = input.rollouts[1];
+  // A first wait that yields again leaves the cell pending; only a later
+  // completed wait output carries the poll's eventual host result.
+  const waitCall = child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call');
+  child.splice(child.indexOf(waitCall), 0,
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001400Z', payload: { type: 'function_call', name: 'wait', call_id: 'outer-wait-0', arguments: JSON.stringify({ cell_id: '1', yield_time_ms: 30000 }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001410Z', payload: { type: 'function_call_output', call_id: 'outer-wait-0', output: [
+      { type: 'input_text', text: 'Script running with cell ID 1\nWall time 30.0 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'partial streamed output\n' },
+    ] } });
+  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.supervisionFacts.requestedOuterContinuations, 2);
+  assert.equal(evidence.supervisionFacts.requestedInnerPolls, 2);
+  assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+});
+
+test('quiet supervision measures a yielded poll through its resolving continuation', () => {
+  const input = outerContinuationYieldedFixture();
+  const child = input.rollouts[1];
+  // The linked wait resumes the yielded cell across its full 30000 ms yield: the
+  // observed poll interval must span the pre-yield slice plus the whole
+  // continuation, not stop at the moment the host yielded the cell.
+  child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output')
+    .timestamp = '2026-08-10T00:00:31.001600Z';
+  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.supervisionFacts.observedElapsedPollMs, 31002);
+});
+
+test('quiet supervision resolves a yielded startup cell through its linked wait continuation', () => {
+  const supervised = () => options({ requireYieldedExecution: true, requireQuietSupervision: true });
+  const evidence = qualifyCodexRescueEvidence(startupContinuationYieldedFixture(), supervised());
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.semanticProgressChecked, true);
+  assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
+  assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+  assert.equal(evidence.yieldedExecution.pollCount, 2);
+  assert.equal(evidence.supervisionFacts.requestedInnerPolls, 2);
+  assert.equal(evidence.supervisionFacts.requestedOuterContinuations, 1);
+
+  const waitCall = (child) => child.find((event) => event?.payload?.call_id === 'startup-wait-1' && event.payload.type === 'function_call');
+  const waitOutput = (child) => child.find((event) => event?.payload?.call_id === 'startup-wait-1' && event.payload.type === 'function_call_output');
+  const probe = (mutate) => {
+    const input = startupContinuationYieldedFixture();
+    mutate(input.rollouts[1]);
+    return input;
+  };
+  // The delivered handle must be the one every later poll addresses.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitOutput(child).payload.output = capturedResult({ output: 'started\n', session_id: 999999 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-handle-mismatch',
+  );
+  // The startup wait is held to the same continuation linkage and wait-tool bounds.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '7', yield_time_ms: 30000 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-cell-id',
+  );
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitCall(child).payload.arguments = JSON.stringify({ cell_id: '0', yield_time_ms: 300000 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-outer-wait-bound',
+  );
+  // A startup cell with no resolving wait and no observable poll never qualifies.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => {
+      for (const event of child.filter((candidate) => candidate?.payload?.call_id === 'startup-wait-1'
+        || ['poll-1', 'poll-2'].includes(candidate?.payload?.call_id))) child.splice(child.indexOf(event), 1);
+    }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-unresolved',
+  );
+});
+
+test('quiet supervision rejects an inner poll observed before the startup continuation resolves', () => {
+  const lateStartupWait = () => {
+    const input = startupContinuationYieldedFixture();
+    const child = input.rollouts[1];
+    // The child polled before the startup resolution delivered its handle: the
+    // wait call and output move behind the first inner poll.
+    const waitCall = child.find((event) => event?.payload?.call_id === 'startup-wait-1' && event.payload.type === 'function_call');
+    const waitOutput = child.find((event) => event?.payload?.call_id === 'startup-wait-1' && event.payload.type === 'function_call_output');
+    const firstPollOutput = child.find((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'custom_tool_call_output');
+    child.splice(child.indexOf(waitOutput), 1);
+    child.splice(child.indexOf(waitCall), 1);
+    child.splice(child.indexOf(firstPollOutput) + 1, 0, waitCall, waitOutput);
+    return input;
+  };
+  assert.throws(
+    () => qualifyCodexRescueEvidence(lateStartupWait(), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-overlap',
+  );
+});
+
+test('quiet supervision rejects duplicate call identities across child host-call families', () => {
+  // An outer wait reusing an inner poll's call id is an ambiguous transcript
+  // that must fail global ownership before family splitting.
+  const renamed = outerContinuationYieldedFixture();
+  const child = renamed.rollouts[1];
+  for (const event of child.filter((candidate) => candidate?.payload?.call_id === 'outer-wait-1')) event.payload.call_id = 'poll-1';
+  assert.throws(
+    () => qualifyCodexRescueEvidence(renamed, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-call-id-duplicate',
+  );
+});
+
+test('quiet supervision rejects continuation outputs that fail to carry the resolved poll result', () => {
+  const supervised = (mutate) => {
+    const input = outerContinuationYieldedFixture();
+    mutate(input.rollouts[1]);
+    return input;
+  };
+  const waitOutputEvent = (child) => child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output');
+  const completedHeader = { type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' };
+  const cases = [
+    // A completed continuation without its carried eventual result is missing.
+    { code: 'outer-continuation-result-missing', mutate: (child) => { waitOutputEvent(child).payload.output = [completedHeader]; } },
+    { code: 'outer-continuation-result-missing', mutate: (child) => { waitOutputEvent(child).payload.output = [completedHeader, { type: 'input_text', text: '  \n' }]; } },
+    // A malformed carried result is not the captured host-result contract.
+    { code: 'outer-continuation-result-shape', mutate: (child) => { waitOutputEvent(child).payload.output = [completedHeader, { type: 'input_text', text: 'not the host result' }]; } },
+    { code: 'outer-continuation-result-shape', mutate: (child) => { waitOutputEvent(child).payload.output = capturedResult({ output: 'still running\n', handle: 41 }); } },
+    // A failed or terminated waited cell never delivers the result.
+    { code: 'outer-continuation-result-failed', mutate: (child) => { waitOutputEvent(child).payload.output = [{ type: 'input_text', text: 'Script failed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: 'boom\n' }]; } },
+    { code: 'outer-continuation-result-failed', mutate: (child) => { waitOutputEvent(child).payload.output = [{ type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: 'killed\n' }]; } },
+    // The resolved poll continuation must keep the original running handle.
+    { code: 'outer-continuation-result-handle', mutate: (child) => { waitOutputEvent(child).payload.output = capturedResult({ output: 'still running\n', session_id: 999999 }); } },
+    // A continuation exit claimed while a later poll still observes the running companion fabricates a terminal signal.
+    { code: 'outer-continuation-result-terminal', mutate: (child) => { waitOutputEvent(child).payload.output = capturedResult({ output: 'done\n', exit_code: 0 }); } },
+    // Removing the whole continuation pair leaves the yielded cell unresolved.
+    { code: 'outer-continuation-unresolved', mutate: (child) => {
+      for (const event of child.filter((candidate) => candidate?.payload?.call_id === 'outer-wait-1')) child.splice(child.indexOf(event), 1);
+    } },
+  ];
+  for (const { code, mutate } of cases) {
+    assert.throws(
+      () => qualifyCodexRescueEvidence(supervised(mutate), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
+    );
+  }
+});
+
+test('quiet supervision resolves the original terminal result through the linked wait continuation', () => {
+  const terminalThroughWait = () => {
+    const input = outerContinuationYieldedFixture();
+    const child = input.rollouts[1];
+    // The companion exits while the cell is still yielded: the later same-handle
+    // poll never happens, and the pending poll's eventual host result — its
+    // terminal exit — arrives through the linked wait output instead. That
+    // resolved result is the original execution's result, not a substitute
+    // terminal signal.
+    for (const event of child.filter((candidate) => candidate?.payload?.call_id === 'poll-2')) child.splice(child.indexOf(event), 1);
+    child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output')
+      .payload.output = capturedResult({ output: `${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: 0 });
+    return input;
+  };
+  const evidence = qualifyCodexRescueEvidence(terminalThroughWait(), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
+  assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+  assert.equal(evidence.yieldedExecution.pollCount, 1);
+  assert.deepEqual(evidence.supervisionFacts, {
+    requestedInnerPolls: 1,
+    requestedOuterWaits: 1,
+    requestedOuterContinuations: 1,
+    mailboxNotifications: 0,
+    observedElapsedPollMs: 1,
+    appliedPollYieldMs: 300000,
+    appliedInitialYieldMs: 30000,
+    appliedRootWaitMs: 600000,
+    appliedOuterContinuationYieldMs: 30000,
+    rootWaitEvidence: 'wait-agent',
+  });
+
+  const waitOutputEvent = (child) => child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output');
+  const waitCallEvent = (child) => child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call');
+  const probe = (mutate) => {
+    const input = terminalThroughWait();
+    mutate(input.rollouts[1]);
+    return input;
+  };
+  const supervised = () => options({ requireYieldedExecution: true, requireQuietSupervision: true });
+  // A wait result claiming both the running handle and the exit is a fabricated shape.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitOutputEvent(child).payload.output = capturedResult({ output: 'done\n', session_id: 41, exit_code: 0 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-result-shape',
+  );
+  // A delivered exit that differs from the required child-turn contract stays rejected.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitOutputEvent(child).payload.output = capturedResult({ output: 'done\n', exit_code: 1 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-terminal-exit-invalid',
+  );
+  // A terminal payload delivered for an unlinked cell id is still rejected.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(probe((child) => { waitCallEvent(child).payload.arguments = JSON.stringify({ cell_id: '9', yield_time_ms: 30000 }); }), supervised()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-cell-id',
+  );
+});
+
+test('quiet supervision rejects an inner poll that starts before the pending cell resolves', () => {
+  const overlapCase = (insertBeforeOutput) => {
+    const input = outerContinuationYieldedFixture();
+    const child = input.rollouts[1];
+    // Start poll-2 while the previous poll's cell is still pending: either
+    // before the wait call, or between the wait call and its resolving output.
+    const pollCall = child.find((event) => event?.payload?.call_id === 'poll-2' && event.payload.type === 'custom_tool_call');
+    child.splice(child.indexOf(pollCall), 1);
+    const anchor = child.find((event) => event?.payload?.call_id === 'outer-wait-1'
+      && event.payload.type === (insertBeforeOutput ? 'function_call_output' : 'function_call'));
+    child.splice(child.indexOf(anchor), 0, pollCall);
+    return input;
+  };
+  for (const insertBeforeOutput of [false, true]) {
+    assert.throws(
+      () => qualifyCodexRescueEvidence(overlapCase(insertBeforeOutput), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'outer-continuation-overlap',
+    );
+  }
+});
+
+test('quiet supervision keeps semantic progress that streams through the resolving wait continuation', () => {
+  const input = outerContinuationYieldedFixture();
+  const child = input.rollouts[1];
+  // The start-progress line streams during the pending interval: it arrives via
+  // the still-yielding wait output instead of the initial execution result, and
+  // must remain part of the normalized execution transcript.
+  child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output')
+    .payload.output = capturedResult({ output: 'booting\n', session_id: 41 });
+  child.find((event) => event?.payload?.call_id === 'outer-wait-1' && event.payload.type === 'function_call_output')
+    .payload.output = capturedResult({ output: `${expectedSemanticProgress.start}\nstill running\n`, session_id: 41 });
+  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.semanticProgressChecked, true);
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+});
+
+test('quiet supervision rejects short inner waits without explicit fixture tool-bound evidence', () => {
+  const throwsBound = (input) => assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-wait-bound',
+  );
+  throwsBound(supervisedYieldedFixture({ pollYieldMs: 500 }));
+  throwsBound(supervisedYieldedFixture({ pollYieldMs: 1000 }));
+  throwsBound(supervisedYieldedFixture({ pollYieldMs: 30000 }));
+  const hostBound = qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: 30000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedPollYieldMs: 30000 }));
+  assert.equal(hostBound.quietSupervisionChecked, true);
+  assert.equal(hostBound.supervisionFacts.requestedInnerPolls, 2);
+  assert.equal(hostBound.supervisionFacts.mailboxNotifications, 0);
+});
+
+test('quiet supervision records applied wait bounds and rejects implausible bound evidence', () => {
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: 300 }),
+      options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedPollYieldMs: 300 })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-bounds',
+  );
+  // Sub-second initial-yield evidence is implausible for the same reason as
+  // sub-second poll evidence: bound evidence must represent a documented host
+  // clamp of at least one second.
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ initialYieldMs: 250 }),
+      options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedInitialYieldMs: 250 })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-bounds',
+  );
+  const oneSecondInitial = qualifyCodexRescueEvidence(supervisedYieldedFixture({ initialYieldMs: 1000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedInitialYieldMs: 1000 }));
+  assert.equal(oneSecondInitial.quietSupervisionChecked, true);
+  assert.equal(oneSecondInitial.supervisionFacts.appliedInitialYieldMs, 1000);
+  const evidence = qualifyCodexRescueEvidence(supervisedYieldedFixture(), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.supervisionFacts.appliedPollYieldMs, 300000);
+  assert.equal(evidence.supervisionFacts.appliedInitialYieldMs, 30000);
+  assert.equal(evidence.supervisionFacts.appliedRootWaitMs, 600000);
+  assert.equal(evidence.supervisionFacts.appliedOuterContinuationYieldMs, 30000);
+  const boundAdapted = qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: 30000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedPollYieldMs: 30000 }));
+  assert.equal(boundAdapted.quietSupervisionChecked, true);
+  assert.equal(boundAdapted.supervisionFacts.appliedPollYieldMs, 30000);
+  assert.notEqual(boundAdapted.supervisionFacts.appliedPollYieldMs, 300000);
+});
+
+test('quiet supervision requires the long initial exec yield or explicit bound evidence', () => {
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ initialYieldMs: null }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-initial-wait-evidence',
+  );
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ initialYieldMs: 1000 }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-initial-wait-bound',
+  );
+  const adapted = qualifyCodexRescueEvidence(supervisedYieldedFixture({ initialYieldMs: 10000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedInitialYieldMs: 10000 }));
+  assert.equal(adapted.quietSupervisionChecked, true);
+  assert.equal(adapted.supervisionFacts.appliedInitialYieldMs, 10000);
+});
+
+test('quiet supervision distinguishes a native-completion wake from verified wait-agent evidence', () => {
+  const native = qualifyCodexRescueEvidence(supervisedYieldedFixture({ rootWaitTimeoutMs: null }), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(native.quietSupervisionChecked, true);
+  assert.equal(native.supervisionFacts.requestedOuterWaits, 0);
+  assert.equal(native.supervisionFacts.rootWaitEvidence, 'native-completion-wake');
+});
+
+test('quiet supervision rejects missing and nonnumeric poll wait arguments', () => {
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: null }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-wait-evidence',
+  );
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: '300000' }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-poll-envelope',
+  );
+});
+
+test('quiet supervision rejects routine child progress messages with a specific reason', () => {
+  const input = supervisedYieldedFixture();
+  const child = input.rollouts[1];
+  child.splice(child.indexOf(childPollOutputs(input)[0]) + 1, 0, relayCall('relay-1', 'started'), relayOutput('relay-1'));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-progress-send',
+  );
+});
+
+test('quiet supervision rejects Root sleep and unforced liveness queries', () => {
+  const supervised = (mutate) => {
+    const input = supervisedYieldedFixture();
+    mutate(input.rollouts[0]);
+    return input;
+  };
+  const withSleep = supervised((parent) => {
+    const childReturn = parent.find((event) => event?.payload?.author === agentPath);
+    parent.splice(parent.indexOf(childReturn), 0,
+      { type: 'response_item', payload: { type: 'function_call', name: 'sleep', call_id: 'sleep-1', arguments: JSON.stringify({ ms: 30000 }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'sleep-1', output: '' } });
+  });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(withSleep, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-root-liveness',
+  );
+  const withList = supervised((parent) => {
+    const childReturn = parent.find((event) => event?.payload?.author === agentPath);
+    parent.splice(parent.indexOf(childReturn), 0, structuredList('liveness-1'), listOutput('liveness-1'));
+  });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(withList, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-root-liveness',
+  );
+});
+
+test('quiet supervision requires the long Root wait or explicit bound evidence', () => {
+  assert.throws(
+    () => qualifyCodexRescueEvidence(supervisedYieldedFixture({ rootWaitTimeoutMs: 30000 }), options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-root-wait',
+  );
+  const adapted = qualifyCodexRescueEvidence(supervisedYieldedFixture({ rootWaitTimeoutMs: 30000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedRootWaitMs: 30000 }));
+  assert.equal(adapted.quietSupervisionChecked, true);
+  assert.equal(adapted.supervisionFacts.requestedOuterWaits, 1);
+});
+
+test('quiet supervision preserves execution boundaries, terminal integrity, and explicit status allowances', () => {
+  const overlapping = supervisedYieldedFixture();
+  const child = overlapping.rollouts[1];
+  const firstPoll = child.find((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'custom_tool_call');
+  const secondCall = child.find((event) => event?.payload?.call_id === 'poll-2' && event.payload.type === 'custom_tool_call');
+  const secondOutput = child.find((event) => event?.payload?.call_id === 'poll-2' && event.payload.type === 'custom_tool_call_output');
+  child.splice(child.indexOf(secondCall), 1);
+  child.splice(child.indexOf(secondOutput), 1);
+  child.splice(child.indexOf(firstPoll) + 1, 0, secondCall, secondOutput);
+  assert.throws(
+    () => qualifyCodexRescueEvidence(overlapping, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-output-order',
+  );
+
+  const earlyFinal = supervisedYieldedFixture();
+  const final = earlyFinal.rollouts[1].pop();
+  earlyFinal.rollouts[1].splice(4, 0, final);
+  assert.throws(
+    () => qualifyCodexRescueEvidence(earlyFinal, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-terminal-order',
+  );
+
+  const substituted = supervisedYieldedFixture();
+  substituted.rollouts[1].find((event) => event?.payload?.phase === 'final_answer').payload.message = JSON.stringify({ type: 'bound-status', status: 'running' });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(substituted, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'public-output-mismatch',
+  );
+
+  const status = qualifyCodexRescueEvidence(supervisedStatusYieldedFixture(),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true, requireStatusSidecar: true, expectedStatusCommand }));
+  assert.equal(status.terminalDeliveryChecked, true);
+  assert.equal(status.quietSupervisionChecked, true);
+  assert.equal(status.statusSidecarChecked, true);
+  assert.doesNotMatch(JSON.stringify(status), /PRIVATE|\/repo|invoke-status|session_id/);
 });
 
 test('Rescue bound status qualification rejects arguments, sibling ownership, and handle substitution', () => {
@@ -1187,9 +1614,9 @@ test('Rescue bound status qualification rejects arguments, sibling ownership, an
     { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.progressPreview = ['x'.repeat(257)]; }) },
   ];
   for (const { code, mutate } of cases) {
-    const input = relayedYieldedFixture({ withStatus: true }); mutate(input.rollouts[1]);
+    const input = supervisedStatusYieldedFixture(); mutate(input.rollouts[1]);
     assert.throws(
-      () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand })),
+      () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true, requireStatusSidecar: true, expectedStatusCommand })),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
       code,
     );
@@ -1252,18 +1679,59 @@ test('forwarder child rollout rejects every unaccounted response and non-allowli
   }
 });
 
-test('forwarder child rejects function-call exec shapes even beside one valid custom exec', () => {
-  for (const name of ['exec', 'exec_command']) {
-    const input = fixture();
-    input.rollouts[1].splice(-1, 0, {
-      type: 'response_item', payload: { type: 'function_call', name, call_id: `extra-${name}`, arguments: JSON.stringify({ cmd: expectedCommand }) },
-    });
-    assert.throws(
-      () => qualifyCodexRescueEvidence(input, options()),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-shape-mismatch',
-      name,
-    );
-  }
+test('forwarder child rejects uncaptured function-call exec shapes even beside one valid custom exec', () => {
+  const input = fixture();
+  input.rollouts[1].splice(-1, 0, {
+    type: 'response_item', payload: { type: 'function_call', name: 'exec', call_id: 'extra-exec', arguments: JSON.stringify({ cmd: expectedCommand }) },
+  });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-shape-mismatch',
+  );
+});
+
+test('parses direct tool calls through the same host-call contract as code-mode wrappers', () => {
+  const input = fixture();
+  input.rollouts[1].splice(1, 2,
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.000005Z', payload: { type: 'function_call', name: 'exec_command', call_id: 'exec-1', arguments: JSON.stringify({ cmd: expectedCommand, workdir: expectedWorkspace }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.000006Z', payload: { type: 'function_call_output', call_id: 'exec-1', output: capturedResult({ output: `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: 0 }) } },
+  );
+  assert.equal(qualifyCodexRescueEvidence(input, options()).route, 'named');
+
+  // A direct tool call still needs its exact linked output and stays one companion process.
+  const duplicated = fixture();
+  duplicated.rollouts[1].splice(-1, 0, { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'direct-1', arguments: JSON.stringify({ cmd: expectedCommand, workdir: expectedWorkspace }) } });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(duplicated, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-count',
+  );
+
+  // Mixed event families cannot pair: a direct call may not answer through a
+  // custom output, and a custom call may not answer through a direct output.
+  // Everything else in each trace stays fully compliant.
+  const directCallCustomOutput = supervisedYieldedFixture();
+  directCallCustomOutput.rollouts[1] = directCallCustomOutput.rollouts[1].map((event) => {
+    if (event?.payload?.type === 'custom_tool_call' && event.payload.call_id === 'exec-1') {
+      const value = parseFixtureHostInput(event.payload.input);
+      return { ...event, payload: { type: 'function_call', name: 'exec_command', call_id: event.payload.call_id, arguments: JSON.stringify(value) } };
+    }
+    return event;
+  });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(directCallCustomOutput, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-call-family-mismatch',
+  );
+  const customCallDirectOutput = supervisedYieldedFixture();
+  customCallDirectOutput.rollouts[1] = customCallDirectOutput.rollouts[1].map((event) => {
+    if (event?.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'exec-1') {
+      return { ...event, payload: { type: 'function_call_output', call_id: event.payload.call_id, output: event.payload.output } };
+    }
+    return event;
+  });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(customCallDirectOutput, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-call-family-mismatch',
+  );
 });
 
 test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
@@ -1380,46 +1848,116 @@ test('choice qualification permits yielded polling in the initial turn, continua
   }
 });
 
-test('choice qualification validates relay and optional status within both original-handle segments', () => {
-  const input = relayedChoiceFixture({ withStatus: true });
+test('choice qualification validates quiet supervision and optional status within both original-handle segments', () => {
+  const input = supervisedChoiceFixture({ withStatus: true });
   const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', {
-    requireProgressRelay: true,
+    requireQuietSupervision: true,
     requireStatusSidecar: true,
     expectedStatusCommand,
     includeExecutionFacts: true,
   }));
-  assert.equal(evidence.progressRelayChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.quietSupervisionChecked, true);
   assert.equal(evidence.statusSidecarChecked, true);
   assert.deepEqual(evidence.executions, {
     initial: { execCommandCount: 1 }, continuation: { execCommandCount: 1 },
   });
 });
 
-test('choice qualification rejects relay/status ownership drift across logical segments before encrypted unqualification', () => {
+test('choice qualification permits exactly one timeout-recovery list_agents under quiet supervision', () => {
+  const input = supervisedChoiceFixture();
+  const parent = input.rollouts[0];
+  const firstReturn = parent.findIndex((event) => event?.payload?.author === agentPath);
+  parent.splice(firstReturn, 0,
+    structuredWait('wait-timeout'), waitOutput('wait-timeout', true),
+    structuredList('list-after-timeout'), listOutput('list-after-timeout'),
+    structuredWait('wait-after-steering'), waitOutput('wait-after-steering', false));
+  const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', { requireQuietSupervision: true }));
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.supervisionFacts.requestedOuterWaits, 4);
+});
+
+test('choice qualification rejects quiet-supervision and status drift across logical segments before encrypted unqualification', () => {
   const cases = [
-    { code: 'choice-initial-progress-relay-target', mutate: (input) => { relayCalls(input.rollouts[1])[0].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('started') }); } },
-    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { const calls = relayCalls(input.rollouts[1]); const outputs = relayOutputs(input.rollouts[1]); calls[1].payload.call_id = calls[0].payload.call_id; outputs[1].payload.call_id = calls[0].payload.call_id; } },
+    { code: 'quiet-supervision-progress-send', mutate: (input) => { const child = input.rollouts[1]; const initialOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output'); child.splice(child.indexOf(initialOutput) + 1, 0, relayCall('choice-relay-1', 'started'), relayOutput('choice-relay-1')); } },
+    { code: 'quiet-supervision-progress-send', encrypted: true, mutate: (input) => { const child = input.rollouts[1]; const continuationStart = child.findIndex((event) => event?.payload?.phase === 'final_answer') + 1; const continuationOutput = child.slice(continuationStart).find((event) => event?.payload?.type === 'custom_tool_call_output'); child.splice(child.indexOf(continuationOutput) + 1, 0, relayCall('choice-relay-2', 'model-active'), relayOutput('choice-relay-2')); } },
+    { code: 'choice-initial-quiet-supervision-wait-bound', mutate: (input) => { input.rollouts[1].find((event) => event?.payload?.call_id === 'choice-initial-poll').payload.input = structuredPoll(51, 'choice-initial-poll', '', 1000).payload.input; } },
+    { code: 'choice-continuation-quiet-supervision-wait-evidence', mutate: (input) => { input.rollouts[1].find((event) => event?.payload?.call_id === 'choice-continuation-poll').payload.input = structuredPoll(61, 'choice-continuation-poll', '', null).payload.input; } },
     { code: 'choice-initial-status-sidecar-command', mutate: (input) => { statusCall(input.rollouts[1]).payload.input = structuredExecResult(`${expectedStatusCommand} --all`, 'status-1').payload.input; } },
-    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { relayOutputs(input.rollouts[1])[1].payload.type = 'custom_tool_call_output'; } },
-    { code: 'choice-initial-progress-relay-call-id', mutate: (input) => { const child = input.rollouts[1]; child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
-    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { const messages = parentRelayMessages(input.rollouts[0]); messages[1].payload.id = messages[0].payload.id; messages[1].payload.internal_chat_message_metadata_passthrough.turn_id = messages[0].payload.internal_chat_message_metadata_passthrough.turn_id; } },
-    { code: 'choice-continuation-progress-relay-turn-association', mutate: (input) => { const messages = parentRelayMessages(input.rollouts[0]); messages[1].payload.internal_chat_message_metadata_passthrough.turn_id = messages[0].payload.internal_chat_message_metadata_passthrough.turn_id; } },
-    { code: 'choice-child-execution-boundary', mutate: (input) => { const child = input.rollouts[1]; const relay = relayCalls(child)[0]; const output = relayOutputs(child)[0]; child.splice(child.indexOf(relay), 1); child.splice(child.indexOf(output), 1); child.splice(child.indexOf(child.filter((event) => event?.payload?.phase === 'final_answer')[0]) + 1, 0, relay, output); } },
-    { code: 'choice-continuation-progress-relay-target', encrypted: true, mutate: (input) => { relayCalls(input.rollouts[1])[1].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('model-active') }); } },
+    { code: 'quiet-supervision-root-liveness', mutate: (input) => { const parent = input.rollouts[0]; const secondReturn = parent.filter((event) => event?.payload?.author === agentPath).at(-1); parent.splice(parent.indexOf(secondReturn), 0, structuredList('choice-liveness'), listOutput('choice-liveness')); } },
+    { code: 'choice-child-execution-boundary', mutate: (input) => { const child = input.rollouts[1]; const call = statusCall(child); const output = statusOutput(child); child.splice(child.indexOf(call), 1); child.splice(child.indexOf(output), 1); child.push(call, output); } },
   ];
   for (const { code, encrypted: encryptedPath, mutate } of cases) {
-    const input = relayedChoiceFixture({ withStatus: true });
+    const input = supervisedChoiceFixture({ withStatus: true });
     if (encryptedPath) {
       const spawn = spawnEvent(input); const args = JSON.parse(spawn.payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawn.payload.arguments = JSON.stringify(args);
       const followup = choiceFollowup(input); const followupArgs = JSON.parse(followup.payload.arguments); followupArgs.message = `gAAAA${'B'.repeat(64)}`; followup.payload.arguments = JSON.stringify(followupArgs);
     }
     mutate(input); retimestampChoice(input);
     assert.throws(
-      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', { requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand })),
+      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', { requireQuietSupervision: true, requireStatusSidecar: true, expectedStatusCommand })),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
       code,
     );
   }
+});
+
+test('choice qualification parses direct tool calls through the same segment contract as wrappers', () => {
+  const input = directChoiceFixture();
+  const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', { requireQuietSupervision: true }));
+  assert.equal(evidence.choice, 'resume');
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.supervisionFacts.requestedInnerPolls, 4);
+  assert.equal(evidence.supervisionFacts.mailboxNotifications, 0);
+
+  // Genuinely boundary-violating direct forms stay rejected with the existing codes.
+  const stray = directChoiceFixture();
+  stray.rollouts[1].push(
+    { type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', call_id: 'stray-direct-poll', arguments: JSON.stringify({ session_id: 61, chars: '', yield_time_ms: 300000 }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'stray-direct-poll', output: capturedResult({ output: '', exit_code: 0 }) } });
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(stray, choiceOptions('resume', { requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-child-execution-boundary',
+  );
+});
+
+test('choice qualification separates and validates real outer-cell continuations per segment', () => {
+  const withContinuation = () => {
+    const input = supervisedChoiceFixture();
+    const child = input.rollouts[1];
+    const pollOutput = child.find((event) => event?.payload?.call_id === 'choice-initial-poll' && event.payload.type === 'custom_tool_call_output');
+    pollOutput.payload.output = [
+      { type: 'input_text', text: 'Script running with cell ID 7\nWall time 300.0 seconds\nOutput:\n' },
+      { type: 'input_text', text: JSON.stringify({ output: '', session_id: 51 }) },
+    ];
+    child.splice(child.indexOf(pollOutput) + 1, 0,
+      { type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'choice-outer-wait', arguments: JSON.stringify({ cell_id: '7', yield_time_ms: 30000 }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'choice-outer-wait', output: capturedResult({ output: 'still running\n', session_id: 51 }) } });
+    return input;
+  };
+  const evidence = qualifyCodexRescueChoiceEvidence(withContinuation(), choiceOptions('resume', { requireQuietSupervision: true }));
+  assert.equal(evidence.choice, 'resume');
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.supervisionFacts.requestedInnerPolls, 4);
+  assert.equal(evidence.supervisionFacts.requestedOuterContinuations, 1);
+  assert.equal(evidence.supervisionFacts.appliedOuterContinuationYieldMs, 30000);
+
+  const unlinked = withContinuation();
+  unlinked.rollouts[1].find((event) => event?.payload?.call_id === 'choice-outer-wait' && event.payload.type === 'function_call')
+    .payload.arguments = JSON.stringify({ cell_id: '8', yield_time_ms: 30000 });
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(unlinked, choiceOptions('resume', { requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-initial-outer-continuation-cell-id',
+  );
+  const legacyShape = withContinuation();
+  legacyShape.rollouts[1].find((event) => event?.payload?.call_id === 'choice-outer-wait' && event.payload.type === 'function_call')
+    .payload.arguments = JSON.stringify({ timeout_ms: 300000 });
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(legacyShape, choiceOptions('resume', { requireQuietSupervision: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-initial-outer-continuation-arguments',
+  );
 });
 
 test('choice child rollout accounts for every host event and exact exec tool name', () => {
@@ -2308,15 +2846,6 @@ test('rejects duplicate malformed nested and repeated exec command evidence', ()
   }
 });
 
-test('fails an observed but unsupported function_call exec_command shape', () => {
-  const input = fixture();
-  input.rollouts[1][1] = { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: expectedCommand }) } };
-  assert.throws(
-    () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-shape-mismatch',
-  );
-});
-
 test('fails when child-only stderr or either compatibility diagnostic enters a parent public event', () => {
   for (const forbidden of ['raw output must stay private', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly]) {
     const input = fixture();
@@ -2504,53 +3033,112 @@ function yieldedFixture() {
   return input;
 }
 
-function relayedYieldedFixture({ withStatus = false } = {}) {
-  const input = yieldedFixture(); const child = input.rollouts[1]; const parent = input.rollouts[0];
-  setCapturedOutput(child, 'exec-1', `${expectedSemanticProgress.start}\n${relayLine(1, 'starting', 'started')}\n`, 41);
-  setCapturedOutput(child, 'poll-1', `${relayLine(2, 'investigating', 'tool-active')}\n`, 41);
-  const firstOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output');
-  child.splice(child.indexOf(firstOutput) + 1, 0, relayCall('relay-1', 'started'), relayOutput('relay-1'));
-  const firstPollOutput = child.find((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'custom_tool_call_output');
-  const additions = [relayCall('relay-2', 'tool-active'), relayOutput('relay-2')];
-  if (withStatus) additions.push(structuredExecResult(expectedStatusCommand, 'status-1'), capturedResultEvent('status-1', {
-    output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`,
-    exit_code: 0,
-  }));
-  child.splice(child.indexOf(firstPollOutput) + 1, 0, ...additions);
+function supervisedYieldedFixture({ pollYieldMs = 300000, rootWaitTimeoutMs = 600000, initialYieldMs = 30000 } = {}) {
+  const input = yieldedFixture();
+  const child = input.rollouts[1];
+  const execCall = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call');
+  execCall.payload.input = structuredExecResult(expectedCommand, 'exec-1', initialYieldMs === null ? {} : { yield_time_ms: initialYieldMs }).payload.input;
+  if (pollYieldMs !== 300000) {
+    for (const poll of childPolls(input)) poll.payload.input = structuredPoll(41, poll.payload.call_id, '', pollYieldMs).payload.input;
+  }
+  // Stamp the whole live interval so requested waits and actual elapsed waits
+  // are counted separately: each observed inner poll spans exactly one
+  // millisecond of trusted timestamp evidence.
+  let micros = 0;
+  const stamp = (event, elapsedMicros = 1) => {
+    micros += elapsedMicros;
+    event.timestamp = `2026-08-10T00:00:00.${String(micros).padStart(6, '0')}Z`;
+  };
+  const calls = child.filter((event) => event?.payload?.type === 'custom_tool_call');
+  const outputs = child.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  stamp(calls[0]);
+  stamp(outputs[0]);
+  for (let index = 1; index < calls.length; index += 1) {
+    stamp(calls[index]);
+    stamp(outputs[index], 1000);
+  }
+  const parent = input.rollouts[0];
   const childReturn = parent.find((event) => event?.payload?.author === agentPath);
-  parent.splice(parent.indexOf(childReturn), 0,
-    parentRelay(agentPath, relayMessage('started')),
-    structuredWait('relay-wait-1'), waitOutput('relay-wait-1', true),
-    parentRelay(agentPath, relayMessage('tool-active')),
-    structuredWait('relay-wait-2'), waitOutput('relay-wait-2', false));
+  stamp(child.find((event) => event?.payload?.phase === 'final_answer'));
+  stamp(childReturn);
+  stamp(parent.find((event) => event?.payload?.phase === 'final_answer'));
+  if (rootWaitTimeoutMs !== null) {
+    parent.splice(parent.indexOf(childReturn), 0, structuredWait('root-wait-1', rootWaitTimeoutMs), waitOutput('root-wait-1', false));
+  }
   return input;
 }
 
-function relayLine(sequence, phase, code) {
-  return `[zcode-relay] ${JSON.stringify({ version: 1, sequence, phase, code, observedAt: `2026-08-17T00:00:0${sequence}.000Z` })}`;
+function outerContinuationYieldedFixture() {
+  const input = supervisedYieldedFixture();
+  const child = input.rollouts[1];
+  // The 300000 ms inner poll outlasts its outer code cell: the host yields the
+  // cell with the companion handle still running and reports the runtime cell
+  // ID in the script-status header. The wrapper has not reached
+  // text(JSON.stringify(r)) yet, so the yielded output carries no completed
+  // host result — only the header captured before the yield.
+  const firstPollOutput = child.find((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'custom_tool_call_output');
+  firstPollOutput.payload.output = [
+    { type: 'input_text', text: 'Script running with cell ID 1\nWall time 300.0 seconds\nOutput:\n' },
+  ];
+  // The child continues only that cell with the host `wait` tool at its own
+  // longest permitted yield; the wait output carries the pending poll's
+  // eventual host result (same running handle), which resolves the cell.
+  child.splice(child.indexOf(firstPollOutput) + 1, 0,
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001500Z', payload: { type: 'function_call', name: 'wait', call_id: 'outer-wait-1', arguments: JSON.stringify({ cell_id: '1', yield_time_ms: 30000 }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001600Z', payload: { type: 'function_call_output', call_id: 'outer-wait-1', output: capturedResult({ output: 'still running\n', session_id: 41 }) } });
+  return input;
 }
+
+function startupContinuationYieldedFixture() {
+  const input = supervisedYieldedFixture();
+  const child = input.rollouts[1];
+  // The 30000 ms startup yield can outlast the initial code cell: the host
+  // yields the startup cell before the wrapper prints the running handle, and
+  // the linked wait resolution delivers that original handle at the longest
+  // permitted wait bound, before the first inner poll.
+  const execOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output');
+  execOutput.payload.output = [{ type: 'input_text', text: 'Script running with cell ID 0\nWall time 30.0 seconds\nOutput:\n' }];
+  child.splice(child.indexOf(execOutput) + 1, 0,
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001400Z', payload: { type: 'function_call', name: 'wait', call_id: 'startup-wait-1', arguments: JSON.stringify({ cell_id: '0', yield_time_ms: 30000 }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:00.001410Z', payload: { type: 'function_call_output', call_id: 'startup-wait-1', output: capturedResult({ output: `${expectedSemanticProgress.start}\n`, session_id: 41 }) } });
+  return input;
+}
+
+function supervisedStatusYieldedFixture() {
+  const input = supervisedYieldedFixture();
+  const child = input.rollouts[1];
+  const firstPollOutput = child.find((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'custom_tool_call_output');
+  child.splice(child.indexOf(firstPollOutput) + 1, 0,
+    structuredExecResult(expectedStatusCommand, 'status-1'),
+    capturedResultEvent('status-1', {
+      output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`,
+      exit_code: 0,
+    }));
+  return input;
+}
+
+function directChoiceFixture() {
+  const input = supervisedChoiceFixture();
+  input.rollouts[1] = input.rollouts[1].map((event) => {
+    if (event?.payload?.type === 'custom_tool_call') {
+      let value; let name;
+      try { value = parseFixturePollInput(event.payload.input); name = 'write_stdin'; }
+      catch { value = parseFixtureHostInput(event.payload.input); name = 'exec_command'; }
+      return { ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+        type: 'response_item', payload: { type: 'function_call', name, call_id: event.payload.call_id, arguments: JSON.stringify(value) } };
+    }
+    if (event?.payload?.type === 'custom_tool_call_output') {
+      return { ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+        type: 'response_item', payload: { type: 'function_call_output', call_id: event.payload.call_id, output: event.payload.output } };
+    }
+    return event;
+  });
+  return input;
+}
+
 function relayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
 function relayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: relayMessage(code) }) } }; }
 function relayOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
-function parentRelay(author, message, turnMarker = 'a') {
-  const marker = message === relayMessage('started') ? 'a' : 'b';
-  return { type: 'response_item', payload: {
-    type: 'agent_message', id: `amsg_${marker.repeat(36)}`, author, recipient: '/root',
-    content: [
-      { type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` },
-      { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` },
-    ],
-    internal_chat_message_metadata_passthrough: { turn_id: relayTurnId(turnMarker) },
-  } };
-}
-function relayTurnId(marker) { return `${marker.repeat(8)}-${marker.repeat(4)}-4${marker.repeat(3)}-8${marker.repeat(3)}-${marker.repeat(12)}`; }
-function relayCalls(child) { return child.filter((event) => event?.payload?.type === 'function_call' && event.payload.name === 'send_message'); }
-function relayOutputs(child) { const ids = new Set(relayCalls(child).map((event) => event.payload.call_id)); return child.filter((event) => event?.payload?.type === 'function_call_output' && ids.has(event.payload.call_id)); }
-function parentRelayMessages(parent) { return parent.filter((event) => event?.payload?.type === 'agent_message' && event.payload.author === agentPath && !event.payload.content?.[0]?.text?.startsWith('Message Type: FINAL_ANSWER')); }
-function setCapturedOutput(child, callId, outputText, sessionId) {
-  const output = child.find((event) => event?.payload?.type === 'custom_tool_call_output' && event.payload.call_id === callId);
-  output.payload.output = capturedResult({ output: outputText, session_id: sessionId });
-}
 function statusCall(child) { return child.find((event) => event?.payload?.type === 'custom_tool_call' && event.payload.call_id === 'status-1'); }
 function statusOutput(child) { return child.find((event) => event?.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'status-1'); }
 function mutateStatusSnapshot(child, mutate) {
@@ -2974,26 +3562,19 @@ function rawJob(id, ownerTurnId, status, extra = {}) {
 function rawJobs(input) { return JSON.parse(input.jobRecordBytesJson).map((bytes) => JSON.parse(bytes)); }
 function setRawJobs(input, jobs) { input.jobRecordBytesJson = JSON.stringify(jobs.map((job) => `${JSON.stringify(job)}\n`)); }
 
-function relayedChoiceFixture({ withStatus = false } = {}) {
+function supervisedChoiceFixture({ withStatus = false } = {}) {
   const input = choiceFixture('resume');
   yieldChoiceTurn(input, 'initial'); yieldChoiceTurn(input, 'continuation');
-  const child = input.rollouts[1]; const parent = input.rollouts[0];
-  const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
-  const initialOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output');
-  initialOutput.payload.output = capturedResult({ output: `partial\n${relayLine(1, 'starting', 'started')}\n`, session_id: 51 });
-  const initialAdditions = [relayCall('choice-relay-1', 'started'), relayOutput('choice-relay-1')];
-  if (withStatus) initialAdditions.push(structuredExecResult(expectedStatusCommand, 'status-1'), capturedResultEvent('status-1', {
-    output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0,
-  }));
-  child.splice(child.indexOf(initialOutput) + 1, 0, ...initialAdditions);
-  const continuationStart = child.indexOf(childFinals[0]) + 1;
-  const continuationOutput = child.slice(continuationStart).find((event) => event?.payload?.type === 'custom_tool_call_output');
-  continuationOutput.payload.output = capturedResult({ output: `partial\n${relayLine(1, 'running', 'model-active')}\n`, session_id: 61 });
-  child.splice(child.indexOf(continuationOutput) + 1, 0, relayCall('choice-relay-2', 'model-active'), relayOutput('choice-relay-2'));
-  const returns = parent.filter((event) => event?.payload?.author === agentPath);
-  parent.splice(parent.indexOf(returns[0]), 0, parentRelay(agentPath, relayMessage('started')), structuredWait('choice-relay-wait-1'), waitOutput('choice-relay-wait-1', false));
-  const secondReturn = parent.filter((event) => event?.payload?.author === agentPath).at(-1);
-  parent.splice(parent.indexOf(secondReturn), 0, parentRelay(agentPath, relayMessage('model-active'), 'b'), structuredWait('choice-relay-wait-2'), waitOutput('choice-relay-wait-2', false));
+  if (withStatus) {
+    const child = input.rollouts[1];
+    const initialOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output');
+    child.splice(child.indexOf(initialOutput) + 1, 0,
+      structuredExecResult(expectedStatusCommand, 'status-1'),
+      capturedResultEvent('status-1', {
+        output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`,
+        exit_code: 0,
+      }));
+  }
   retimestampChoice(input);
   return input;
 }
@@ -3004,7 +3585,7 @@ function yieldChoiceTurn(input, turn) {
   const call = child[start]; const output = child[start + 1]; const handle = turn === 'initial' ? 51 : 61;
   const terminalText = turn === 'initial' ? JSON.parse(output.payload.output[1].text).output : expectedPublicOutput + '\n';
   const terminalExit = turn === 'initial' ? 3 : 0; const prefix = turn === 'initial' ? 'choice-initial' : 'choice-continuation';
-  call.payload.input = structuredExecResult(turn === 'initial' ? expectedCommand : choiceOptions('resume').expectedChoiceCommand, call.payload.call_id).payload.input;
+  call.payload.input = structuredExecResult(turn === 'initial' ? expectedCommand : choiceOptions('resume').expectedChoiceCommand, call.payload.call_id, { yield_time_ms: 30000 }).payload.input;
   output.payload.output = capturedResult({ output: 'partial\n', session_id: handle });
   const poll = structuredPoll(handle, `${prefix}-poll`); const pollOutput = capturedResultEvent(`${prefix}-poll`, { output: 'heartbeat\n', session_id: handle });
   const terminalPoll = structuredPoll(handle, `${prefix}-terminal`); const terminal = capturedResultEvent(`${prefix}-terminal`, { output: terminalText, exit_code: terminalExit });
@@ -3037,8 +3618,8 @@ function structuredFollowup(callId, choice) {
 }
 function followupOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
 
-function structuredWait(callId) {
-  return { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } };
+function structuredWait(callId, timeoutMs = 600000) {
+  return { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: timeoutMs }) } };
 }
 
 function waitOutput(callId, timedOut) {
@@ -3066,8 +3647,8 @@ function parseFixturePollInput(source) {
 }
 function fixtureExecInput(value) { return `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n`; }
 
-function structuredPoll(sessionId, callId, chars = '') {
-  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n` } };
+function structuredPoll(sessionId, callId, chars = '', yieldTimeMs = chars === '' ? 300000 : undefined) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(yieldTimeMs ? { yield_time_ms: yieldTimeMs } : {}) })}); text(JSON.stringify(r))\n` } };
 }
 
 function capturedResult(result) {

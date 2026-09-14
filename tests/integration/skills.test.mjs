@@ -1805,7 +1805,7 @@ test('installed Rescue instructions keep resume on one child and route pending f
   assert.match(source, /While that operation remains selected, do not call `spawn_agent` again after `rescueChildPath` exists/);
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildPath,\s*message:\s*continuationMessage,?\s*\}\)/s);
-  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*600000\s*\}\)/);
   assert.match(source, /select only the result or status belonging to `rescueChildPath`/);
   assert.equal(source.split(resume).length - 1, 2);
   assert.equal(source.split(fresh).length - 1, 2);

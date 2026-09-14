@@ -479,26 +479,48 @@ test('named and generic Rescue forwarders keep yielded executions attached throu
   }
 });
 
-test('named and generic Rescue forwarders relay only validated coarse liveness and keep status observational', () => {
+test('named and generic Rescue forwarders supervise the original handle with long quiet terminal waits', () => {
   const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
   const source = skill('rescue');
   const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
   assert.ok(generic, 'generic forwarder fixture must be present');
   for (const forwarder of [role, generic]) {
-    assert.match(forwarder, /parse only complete dedicated `?\[zcode-relay\]`? lines/i);
-    assert.match(forwarder, /exact keys[\s\S]+version[\s\S]+sequence[\s\S]+phase[\s\S]+code[\s\S]+observedAt/i);
-    assert.match(forwarder, /strictly increasing sequence/i);
-    assert.match(forwarder, /phase\/code pairs are exactly[\s\S]+`starting`\s*\/\s*`started`[\s\S]+`running`\s*\/\s*`model-active`[\s\S]+`investigating`\s*\/\s*`tool-active`[\s\S]+`finalizing`\s*\/\s*`finalizing`/i);
-    assert.match(forwarder, /send_message[\s\S]+only to (?:the exact target )?`?\/root`?/i);
-    assert.match(forwarder, /fixed (?:allowlisted )?code-to-message map/i);
-    assert.match(forwarder, /never relay[\s\S]+detailed `?\[zcode\]`?[\s\S]+stderr[\s\S]+stdout/i);
-    assert.match(forwarder, /relay[\s\S]+liveness only[\s\S]+never completion/i);
+    assert.match(forwarder, /Do not send routine progress, heartbeat, or phase messages to Root\./);
+    assert.match(forwarder, /Detailed progress is owned by the companion's stderr and durable status\/log pipeline; do not interpret or summarize it\./);
+    assert.match(forwarder, /The native child completion mechanism delivers your terminal result to the parent\./);
+    assert.match(forwarder, /Observe only the original running process handle\./);
+    assert.match(forwarder, /For empty-input write_stdin calls request yield_time_ms: 300000 when supported/);
+    assert.match(forwarder, /otherwise use the longest wait allowed by the active tool bounds and higher-priority instructions\./);
+    assert.match(forwarder, /For the initial exec_command request the longest permitted yield up to 30000 ms\./);
+    assert.match(forwarder, /Never replace waiting with sleep, periodic status, or another execution\./);
+    assert.match(forwarder, /If an outer code cell yields while an inner observation is pending, continue only that outer cell with its continuation tool and the longest permitted wait\./);
+    assert.match(forwarder, /Do not issue another inner poll until the pending call finishes\./);
+    assert.match(forwarder, /A completed outer cell alone is not proof that the companion exited\./);
+    assert.match(forwarder, /After inspecting each yielded result, continue only with same-handle observation of the original running process\./);
+    assert.doesNotMatch(forwarder, /send_message/);
+    assert.doesNotMatch(forwarder, /\[zcode-relay\]/);
+    assert.doesNotMatch(forwarder, /code-to-message map|strictly increasing sequence/);
+    assert.match(forwarder, /Never relay detailed `?\[zcode\]`? lines, arbitrary stderr/);
     assert.match(forwarder, /exact trimmed[\s\S]+`zcode status`[\s\S]+`\$zcode:status`[\s\S]+`\/zcode:status`/i);
     assert.match(forwarder, /invoke-status rescue/);
     assert.match(forwarder, /no arguments/i);
     assert.match(forwarder, /status[\s\S]+does not (?:replace|complete)[\s\S]+original[\s\S]+handle/i);
     assert.match(forwarder, /return only[\s\S]+original[\s\S]+terminal[\s\S]+public stdout/i);
   }
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*600000\s*\}\)/);
+  assert.doesNotMatch(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.deepEqual([...source.matchAll(/wait_agent\(\{[^}]*\}\)/g)].map((match) => match[0]),
+    ['wait_agent({ timeout_ms: 600000 })'], 'Root must keep exactly one native wait example at the long-wait interval');
+  assert.ok(/```text\nwait_agent\(\{\s*timeout_ms:\s*600000\s*\}\)\n```\n\nUse the longest permitted native wait/i.test(source),
+    'parent policy paragraph must immediately follow the long-wait example');
+  assert.doesNotMatch(source, /list_agents`?\s+to\s+inspect\s+only\s+that\s+child/i);
+  assert.match(source, /Use the longest permitted native wait if active bounds or higher-priority instructions require a different interval\./);
+  assert.match(source, /Do not use periodic sleep, list_agents, or status calls solely to check liveness\./);
+  assert.match(source, /On timeout or unrelated mailbox activity, continue waiting for the same `?rescueChildPath`?/);
+  assert.match(source, /Inspect the exact child only when route discovery or lifecycle reconciliation requires evidence\./);
+  assert.match(source, /Do not expect ordinary progress messages/);
+  assert.match(source, /native child completion\/error delivery and the original execution remain authoritative\./);
+  assert.match(source, /Background acknowledgement ends runner supervision as specified above\./);
   assert.match(source, /update from the exact `rescueChildPath`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
   assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
 });
@@ -540,7 +562,7 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /resume[\s\S]+same-child choice continuation/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildPath,\s*message:\s*continuationMessage,?\s*\}\)/s);
-  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*600000\s*\}\)/);
   assert.match(source, /select only the result or status belonging to `rescueChildPath`/);
   assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildPath`/i);
   assert.doesNotMatch(source, /followup_task\([\s\S]{0,160}(?:spawn_agent|invoke rescue)/);
