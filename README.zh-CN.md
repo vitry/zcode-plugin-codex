@@ -86,7 +86,7 @@ ZCode 支持时，child 会订阅 online conversation progress，并用结构化
 
 后台 Rescue 由 host 托管且 session-bound：显式 `--background` 会持久预留一个精确 job，启动一个 session-bound 的 detached runner，并立即返回 queued 确认；Rescue child 不再观察运行到终态就退出，新的 Rescue 也绝不复用旧 detached worker 启动路径。queued 仅表示已被接受等待执行：它不证明 runner 已 claim 或已开始运行，queued 确认也绝不会最终化完成标记。runner 会先发布 result artifact 与持久终态 winner；`$zcode:status` 与 `$zcode:result` 仍是权威的拉取接口，未读的终态结果会在下一次 UserPromptSubmit 依据现有单次送达 claim 通告，完整输出仍通过 `$zcode:result` 获取。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 
-每个 session-bound run 都始终处于所属 session 的授权之下。`$zcode:status` 与 `$zcode:result` 会暴露 `resumable`：当已停止、失败或已取消 job 的精确 binding 仍可恢复时为 true；确认的取消会携带其 Stop Cause：`user`、`session-end` 或 `host-coordination-loss`。中断尚未被证明时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效；在停止结算前已自然完成的运行保持 `succeeded`。
+每个 session-bound run 都始终处于所属 session 的授权之下。`$zcode:status` 与 `$zcode:result` 会暴露 `resumable`：当已停止、失败或已取消 job 的精确 binding 仍可恢复时为 true；确认的取消会携带其 Stop Cause：`user`、`session-end` 或 `host-coordination-loss`。停止确认以证据为准：同一次取消尝试中取得的合格 exact-runtime 停止确认，加上经过验证的 executor 清理，即使没有最终 ZCode 报告也会把 job 结算为 `cancelled`。取消结算表示插件授权的取消流程已经完成——它不是最终模型报告，绝不声称执行成功或测试通过，也不保证任意 detached 工具已经退出。当没有最终报告时，Result 会在保留的 Stop Cause 旁边呈现 `Run cancelled; no final ZCode report was produced.`，而 `$zcode:status <job-id>` 的 detail 视图会在同一提示旁边显示保留的部分日志链接。中断尚未被证明时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效；在停止结算前已自然完成的运行保持 `succeeded`。
 
 历史 detached Rescue job 仍保留完整的持久操作面：原 owner 依旧可以通过 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel` 检查、等待、取消并收敛这些任务（含 PromptSubmit 回退），而新 Rescue 绝不再启动 detached 路径。升级绝不批量取消历史任务，也绝不把它们收编为新的 host child 或重新启动 detached worker。
 
@@ -148,7 +148,7 @@ Log: <absolute-private-path>
 
 后台任务有独立生命周期：启动它的前台命令或 Codex turn 结束时，后台任务不会自动取消。但所属 Codex session 结束时不同：`SessionEnd` 会停止 session-bound 的后台 Rescue 并做持久结算，同时也会发现并结算活动中的 detached 只读 Review 或 Adversarial Review 运行，因此只读后台工作同样不会在登出后继续存在。用 `$zcode:status <job-id>` 查看，用 `$zcode:cancel <job-id>` 显式取消；ownership 仍只属于预留该 job 的 Codex session。
 
-在支持的前台路径上，插件会在安全协议边界处理 `SIGINT` 和 `SIGTERM`。ZCode session 尚未建立时，中断会取消排队中的预留；精确持久化的 ZCode session ID 一旦存在，插件只会对该 session 发送 `session/stop`。停止得到确认后，job 会持久标记为 cancelled；如果 `session/stop` 失败或超时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效，取消错误仍通过 status 暴露，由后续成功的停止或 reconciliation 结算该中断。这是刻意限定的 session 级边界：插件不声称停止或杀死 ZCode 或嵌套工具创建的任意 detached grandchildren。
+在支持的前台路径上，插件会在安全协议边界处理 `SIGINT` 和 `SIGTERM`。ZCode session 尚未建立时，中断会取消排队中的预留；精确持久化的 ZCode session ID 一旦存在，插件只会对该 session 发送 `session/stop`。对 exact runtime 的合格停止确认加上经过验证的清理，会把 job 持久标记为 cancelled，且该结算不要求最终 ZCode 报告；如果 `session/stop` 失败或超时，job 保持 `cancelling`，writable guard 与有界的重试指引继续有效，取消错误仍通过 status 暴露，由后续成功的停止或 reconciliation 结算该中断。这是刻意限定的 session 级边界：取消结算表示插件授权的取消流程已经完成，并不声称停止或杀死 ZCode 或嵌套工具创建的任意 detached grandchildren。
 
 Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺序排列、用户可见的 user/assistant 文本；不转移隐藏推理、工具状态、permission 或 job ownership。
 

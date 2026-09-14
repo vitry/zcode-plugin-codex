@@ -3507,7 +3507,15 @@ test('a reread answered by a replaced upstream generation never qualifies the no
     assert.equal(control.stops(), 1, 'the exact stop still ran and was acknowledged by the same generation');
     assert.equal(reconcile.createdClients(), 1, 'the reads and stop reuse the one acquired client');
     assert.deepEqual(control.violations, []);
-    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(retained.status, 'cancelling');
+    // Spec 6 diagnostics: the refusal is neither a stop-request failure nor
+    // incomplete cleanup — the stop itself was acknowledged — so the retained
+    // guard records its own bounded, non-private continuity diagnostic, and
+    // the private generation stamps that proved the refusal never cross it.
+    assert.match(retained.lastCancelError, /acknowledged stop could not be proven against the same ZCode upstream/u);
+    assert.ok(Buffer.byteLength(retained.lastCancelError ?? '', 'utf8') <= 2_048);
+    assert.doesNotMatch(retained.lastCancelError ?? '', /a{16,}|b{16,}|sess_[a-z0-9-]+/u);
     await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-reread-replaced-upstream' }), { code: 'WRITABLE_JOB_EXISTS' },
       'the cancelling writable guard is retained');
   } finally {

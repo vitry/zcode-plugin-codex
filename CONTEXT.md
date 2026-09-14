@@ -60,6 +60,10 @@ _Avoid_: Suspended run, durable background job, automatic continuation
 A user-authorized stop of one exact Companion Run. It ends the current turn without deleting its Resumable Companion Session; any later turn requires new explicit authorization and the same exact binding proof.
 _Avoid_: Session deletion, binding revocation, pause
 
+**Cancellation Settlement**:
+The completion of the plugin's authorized cancellation procedure for one exact Companion Run: a qualified exact-runtime stop acknowledgement observed in the same cancellation attempt plus verified executor cleanup publish `cancelled` without requiring a final ZCode report. It is distinct from a final model report — it never claims execution success, a passing test verdict, or that arbitrary detached tools exited. Historical inactive-runtime jobs without terminal evidence do not automatically become cancelled by this rule.
+_Avoid_: Final model report, guaranteed remote quiescence, bulk historical cancellation
+
 **Stop Cause**:
 The structured reason attached to a cancelled Companion Run, such as `user`, `session-end`, or `host-coordination-loss`. It explains one shared terminal status without creating parallel terminal state machines.
 _Avoid_: Job status, error message

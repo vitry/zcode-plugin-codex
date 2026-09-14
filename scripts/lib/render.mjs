@@ -76,6 +76,18 @@ function renderCompactJob(job) {
   return fields.join(' ');
 }
 
+/**
+ * The bounded notice for one durable cancelled run that settled without a
+ * final ZCode report (spec 2026-09-14 section 6). The job schema admits a
+ * result artifact only on succeeded records, so the durable `cancelled`
+ * status itself proves no final report exists; this is exactly why the render
+ * may derive the notice from that status alone — it never infers
+ * cancellation for a nonterminal record, never claims execution success, a
+ * passing test verdict, or that background tools exited, and a projection
+ * that supplies a real result keeps the existing result render instead.
+ */
+const NO_FINAL_REPORT_NOTICE = 'Run cancelled; no final ZCode report was produced.';
+
 /** @param {any} job */
 function renderJob(job) {
   const terminal = ['succeeded', 'failed', 'cancelled'].includes(job.status);
@@ -96,6 +108,7 @@ function renderJob(job) {
   const stopCause = typeof job.stopCause === 'string' && job.stopCause.length > 0 ? safeInline(job.stopCause) : null;
   const resumable = typeof job.resumable === 'boolean' ? job.resumable : null;
   const logFile = safePath(job.owned === true && job.owner === 'same-owner' ? job.logFile : undefined);
+  const noFinalReportNotice = job.status === 'cancelled' ? safeInline(NO_FINAL_REPORT_NOTICE) : null;
   const lines = [
     `Job: ${safeInline(job.id)}`,
     `Command: ${safeInline(job.command)}`,
@@ -106,6 +119,7 @@ function renderJob(job) {
     `Finished: ${safeInline(job.finishedAt)}`,
     `${timingLabel}: ${timing}`,
     `Last activity: ${safeInline(job.lastActivityAt)}`,
+    ...(noFinalReportNotice === null ? [] : [noFinalReportNotice]),
     ...(logFile === null ? [] : [`Log: ${logFile}`]),
     ...(storedError === null ? [] : [`Error: ${storedError}`]),
     ...(stopCause === null ? [] : [`Stop cause: ${stopCause}`]),

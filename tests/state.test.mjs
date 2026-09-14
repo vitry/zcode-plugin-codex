@@ -538,6 +538,42 @@ test('stop cause accompanies only a confirmed cancelled winner matching its stop
   await store.finishJob(workspace, shaped.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
 });
 
+test('a settled cancellation clears its obsolete stop-retry diagnostic', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');
+  const lifecycle = { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: 'foreground' };
+  const stopIntent = { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' };
+  const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle });
+  await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session' });
+  // One bounded pass persists its stop intent, then records the unresolved
+  // stop's bounded retry diagnostic on the retained cancelling guard (the
+  // schema admits lastCancelError on cancelling only beside a valid intent).
+  await store.transitionJob(workspace, reserved.job.id, ['running'], 'cancelling', { stopIntent });
+  const retained = await store.transitionJob(workspace, reserved.job.id, ['cancelling'], 'cancelling',
+    { lastCancelError: 'The remote stop remains unresolved; reconciliation will retry the persisted stop intent.' });
+  assert.equal(typeof retained.lastCancelError, 'string', 'the retained guard carries its retry diagnostic');
+  // The NEXT pass's settled cancellation clears the obsolete diagnostic (spec
+  // 2026-09-14 section 6): the terminal winner explains itself through its
+  // stop cause and completion-time fields, never a stale stop-failure message.
+  const cancelled = await store.finishJob(workspace, reserved.job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.stopCause, 'user');
+  assert.equal(cancelled.finishedAt !== undefined, true, 'the completion-time field is reused, not redefined');
+  assert.equal('lastCancelError' in cancelled, false, 'the obsolete diagnostic is cleared by the cancelled publication');
+  assert.equal('lastCancelError' in (await store.readJob(workspace, reserved.job.id)), false,
+    'the cleared diagnostic round-trips through the durable record');
+  // The retained-guard retry surface itself is unchanged: a cancelling record
+  // still admits a fresh bounded diagnostic while it waits for the next pass.
+  const again = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-cleared-retry'),
+    executor: { ...legacyExecutor(workspace), agentId: 'cleared-retry-diagnostic' }, lifecycle });
+  await startWritableRescueForTest(store, workspace, again.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'host-owned-session-2' });
+  await store.transitionJob(workspace, again.job.id, ['running'], 'cancelling', { stopIntent });
+  const diagnostic = await store.transitionJob(workspace, again.job.id, ['cancelling'], 'cancelling',
+    { lastCancelError: 'The remote stop remains unresolved; reconciliation will retry the persisted stop intent.' });
+  assert.equal(typeof diagnostic.lastCancelError, 'string');
+});
+
 test('coordination-loss stop cause correction is a one-way cancelling-guard upgrade', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const epoch = hostLifecycleEpoch('host-session-a', '2026-09-02T00:00:00.000Z');

@@ -14,7 +14,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { isSafeIdentifier } from './lib/identifier.mjs';
-import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, durableCancelledWinner, ownerIdForSession, publishGuardedNoReportCancellation, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
+import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, durableCancelledWinner, ownerIdForSession, publishGuardedNoReportCancellation, readBoundRescueStatus, resumableJobIndicator, retainNoReportContinuityRefusal, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
@@ -649,7 +649,13 @@ async function publishManagementWinner(input, joined, specification, options, co
         // persisted turn boundary, not to generation continuity.
         const rereadGeneration = servingGenerationOf(context?.client, joined.job.zcodeSessionId);
         if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context?.upstream)) {
-          return input.store.readJob(input.workspace, joined.job.id);
+          // The refusal keeps the cancelling guard AND records its own bounded
+          // non-private continuity diagnostic (spec 6) through the same safe
+          // lastCancelError surface the other unresolved-stop retentions use —
+          // the shared retention helper distinguishes this continuity refusal
+          // from a stop failure or a cleanup failure without ever exposing the
+          // private generation stamps that proved it.
+          return retainNoReportContinuityRefusal(input.store, input.workspace, joined.job);
         }
         return publishGuardedNoReportCancellation({ store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
           ...(context?.guard === undefined || context?.guard === null ? {} : { guard: context.guard }) }, joined.job, specification.stopCause);

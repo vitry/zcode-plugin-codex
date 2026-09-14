@@ -1254,6 +1254,39 @@ test('the no-report SessionEnd publication refuses while the exact worker lease 
     permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
 });
 
+test('a reread answered by a replaced upstream generation refuses the SessionEnd no-report settlement with its bounded diagnostic', async () => {
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked } = await markedRunningRunner(input, 'no-report-reread-replaced-child');
+  let client;
+  // The joined read and the stop both carry generation 1's stamp — the stop
+  // itself is continuous — but the broker reconstructs its upstream between
+  // the stop and the reread, so the REPLACEMENT generation (2) serves the
+  // reread. The recovery adapter's no-report publication must refuse exactly
+  // like the management adapter's, and the retained cancelling guard records
+  // its own bounded non-private continuity diagnostic (spec 6): the stop was
+  // acknowledged, so the refusal is neither a stop failure nor a cleanup
+  // failure, and the generation stamps that proved it never cross the
+  // diagnostic.
+  const settlement = await settleOutcome({ ...input,
+    terminateProcessTree: async () => {},
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async (current) => (client = stampedClient(current, {
+    readGenerations: ['a'.repeat(32), 'a'.repeat(32), 'b'.repeat(32)],
+  })));
+  const stored = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(settlement.kind, 'retained-writable-guard');
+  assert.equal(stored.status, 'cancelling');
+  assert.equal(client.stopCount(), 1, 'the exact stop still ran and was acknowledged by the same generation');
+  assert.equal(client.readCount(), 3, 'the joined read, the pre-stop read, and the replaced reread share the acquired client');
+  assert.match(stored.lastCancelError, /acknowledged stop could not be proven against the same ZCode upstream/u);
+  assert.ok(Buffer.byteLength(stored.lastCancelError ?? '', 'utf8') <= 2_048);
+  assert.doesNotMatch(stored.lastCancelError ?? '', /a{16,}|b{16,}|sess_[a-z0-9-]+/u);
+  await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'reread-replaced-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the cancelling writable guard is retained');
+});
+
 test('a repeated SessionEnd pass after the no-report settlement reports the settled boundary without new remote control', async () => {
   const input = await fixture();
   await recordBrokerIdentity(input.dataRoot, input.workspace);

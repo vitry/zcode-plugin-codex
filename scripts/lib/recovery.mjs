@@ -1,7 +1,7 @@
 import { PluginError } from './errors.mjs';
 import { createIdentityStore } from './identity.mjs';
 import { createHostLifecycleStore } from './host-lifecycle.mjs';
-import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, publishGuardedNoReportCancellation, terminateLeasedProcessTree, terminateMarkedRunnerTree, withJobCancellationLock, withWorkerLease } from './job-control.mjs';
+import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, publishGuardedNoReportCancellation, retainNoReportContinuityRefusal, terminateLeasedProcessTree, terminateMarkedRunnerTree, withJobCancellationLock, withWorkerLease } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { realpath } from 'node:fs/promises';
 import { terminateRecordedProcessTree } from './process.mjs';
@@ -1454,7 +1454,12 @@ async function publishEndedWinner(input, context, joined, specification, options
       // boundary, not to generation continuity.
       const rereadGeneration = servingGenerationOf(context.client, joined.job.zcodeSessionId);
       if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context.upstream)) {
-        const current = await input.store.readJob(input.workspace, joined.job.id);
+        // The refusal keeps the cancelling guard AND records its own bounded
+        // non-private continuity diagnostic (spec 6) — the same shared
+        // retention helper the management adapter's no-report publication
+        // uses, so both adapters surface the identical distinction from a
+        // stop failure or a cleanup failure without private generation stamps.
+        const current = await retainNoReportContinuityRefusal(input.store, input.workspace, joined.job);
         context.job = current;
         return current;
       }

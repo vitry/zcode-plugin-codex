@@ -1480,6 +1480,38 @@ export async function revalidateBoundRescueStop(store, workspace, job, expected,
 }
 
 /**
+ * The bounded non-private retention for one no-report publication that
+ * refused on broken upstream continuity (spec 2026-09-14 sections 4.2/6):
+ * the stop itself was acknowledged over the qualifying generation, but the
+ * reread was answered by a REPLACED upstream, so the attempt's continuity
+ * chain never closed and the cancelling guard stays for the next bounded
+ * pass. The retained guard records its own bounded public diagnostic through
+ * the existing safe lastCancelError surface — one that DISTINGUISHES this
+ * continuity refusal from a stop-request failure and from incomplete cleanup
+ * (the stop succeeded; the cleanup completed) — and never exposes the private
+ * generation stamps that proved the refusal. A terminal race winner is
+ * returned untouched; a non-cancelling record or one without the persisted
+ * intent (the schema admits the diagnostic only beside a valid intent) is
+ * returned without a write; transition conflicts reread the durable record.
+ * @param {any} store @param {string} workspace @param {any} job
+ */
+export async function retainNoReportContinuityRefusal(store, workspace, job) {
+  const current = await store.readJob(workspace, job.id);
+  if (TERMINAL.has(current.status)) return current;
+  if (current.status !== 'cancelling' || !validStopIntent(current.stopIntent)) return current;
+  try {
+    return await store.transitionJob(workspace, job.id, ['cancelling'], 'cancelling', {
+      lastCancelError: boundedCancelMessage('The acknowledged stop could not be proven against the same ZCode upstream; the cancelling guard is retained for the next bounded retry.'),
+    });
+  } catch (error) {
+    if (error instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION', 'JOB_PATCH_INVALID'].includes(error.code)) {
+      return await store.readJob(workspace, job.id).catch(() => current);
+    }
+    throw error;
+  }
+}
+
+/**
  * The DEDICATED guarded publication for cancelling one exact job WITHOUT a
  * final assistant report (spec 2026-09-14 section 4.3): unlike the existing
  * authoritative-terminal path (whose terminal evidence with a report keeps
