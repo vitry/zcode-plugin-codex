@@ -306,7 +306,7 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
       // the guard is retained). The unmarked record stays a non-target — the
       // duty above already refused to signal it, and this branch never
       // dispatches a process-tree termination.
-      if (cleanup !== 'unmarked') return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+      if (cleanup !== 'unmarked') return retainedOutcome(adapters, joined, cleanupIncompleteStopError(), signal);
     }
     const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), noFinalReport: true }, { signal });
     return publishedOutcome(winner, joined);
@@ -646,6 +646,20 @@ function terminalOutcome(winner, joined) {
 
 function unresolvedStopError() {
   return new PluginError('JOB_RECOVERY_FAILED', 'The remote turn settlement remains unresolved after the stop acknowledgement.', {
+    category: 'state', remedy: 'Retry reconciliation to settle the cancelling job.',
+  });
+}
+
+/** The bounded retention diagnostic for one qualified no-report pass whose
+ * applicable executor cleanup did not complete (spec section 6): Status must
+ * distinguish incomplete cleanup from the still-active contrary-evidence
+ * retention (the generic unresolved-stop diagnostic above), so this branch
+ * names the cleanup instead of reusing that message. The same bounded public
+ * length and privacy limits apply — no private identifiers, no generation
+ * stamps.
+ * @returns {PluginError} */
+function cleanupIncompleteStopError() {
+  return new PluginError('JOB_RECOVERY_FAILED', 'The executor cleanup did not complete; the cancelling guard is retained for the next bounded retry.', {
     category: 'state', remedy: 'Retry reconciliation to settle the cancelling job.',
   });
 }

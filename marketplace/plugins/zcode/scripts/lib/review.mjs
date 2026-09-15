@@ -138,7 +138,11 @@ export async function executeJob(input) {
         generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
       return snapshot;
     } catch (error) {
-      foregroundControlEvidence.observeRead({ error, generation: null });
+      // The failure record keeps the serving-generation stamp observable AT
+      // failure time (null after the client voids its cache on the failed
+      // read): the no-report qualification reads it as the failed reread's
+      // only possible positive continuity attestation (spec 4.2).
+      foregroundControlEvidence.observeRead({ error, generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
       throw error;
     }
   };
@@ -575,7 +579,12 @@ function boundedGenerationStamp(value) {
  * the stop: a coherent success whose publication failed without a durable
  * winner still belongs to the success-precedence path or a later pass, never
  * to a no-report cancellation). An unreadable final reread does not veto by
- * itself (spec 4.4), but a post-stop observation read attempt must exist.
+ * itself (spec 4.4), but it can never attest the reread leg either: this
+ * owner-held evidence predicate is held to spec 4.2's POSITIVE-proof
+ * standard, so a failed final reread qualifies only when its failure record
+ * still positively attests the SAME serving generation — and a failed read
+ * voids the client's cached stamp, so an upstream-replacement disconnect
+ * arrives with no stamp and refuses.
  * @param {{seq:number, stops:Array<{seq:number, generation:string|null}>, lastPreStopRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null, lastRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null}} evidence
  * @param {any} boundary the accepted turn boundary
  */
@@ -589,7 +598,16 @@ function foregroundNoReportQualified(evidence, boundary) {
   if (!hasCurrentTurnActivity(lastPreStop.snapshot, boundary)) return false;
   const lastRead = evidence.lastRead;
   if (!lastRead || lastRead.seq <= lastStop.seq) return false; /* no post-stop observation attempt */
-  if (lastRead.snapshot === undefined) return true; /* the final reread failed: readable contrary evidence is absent (spec 4.4) */
+  if (lastRead.snapshot === undefined) {
+    // The final reread failed: readable contrary evidence is absent (spec 4.4
+    // — the failure does not veto by itself), but the owner-held claim still
+    // needs POSITIVE continuity attestation for the reread leg (spec 4.2).
+    // observeReadSession stamps every read failure with the serving
+    // generation observable at failure time; the client voids its cached
+    // stamp on every failed read, so an upstream-replacement disconnect
+    // arrives with null and can never qualify this claim.
+    return boundedGenerationStamp(lastRead.generation) === stopGeneration;
+  }
   if (boundedGenerationStamp(lastRead.generation) !== stopGeneration) return false;
   // Spec 4.4 outcome precedence: classify the readable final observation and
   // reject NATURAL-TERMINAL evidence before any no-report claim exists. A

@@ -1451,7 +1451,13 @@ async function publishEndedWinner(input, context, joined, specification, options
       // continuity chain, so the no-report publication refuses and the
       // cancelling guard stays for the next bounded pass. Natural outcomes are
       // unaffected: their evidence is attributable to the persisted turn
-      // boundary, not to generation continuity.
+      // boundary, not to generation continuity. A FAILED reread carries no
+      // stamp at all (the client voids its cached generation on every failed
+      // read), so null is exactly "no readable-reread proof" — never
+      // proof-of-continuity — and per spec 4.2 a continuity chain that cannot
+      // be established keeps this entry point cancelling: the decision-layer's
+      // unreadable-reread relaxation only routes the attempt here, and the
+      // refusal below is what the retained guard records.
       const rereadGeneration = servingGenerationOf(context.client, joined.job.zcodeSessionId);
       if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context.upstream)) {
         // The refusal keeps the cancelling guard AND records its own bounded

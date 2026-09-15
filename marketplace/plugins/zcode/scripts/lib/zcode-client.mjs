@@ -95,6 +95,15 @@ export class ZCodeClient {
 
   /** @param {string} sessionId */ async readSession(sessionId) {
     requireSessionId(sessionId);
+    // Void the cached serving generation at EVERY read attempt FIRST: the
+    // attestation must describe the read that actually served THIS attempt.
+    // A rejected read — exactly the post-stop reread an upstream
+    // reconstruction drops — must leave no previous successful read's stamp
+    // behind, so readServingGeneration() returns null until a subsequent
+    // successful read re-establishes the generation and no publisher can
+    // mistake the stale pre-stop stamp for the failed reread's continuity
+    // proof (spec 2026-09-14 section 4.2).
+    this.readGenerations.delete(sessionId);
     const result = await this.protocol.request('session/read', { sessionId });
     // The broker stamps the upstream protocol generation that actually served
     // this read BESIDE the engine snapshot (see ZCodeBroker). Strip it before
