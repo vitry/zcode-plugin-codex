@@ -4055,6 +4055,58 @@ test('a still-active post-stop reread never lets the foreground executor publish
   }
 });
 
+/** The coherent natural-success shape: idle with the accepted turn's linked
+ * assistant COMPLETED without an interrupted finish or an error — a readable
+ * final observation that classifies `succeeded` against the boundary. */
+function foregroundSucceededTurnSnapshot() {
+  return { projection: { status: 'idle' }, runtime: { stateRevision: 4 }, messages: [completedUser('input-foreground-no-report'), {
+    info: { role: 'assistant', messageId: 'assistant-input-foreground-no-report', parentMessageId: 'input-foreground-no-report',
+      finish: 'succeeded', time: { completed: 4 } }, parts: [{ type: 'text', text: 'the natural result' }],
+  }] };
+}
+
+test('an observed natural success whose publication failed never becomes the foreground no-report cancellation', { timeout: 15_000 }, async () => {
+  // Spec 4.4 outcome precedence: the interrupt observed a COHERENT SUCCESSFUL
+  // snapshot for the accepted turn, but the election's success publication
+  // failed without producing a durable winner (a storage failure raced the
+  // CAS). The observed success outranks the acknowledged stop: the no-report
+  // claim must be refused — the success-precedence path or a later pass owns
+  // the record — so the owner-held publication may never CAS the
+  // still-cancelling job to cancelled over observed natural success.
+  const fixture = await foregroundExecutorFixture({ snapshot: foregroundActiveSnapshot });
+  const succeededRead = foregroundSucceededTurnSnapshot();
+  // Pre-stop reads stay active and attributable; every read AFTER the exact
+  // stop serves the coherent successful snapshot over the same generation.
+  const originalReadSession = fixture.client.readSession.bind(fixture.client);
+  /** @type {()=>Promise<any>} */
+  const readSessionWithObservedSuccess = async () => (fixture.stops() > 0 ? succeededRead : originalReadSession());
+  fixture.client.readSession = readSessionWithObservedSuccess;
+  /** The success publication fails without a durable winner; every other
+   * transition (the persisted cancelling intent included) passes through. */
+  const refusingStore = { ...fixture.store,
+    finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {any} */ patch = {}) => {
+      if (next === 'succeeded') throw new PluginError('JOB_PERSISTENCE_FAILED', 'the success publication raced a storage failure', { category: 'state', remedy: 'retry' });
+      return fixture.store.finishJob(workspaceArg, jobIdArg, expected, next, patch);
+    },
+  };
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: refusingStore,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling',
+      `the observed natural success keeps its precedence over the acknowledged stop: ${retained.status}`);
+    assert.ok(fixture.stops() >= 1, 'the executor\'s own acknowledged stop still ran');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-observed-success' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard stays for the success-precedence path or a later pass');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('a replaced upstream serving generation never lets the foreground executor publish its own cancellation', { timeout: 15_000 }, async () => {
   // The pre-stop reads are served by generation A, but the stop response
   // carries the REPLACEMENT generation's stamp (B) — the broker reconstructed

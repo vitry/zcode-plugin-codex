@@ -14,7 +14,7 @@ import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
-import { awaitCurrentTurnTerminal, hasCurrentTurnActivity, selectCurrentTurnAssistant } from './turn-terminal.mjs';
+import { awaitCurrentTurnTerminal, classifyCurrentTurnSnapshot, hasCurrentTurnActivity, selectCurrentTurnAssistant } from './turn-terminal.mjs';
 import { publicErrorMessage } from './public-text.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
@@ -568,10 +568,14 @@ function boundedGenerationStamp(value) {
  * issued must carry a serving-generation stamp equal to the stamp of the last
  * read BEFORE that stop, that pre-stop snapshot must be attributable to the
  * accepted turn, and the final read after the stop must show NO contrary
- * evidence — a readable reread still executing the turn, or content not
- * attributable to it, refuses the claim (an acknowledgement never overrides
- * contrary evidence). An unreadable final reread does not veto by itself
- * (spec 4.4), but a post-stop observation read attempt must exist.
+ * evidence — a readable reread still executing the turn, content not
+ * attributable to it, or a readable NATURAL-TERMINAL observation refuses the
+ * claim (an acknowledgement never overrides contrary evidence, and spec 4.4
+ * outcome precedence keeps an observed natural success or failure ahead of
+ * the stop: a coherent success whose publication failed without a durable
+ * winner still belongs to the success-precedence path or a later pass, never
+ * to a no-report cancellation). An unreadable final reread does not veto by
+ * itself (spec 4.4), but a post-stop observation read attempt must exist.
  * @param {{seq:number, stops:Array<{seq:number, generation:string|null}>, lastPreStopRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null, lastRead:{seq:number, snapshot?:any, error?:unknown, generation:string|null}|null}} evidence
  * @param {any} boundary the accepted turn boundary
  */
@@ -587,6 +591,15 @@ function foregroundNoReportQualified(evidence, boundary) {
   if (!lastRead || lastRead.seq <= lastStop.seq) return false; /* no post-stop observation attempt */
   if (lastRead.snapshot === undefined) return true; /* the final reread failed: readable contrary evidence is absent (spec 4.4) */
   if (boundedGenerationStamp(lastRead.generation) !== stopGeneration) return false;
+  // Spec 4.4 outcome precedence: classify the readable final observation and
+  // reject NATURAL-TERMINAL evidence before any no-report claim exists. A
+  // coherent success observed in this attempt outranks the acknowledged stop —
+  // even when its own publication failed without a durable winner, the
+  // success-precedence path or a later pass owns the record — and a failure
+  // keeps its existing failure semantics instead of becoming a cancellation;
+  // an interrupted observation settles through the authoritative evidence
+  // path. Only a genuinely NON-TERMINAL observation may qualify here.
+  if (classifyCurrentTurnSnapshot(lastRead.snapshot, boundary).kind !== 'pending') return false;
   return hasCurrentTurnActivity(lastRead.snapshot, boundary)
     && !FOREGROUND_ACTIVE_PROJECTION_STATUSES.has(lastRead.snapshot?.projection?.status);
 }
