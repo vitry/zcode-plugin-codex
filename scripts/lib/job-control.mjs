@@ -1534,11 +1534,14 @@ export async function retainNoReportContinuityRefusal(store, workspace, job) {
  * today's direct finishJob semantics), an EXTERNAL publisher of the no-report
  * settlement must prove it owns the exact worker claim before publishing.
  * Within the caller's already-held cancellation lock — this helper never
- * reacquires it — it revalidates the durable stop decision, revalidates the
- * owner/binding generation (the reconciler guard), acquires the EXACT worker
+ * reacquires it — it revalidates the durable stop decision and the
+ * owner/binding generation as a pre-lease fast-path, acquires the EXACT worker
  * lease with a zero-timeout probe, re-reads and revalidates the exact
- * owner/session/worker claim and stopIntent inside the hold, and publishes
- * through the expected-statuses CAS. A held lease, a moved claim, a stale
+ * owner/session/worker claim and stopIntent inside the hold, revalidates the
+ * BINDING GENERATION again inside the hold immediately before the CAS (spec
+ * 2026-09-14 section 4.3: the pre-lease answer cannot see a binding that
+ * closes or is superseded while the lease is acquired), and publishes through
+ * the expected-statuses CAS. A held lease, a moved claim, a stale
  * generation, or a raced winner retains the cancelling record or returns the
  * durable winner; uncertainty never publishes and never throws out of the
  * reconciler — the nonterminal return is the caller's unresolved-stop
@@ -1558,9 +1561,11 @@ export async function publishGuardedNoReportCancellation(input, job, stopCause) 
   // qualified: owner, workspace partition job, and the accepted session.
   if (current.ownerSessionId !== job.ownerSessionId || current.command !== 'rescue' || current.readOnly !== false
     || current.zcodeSessionId !== job.zcodeSessionId) return current;
-  // Binding-generation revalidation under the reconciler's guard: a successor
-  // or closed binding makes this attempt's evidence stale, and the raced
-  // record (not our cancelled claim) is the durable answer.
+  // Binding-generation fast-path under the reconciler's guard: a successor or
+  // closed binding known BEFORE the lease is acquired spares the probe, but
+  // this pre-lease answer is NOT publication authority — a binding may still
+  // close or be superseded while the exact lease is acquired, so the
+  // authoritative revalidation runs inside the hold (spec 4.3).
   const revalidated = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
   if (revalidated?.kind === 'stale') return revalidated.job;
   const workerLeaseId = current.workerLeaseId;
@@ -1578,6 +1583,14 @@ export async function publishGuardedNoReportCancellation(input, job, stopCause) 
     if (latest.status !== 'cancelling' || !validStopIntent(latest.stopIntent)
       || latest.workerLeaseId !== workerLeaseId || latest.childPid !== current.childPid
       || latest.zcodeSessionId !== current.zcodeSessionId || latest.ownerSessionId !== job.ownerSessionId) return latest;
+    // Binding-generation revalidation INSIDE the acquired lease, immediately
+    // before the CAS (spec 4.3): the pre-lease answer cannot see a binding
+    // that closed or was superseded between that check and this hold, so the
+    // in-hold generation — not the stale earlier one — owns the publication
+    // decision. A stale answer returns the raced durable record; the guard is
+    // retained for the next bounded pass.
+    const inHold = await revalidateBoundRescueStop(input.store, input.workspace, latest, input.guard);
+    if (inHold?.kind === 'stale') return inHold.job;
     try {
       return await finishJob(input.store, input.workspace, job.id, ['cancelling'], 'cancelled',
         { exitCode: null, ...hostOwnedCancelledPatch(latest, stopCause) });
@@ -1616,8 +1629,12 @@ export async function publishGuardedNoReportCancellation(input, job, stopCause) 
  * exact lease must be provably HELD right now (a zero-timeout probe that never
  * acquires it — a free lease means this executor already exited and lost the
  * owner-held standing; an external management process fails the pid gate
- * before any probe). Identity and binding generation are revalidated, the
- * publication runs through the same expected-statuses CAS, contention returns
+ * before any probe). Identity and binding generation are revalidated before
+ * the probe as a fast-path and the binding generation is revalidated AGAIN
+ * inside the proven standing immediately before the CAS (spec 2026-09-14
+ * section 4.3, the owner-held counterpart of the external path's in-lease
+ * revalidation), the publication runs through the same expected-statuses CAS,
+ * contention returns
  * the durable winner, and invalid identity retains cancelling without
  * publishing. The helper never reacquires the caller's own worker lease and
  * never takes the cancellation lock (the caller's finalization serializes
@@ -1640,8 +1657,10 @@ export async function publishOwnerHeldNoReportCancellation(input, job, stopCause
   if (current.ownerSessionId !== job.ownerSessionId || current.command !== 'rescue' || current.readOnly !== false
     || current.zcodeSessionId !== job.zcodeSessionId
     || current.workerLeaseId !== claim.workerLeaseId || current.childPid !== claim.childPid) return current;
-  // Binding-generation revalidation under the caller's guard: a successor or
-  // closed binding makes the raced record the durable answer.
+  // Binding-generation fast-path under the caller's guard: a successor or
+  // closed binding known BEFORE the held-lease probe spares the probe, but
+  // this answer is NOT publication authority — the authoritative revalidation
+  // runs inside the proven standing below (spec 4.3).
   const revalidated = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
   if (revalidated?.kind === 'stale') return revalidated.job;
   // Owner-held proof WITHOUT acquisition: the exact lease must still be HELD
@@ -1656,6 +1675,13 @@ export async function publishOwnerHeldNoReportCancellation(input, job, stopCause
     else throw error;
   }
   if (!held) return current;
+  // Binding-generation revalidation INSIDE the proven owner-held standing,
+  // immediately before the CAS (spec 4.3): the pre-probe answer cannot see a
+  // binding that closed or was superseded while the held-lease probe ran, so
+  // the in-standing generation — not the stale earlier one — owns the
+  // publication decision. A stale answer returns the raced durable record.
+  const revalidatedHeld = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
+  if (revalidatedHeld?.kind === 'stale') return revalidatedHeld.job;
   try {
     return await finishJob(input.store, input.workspace, job.id, ['cancelling'], 'cancelled',
       { exitCode: null, ...hostOwnedCancelledPatch(current, stopCause) });

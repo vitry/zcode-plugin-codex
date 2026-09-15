@@ -3632,6 +3632,57 @@ test('a stale binding generation at the no-report publication retains cancelling
   }
 });
 
+test('a binding closed after the pre-lease revalidation is refused inside the guarded publication lease', async () => {
+  // Spec 4.3 sequences the binding-generation revalidation INSIDE the acquired
+  // exact worker lease, immediately before the CAS: a concurrent
+  // closeRescueBindingForChild that lands AFTER the pre-lease check but BEFORE
+  // the lease-held callback runs must refuse the publication, never publish
+  // the unchanged cancelling record from stale authority. The race is
+  // injected deterministically at the store seam the publication passes
+  // through: the FIRST binding revalidation observed after the control reread
+  // (the publisher's own pre-lease check) is served normally, and the binding
+  // then closes — strictly before the in-lease publication decisions run.
+  const fixture = await noReportSettlementFixture();
+  let armed = false;
+  let closed = false;
+  const control = noReportControlClient({ onReread: async () => { armed = true; } });
+  /** @type {Record<string, any>} */
+  const racingStore = {};
+  for (const [key, value] of Object.entries(fixture.store)) {
+    racingStore[key] = typeof value === 'function' ? value.bind(fixture.store) : value;
+  }
+  const realRevalidate = fixture.store.revalidateBoundRescueStop.bind(fixture.store);
+  racingStore.revalidateBoundRescueStop = async (/** @type {any} */ input) => {
+    const result = await realRevalidate(input);
+    if (armed && !closed) {
+      closed = true;
+      await fixture.store.closeRescueBindingForChild({ workspace: fixture.workspace, parentSessionId: 'session-a',
+        executorAgentId: fixture.reserved.binding.childAuthority.childAgentId,
+        operationId: fixture.reserved.binding.operationId, reason: 'cancel' });
+    }
+    return result;
+  };
+  const reconcileRescueLifecycle = createManagementRescueReconcile({
+    store: racingStore, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'session-a',
+    createClient: async () => control.client,
+    createRescueLifecycleReconciler,
+  });
+  try {
+    const outcome = await reconcileRescueLifecycle({ intent: { kind: 'stop', cause: 'user' },
+      authority: { ownerSessionId: 'session-a' }, workspace: fixture.workspace, selector: { jobId: fixture.reserved.job.id } });
+    assert.equal(closed, true, 'the racing close must land between the pre-lease revalidation and the publication');
+    assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+      `a binding closed inside the publication's lease acquisition window is refused before the CAS: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the qualified stop still ran; only the publication is refused');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling',
+      'the unchanged cancelling record is never published from stale binding authority');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-in-lease-close' }),
+      { code: 'WRITABLE_JOB_EXISTS' }, 'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('an unmarked foreground record never settles the no-report path and is never a termination target', async () => {
   const fixture = await noReportSettlementFixture({ unmarked: true });
   const control = noReportControlClient();
@@ -4071,6 +4122,55 @@ test('the owner-held publication is unreachable for a process that is not the re
       before, 'user', { workerLeaseId: fixture.workerLeaseId, childPid: process.pid });
     assert.equal(released.status, 'cancelling', 'a free lease means the executor already exited: the external guarded path owns publication after that');
     assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a binding closed while the owner-held publication proves its standing is refused before the CAS', { timeout: 8_000 }, async () => {
+  // The owner-held counterpart of the in-lease binding revalidation (spec 4.3):
+  // the binding generation must be revalidated INSIDE the proven owner-held
+  // standing, immediately before the CAS. A concurrent
+  // closeRescueBindingForChild that lands after the helper's pre-probe check —
+  // while the held-lease probe runs — must refuse the publication, never
+  // publish the unchanged cancelling record from stale binding authority. The
+  // race is injected deterministically at the store seam the publication passes
+  // through: the FIRST binding revalidation observed after the transport turn
+  // is released (the helper's own pre-probe check) is served normally, and the
+  // binding then closes — strictly before the held-lease probe returns.
+  const fixture = await foregroundExecutorFixture();
+  let armed = false;
+  let closed = false;
+  fixture.client.releaseTurn = async () => { armed = true; };
+  /** @type {Record<string, any>} */
+  const racingStore = {};
+  for (const [key, value] of Object.entries(fixture.store)) {
+    racingStore[key] = typeof value === 'function' ? value.bind(fixture.store) : value;
+  }
+  const realRevalidate = fixture.store.revalidateBoundRescueStop.bind(fixture.store);
+  racingStore.revalidateBoundRescueStop = async (/** @type {any} */ input) => {
+    const result = await realRevalidate(input);
+    if (armed && !closed) {
+      closed = true;
+      await fixture.store.closeRescueBindingForChild({ workspace: fixture.workspace, parentSessionId: 'session-a',
+        executorAgentId: fixture.reserved.binding.childAuthority.childAgentId,
+        operationId: fixture.reserved.binding.operationId, reason: 'cancel' });
+    }
+    return result;
+  };
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: racingStore,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    assert.equal(closed, true, 'the racing close must land between the pre-probe revalidation and the CAS');
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'a binding closed inside the owner-held standing window is refused before the CAS');
+    assert.ok(fixture.stops() >= 1, 'the executor\'s own stop still ran; only the publication is refused');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-owner-held-close' }),
+      { code: 'WRITABLE_JOB_EXISTS' }, 'the cancelling writable guard is retained');
   } finally {
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }

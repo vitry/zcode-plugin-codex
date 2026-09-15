@@ -139,6 +139,13 @@ This task implements spec section 10. It is required for the overall handoff, af
 - [ ] Validate rollback on the rehearsal data: original backup hashes, unchanged post-repair state, no successor, and locks held. A concurrent change must prevent rollback. Supply the procedure and private backup location with the before/after report.
 - [ ] Run `node --test tests/incident-cancellation-repair.test.mjs` if a maintenance entry point was added, then rerun relevant state/recovery/controller tests and the Task 6 checks for new implementation changes. Report code, rehearsal, and live repair separately. Missing owner authority requires a precise original-session handoff and an explicit incomplete live-repair status, not a false success.
 
+### Task 7 addendum (2026-09-15): adjudicated deviation — no maintenance entry point
+
+- On 2026-09-15 the user waived the `scripts/repair-cancellation-incident.mjs` maintenance entry point and its test suite (`tests/incident-cancellation-repair.test.mjs`): the live data fix did not need a program, so the checklist items above that scope that entry point were not delivered.
+- The live incident record — job `7f1324964b40824f2146c479c684534946285173ecb8c4db9fbea363fcb7fa22`, workspace `/Users/zhangzikai/Workspace/Codes/tmp/zcodeplugin`, session `sess_6ec276f7-c33c-4b6e-92f0-d71f286bedf5` — was settled through a sha256-manifested private backup followed by the StateStore's own official `finishJob(['cancelling'], 'cancelled')` transition: the persisted stop intent's `session-end` stopCause was preserved, `finishedAt` records the repair time, `lastCancelError` was cleared, and the session, binding, and owner records were left untouched.
+- Verification: the durable record re-reads as `cancelled`; an idempotent repeat apply was refused with `JOB_TERMINAL`; the workspace writable guard was released.
+- Backup and rollback location: `/Users/zhangzikai/.codex/plugins/backups-cancellation-incident-20260915/` with `manifest.sha256`. Rollback procedure: restore the backed-up job JSON under the state lock.
+
 ## Implementation pitfalls
 
 1. Shared brokers are independent of workers. Worker disappearance alone cannot prove remote termination.
