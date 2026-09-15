@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "96be5dd7793b03ed9f62de68bb63d5e5fd39510d",
-  "sourceSha": "96be5dd7793b03ed9f62de68bb63d5e5fd39510d",
+  "sourceRef": "31a635c4cbdf5c41d70a2c592b927e05b13f16cd",
+  "sourceSha": "31a635c4cbdf5c41d70a2c592b927e05b13f16cd",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "c7b4ef2cd63d754784ad80a2766fc5559e9790bf5767bdf82697cc81fcad3dba",
+    "sha256": "6ff60ac83119118f7b962b25ebb4a1cf9a49fee01e18f1462afa65994ba36d0c",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -693,8 +693,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/review.mjs",
-        "size": 60414,
-        "sha256": "8daa3995df0eb4c91f0bfbd6d73f6cc82a1a4ceba4f67ac8405b2922deb45088"
+        "size": 61464,
+        "sha256": "d7a0ce8ccfdaf73ef9de2555beb2bb83996ba83d616d5ea7c17df94a3d3770e8"
       },
       {
         "path": "plugins/zcode/scripts/lib/session-progress.mjs",
