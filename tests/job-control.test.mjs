@@ -4406,6 +4406,58 @@ test('a reconciler retention without a stop attempt never suppresses the electio
   }
 });
 
+test('a management read abandoned at its budget is aborted and never blocks the exact stop', { timeout: 20_000 }, async () => {
+  // The management reconciler races its reads against the 2.5s observation
+  // budget. The broker admits session/read as SHARED and session/stop as
+  // EXCLUSIVE: when the race abandons a read past the budget, the read must
+  // be ABORTED (with a bounded admission-release wait) so the retry pass's
+  // best-effort exact stop still reaches the upstream — never rejected by the
+  // orphaned read's admission (spec lines 81-83). Without a qualified stop
+  // the pass still retains the cancelling guard.
+  const fixture = await noReportSettlementFixture();
+  const admission = { inFlight: 0, aborted: 0 };
+  let joinedRead = false; let stops = 0;
+  const idleRead = () => idleUnfinishedTurnSnapshot('input-no-report');
+  const control = {
+    client: {
+      readServingGeneration: () => 'a'.repeat(32),
+      readSessionDetailed: async (/** @type {string} */ sessionId, /** @type {{signal?:AbortSignal}} */ options = {}) => {
+        if (!joinedRead) {
+          joinedRead = true;
+          return new Promise((_, reject) => {
+            admission.inFlight += 1;
+            options?.signal?.addEventListener('abort', () => {
+              admission.aborted += 1;
+              admission.inFlight -= 1;
+              reject(new Error('the management read was aborted at its budget'));
+            }, { once: true });
+          });
+        }
+        return { snapshot: idleRead(), servingGeneration: 'a'.repeat(32) };
+      },
+      stopSession: async () => {
+        if (admission.inFlight > 0) throw new Error('broker exclusive admission is held by the in-flight read');
+        stops += 1;
+        return {};
+      },
+      close: async () => {},
+    },
+    violations: [], stops: () => stops, calls: () => [],
+  };
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.equal(outcome.kind, 'unresolved-stop', 'without a qualified stop the pass retains the guard');
+    assert.ok(stops >= 1, 'the exact stop still reached the upstream — never rejected by the orphaned read\'s admission');
+    assert.equal(admission.aborted, 1, 'the budget-abandoned read was aborted and released its admission');
+    assert.equal(admission.inFlight, 0, 'no read is left in flight');
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(retained.status, 'cancelling', 'the unresolved stop keeps the durable cancelling guard');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('a retry pass over an attributable idle-unfinished turn stops once and settles the no-report shape', { timeout: 15_000 }, async () => {
   // spec 4.2: the attributable idle/completed snapshot with an unfinished
   // assistant IS valid pre-stop current-turn evidence. The retry pass's shared

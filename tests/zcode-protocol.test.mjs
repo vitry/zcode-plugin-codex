@@ -5,7 +5,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { mock, test } from 'node:test';
 
@@ -45,6 +45,40 @@ test('an aborted request rejects promptly with the abort reason and drops its la
   child.stdout.write(`${JSON.stringify({ id: frames.at(-1).id, result: { ok: true } })}\n`);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(protocol.closed, false, 'the protocol survives a response for an aborted request');
+});
+
+test('a settled request leaves zero abort listeners attached to its signal', async () => {
+  // Repeated status-wait reads carry LONG-LIVED signals: an abort listener
+  // that survives settlement would accumulate on every operation until the
+  // listener warnings start. Every settlement path must detach it.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  child.stdin.on('data', (chunk) => {
+    const frame = JSON.parse(chunk.toString('utf8'));
+    setImmediate(() => child.stdout.write(`${JSON.stringify({ id: frame.id, result: { ok: true } })}\n`));
+  });
+  const controller = new AbortController();
+  await protocol.request('session/read', { sessionId: 'session-listeners' }, undefined, controller.signal);
+  await Promise.resolve();
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'the abort listener is detached when the request settles');
+});
+
+test('a request with an already-aborted signal rejects immediately with nothing left in pending', async () => {
+  // A never-sent request has no in-flight operation to release: it must
+  // reject fast and leave the pending map exactly as it found it, instead of
+  // occupying an entry until the full request timeout.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { try { frames.push(JSON.parse(chunk.toString('utf8'))); } catch { /* partial frame */ } });
+  const controller = new AbortController();
+  const reason = new Error('the budget expired before the read started');
+  controller.abort(reason);
+  const pendingSizeBefore = protocol.pending.size;
+  await assert.rejects(protocol.request('session/read', { sessionId: 'session-pre-aborted' }, undefined, controller.signal),
+    (error) => error === reason, 'the pre-aborted signal rejects the request fast with its reason');
+  assert.equal(protocol.pending.size, pendingSizeBefore, 'a never-sent request leaves nothing in pending');
+  assert.equal(frames.length, 0, 'no frame is sent for an already-aborted request');
 });
 
 test('real socket response ready at the deadline wins before request timeout', async () => {

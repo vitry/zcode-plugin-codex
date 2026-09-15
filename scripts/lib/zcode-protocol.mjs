@@ -75,7 +75,7 @@ export class ZCodeProtocolClient {
         setImmediate(() => {
           if (this.pending.get(id) !== pending) return;
           this.pending.delete(id);
-          reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
+          pending.reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
         });
       }, effectiveTimeoutMs);
       timer.unref?.();
@@ -86,16 +86,32 @@ export class ZCodeProtocolClient {
         // uncorrelated. The original deadline timer still reaps the entry, so
         // the marker never outlives the request budget.
         pending.aborted = true;
-        reject(signal?.reason instanceof Error ? signal.reason
+        pending.reject(signal?.reason instanceof Error ? signal.reason
           : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
       };
-      const pending = { resolve, reject, timer, method, aborted: false };
+      // EVERY settlement path (success, failure, timeout, abort) detaches the
+      // abort listener: callers hold long-lived signals (e.g. repeated
+      // status-wait reads), and listeners that survive settlement would
+      // accumulate closures until the listener warnings start.
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+      const pending = {
+        aborted: false, method, timer,
+        resolve: (/** @type {any} */ value) => { cleanup(); resolve(value); },
+        reject: (/** @type {Error} */ error) => { cleanup(); reject(error); },
+      };
       this.pending.set(id, pending);
-      if (signal !== undefined) {
-        if (signal.aborted) { onAbort(); return; }
-        signal.addEventListener('abort', onAbort, { once: true });
+      // An ALREADY-aborted signal never sends: reject fast with its reason and
+      // leave nothing in pending — there is no in-flight operation whose late
+      // response would need the silent-drop marker.
+      if (signal?.aborted) {
+        this.pending.delete(id);
+        cleanup();
+        pending.reject(signal.reason instanceof Error ? signal.reason
+          : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
+        return;
       }
-      try { this.sendFrame({ id, method, params }); } catch (error) { this.pending.delete(id); clearTimeout(timer); reject(error); }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try { this.sendFrame({ id, method, params }); } catch (error) { this.pending.delete(id); pending.reject(error instanceof Error ? error : new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode request could not be sent.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); }
     });
   }
 
