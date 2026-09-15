@@ -198,8 +198,12 @@ async function stopAndSettle(adapters, joined, cause, signal, attempt) {
  * the duty on the next bounded pass, which then publishes the same durable
  * winner behind its own clean sweep. The no-report settlement is stricter
  * still: only `settled` verifies applicable executor cleanup (`unmarked`
- * must never imply a foreground executor exited). The pass that attempts no
- * remote control (evidence `none`) defers the duty to the pass that does.
+ * must never imply a foreground executor exited — but the UNMARKED external
+ * foreground case still settles through the guarded publisher, whose
+ * zero-timeout exact-lease acquisition is itself the cleanup proof: free ⇒
+ * worker proven gone, held ⇒ live claim retains; spec 4.3). The pass that
+ * attempts no remote control (evidence `none`) defers the duty to the pass
+ * that does.
  * @param {any} adapters @param {any} joined @param {string} cause @param {AbortSignal} [signal] @param {any} [guard]
  * @param {{done: boolean, outcome: string|null}} [runnerCleanup]
  * @param {StopResponseEvidence|undefined} [stopEvidence] this attempt's stop-response evidence; undefined before any stop this pass
@@ -290,7 +294,20 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // procedure). That settles `cancelled` without a report — but only behind
     // POSITIVE applicable-cleanup evidence, never an implied executor exit.
     const cleanup = await runRunnerCleanup(adapters, joined, runnerCleanup);
-    if (!cleanupVerifiesExecutorCleanup(cleanup)) return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+    if (!cleanupVerifiesExecutorCleanup(cleanup)) {
+      // Spec 4.3 recovery-after-worker-gone: an UNMARKED attached foreground
+      // record whose executor exited before its owner-held publication
+      // completed still settles — not because `unmarked` itself is exit
+      // evidence (it never is), but because the guarded publisher's own
+      // zero-timeout EXACT-LEASE ACQUISITION is the applicable cleanup proof:
+      // a FREE lease proves the worker gone (acquisition + in-hold
+      // identity/binding revalidation + CAS publishes cancelled), a HELD lease
+      // proves a live claim (LOCK_TIMEOUT returns the cancelling record and
+      // the guard is retained). The unmarked record stays a non-target — the
+      // duty above already refused to signal it, and this branch never
+      // dispatches a process-tree termination.
+      if (cleanup !== 'unmarked') return retainedOutcome(adapters, joined, unresolvedStopError(), signal);
+    }
     const winner = await adapters.publishWinner(joined, { status: 'cancelled', stopCause: stopCauseOf(joined, cause), noFinalReport: true }, { signal });
     return publishedOutcome(winner, joined);
   }
@@ -523,7 +540,11 @@ function preStopCurrentTurnSnapshot(remote) {
  * same-pass dead-root descendant sweep). `unmarked` is deliberately NOT
  * accepted — no marked claim does not mean a foreground executor exited — and
  * neither are `unproven`, `skipped`, exhausted budgets, nor pending sweeps;
- * those retain the guard so the next bounded pass re-arms the duty.
+ * those retain the guard so the next bounded pass re-arms the duty. The one
+ * exception lives at the settlement branch, not here: an UNMARKED external
+ * foreground record whose exact worker lease is provably FREE settles through
+ * the guarded publisher's own lease acquisition (free ⇒ worker gone; held ⇒
+ * live claim retains) — never through a blanket widening of this predicate.
  * @param {string|null} outcome
  */
 function cleanupVerifiesExecutorCleanup(outcome) {
