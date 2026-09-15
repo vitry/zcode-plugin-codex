@@ -113,6 +113,38 @@ test('a correlated error frame lends its bounded serving-generation stamp to the
   await protocol.close();
 });
 
+test('an aborted retained entry is reaped by a timer that keeps the event loop alive', async () => {
+  // CI regression (Node 22.13): the reap timer was unref'd, so when a
+  // caller's abort path left the retained entry's timer as the ONLY
+  // event-loop work, the loop drained mid-await and node:test failed the
+  // composition test with `Promise resolution is still pending but the event
+  // loop has already resolved`. The reap must participate in loop liveness
+  // for its bounded lifetime — the request budget — so the reaping is
+  // observable even when nothing else holds a ref. The observable in-process
+  // seam is the timer's own refness while the entry is retained, plus the
+  // reap itself.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const controllers = [];
+  const attempts = [];
+  for (let index = 0; index < 3; index += 1) {
+    const controller = new AbortController();
+    controllers.push(controller);
+    attempts.push(protocol.request('session/read', { sessionId: `session-reap-ref-${index}` }, 120, controller.signal).then(() => 'resolved', (error) => error));
+  }
+  await Promise.resolve();
+  const reason = new Error('the bounded read outlived its budget');
+  for (const controller of controllers) controller.abort(reason);
+  await Promise.all(attempts);
+  const retained = [...protocol.pending.values()];
+  assert.equal(retained.length, 3, 'the aborted entries stay installed for the silent late-response drop');
+  for (const entry of retained) assert.equal(entry.timer?.hasRef?.(), true,
+    'the reap timer is referenced — it keeps the event loop alive for its bounded budget');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(protocol.pending.size, 0, 'the referenced reap timer reaped every retained entry at its budget');
+  await protocol.close();
+});
+
 test('a settled request leaves zero abort listeners attached to its signal', async () => {
   // Repeated status-wait reads carry LONG-LIVED signals: an abort listener
   // that survives settlement would accumulate on every operation until the

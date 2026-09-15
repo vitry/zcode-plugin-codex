@@ -196,15 +196,23 @@ export async function executeJob(input) {
       .then(() => { readSettled = true; }, () => { readSettled = true; });
     let budgetExpired = false;
     await new Promise((resolvePre) => {
+      // Both waits below stay REFERENCED for their bounded lifetimes: when an
+      // interruption lands before any reconciliation read, the read-hang wait
+      // is this flow's ONLY pending resolver (the interrupt just unwound the
+      // reconcile loop), so an unref'd timer would let the event loop drain
+      // mid-await and stall the whole settlement (observed on Node 22.13 as
+      // `Promise resolution is still pending but the event loop has already
+      // resolved`). The cost is bounded: the timer lives at most the 1s read
+      // budget (and the 250ms admission-release window), and its own finally
+      // clears it as soon as the read settles.
       const timer = setTimeout(() => { budgetExpired = true; resolvePre(undefined); }, FOREGROUND_PRESTOP_READ_BUDGET_MS);
-      timer.unref?.();
       readSettledGate.finally(() => { if (!budgetExpired) resolvePre(undefined); clearTimeout(timer); });
     });
     if (budgetExpired && !readSettled) {
       controller.abort(new PluginError('ZCODE_REQUEST_ABORTED', 'The bounded pre-stop evidence read outlived its budget.', { category: 'timeout', remedy: 'Retry the operation.' }));
       await Promise.race([
         readSettledGate,
-        new Promise((resolve) => { const timer = setTimeout(resolve, FOREGROUND_PRESTOP_READ_RELEASE_MS); timer.unref?.(); }),
+        new Promise((resolve) => { setTimeout(resolve, FOREGROUND_PRESTOP_READ_RELEASE_MS); }),
       ]);
     }
   };

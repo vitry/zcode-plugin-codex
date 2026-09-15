@@ -659,6 +659,14 @@ async function boundedManagementRead(client, sessionId, budget) {
   let readSettled = false;
   const readSettledGate = readWithServingGeneration(client, sessionId, { signal: controller.signal })
     .then((read) => { readSettled = true; return read; }, (error) => { readSettled = true; throw error; });
+  // The observation budget may ride `AbortSignal.timeout`, which never keeps
+  // the event loop alive: with a stalled read, this await can be the stop
+  // flow's ONLY pending resolver, and on Node 22.13 the loop then drains
+  // mid-await (`Promise resolution is still pending but the event loop has
+  // already resolved`) before the budget abort ever fires. One REFERENCED
+  // keep-alive timer covers the bounded observation window; it is cleared as
+  // soon as this helper settles, so the process never outlives the budget.
+  const keepAlive = budget ? setTimeout(() => {}, managementObservationBudgetMs) : undefined;
   try {
     return await raceControlOperation(readSettledGate, budget);
   } catch (error) {
@@ -666,11 +674,18 @@ async function boundedManagementRead(client, sessionId, budget) {
       if (!controller.signal.aborted) controller.abort(error);
       await Promise.race([
         readSettledGate.catch(() => {}),
-        new Promise((resolve) => { const timer = setTimeout(resolve, managementReadReleaseMs); timer.unref?.(); }),
+        // Kept REFERENCED for its bounded 250ms lifetime: this race may be the
+        // stop flow's only pending resolver after the budget abort, and an
+        // unref'd timer would let the event loop drain mid-await (observed on
+        // Node 22.13 as a pending-promise stall).
+        new Promise((resolve) => { setTimeout(resolve, managementReadReleaseMs); }),
       ]);
     }
     throw error;
-  } finally { budget?.removeEventListener('abort', onBudgetAbort); }
+  } finally {
+    budget?.removeEventListener('abort', onBudgetAbort);
+    if (keepAlive !== undefined) clearTimeout(keepAlive);
+  }
 }
 
 /** The serving protocol generation one management control client observed on its most recent session/read for the session: the production ZCodeClient surfaces the broker's `brokerProtocolGeneration` stamp per response (see ZCodeClient.readServingGeneration). A client that cannot prove its serving generation carries no continuity evidence, so its stop response can never qualify the no-report settlement. @param {any} client @param {string} sessionId */
