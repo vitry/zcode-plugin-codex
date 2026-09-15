@@ -1356,6 +1356,49 @@ test('a rejected reread cannot ride a stale serving-generation stamp into the Se
     'the cancelling writable guard is retained');
 });
 
+test('a same-generation failed reread settles the qualified SessionEnd no-report cancellation', async () => {
+  // Spec 4.4 line 73: "A read failure must not independently veto" otherwise
+  // complete evidence. The post-stop reread REJECTS with the broker's
+  // same-generation inactive-session error response — through the REAL
+  // ZCodeClient, whose correlated error frame carries the protocol generation
+  // that PRODUCED the error — so the reread leg is positively attested by the
+  // error's own stamp and the qualified acknowledgement plus verified cleanup
+  // settle cancelled.
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked } = await markedRunningRunner(input, 'no-report-reread-failed-stamped-child');
+  const workspaceReal = await realpath(input.workspace);
+  const generation = 'a'.repeat(32);
+  let reads = 0;
+  const protocol = {
+    request: async (method, params) => {
+      if (method === 'session/read') {
+        reads += 1;
+        if (reads >= 3) throw new PluginError('ZCODE_REQUEST_FAILED', 'ZCode session/read failed: the session is inactive.', { category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: 'session/read', rpcCode: -32000, brokerProtocolGeneration: generation } });
+        return { ...stampedValidSnapshot(params.sessionId, workspaceReal, marked.inputId), brokerProtocolGeneration: generation };
+      }
+      if (method === 'session/stop') return { brokerProtocolGeneration: generation };
+      throw new Error(`unexpected ${method}`);
+    },
+    cancelTurn: () => {},
+    close: async () => {},
+  };
+  const settlement = await settleOutcome({ ...input,
+    terminateProcessTree: async () => {},
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async () => new ZCodeClient(protocol, workspaceReal));
+  const stored = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(reads, 3, 'the joined read, the pre-stop read, and the one rejected reread ran');
+  assert.equal(settlement.kind, 'confirmed-cancellation',
+    'the same-generation error-stamped reread failure does not veto the qualified acknowledgement');
+  assert.equal(stored.status, 'cancelled', 'the no-report winner settles past the failed reread');
+  assert.equal(stored.stopCause, 'session-end');
+  assert.ok(stored.finishedAt, 'the cancelled winner carries a completion time');
+  assert.equal(stored.resultArtifact, undefined, 'no success artifact is fabricated');
+  await input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-stamped-read-failure', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
+});
+
 test('a repeated SessionEnd pass after the no-report settlement reports the settled boundary without new remote control', async () => {
   const input = await fixture();
   await recordBrokerIdentity(input.dataRoot, input.workspace);

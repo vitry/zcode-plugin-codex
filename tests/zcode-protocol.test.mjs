@@ -86,6 +86,33 @@ test('repeated in-flight aborts against a silent peer are reaped at their budget
   await protocol.close();
 });
 
+test('a correlated error frame lends its bounded serving-generation stamp to the rejected request', async () => {
+  // Spec 4.4 line 73 through the 4.2 continuity chain: a broker stamps a
+  // session/read ERROR response with the protocol generation that PRODUCED
+  // the error, and the rejected request surfaces that stamp as internal
+  // `details.brokerProtocolGeneration` evidence — a failed read CAN carry its
+  // own per-response provenance. Unstamped error frames (and every unbounded
+  // or missing shape) stay unstamped: transport-level failures never gain a
+  // generation here.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000, acceptBrokerControl: true });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { frames.push(JSON.parse(chunk.toString('utf8'))); });
+  const stamped = protocol.request('session/read', { sessionId: 'session-error-stamp' }, 1_000).then(() => 'resolved', (error) => error);
+  for (let turn = 0; turn < 100 && frames.length < 1; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  child.stdout.write(`${JSON.stringify({ id: frames[0].id, error: { code: -32000, message: 'ZCode session/read failed: the session is inactive.', data: { pluginError: { code: 'ZCODE_OUTPUT_INVALID', category: 'protocol', remedy: 'Retry the operation.', details: { method: 'session/read' } }, protocolGeneration: 'a'.repeat(32) } } })}\n`);
+  const stampedError = await stamped;
+  assert.equal(stampedError instanceof Error && stampedError.details?.brokerProtocolGeneration, 'a'.repeat(32),
+    'the correlated error frame stamps the rejection with its producing generation');
+  const unstamped = protocol.request('session/read', { sessionId: 'session-error-unstamped' }, 1_000).then(() => 'resolved', (error) => error);
+  for (let turn = 0; turn < 100 && frames.length < 2; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  child.stdout.write(`${JSON.stringify({ id: frames.at(-1).id, error: { code: -32000, message: 'ZCode session/read failed: the session is inactive.', data: { pluginError: { code: 'ZCODE_OUTPUT_INVALID', category: 'protocol', remedy: 'Retry the operation.', details: { method: 'session/read' } }, protocolGeneration: 'not-a-generation' } } })}\n`);
+  const unstampedError = await unstamped;
+  assert.equal(unstampedError instanceof Error && unstampedError.details?.brokerProtocolGeneration, undefined,
+    'an unbounded stamp shape is never surfaced as provenance');
+  await protocol.close();
+});
+
 test('a settled request leaves zero abort listeners attached to its signal', async () => {
   // Repeated status-wait reads carry LONG-LIVED signals: an abort listener
   // that survives settlement would accumulate on every operation until the

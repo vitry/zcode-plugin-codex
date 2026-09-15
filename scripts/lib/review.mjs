@@ -133,10 +133,13 @@ export async function executeJob(input) {
   const foregroundControlEvidence = createForegroundControlEvidence();
   /** One evidence-carrying session/read: the snapshot plus the serving
    * generation carried by THAT read's own response (per-response
-   * correlation). On failure the record carries NO generation — a failed read
-   * has none, and the client's shared last-completed view must never be
-   * consulted for it, since an overlapping read's stamp is not this read's
-   * continuity proof. `options.signal` aborts the underlying request.
+   * correlation). On failure the record carries a generation ONLY through the
+   * failure's own CORRELATED error frame (the broker stamps session/read
+   * error responses with the protocol generation that produced them); a
+   * transport drop or unstamped failure records none, and the client's shared
+   * last-completed view must never be consulted for it, since an overlapping
+   * read's stamp is not this read's continuity proof. `options.signal` aborts
+   * the underlying request.
    * @param {string} id @param {{signal?:AbortSignal}} [options] */
   const observeReadSession = async (id, options = {}) => {
     try {
@@ -150,7 +153,12 @@ export async function executeJob(input) {
         generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
       return snapshot;
     } catch (error) {
-      foregroundControlEvidence.observeRead({ error, generation: null });
+      // Spec 4.4 line 73 — a read failure must not independently veto
+      // otherwise complete evidence: a same-generation CORRELATED error
+      // frame positively attests the failed reread's continuity leg, while
+      // drops and unstamped failures stay null (fail-closed exactly as
+      // before).
+      foregroundControlEvidence.observeRead({ error, generation: foregroundFailedReadGeneration(error) });
       throw error;
     }
   };
@@ -599,6 +607,20 @@ function boundedGenerationStamp(value) {
   return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
 }
 
+/** The serving-generation stamp a FAILED session/read carries through its own
+ * CORRELATED error frame: the broker stamps session/read error responses with
+ * the protocol generation that produced the error, and the protocol client
+ * surfaces it as `details.brokerProtocolGeneration` (see
+ * ZCodeClient.readSessionDetailed). Spec 4.4 line 73 — a read failure must
+ * not independently veto otherwise complete evidence — so this stamp may
+ * attest the failed final reread's continuity leg. Transport drops, unstamped
+ * errors, and non-plugin failures carry none: null keeps the round-4/8
+ * fail-closed proof exactly as before.
+ * @param {unknown} error */
+function foregroundFailedReadGeneration(error) {
+  return boundedGenerationStamp(error instanceof PluginError ? error.details?.brokerProtocolGeneration : null);
+}
+
 /** Whether one retained read observation already counts as the pre-stop
  * evidence the no-report qualification reads (spec 2026-09-14 line 40): a
  * readable snapshot attributable to the accepted turn AND stamped with the
@@ -652,10 +674,12 @@ function foregroundNoReportQualified(evidence, boundary) {
     // The final reread failed: readable contrary evidence is absent (spec 4.4
     // — the failure does not veto by itself), but the owner-held claim still
     // needs POSITIVE continuity attestation for the reread leg (spec 4.2).
-    // observeReadSession stamps every read failure with the serving
-    // generation observable at failure time; the client voids its cached
-    // stamp on every failed read, so an upstream-replacement disconnect
-    // arrives with null and can never qualify this claim.
+    // observeReadSession stamps every read failure with the generation the
+    // failure's own CORRELATED error frame carried — a genuine same-generation
+    // error response positively attests the leg (spec 4.4 line 73) — while the
+    // client voids its cached stamp on every failed read, so an
+    // upstream-replacement disconnect still arrives with null and can never
+    // qualify this claim.
     return boundedGenerationStamp(lastRead.generation) === stopGeneration;
   }
   if (boundedGenerationStamp(lastRead.generation) !== stopGeneration) return false;

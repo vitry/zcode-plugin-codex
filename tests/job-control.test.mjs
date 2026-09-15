@@ -3538,6 +3538,43 @@ test('a serving path that proves no upstream generation never qualifies the no-r
   }
 });
 
+test('a same-generation failed reread settles the qualified management no-report cancellation', async () => {
+  // Spec 4.4 line 73: "A read failure must not independently veto" otherwise
+  // complete evidence. The post-stop reread REJECTS with the broker's
+  // same-generation inactive-session error response — an error frame stamped
+  // with the protocol generation that PRODUCED it — so the reread leg is
+  // positively attested by the error's own stamp: attributable pre-stop
+  // snapshot, stamped stop acknowledgement, and verified cleanup settle
+  // cancelled instead of retaining the guard forever.
+  const fixture = await noReportSettlementFixture();
+  const inputId = 'input-no-report';
+  const control = noReportControlClient({
+    reads: [
+      () => activeCurrentTurnSnapshot(inputId),
+      () => activeCurrentTurnSnapshot(inputId),
+      () => { throw new PluginError('ZCODE_REQUEST_FAILED', 'ZCode session/read failed: the session is inactive.', { category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: 'session/read', rpcCode: -32000, brokerProtocolGeneration: 'a'.repeat(32) } }); },
+    ],
+    stopGeneration: 'a'.repeat(32),
+  });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+      `the same-generation error-stamped reread failure does not veto the qualified acknowledgement: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'exactly one exact stop through the managed control path');
+    assert.deepEqual(control.violations, []);
+    assert.equal(reconcile.createdClients(), 1, 'the joined read, stop, and failed reread share one acquired control client');
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(winner.status, 'cancelled');
+    assert.equal(winner.stopCause, 'user');
+    assert.ok(winner.finishedAt, 'the cancelled winner carries a completion time');
+    assert.equal(winner.resultArtifact, undefined, 'no success artifact is fabricated for a no-report cancellation');
+    await fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'after-same-generation-read-failure' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('a failed initial read with a persisted stop intent still attempts the exact stop but cannot settle without a report', async () => {
   const fixture = await noReportSettlementFixture();
   const inputId = 'input-no-report';
@@ -4163,6 +4200,39 @@ test('a rejected post-stop reread never qualifies the foreground no-report claim
     assert.ok(fixture.stops() >= 1, 'the executor\'s own acknowledged stop still ran');
     await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-rejected-reread' }), { code: 'WRITABLE_JOB_EXISTS' },
       'the cancelling writable guard is retained for the next bounded pass');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a same-generation failed reread still qualifies the foreground no-report claim', { timeout: 15_000 }, async () => {
+  // Spec 4.4 line 73: "A read failure must not independently veto" otherwise
+  // complete evidence. The executor's final observation reread REJECTS with
+  // the broker's same-generation inactive-session error response — an error
+  // frame carrying the protocol generation that PRODUCED it — so the reread
+  // leg of the owner-held claim is positively attested by the error's own
+  // stamp (never a fabricated or stale one: transport drops and replaced
+  // generations stay null, see the neighboring pins) and the qualified
+  // acknowledged stop settles cancelled through the owner-held publication.
+  const fixture = await foregroundExecutorFixture();
+  const originalReadSession = fixture.client.readSession.bind(fixture.client);
+  fixture.client.readSession = async () => {
+    if (fixture.stops() > 0) throw new PluginError('ZCODE_REQUEST_FAILED', 'ZCode session/read failed: the session is inactive.', { category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: 'session/read', rpcCode: -32000, brokerProtocolGeneration: 'a'.repeat(32) } });
+    return originalReadSession();
+  };
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const settled = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(settled.status, 'cancelled',
+      `the same-generation error-stamped reread failure does not veto the owner-held claim: ${settled.status}`);
+    assert.equal(settled.stopCause, 'host-coordination-loss');
+    assert.equal(fixture.stops(), 1, 'exactly one stop — the executor\'s own');
+    assert.ok(settled.finishedAt, 'the owner-held no-report publication settled the record');
   } finally {
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }

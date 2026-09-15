@@ -2334,6 +2334,37 @@ test('an aborted read notifies the broker so the exclusive stop is admitted imme
   }
 });
 
+test('a failed upstream session/read error frame carries the current serving generation only', async () => {
+  // Spec 4.4 line 73: the broker stamps a FAILED session/read with the same
+  // internal protocolGeneration the success path uses, but ONLY while the
+  // protocol that served the attempt is still the current generation — a
+  // correlated same-generation error response carries provenance; pre-upstream
+  // failures and retired generations stay unstamped so old-client and
+  // fail-closed semantics are unchanged.
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-read-error-stamp-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'read-error-stamp-owner'; const sessionId = 'read-error-stamp-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+  await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } }));
+  const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '9'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  broker.ownershipStoreEstablished = true; broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.reloadOwnership = async () => {};
+  broker.protocol = { request: async (method) => { if (method === 'session/read') throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/read result.', { category: 'protocol', remedy: 'Retry the operation.' }); throw new Error(`unexpected upstream ${method}`); }, cancelTurn() {} };
+  broker.protocolGeneration = 'e'.repeat(32);
+  try {
+    await broker.handleLocal(socket, JSON.stringify({ id: 90, method: 'session/read', params: { sessionId } }));
+    const stampedFrame = writes.find((frame) => frame.id === 90);
+    assert.equal(stampedFrame?.error?.data?.pluginError?.code, 'ZCODE_OUTPUT_INVALID', 'the upstream read failure reaches the client as the correlated plugin error');
+    assert.equal(stampedFrame?.error?.data?.protocolGeneration, 'e'.repeat(32), 'the error frame carries the current serving generation that produced the failure');
+    // A retired serving generation is never stamped: the read attempt's
+    // protocol is no longer the broker's current generation.
+    const retired = broker.clearProtocolGeneration(broker.protocol);
+    await broker.handleLocal(socket, JSON.stringify({ id: 91, method: 'session/read', params: { sessionId } }));
+    const unstampedFrame = writes.find((frame) => frame.id === 91);
+    assert.equal(unstampedFrame?.error?.data?.protocolGeneration, undefined, 'a read with no current serving protocol is never stamped');
+    await retired.closePromise;
+  } finally {
+    await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('an idle stop winner remains authoritative when its protocol resets during the durable write', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-write-generation-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'release-write-generation-owner'; const sessionId = 'release-write-generation-session'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: '0'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; const protocol = { request: async () => ({}), cancelTurn() {} }; broker.protocol = protocol; let writeApplied; let resumeWrite; const applied = new Promise((resolvePromise) => { writeApplied = resolvePromise; }); const gate = new Promise((resolvePromise) => { resumeWrite = resolvePromise; }); let writes = 0; broker.writeOwnerStore = async (sessions) => { writes += 1; await atomicWriteJson(ownershipPath, { version: 1, sessions }); if (writes === 1) { writeApplied(); await gate; } };
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 2_000); await applied; broker.clearProtocolGeneration(protocol); resumeWrite(); const result = await releasing; assert.deepEqual(result.releasedSessionIds, [sessionId]); assert.deepEqual(result.failedSessionIds, []); assert.equal(writes, 1); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(Object.hasOwn(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, sessionId), false); assert.equal(broker.stoppingSessions.has(sessionId), false); await rm(directory, { recursive: true, force: true });
