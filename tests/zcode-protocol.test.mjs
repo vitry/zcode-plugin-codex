@@ -47,6 +47,45 @@ test('an aborted request rejects promptly with the abort reason and drops its la
   assert.equal(protocol.closed, false, 'the protocol survives a response for an aborted request');
 });
 
+test('repeated in-flight aborts against a silent peer are reaped at their budget and never overflow pending', async () => {
+  // The bounded pre-stop read aborts its request and KEEPS the marked entry
+  // installed for the silent late-response drop. Against a peer that never
+  // answers, nothing deletes those entries — so their original deadline
+  // timers must stay armed: repeated bounded-read aborts may not accumulate
+  // until the pending-map limit turns every later request into a
+  // ZCODE_PENDING_OVERFLOW rejection.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { frames.push(JSON.parse(chunk.toString('utf8'))); });
+  const controllers = [];
+  const attempts = [];
+  for (let index = 0; index < 1024; index += 1) {
+    const controller = new AbortController();
+    controllers.push(controller);
+    attempts.push(protocol.request('session/read', { sessionId: `session-reap-${index}` }, 120, controller.signal).then(() => 'resolved', (error) => error));
+  }
+  await Promise.resolve();
+  const reason = new Error('the bounded read outlived its budget');
+  for (const controller of controllers) controller.abort(reason);
+  const outcomes = await Promise.all(attempts);
+  assert.ok(outcomes.every((outcome) => outcome === reason), 'every aborted request rejects with its abort reason');
+  // The original request budgets (120ms) must reap the retained entries even
+  // though the silent peer never answers.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(protocol.pending.size, 0, 'aborted-but-retained entries are reaped at their original budget');
+  assert.equal(protocol.closed, false, 'the silent peer never failed the connection');
+  // The pending map is free again: the next request must be admitted instead
+  // of rejected as pending overflow.
+  const followUp = protocol.request('broker/health', {}, 1_000);
+  for (let turn = 0; turn < 200 && frames.length < 1_025; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  const followUpFrame = frames.at(-1);
+  assert.equal(followUpFrame?.method, 'broker/health', 'the follow-up request was sent and admitted');
+  child.stdout.write(`${JSON.stringify({ id: followUpFrame.id, result: { ok: true } })}\n`);
+  assert.deepEqual(await followUp, { ok: true }, 'a request after the reaped aborts is admitted and answered');
+  await protocol.close();
+});
+
 test('a settled request leaves zero abort listeners attached to its signal', async () => {
   // Repeated status-wait reads carry LONG-LIVED signals: an abort listener
   // that survives settlement would accumulate on every operation until the

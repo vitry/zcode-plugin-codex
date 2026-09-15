@@ -626,7 +626,15 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string,identityPath?:string,publishIdentityAfterListen?:boolean}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validIdleTimeoutOption(options?.idleTimeoutMs) || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync.native(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.exactTurnReleaseSockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.releasedTurnTombstones = new Map(); this.terminalWinnerEvidence = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validIdleTimeoutOption(options?.idleTimeoutMs) || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync.native(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.exactTurnReleaseSockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.releasedTurnTombstones = new Map(); this.terminalWinnerEvidence = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map();
+    // Per-socket in-flight client requests that a `broker/cancelRequest`
+    // notification can release early: socket → Map(request id → release). The
+    // release closure finishes exactly that request's session admission so an
+    // aborted client read stops fencing exclusive stops while its stalled
+    // upstream answer is still pending (the late settlement is refused by the
+    // existing sessionRequestCurrent gate and silently dropped client-side).
+    this.clientRequestCancellations = new WeakMap();
+    this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -692,7 +700,13 @@ export class ZCodeBroker {
         writeLocal(socket, { id: Number.isSafeInteger(frame?.id) ? frame.id : 0, error: { code: -32040, message: 'Broker authentication failed.' } });
         socket.end(); return;
       }
-      clearTimeout(socket.authTimer); this.authenticated.add(socket); if (frame.params.existingProtocolOnly === true) this.existingProtocolOnlySockets.add(socket); this.socketOwnerIds.set(socket, frame.params.ownerId); this.owners += 1; this.cancelIdleShutdown(); writeLocal(socket, { id: frame.id, result: { authenticated: true, ...(frame.params.existingProtocolOnly === true ? { existingProtocolOnly: true } : {}) } }); return;
+      clearTimeout(socket.authTimer); this.authenticated.add(socket); if (frame.params.existingProtocolOnly === true) this.existingProtocolOnlySockets.add(socket); this.socketOwnerIds.set(socket, frame.params.ownerId); this.owners += 1; this.cancelIdleShutdown(); writeLocal(socket, { id: frame.id, result: { authenticated: true,
+        // Additive cancel-capability negotiation (see ZCodeProtocolClient):
+        // only a client that observed this field sends `broker/cancelRequest`
+        // notifications; older clients ignore it and keep the bounded
+        // release-wait behavior.
+        requestCancellation: true,
+        ...(frame.params.existingProtocolOnly === true ? { existingProtocolOnly: true } : {}) } }); return;
     }
     if (frame && Number.isSafeInteger(frame.id) && !frame.method && (Object.hasOwn(frame, 'result') || Object.hasOwn(frame, 'error'))) {
       const pending = this.permissionPending.get(frame.id);
@@ -700,6 +714,25 @@ export class ZCodeBroker {
       if (pending.socket !== socket) { socket.destroy(); return; }
       this.permissionPending.delete(frame.id); clearTimeout(pending.timer);
       if (frame.error) pending.reject(new Error('Permission handler failed.')); else pending.resolve(frame.result);
+      return;
+    }
+    // A client cancel NOTIFICATION (no response id of its own): the named
+    // request was aborted by its caller, so the broker releases exactly that
+    // request's session admission now instead of waiting for the stalled
+    // upstream answer — the abandoned exclusive/stop path must not be fenced
+    // as a conflicting operation (spec 2026-09-14 lines 81-82). The in-flight
+    // request's own settlement is untouched: when the upstream answer finally
+    // arrives, the released admission fails its sessionRequestCurrent gate and
+    // the late error frame is dropped silently by the client's abort marker.
+    // Unknown or malformed notifications stay on the strict legacy wire: a
+    // frame this broker cannot interpret destroys the socket, exactly like any
+    // other unrecognized notification, and an OLD broker never receives the
+    // frame at all (the client gates it on the auth-negotiated capability).
+    if (frame && !Object.hasOwn(frame, 'id') && frame.method === 'broker/cancelRequest') {
+      if (!frame.params || typeof frame.params !== 'object' || Object.keys(frame.params).length !== 1 || !Number.isSafeInteger(frame.params.requestId)) { socket.destroy(); return; }
+      const cancellations = this.clientRequestCancellations.get(socket);
+      const release = cancellations?.get(frame.params.requestId);
+      if (release) { cancellations.delete(frame.params.requestId); release(); }
       return;
     }
     if (!frame || !Number.isSafeInteger(frame.id) || typeof frame.method !== 'string' || !frame.params || typeof frame.params !== 'object') { socket.destroy(); return; }
@@ -727,6 +760,17 @@ export class ZCodeBroker {
     try {
       try { sessionAdmission = this.admission.beginSessionRequest(frame.method, requestedSessionId, ownerId, socket, ownerAdmission, ownershipPreflight); if (frame.method === 'session/create' && sessionAdmission) this.admission.claimSession(sessionAdmission); }
       catch (error) { this.admission.finishSessionRequest(sessionAdmission); sessionAdmission = null; writeRequestError(socket, frame.id, error); return; }
+      // Register the cancel handle for this request id BEFORE any await that
+      // precedes the upstream forward: a `broker/cancelRequest` notification
+      // arriving mid-flight releases exactly this request's session admission.
+      // The closure reads the live sessionAdmission binding (session/create
+      // may re-bind it below), and finishSessionRequest is idempotent — the
+      // request's own finally simply becomes a no-op after an early release.
+      if (sessionAdmission) {
+        let cancellations = this.clientRequestCancellations.get(socket);
+        if (!cancellations) { cancellations = new Map(); this.clientRequestCancellations.set(socket, cancellations); }
+        cancellations.set(frame.id, () => { cancellations.delete(frame.id); this.admission.finishSessionRequest(sessionAdmission); });
+      }
       try {
         if (frame.method === 'broker/releaseOwner') {
           const trackedOwnerAdmission = ownerAdmission; ownerAdmission = null;
@@ -822,7 +866,7 @@ export class ZCodeBroker {
           const requestProvenance = frame.method === 'session/send' && isCorrelatedZCodeResponseError(error) ? CORRELATED_RESPONSE_PROVENANCE : undefined;
           writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError, ...(requestProvenance ? { requestProvenance } : {}) } } : {}) } });
         }
-      } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.admission.finishSessionRequest(sessionAdmission); }
+      } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.clientRequestCancellations.get(socket)?.delete(frame.id); this.admission.finishSessionRequest(sessionAdmission); }
     } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }
   }
 

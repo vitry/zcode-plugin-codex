@@ -2273,6 +2273,67 @@ test('one session admission prevents subscribe and owner release from entering t
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 2_000); while (!stopCalls) await new Promise((resolvePromise) => setImmediate(resolvePromise)); await broker.handleLocal(socket, JSON.stringify({ id: 60, method: 'v4/conversation/subscribe', params: { topic: `conversation/${sessionId}`, connectionId: 'release-subscribe-admission', clientMode: 'desktop-continuous' } })); assert.equal(subscribeCalls, 0); assert.equal(writes.find((frame) => frame.id === 60)?.error?.data?.pluginError?.code, 'ZCODE_TURN_ACTIVE'); resolveStop({}); const released = await releasing; assert.deepEqual(released.releasedSessionIds, [sessionId]); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(broker.stoppingSessions.has(sessionId), false); await rm(directory, { recursive: true, force: true });
 });
 
+test('an aborted read notifies the broker so the exclusive stop is admitted immediately', async () => {
+  // Spec 2026-09-14 lines 81-82: the bounded read that outlives its budget is
+  // aborted, and the best-effort stop after the failed read must not stay
+  // fenced behind the abandoned read's SHARED session admission. The abort
+  // must therefore PROPAGATE to the broker over the client wire — a cancel
+  // notification the broker answers by releasing exactly that request's
+  // session admission — instead of waiting for the stalled upstream read to
+  // settle on its own.
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-abort-release-'));
+  const endpoint = join(directory, 'broker.sock');
+  const ownershipPath = `${endpoint}.owners.json`;
+  const ownerId = 'broker-abort-release-owner';
+  const sessionId = 'broker-abort-release-session';
+  let broker; let client;
+  let resolveStalledRead;
+  try {
+    await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } }));
+    broker = await newTestBroker({ endpoint, ownershipPath, brokerToken: 'c'.repeat(64), instanceId: 'd'.repeat(48), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }).start();
+    // The upstream read stalls at the broker forever; the upstream stop answers
+    // immediately, so the only thing that can fence the stop is the broker's
+    // own shared-read admission.
+    let stalledReadEntered = false;
+    broker.protocol = {
+      request: (method) => {
+        if (method === 'session/read') { stalledReadEntered = true; return new Promise((resolvePromise) => { resolveStalledRead = resolvePromise; }); }
+        if (method === 'session/stop') return Promise.resolve({});
+        throw new Error(`unexpected upstream ${method}`);
+      },
+      cancelTurn() {},
+    };
+    client = await connectZCodeBroker(endpoint, { brokerToken: 'c'.repeat(64), ownerId, requestTimeoutMs: 2_000 });
+    const controller = new AbortController();
+    const abortReason = new Error('the bounded pre-stop read outlived its budget');
+    const reading = client.request('session/read', { sessionId }, undefined, controller.signal).then(() => 'resolved', (error) => error);
+    for (let turn = 0; turn < 400 && !stalledReadEntered; turn += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    assert.equal(stalledReadEntered, true, 'the stalled read reached the broker upstream');
+    controller.abort(abortReason);
+    assert.equal(await reading, abortReason, 'the abort rejects the abandoned read with its reason');
+    const stopStartedAt = Date.now();
+    const stopped = await client.request('session/stop', { sessionId });
+    const stopElapsedMs = Date.now() - stopStartedAt;
+    assert.deepEqual(stopped, {}, 'the exclusive stop is admitted and acknowledged — no conflicting-operation rejection');
+    assert.ok(stopElapsedMs < 1_000, `the stop was admitted immediately instead of waiting behind the abandoned read (${stopElapsedMs}ms)`);
+    // The stalled upstream answer settles late: its broker-side settlement is
+    // refused by the released admission and the client drops the late frame
+    // silently — the connection survives.
+    resolveStalledRead?.({});
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    assert.equal(client.closed, false, 'the late response for the aborted read is dropped without failing the connection');
+  } finally {
+    // Release the stalled upstream read BEFORE closing the broker: its close
+    // awaits every in-flight local task, so a forever-pending read would hang
+    // the teardown of a deliberately failed attempt.
+    resolveStalledRead?.({});
+    for (let turn = 0; turn < 400 && broker?.localTasks.size; turn += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    await client?.close().catch(() => {});
+    await broker?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('an idle stop winner remains authoritative when its protocol resets during the durable write', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-write-generation-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'release-write-generation-owner'; const sessionId = 'release-write-generation-session'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: '0'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; const protocol = { request: async () => ({}), cancelTurn() {} }; broker.protocol = protocol; let writeApplied; let resumeWrite; const applied = new Promise((resolvePromise) => { writeApplied = resolvePromise; }); const gate = new Promise((resolvePromise) => { resumeWrite = resolvePromise; }); let writes = 0; broker.writeOwnerStore = async (sessions) => { writes += 1; await atomicWriteJson(ownershipPath, { version: 1, sessions }); if (writes === 1) { writeApplied(); await gate; } };
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 2_000); await applied; broker.clearProtocolGeneration(protocol); resumeWrite(); const result = await releasing; assert.deepEqual(result.releasedSessionIds, [sessionId]); assert.deepEqual(result.failedSessionIds, []); assert.equal(writes, 1); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(Object.hasOwn(JSON.parse(await readFile(ownershipPath, 'utf8')).sessions, sessionId), false); assert.equal(broker.stoppingSessions.has(sessionId), false); await rm(directory, { recursive: true, force: true });

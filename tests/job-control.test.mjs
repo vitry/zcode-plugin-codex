@@ -3899,10 +3899,13 @@ function foregroundActiveSnapshot() {
  * replacement between the read and the stop, `releaseTurnFails` leaves the
  * original transport turn unreleased, `holdCompletion` keeps the legacy
  * completion wake pending (the caller interrupts before any reconciliation
- * read — release it with `releaseCompletion()`), `onStop` models a concurrent
+ * read — release it with `releaseCompletion()`), `transientReadFailures`
+ * fails the first N reads with the transitional output error the polling
+ * loop retries on (`firstFailure` resolves when the first one was recorded),
+ * `onStop` models a concurrent
  * durable mutation landing during the executor's own stop, and
  * `claimChildPid` records a non-self executor pid (a detached child).
- * @param {{onStop?:()=>Promise<void>, workerLeaseId?:string, claimChildPid?:number, snapshot?:()=>any, readGeneration?:string, stopGeneration?:string, releaseTurnFails?:boolean, holdCompletion?:boolean}} [options]
+ * @param {{onStop?:()=>Promise<void>, workerLeaseId?:string, claimChildPid?:number, snapshot?:()=>any, readGeneration?:string, stopGeneration?:string, releaseTurnFails?:boolean, holdCompletion?:boolean, transientReadFailures?:number}} [options]
  */
 async function foregroundExecutorFixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zcode-foreground-no-report-'));
@@ -3929,6 +3932,10 @@ async function foregroundExecutorFixture(options = {}) {
   /** @type {(value?:any)=>void} */ let releaseCompletion = () => {};
   let firstReadStarted = () => {};
   const firstRead = new Promise((resolve) => { firstReadStarted = () => resolve(undefined); });
+  let firstFailureObserved = () => {};
+  const firstFailure = new Promise((resolve) => { firstFailureObserved = () => resolve(undefined); });
+  let readCalls = 0;
+  const transientReadFailures = options.transientReadFailures ?? 0;
   const interruption = new PluginError('JOB_INTERRUPTED', 'foreground executor interrupted', { category: 'interruption', remedy: 'retry' });
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-foreground-no-report' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
@@ -3942,7 +3949,17 @@ async function foregroundExecutorFixture(options = {}) {
       if (options.holdCompletion === true) return new Promise((resolve) => { releaseCompletion = resolve; });
       return Promise.resolve();
     },
-    readSession: async (/** @type {string=} */ id = 'session', /** @type {{signal?:AbortSignal}=} */ options = {}) => { firstReadStarted(); lastReadGeneration = readGeneration; return snapshot(); },
+    // `transientReadFailures` fails the first N reads with the transitional
+    // session/read output error the polling loop retries on — the recorded
+    // observation is a FAILED read, not a snapshot. The default read ignores
+    // its (id, options) arguments by design; readSessionDetailed forwards
+    // them so per-test overrides can participate.
+    readSession: async (/** @type {string=} */ id = 'session', /** @type {{signal?:AbortSignal}=} */ options = {}) => {
+      void id; void options;
+      readCalls += 1; firstReadStarted();
+      if (readCalls <= transientReadFailures) { firstFailureObserved(); throw new PluginError('ZCODE_OUTPUT_INVALID', 'transient session/read failure', { category: 'protocol', remedy: 'Retry the operation.', details: { method: 'session/read' } }); }
+      lastReadGeneration = readGeneration; return snapshot();
+    },
     // Per-response correlation, exactly like the production ZCodeClient: the
     // detailed read reports the stamp THIS response carried (delegates through
     // the client property so test overrides participate).
@@ -3957,7 +3974,7 @@ async function foregroundExecutorFixture(options = {}) {
       : { releaseTurn: async () => { events.push('release'); } }),
     close: async () => {},
   };
-  return { root, dataRoot, workspace, store, reserved, claimed, workerLeaseId, client, events, stops: () => stops, waiting, firstRead, releaseCompletion, interruption };
+  return { root, dataRoot, workspace, store, reserved, claimed, workerLeaseId, client, events, stops: () => stops, waiting, firstRead, firstFailure, reads: () => readCalls, releaseCompletion, interruption };
 }
 
 test('the foreground executor settles its own no-report cancellation owner-held after releasing its transport turn', { timeout: 8_000 }, async () => {
@@ -4269,6 +4286,31 @@ test('an interruption before any control read still settles the owner-held no-re
     assert.equal(settled.status, 'cancelled', 'the executor obtained its own pre-stop evidence and settled its qualified acknowledged stop');
     assert.equal(settled.stopCause, 'host-coordination-loss');
     assert.equal(fixture.stops(), 1, 'exactly one stop — the executor\'s own');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('an interruption after a transient read failure still runs the dedicated pre-stop read and settles cancelled', { timeout: 15_000 }, async () => {
+  // The reconciliation polling recorded a TRANSIENT read failure (spec 4.2
+  // line 40): the retained observation is a failed read, not a valid
+  // attributable generation-stamped snapshot, so the executor's finalization
+  // must still obtain its own dedicated bounded pre-stop read before the
+  // stop — skipping it because SOME lastRead exists leaves the qualified
+  // no-report claim without pre-stop evidence and the job stuck cancelling.
+  const fixture = await foregroundExecutorFixture({ transientReadFailures: 1 });
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstFailure; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const settled = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(settled.status, 'cancelled', 'the dedicated pre-stop read replaced the failed observation and the qualified acknowledged stop settled cancelled');
+    assert.equal(settled.stopCause, 'host-coordination-loss');
+    assert.equal(fixture.stops(), 1, 'exactly one stop — the executor\'s own');
+    assert.ok(fixture.reads() >= 2, 'a read ran after the failed observation — the dedicated pre-stop evidence read');
   } finally {
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }
