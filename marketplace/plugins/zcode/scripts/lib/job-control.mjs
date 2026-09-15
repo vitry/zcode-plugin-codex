@@ -327,7 +327,7 @@ async function waitForWorkerLeaseRelease(input, job, budgetMs) {
  * - `unmarked` — no marked claim: no local duty exists and the caller's
  *   settlement is not gated.
  * - `unproven` / `not-proven` — the claim identity is unprovable: retention.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>,inspectIdentityFn?:(identityPath:string,options:{healthProbe?:(record:any)=>Promise<boolean>})=>Promise<{status:string,record:any,reason?:string}>}} input
  * @param {any} selection the durable record this cleanup was selected for
  * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
  * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
@@ -379,7 +379,7 @@ function emitWindowsDutyDiagnostic(outcome, stageTimings, startedAtMs) {
 /** The marked-runner cleanup duty itself (see terminateMarkedRunnerTree for
  * the contract). The optional `input.dutyStageTimings` record accumulates the
  * per-stage elapsed-ms accounting the Windows diagnostic surfaces.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,dutyStageTimings?:Record<string,number|string>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,dutyStageTimings?:Record<string,number|string>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>,inspectIdentityFn?:(identityPath:string,options:{healthProbe?:(record:any)=>Promise<boolean>})=>Promise<{status:string,record:any,reason?:string}>}} input
  * @param {any} selection the durable record this cleanup was selected for
  * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
  * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
@@ -501,7 +501,11 @@ async function runMarkedRunnerDuty(input, selection, terminateProcessTree = term
       // STARTUP SYNCHRONIZATION above); the finally releases it. Below the
       // minimal slice, the lookup is skipped and the default fail-closed state
       // lets the guarded kill keep the entire remaining budget pid-only.
-      try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true }); }
+      try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true,
+        // Test seam passthrough (see recordedWorkspaceBrokerPids): the identity
+        // scan runs INSIDE the held broker startup lock, so a unit test can
+        // observe and coordinate the lookup-to-dispatch gap deterministically.
+        ...(typeof input.inspectIdentityFn === 'function' ? { inspectIdentityFn: input.inspectIdentityFn } : {}) }); }
       catch { exclusions = { status: 'failed', pids: [], brokers: [] }; }
     }
     markStage('lookupMs', lookupStartedAtMs);
