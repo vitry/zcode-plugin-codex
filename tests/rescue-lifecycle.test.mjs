@@ -437,14 +437,34 @@ test('observed natural success settles succeeded for a background run without a 
   assert.equal(fixture.stopCalls, 0);
 });
 
-test('an unattributable or idle remote turn under a stop intent retains the guard without stopping', async () => {
-  for (const loadRemote of ['idle-empty', 'unattributable', 'none']) {
+test('an unattributable or absent remote turn under a stop intent retains the guard without stopping', async () => {
+  for (const loadRemote of ['unattributable', 'none']) {
     const fixture = fixtureAdapters({ loadRemote, remote: 'interrupted' });
     const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'session-end' }, authority, workspace });
     assert.equal(outcome.kind, 'unresolved-stop', loadRemote);
     assert.equal(fixture.stopCalls, 0, loadRemote);
     assert.deepEqual(fixture.events, ['persist-stop-intent', 'retain-unresolved'], loadRemote);
   }
+});
+
+test('an attributable idle-unfinished turn under a stop intent stops and settles without a report', async () => {
+  // spec 4.2 requires "at least one valid pre-stop snapshot attributable to
+  // the current turn under persistedTurnBoundary" — ATTRIBUTION, never the
+  // active projection. The attributable idle/completed snapshot with an
+  // unfinished assistant is exactly the no-report shape a retry pass must
+  // proceed on: revalidate, the same-generation exact stop, one bounded
+  // reread, verified cleanup, cancelled. A pass that retained here instead
+  // would leave the shape cancelling indefinitely.
+  const events = [];
+  const fixture = fixtureAdapters({ events, loadRemote: 'idle-empty', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'record', jobStatus: 'cancelling', persistedStopCause: 'session-end',
+    host: 'absent', placement: 'background', receipt: null });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'session-end' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'session-end', resumable: true },
+    'the attributable idle pre-stop snapshot qualifies; the exact stop settles the no-report shape');
+  assert.deepEqual(fixture.events,
+    ['revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled'],
+    'the pass proceeded through the full mandated order with exactly one exact stop');
 });
 
 test('a cancelling job replays its persisted stop intent without minting a new one', async () => {

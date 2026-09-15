@@ -2791,9 +2791,12 @@ test('a crash after the qualified acknowledgement leaves no replayable receipt: 
   assert.deepEqual(Object.keys(persisted.stopIntent).sort(), ['cause', 'requestedAt', 'version'],
     'the durable stop intent is the only persisted cancellation evidence');
   // Pass 2 (exactly what a fresh process observes): the remote turn is already
-  // idle-unfinished — THIS attempt never observed the current turn executing,
-  // so its own stop evidence cannot qualify, the previous attempt's in-memory
-  // acknowledgement died with it, and the record stays unresolved.
+  // idle-unfinished. Nothing of pass 1's acknowledgement is replayable, so
+  // this pass re-proves EVERYTHING with its own evidence: the attributable
+  // idle-unfinished snapshot is valid pre-stop current-turn evidence (spec
+  // 4.2 — attribution, not the active projection), so the pass issues its own
+  // same-generation exact stop, rereads, verifies cleanup, and settles the
+  // no-report shape cancelled — on its own evidence, never pass 1's.
   let secondClient;
   const second = await settleEndedRescueJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
     epoch: null, lockTimeoutMs: 0, includeSettlementEvidence: true,
@@ -2801,15 +2804,16 @@ test('a crash after the qualified acknowledgement leaves no replayable receipt: 
     createClient: async (current) => (secondClient = stampedSessionEndClient(current, {
       reads: [() => idleUnfinishedCurrentTurn(current.inputId), () => idleUnfinishedCurrentTurn(current.inputId)],
     })) }, job.id);
-  assert.equal(second.kind, 'retained-writable-guard',
-    'the next attempt cannot settle on the previous attempt\'s in-memory acknowledgement');
-  assert.equal(second.job.status, 'cancelling', 'it may remain unresolved instead of inventing durable confirmation');
-  assert.equal(secondClient.stopCount(), 0, 'the idle non-active turn is never re-stopped by this pass');
-  // The durable cancelling intent already delegates the stop (receipt
-  // semantics); the WRITABLE GUARD itself stays retained and blocking.
-  await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-crash-blocked', command: 'rescue', readOnly: false,
-    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
-    'the unresolved no-report guard keeps blocking writable admission');
+  assert.equal(second.kind, 'confirmed-cancellation',
+    'the fresh pass settles on its own qualified stop, reread, and cleanup — never on pass 1\'s in-memory acknowledgement');
+  assert.equal(second.job.status, 'cancelled');
+  assert.equal(secondClient.stopCount(), 1, 'this pass issued its own one exact stop over the attributable idle snapshot');
+  assert.equal(secondClient.readCount(), 3, 'the joined read, the retry pre-stop read, and the one bounded reread');
+  assert.equal(second.job.resultArtifact, undefined, 'no success artifact is fabricated for the no-report winner');
+  // The settled no-report winner releases the writable guard: a new writable
+  // reservation is admitted again.
+  await store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-crash-settled', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
   void endedObligationSettled;
   await cleanupRecoveryFixture(fixture);
 });

@@ -4316,12 +4316,44 @@ test('a binding closed while the owner-held publication proves its standing is r
 });
 
 test('a reconciler retention without a stop attempt never suppresses the election stop in one command', async () => {
-  // The RETRY shape with an attributable idle-unfinished remote snapshot: the
-  // shared reconciler pass retains WITHOUT attempting the exact stop (spec 4.2
-  // keeps that snapshot for settlement, but the durable stop intent still owes
-  // a remote stop attempt). Nonterminal retention is not proof of a stop
-  // attempt, so the election must NOT defer to the shared pass here — it must
-  // issue its own exact stop.
+  // The RETRY shape with an UNATTRIBUTABLE remote snapshot (no current-turn
+  // root at/after the persisted boundary — the fabricated or reconstructed
+  // idle shape): the shared reconciler pass retains WITHOUT attempting the
+  // exact stop. Nonterminal retention is not proof of a stop attempt, so the
+  // election must NOT defer to the shared pass here — it must issue its own
+  // exact stop. (An ATTRIBUTABLE idle-unfinished snapshot no longer retains
+  // pre-stop: it qualifies as spec 4.2 pre-stop evidence and the shared pass
+  // itself stops and settles.)
+  const fixture = await noReportSettlementFixture();
+  const unattributableIdleRead = () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 1 }, messages: [] });
+  const control = noReportControlClient({ reads: [unattributableIdleRead, unattributableIdleRead, unattributableIdleRead] });
+  const reconcile = managementReconcileFor(fixture, control);
+  try {
+    let electionStops = 0;
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      stopSession: async () => { electionStops += 1; },
+      readSession: async () => idleUnfinishedTurnSnapshot('input-no-report'),
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained stop'); } });
+    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
+    assert.equal(control.stops(), 0, 'the shared pass retained without attempting the exact stop');
+    assert.equal(electionStops, 1, 'the election MUST still attempt its own exact stop when the shared pass retained without one');
+    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling',
+      'the unresolved stop keeps the durable cancelling guard');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-no-stop-suppression' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a retry pass over an attributable idle-unfinished turn stops once and settles the no-report shape', { timeout: 15_000 }, async () => {
+  // spec 4.2: the attributable idle/completed snapshot with an unfinished
+  // assistant IS valid pre-stop current-turn evidence. The retry pass's shared
+  // reconciler pass therefore proceeds through the full mandated order —
+  // revalidate, the same-generation exact stop, one bounded reread, verified
+  // cleanup — and settles cancelled without a report; the election is never
+  // needed and never duplicates the stop.
   const fixture = await noReportSettlementFixture();
   const idleRead = () => idleUnfinishedTurnSnapshot('input-no-report');
   const control = noReportControlClient({ reads: [idleRead, idleRead, idleRead] });
@@ -4331,15 +4363,16 @@ test('a reconciler retention without a stop attempt never suppresses the electio
     const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
       reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
       stopSession: async () => { electionStops += 1; },
-      readSession: async () => idleRead(),
-      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained stop'); } });
-    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED' });
-    assert.equal(control.stops(), 0, 'the shared pass retained without attempting the exact stop');
-    assert.equal(electionStops, 1, 'the election MUST still attempt its own exact stop when the shared pass retained without one');
-    assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling',
-      'the unresolved stop keeps the durable cancelling guard');
-    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-no-stop-suppression' }), { code: 'WRITABLE_JOB_EXISTS' },
-      'the cancelling writable guard is retained');
+      readSession: async () => { throw new Error('the election is never reached: the shared pass settles the attributable idle shape'); },
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for the no-report settlement'); } });
+    const winner = await controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a');
+    assert.equal(winner.status, 'cancelled', 'the attributable idle pre-stop evidence let the shared pass settle the no-report shape');
+    assert.equal(control.stops(), 1, 'exactly one exact stop this command: the shared retry pass owns it');
+    assert.equal(electionStops, 0, 'the election never duplicates the shared pass stop in one command');
+    const stored = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(stored.status, 'cancelled', 'the durable winner is the no-report cancellation');
+    assert.equal(stored.resultArtifact, undefined, 'no success artifact is fabricated');
+    await fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'after-attributable-idle-release' });
   } finally {
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }
@@ -4492,17 +4525,18 @@ test('a retained shared stop never repeats the runner cleanup duty inside one ca
 test('a genuine pre-stop engine failure without a shared stop attempt still publishes failed from the election read', async () => {
   // The legitimate path the retained-shared-stop guard must keep reachable:
   // the shared reconciler pass retained WITHOUT attempting any stop (the
-  // attributable idle-unfinished joined read), so the election's retry
-  // pre-stop read observes a GENUINE pre-existing engine failure — the turn
-  // errored before any stop was ever attempted — and its natural-failure
-  // publication keeps its own semantics, releasing the writable guard.
+  // UNATTRIBUTABLE idle-unfinished joined read — no current-turn root at/after
+  // the persisted boundary), so the election's retry pre-stop read observes a
+  // GENUINE pre-existing engine failure — the turn errored before any stop was
+  // ever attempted — and its natural-failure publication keeps its own
+  // semantics, releasing the writable guard.
   const fixture = await noReportSettlementFixture();
-  const idleRead = () => idleUnfinishedTurnSnapshot('input-no-report');
+  const unattributableIdleRead = () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 1 }, messages: [] });
   const failedRead = () => ({ projection: { status: 'idle' }, runtime: { stateRevision: 3 }, messages: [completedUser('input-no-report'), {
     info: { role: 'assistant', messageId: 'assistant-input-no-report', parentMessageId: 'input-no-report', error: { message: 'engine failure before any stop' } },
     parts: [{ type: 'text', text: 'failed without finishing' }],
   }] });
-  const control = noReportControlClient({ reads: [idleRead, idleRead, idleRead] });
+  const control = noReportControlClient({ reads: [unattributableIdleRead, unattributableIdleRead, unattributableIdleRead] });
   const reconcile = managementReconcileFor(fixture, control);
   try {
     let electionStops = 0;

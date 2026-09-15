@@ -1103,13 +1103,12 @@ async function performCancellation(input, attempts, election) {
           // when it actually attempted one (`remoteStopAttempted` — the
           // reconciler marks outcomes produced after its exact-stop seam): a
           // nonterminal retention alone also happens WITHOUT any stop (an
-          // attributable idle snapshot with an unfinished assistant retains
-          // before the stop), and suppressing the election's stop there would
-          // strand the durable intent with NO remote control this command.
-          // When marked, the retained outcome is the bounded stop failure this
-          // election reports below (the election never issues a second stop
-          // inside the same command — the durable intent re-arms the next
-          // bounded pass).
+          // unattributable snapshot retains before the stop), and suppressing
+          // the election's stop there would strand the durable intent with NO
+          // remote control this command. When marked, the retained outcome is
+          // the bounded stop failure this election reports below (the election
+          // never issues a second stop inside the same command — the durable
+          // intent re-arms the next bounded pass).
           if (/** @type {any} */ (converged)?.remoteStopAttempted === true) sharedStopRetained = true;
         }
       } else if (!initiallyRunning && job.status === 'cancelling' && validStopIntent(job.stopIntent)) {
@@ -1117,11 +1116,11 @@ async function performCancellation(input, attempts, election) {
         // stop intent at entry, so the shared pass above IS this command's
         // convergence pass. Defer ONLY when that pass actually attempted the
         // exact remote stop (`remoteStopAttempted`, see the reconciler's
-        // stop-seam marker): a retention without a stop attempt — the
-        // attributable idle-unfinished shape — still owes this command's stop,
-        // which the election issues below. The election never duplicates a
-        // shared pass's stop inside one command, and the durable intent
-        // re-arms the next bounded pass.
+        // stop-seam marker): a retention without a stop attempt — an
+        // unattributable snapshot — still owes this command's stop, which the
+        // election issues below. The election never duplicates a shared pass's
+        // stop inside one command, and the durable intent re-arms the next
+        // bounded pass.
         if (/** @type {any} */ (outcome)?.remoteStopAttempted === true) sharedStopRetained = true;
       }
     }
