@@ -345,9 +345,15 @@ export function createManagementRescueReconcile(input) {
       let upstreamContinuous = joinedUpstream !== null;
       // Pre-stop read: a turn that already reached a terminal outcome BEFORE
       // this stop keeps its own semantics instead of being misclassified as
-      // caused by the stop. The read reuses the already-open control client.
+      // caused by the stop. The read reuses the already-open control client
+      // under the composed observation budget — and when the budget expires
+      // the read is aborted (with a bounded admission-release wait) so the
+      // orphaned shared admission never rejects the EXCLUSIVE stop below
+      // (spec lines 81-83: the best-effort stop follows a failed or
+      // unreadable read).
       try {
-        const preStopRead = await raceControlOperation(readWithServingGeneration(context.client, joined.job.zcodeSessionId), options?.signal);
+        const preStopBudget = options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs);
+        const preStopRead = await boundedManagementRead(context.client, joined.job.zcodeSessionId, preStopBudget);
         const preStop = endedRemoteEvidence(preStopRead.snapshot, joined.job);
         if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
           return { acknowledged: true, preExistingTerminal: preStop };
@@ -469,6 +475,10 @@ export function createManagementRescueReconcile(input) {
 }
 
 const managementObservationBudgetMs = 2_500;
+/** The bounded wait for a budget-abandoned management read to release the
+ * broker's exclusive stop admission after its budget abort; expiry never
+ * blocks the stop — the flow proceeds and the uncertainty retains the guard. */
+const managementReadReleaseMs = 250;
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 
 /** The caller-scoped signal that distinguishes a genuine command abort (SIGINT)
@@ -593,7 +603,7 @@ async function loadManagementRemoteEvidence(input, context, request, job) {
   let snapshot; let joinedReadGeneration;
   const readBudget = request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs);
   try {
-    ({ snapshot, servingGeneration: joinedReadGeneration } = await raceControlOperation(readWithServingGeneration(client, job.zcodeSessionId), readBudget));
+    ({ snapshot, servingGeneration: joinedReadGeneration } = await boundedManagementRead(client, job.zcodeSessionId, readBudget));
   } catch (error) { return unavailableOrReadableEvidence(error); }
   const evidence = endedRemoteEvidence(snapshot, job);
   // Record the broker's serving-generation stamp that produced this joined
@@ -612,14 +622,46 @@ async function loadManagementRemoteEvidence(input, context, request, job) {
  * client's shared last-completed view, which an overlapping read can
  * repopulate before the caller observes it. Control clients predating
  * per-read correlation (test fixtures with single-threaded read sequences)
- * fall back to that view. @param {any} client @param {string} sessionId */
-async function readWithServingGeneration(client, sessionId) {
+ * fall back to that view. `options.signal` aborts the underlying request.
+ * @param {any} client @param {string} sessionId @param {{signal?:AbortSignal}} [options] */
+async function readWithServingGeneration(client, sessionId, options = {}) {
   if (typeof client?.readSessionDetailed === 'function') {
-    const detailed = await client.readSessionDetailed(sessionId);
+    const detailed = await client.readSessionDetailed(sessionId, options);
     return { snapshot: detailed.snapshot, servingGeneration: boundedUpstreamStamp(detailed?.servingGeneration) };
   }
-  const snapshot = await client.readSession(sessionId);
+  const snapshot = await client.readSession(sessionId, options);
   return { snapshot, servingGeneration: servingGenerationOf(client, sessionId) };
+}
+
+/** One bounded per-response-correlated management read, mirroring the
+ * foreground executor's pre-stop pattern: the read is armed with the composed
+ * budget through an AbortController, and when the budget expires the
+ * underlying request is ABORTED and the helper waits (bounded) for its
+ * admission release — the broker admits session/read as SHARED and
+ * session/stop as EXCLUSIVE, so an orphaned read must never hold admission
+ * while the authorized stop is issued (spec lines 81-83). Expiry propagates
+ * the budget's abort reason to the caller; the stop flow proceeds regardless.
+ * @param {any} client @param {string} sessionId @param {AbortSignal|undefined} budget */
+async function boundedManagementRead(client, sessionId, budget) {
+  const controller = new AbortController();
+  const onBudgetAbort = () => controller.abort(budget?.reason);
+  if (budget?.aborted) onBudgetAbort();
+  else budget?.addEventListener('abort', onBudgetAbort, { once: true });
+  let readSettled = false;
+  const readSettledGate = readWithServingGeneration(client, sessionId, { signal: controller.signal })
+    .then((read) => { readSettled = true; return read; }, (error) => { readSettled = true; throw error; });
+  try {
+    return await raceControlOperation(readSettledGate, budget);
+  } catch (error) {
+    if (!readSettled) {
+      if (!controller.signal.aborted) controller.abort(error);
+      await Promise.race([
+        readSettledGate.catch(() => {}),
+        new Promise((resolve) => { const timer = setTimeout(resolve, managementReadReleaseMs); timer.unref?.(); }),
+      ]);
+    }
+    throw error;
+  } finally { budget?.removeEventListener('abort', onBudgetAbort); }
 }
 
 /** The serving protocol generation one management control client observed on its most recent session/read for the session: the production ZCodeClient surfaces the broker's `brokerProtocolGeneration` stamp per response (see ZCodeClient.readServingGeneration). A client that cannot prove its serving generation carries no continuity evidence, so its stop response can never qualify the no-report settlement. @param {any} client @param {string} sessionId */
