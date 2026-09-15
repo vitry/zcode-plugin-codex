@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -14,6 +14,7 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { endedObligationSettled, reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
 import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import { ZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const cancelLockHolder = fileURLToPath(new URL('./fixtures/cancel-lock-holder.mjs', import.meta.url));
@@ -1072,6 +1073,23 @@ function stampedClient(value, options = {}) {
   };
 }
 
+/** One FULLY schema-valid session/read snapshot for the REAL ZCodeClient: the
+ * broker shape plus the accepted turn's attributable user root still
+ * executing, so the joined and pre-stop reads carry valid current-turn
+ * evidence. @param {string} sessionId @param {string} workspacePath @param {string} inputId */
+function stampedValidSnapshot(sessionId, workspacePath, inputId) {
+  const model = { providerId: 'fake', modelId: 'model' };
+  return {
+    protocol: { name: 'ZCode Protocol', version: 1 },
+    session: { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Session end continuity', mode: 'build', status: 'idle', model, createdAt: 1, updatedAt: 1 },
+    settings: { model: { current: model, available: [] }, thoughtLevel: { enabled: true, available: [] }, mode: { current: 'build' } },
+    projection: { sessionId, status: 'running', mode: 'build', turnCount: 1, totalTokenCount: 0, contextUsed: 0, contextWindow: 1, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] },
+    runtime: { eventSeq: 0, stateRevision: 8, pendingRequestIds: [] },
+    messages: [{ info: { role: 'user', messageId: inputId, sessionId, time: { created: 1 }, agent: 'agent-x', model },
+      parts: [{ partId: `part-${inputId}`, type: 'text', text: 'task', sessionId, messageId: inputId }] }],
+  };
+}
+
 /** One claimed queued MARKED detached-runner Host-owned Rescue. */
 async function markedQueuedRunner(input, agent, childPid = 999_999_999) {
   const executor = exactExecutor(input.workspace, agent);
@@ -1288,6 +1306,52 @@ test('a reread answered by a replaced upstream generation refuses the SessionEnd
   assert.ok(Buffer.byteLength(stored.lastCancelError ?? '', 'utf8') <= 2_048);
   assert.doesNotMatch(stored.lastCancelError ?? '', /a{16,}|b{16,}|sess_[a-z0-9-]+/u);
   await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'reread-replaced-blocked', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
+    'the cancelling writable guard is retained');
+});
+
+test('a rejected reread cannot ride a stale serving-generation stamp into the SessionEnd no-report publication', async () => {
+  // spec 4.2: the read, the stop, AND the reread must be PROVEN to share one
+  // upstream protocol generation. The broker reconstructs its upstream between
+  // the stop and the reread and the reread REJECTS — and through the REAL
+  // ZCodeClient a failed read must leave NO cached generation: with the stale
+  // pre-stop stamp surviving the failure, the publisher mistook it for proof
+  // the failed reread used the same upstream and published cancelled over an
+  // unproven (replaced) upstream. The unreadable-reread relaxation stays a
+  // decision-layer routing rule; the publisher's reread-leg evidence still
+  // cannot close, so the entry point remains cancelling (spec 4.2) with the
+  // same bounded continuity diagnostic as a proven replacement.
+  const input = await fixture();
+  await recordBrokerIdentity(input.dataRoot, input.workspace);
+  const { job: marked } = await markedRunningRunner(input, 'no-report-reread-failed-child');
+  const workspaceReal = await realpath(input.workspace);
+  const generation = 'a'.repeat(32);
+  let reads = 0;
+  const protocol = {
+    request: async (method, params) => {
+      if (method === 'session/read') {
+        reads += 1;
+        if (reads >= 3) throw new Error('post-stop read transport closed');
+        return { ...stampedValidSnapshot(params.sessionId, workspaceReal, marked.inputId), brokerProtocolGeneration: generation };
+      }
+      if (method === 'session/stop') return { brokerProtocolGeneration: generation };
+      throw new Error(`unexpected ${method}`);
+    },
+    cancelTurn: () => {},
+    close: async () => {},
+  };
+  const settlement = await settleOutcome({ ...input,
+    terminateProcessTree: async () => {},
+    sweepDeadRootDescendants: async () => ({ kind: 'clean' }),
+  }, async () => new ZCodeClient(protocol, workspaceReal));
+  const stored = await input.store.readJob(input.workspace, marked.id);
+  assert.equal(reads, 3, "the joined read, the pre-stop read, and the one rejected reread ran");
+  assert.equal(settlement.kind, 'retained-writable-guard',
+    'the failed reread has NO serving-generation proof, so the no-report publication refuses');
+  assert.equal(stored.status, 'cancelling', 'the failed reread never publishes cancelled over its missing continuity proof');
+  assert.match(stored.lastCancelError ?? '', /acknowledged stop could not be proven against the same ZCode upstream/u,
+    'the retained guard records the bounded continuity diagnostic');
+  await assert.rejects(input.store.reserveJob({ workspace: input.workspace, ownerSessionId: 'next-owner', ownerTurnId: 'reread-failed-blocked', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' },
     'the cancelling writable guard is retained');
 });

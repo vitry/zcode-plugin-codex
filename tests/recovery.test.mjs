@@ -2747,8 +2747,8 @@ test('a no-report SessionEnd settlement retains the cancelling guard when the cl
   assert.equal(outcome.job.status, 'cancelling');
   assert.equal(client.stopCount(), 1, 'the qualified stop still ran; only the settlement was gated on the cleanup');
   assert.equal(cancelledFinishes, 0, 'no cancelled publication over an incomplete cleanup');
-  assert.match(outcome.job.lastCancelError ?? '', /remains unresolved after the stop acknowledgement/,
-    'the bounded retention diagnostic is the visible retry evidence');
+  assert.match(outcome.job.lastCancelError ?? '', /cleanup did not complete/,
+    'the bounded retention diagnostic names the incomplete cleanup, distinct from continued remote activity');
   // The durable cancelling intent already delegates the stop (receipt
   // semantics); the WRITABLE GUARD itself stays retained and blocking.
   await assert.rejects(store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'budget-blocked', command: 'rescue', readOnly: false,

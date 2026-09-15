@@ -136,6 +136,38 @@ test('the serving-generation stamp is stripped from snapshots, recorded per read
   assert.deepEqual(await client.stopSession('session-stamp-1'), {}, 'an unstamped stop response stays the bare acknowledgement');
 });
 
+test('a failed read voids the cached serving generation until a successful read re-establishes it', async () => {
+  // spec 2026-09-14 section 4.2: continuity is proven per response stamp, and
+  // the stamp must describe the read that ACTUALLY served this attempt. A
+  // rejected session/read — exactly the post-stop reread an upstream
+  // reconstruction drops — must leave NO cached generation behind: a stale
+  // pre-stop stamp surviving the failure would let a publisher mistake it for
+  // proof the failed reread used the same upstream.
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  const stamp = 'a'.repeat(32);
+  let failRead = false;
+  const protocol = {
+    request: async (method, params) => {
+      if (method === 'session/read') {
+        if (failRead) throw new Error('post-stop read transport closed');
+        return { ...brokerCreateSnapshot(params.sessionId, workspacePath), brokerProtocolGeneration: stamp };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  await client.readSession('session-stamp-failure');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the successful read stamps the serving generation');
+  failRead = true;
+  await assert.rejects(client.readSession('session-stamp-failure'), undefined, 'the modeled reread failure rejects');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), null,
+    'the failed read leaves NO cached generation — the stale pre-stop stamp can never pose as the failed reread\'s continuity proof');
+  failRead = false;
+  await client.readSession('session-stamp-failure');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the next successful read re-establishes the generation');
+});
+
 test('conversation subscribe accepts additive fields and rejects malformed consumed fields', async () => {
   // ZCode 0.16.5 bundle schema/implementation: openTiming is nested under ack
   // with this versioned warm-session timing shape. `future` is unit-only.

@@ -61,6 +61,7 @@ function fixtureAdapters(overrides = {}) {
     stopAcknowledged: true, jobStatus: 'running', hostOwned: true, ...overrides,
   };
   const events = overrides.events ?? [];
+  const retainedErrors = [];
   let stopCalls = 0;
   let lastStopAcknowledged = null;
   const stopIntent = (cause) => ({ version: 1, cause, requestedAt: REQUESTED_AT });
@@ -159,8 +160,9 @@ function fixtureAdapters(overrides = {}) {
       events.push(`publish-${specification.status}`);
       return { status: specification.status, ...(specification.status === 'cancelled' ? { stopCause: specification.stopCause } : {}) };
     },
-    retainUnresolved: async (joined) => {
+    retainUnresolved: async (joined, evidence) => {
       events.push('retain-unresolved');
+      retainedErrors.push(evidence?.error);
       return joined.job;
     },
     settleUnavailableExecutor: async (joined) => {
@@ -188,6 +190,7 @@ function fixtureAdapters(overrides = {}) {
   Object.defineProperties(adapters, {
     adapters: { value: adapters },
     events: { value: events },
+    retainedErrors: { value: retainedErrors },
     stopCalls: { get: () => stopCalls },
   });
   return adapters;
@@ -857,6 +860,29 @@ test('an acknowledged stop with pending, failed, or unproven cleanup keeps the g
     assert.ok(events.includes('terminate-marked-runner'), terminateRunner);
     assert.equal(events.some((event) => event.startsWith('publish-')), false, terminateRunner);
   }
+});
+
+test('pending-cleanup retention records a cleanup-specific diagnostic distinct from continued remote activity', async () => {
+  // spec section 6: Status must distinguish incomplete executor cleanup from
+  // the still-active contrary-evidence retention. The qualified no-report
+  // branch's cleanup retention carries its own bounded cleanup diagnostic —
+  // never the generic unresolved-stop message the still-active branch keeps.
+  const cleanupEvents = [];
+  const cleanupFixture = fixtureAdapters({ events: cleanupEvents, loadRemote: 'running', remote: 'idle-empty',
+    stopUpstream: 'same', terminateRunner: 'pending' });
+  await createRescueLifecycleReconciler(cleanupFixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  const cleanupMessage = String(cleanupFixture.retainedErrors.at(-1)?.message ?? '');
+  assert.match(cleanupMessage, /cleanup did not complete/u,
+    'the incomplete-cleanup retention names the cleanup, not the generic unresolved stop');
+  const activeEvents = [];
+  const activeFixture = fixtureAdapters({ events: activeEvents, loadRemote: 'running', remote: 'pending',
+    stopUpstream: 'same', terminateRunner: 'record' });
+  await createRescueLifecycleReconciler(activeFixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+  const activeMessage = String(activeFixture.retainedErrors.at(-1)?.message ?? '');
+  assert.match(activeMessage, /remains unresolved after the stop acknowledgement/u,
+    'the still-active contrary-evidence retention keeps the generic unresolved-stop diagnostic');
+  assert.notEqual(cleanupMessage, activeMessage,
+    'incomplete cleanup and continued remote activity stay distinguishable (spec section 6)');
 });
 
 test('contrary post-stop evidence retains cancelling over the acknowledged stop', async () => {

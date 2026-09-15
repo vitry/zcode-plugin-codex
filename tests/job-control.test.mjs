@@ -4107,6 +4107,43 @@ test('an observed natural success whose publication failed never becomes the for
   }
 });
 
+test('a rejected post-stop reread never qualifies the foreground no-report claim without positive continuity', { timeout: 15_000 }, async () => {
+  // spec 4.2's positive-proof standard for the executor's OWN owner-held
+  // claim: the read-stop-reread generation chain must be positively attested.
+  // The final reread REJECTS — the broker reconstructed its upstream and the
+  // read failed — and after the client fix a failed read leaves NO cached
+  // serving-generation stamp, so the evidence chain cannot attest the reread
+  // leg. The owner-held publication is refused and the cancelling guard stays
+  // for the next bounded pass; an upstream-replacement disconnect can never
+  // publish cancelled on the bare fact that a stop response returned.
+  const fixture = await foregroundExecutorFixture();
+  const originalReadSession = fixture.client.readSession.bind(fixture.client);
+  const originalGeneration = fixture.client.readServingGeneration.bind(fixture.client);
+  fixture.client.readSession = async () => {
+    if (fixture.stops() > 0) throw new Error('post-stop reread transport closed');
+    return originalReadSession();
+  };
+  // Models the production client's post-fix stamp semantics: the failed read
+  // voided the cached generation, so the failure-time attestation is null.
+  fixture.client.readServingGeneration = () => (fixture.stops() > 0 ? null : originalGeneration());
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.firstRead; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling',
+      `the rejected reread cannot positively attest the reread leg, so the owner-held publication is refused: ${retained.status}`);
+    assert.ok(fixture.stops() >= 1, 'the executor\'s own acknowledged stop still ran');
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-rejected-reread' }), { code: 'WRITABLE_JOB_EXISTS' },
+      'the cancelling writable guard is retained for the next bounded pass');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('a replaced upstream serving generation never lets the foreground executor publish its own cancellation', { timeout: 15_000 }, async () => {
   // The pre-stop reads are served by generation A, but the stop response
   // carries the REPLACEMENT generation's stamp (B) — the broker reconstructed
@@ -4391,11 +4428,11 @@ test('the cancel election preserves the shared reconciliation diagnostic when it
       publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained shared stop'); } });
     await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'),
       (/** @type {any} */ error) => error?.code === 'JOB_CANCEL_FAILED'
-        && error.message.includes('The remote turn settlement remains unresolved after the stop acknowledgement.'),
+        && error.message.includes('The executor cleanup did not complete; the cancelling guard is retained for the next bounded retry.'),
       'the public rejection surfaces the shared pass specific diagnostic');
     const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
     assert.equal(retained.status, 'cancelling', 'the durable guard stays cancelling');
-    assert.equal(retained.lastCancelError, 'The remote turn settlement remains unresolved after the stop acknowledgement.',
+    assert.equal(retained.lastCancelError, 'The executor cleanup did not complete; the cancelling guard is retained for the next bounded retry.',
       'the shared pass specific retry diagnostic is preserved, not overwritten with the generic retained-stop message');
   } finally {
     releaseHolder();
