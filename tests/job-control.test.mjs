@@ -3942,7 +3942,14 @@ async function foregroundExecutorFixture(options = {}) {
       if (options.holdCompletion === true) return new Promise((resolve) => { releaseCompletion = resolve; });
       return Promise.resolve();
     },
-    readSession: async () => { firstReadStarted(); lastReadGeneration = readGeneration; return snapshot(); },
+    readSession: async (/** @type {string=} */ id = 'session', /** @type {{signal?:AbortSignal}=} */ options = {}) => { firstReadStarted(); lastReadGeneration = readGeneration; return snapshot(); },
+    // Per-response correlation, exactly like the production ZCodeClient: the
+    // detailed read reports the stamp THIS response carried (delegates through
+    // the client property so test overrides participate).
+    readSessionDetailed: async (/** @type {string} */ id, /** @type {{signal?:AbortSignal}} */ options = {}) => {
+      const snapshot = await client.readSession(id, options);
+      return { snapshot, servingGeneration: lastReadGeneration };
+    },
     readServingGeneration: () => lastReadGeneration,
     stopSession: async () => { stops += 1; await options.onStop?.(); return { brokerProtocolGeneration: stopGeneration }; },
     ...(options.releaseTurnFails
@@ -4139,6 +4146,58 @@ test('a rejected post-stop reread never qualifies the foreground no-report claim
     assert.ok(fixture.stops() >= 1, 'the executor\'s own acknowledged stop still ran');
     await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-rejected-reread' }), { code: 'WRITABLE_JOB_EXISTS' },
       'the cancelling writable guard is retained for the next bounded pass');
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a hung pre-stop evidence read is aborted at its budget and never blocks the exact stop', { timeout: 20_000 }, async () => {
+  // The broker admits session/read requests as SHARED and session/stop as
+  // EXCLUSIVE: when the 1s bounded pre-stop evidence read outlives its
+  // budget, the executor must ABORT the underlying request and wait (bounded)
+  // for its admission release before issuing the stop — never leave the
+  // orphaned read holding admission so the authorized stop is rejected
+  // (spec lines 81-82). The abandoned read eventually rejects through the
+  // abort instead of leaking, and the cancelled settlement keeps the guard
+  // for the next bounded pass.
+  const fixture = await foregroundExecutorFixture({ holdCompletion: true });
+  /** The modeled broker admission: session/stop is exclusive over reads. The
+   * FIRST read is the bounded pre-stop evidence read; the election's later
+   * observation reads hang and are abandoned by their own bounded races. */
+  const preStopRead = { inFlight: false, aborted: false, settled: false };
+  const originalStop = fixture.client.stopSession.bind(fixture.client);
+  let readCount = 0;
+  fixture.client.readSession = (/** @type {string=} */ id, /** @type {{signal?:AbortSignal}=} */ options = {}) => {
+    readCount += 1;
+    if (readCount > 1) return new Promise(() => {});
+    return new Promise((_, reject) => {
+      preStopRead.inFlight = true;
+      options?.signal?.addEventListener('abort', () => {
+        preStopRead.aborted = true;
+        preStopRead.inFlight = false;
+        preStopRead.settled = true;
+        reject(new Error('the pre-stop evidence read was aborted at its budget'));
+      }, { once: true });
+    });
+  };
+  fixture.client.stopSession = async () => {
+    if (preStopRead.inFlight) throw new Error('broker exclusive admission is held by the in-flight read');
+    return originalStop();
+  };
+  try {
+    const controller = new AbortController();
+    const execution = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: fixture.claimed.id, workerLeaseId: fixture.workerLeaseId },
+      () => executeJobProduction({ job: fixture.claimed, workspace: fixture.workspace, dataRoot: fixture.dataRoot, store: fixture.store,
+        client: fixture.client, task: 'bounded task', childPid: process.pid, workerLeaseId: fixture.workerLeaseId, signal: controller.signal }));
+    await fixture.waiting; controller.abort(fixture.interruption);
+    await assert.rejects(execution, (error) => error === fixture.interruption);
+    assert.ok(fixture.stops() >= 1, 'the exact stop was ISSUED — never blocked behind the orphaned read\'s admission');
+    assert.ok(readCount >= 2, 'the bounded pre-stop read ran before the stop and the observation reread after it');
+    assert.equal(preStopRead.inFlight, false, 'the pre-stop read no longer holds admission');
+    assert.ok(preStopRead.aborted, 'the budget-expired pre-stop read was aborted');
+    assert.equal(preStopRead.settled, true, 'the aborted pre-stop read rejected through its abort — it did not leak');
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.claimed.id);
+    assert.equal(retained.status, 'cancelling', 'the unresolved settlement keeps the durable cancelling guard');
   } finally {
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }

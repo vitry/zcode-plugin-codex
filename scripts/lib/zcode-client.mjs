@@ -93,32 +93,37 @@ export class ZCodeClient {
     return { ...result, inputId };
   }
 
-  /** @param {string} sessionId */ async readSession(sessionId) {
+  /** Correlate one session/read per response: resolves the validated engine
+   * snapshot TOGETHER with the serving generation that served THIS response —
+   * never a stamp from the shared last-completed view, which an overlapping
+   * read can repopulate before the caller observes it. A rejected read has no
+   * generation at all, so cancellation paths can never mistake an unrelated
+   * or stale stamp for this read's continuity proof (spec 2026-09-14 section
+   * 4.2). `options.signal` aborts the pending protocol request.
+   * @param {string} sessionId @param {{signal?:AbortSignal}} [options] @returns {Promise<{snapshot:any, servingGeneration:string|null}>} */
+  async readSessionDetailed(sessionId, options = {}) {
     requireSessionId(sessionId);
-    // Void the cached serving generation at EVERY read attempt FIRST: the
-    // attestation must describe the read that actually served THIS attempt.
-    // A rejected read — exactly the post-stop reread an upstream
-    // reconstruction drops — must leave no previous successful read's stamp
-    // behind, so readServingGeneration() returns null until a subsequent
-    // successful read re-establishes the generation and no publisher can
-    // mistake the stale pre-stop stamp for the failed reread's continuity
-    // proof (spec 2026-09-14 section 4.2).
+    // Void the shared last-completed view at EVERY read attempt: it describes
+    // whichever read completed last, and a rejected read — exactly the
+    // post-stop reread an upstream reconstruction drops — must leave nothing
+    // behind that legacy callers could mistake for this attempt's proof.
     this.readGenerations.delete(sessionId);
-    const result = await this.protocol.request('session/read', { sessionId });
+    const result = await this.protocol.request('session/read', { sessionId }, undefined, options.signal);
     // The broker stamps the upstream protocol generation that actually served
     // this read BESIDE the engine snapshot (see ZCodeBroker). Strip it before
-    // schema validation — the engine snapshot contract never includes it — and
-    // record it as this client's serving-generation observation for the
-    // session: the value cancellation-settlement attestation compares against
-    // the stop response's stamp. A serving path that proves no generation
-    // (a direct protocol connection, a stamp-less broker) records null, which
-    // can never qualify continuity.
+    // schema validation — the engine snapshot contract never includes it —
+    // and correlate it with THIS response. A serving path that proves no
+    // generation (a direct protocol connection, a stamp-less broker) records
+    // null, which can never qualify continuity.
     const { brokerProtocolGeneration, ...snapshot } = result ?? {};
     validateSnapshot(snapshot, sessionId, this.expectedWorkspace(sessionId), 'session/read');
     this.sessionCatalogs.set(sessionId, snapshot.settings.model);
-    this.readGenerations.set(sessionId, boundedServingGeneration(brokerProtocolGeneration));
-    return snapshot;
+    const servingGeneration = boundedServingGeneration(brokerProtocolGeneration);
+    this.readGenerations.set(sessionId, servingGeneration);
+    return { snapshot, servingGeneration };
   }
+  /** @param {string} sessionId @param {{signal?:AbortSignal}} [options] */
+  async readSession(sessionId, options = {}) { return (await this.readSessionDetailed(sessionId, options)).snapshot; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
   /** @param {string} sessionId @param {number} [timeoutMs] */

@@ -136,13 +136,15 @@ test('the serving-generation stamp is stripped from snapshots, recorded per read
   assert.deepEqual(await client.stopSession('session-stamp-1'), {}, 'an unstamped stop response stays the bare acknowledgement');
 });
 
-test('a failed read voids the cached serving generation until a successful read re-establishes it', async () => {
-  // spec 2026-09-14 section 4.2: continuity is proven per response stamp, and
-  // the stamp must describe the read that ACTUALLY served this attempt. A
-  // rejected session/read — exactly the post-stop reread an upstream
-  // reconstruction drops — must leave NO cached generation behind: a stale
-  // pre-stop stamp surviving the failure would let a publisher mistake it for
-  // proof the failed reread used the same upstream.
+test('a failed read carries no per-read serving generation and the next successful read re-establishes it', async () => {
+  // spec 2026-09-14 section 4.2: continuity is proven PER RESPONSE —
+  // readSessionDetailed resolves the serving generation that served ITS OWN
+  // response, and a rejected session/read (exactly the post-stop reread an
+  // upstream reconstruction drops) carries no generation at all, so no
+  // publisher can mistake any cached or overlapping stamp for the failed
+  // reread's continuity proof. The shared readServingGeneration() view stays
+  // the last-completed-read observation for legacy callers — never per-read
+  // proof.
   const workspacePath = canonicalTestWorkspace(process.cwd());
   const stamp = 'a'.repeat(32);
   let failRead = false;
@@ -157,15 +159,75 @@ test('a failed read voids the cached serving generation until a successful read 
     cancelTurn: () => {},
   };
   const client = new ZCodeClient(protocol, workspacePath);
-  await client.readSession('session-stamp-failure');
-  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the successful read stamps the serving generation');
+  const first = await client.readSessionDetailed('session-stamp-failure');
+  assert.equal(first.servingGeneration, 'a'.repeat(32), 'the successful read carries its own serving generation');
+  assert.equal('brokerProtocolGeneration' in first.snapshot, false, 'the broker-only stamp never leaks into the engine snapshot');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the shared view mirrors the last completed read');
   failRead = true;
-  await assert.rejects(client.readSession('session-stamp-failure'), undefined, 'the modeled reread failure rejects');
-  assert.equal(client.readServingGeneration('session-stamp-failure'), null,
-    'the failed read leaves NO cached generation — the stale pre-stop stamp can never pose as the failed reread\'s continuity proof');
+  await assert.rejects(client.readSessionDetailed('session-stamp-failure'), undefined, 'the modeled reread failure rejects — no generation exists for it');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), null, 'the failed read leaves the shared last-completed view empty');
   failRead = false;
-  await client.readSession('session-stamp-failure');
-  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the next successful read re-establishes the generation');
+  const third = await client.readSessionDetailed('session-stamp-failure');
+  assert.equal(third.servingGeneration, 'a'.repeat(32), 'the next successful read re-establishes its own generation');
+});
+
+test('an overlapping read never lends its serving generation to a failed read', async () => {
+  // The race the per-response correlation removes: read A — a caller's own
+  // post-stop reread — hangs and then fails while read B (an overlapping read
+  // for the same session) completes with its own stamp. A's caller must never
+  // observe B's stamp: the detailed API rejects for A and carries no
+  // generation at all, and the shared readServingGeneration() view is
+  // documented as the LAST-COMPLETED read's observation — explicitly not
+  // continuity proof for the failed read.
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  let releaseA = () => {};
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const reads = [];
+  const protocol = {
+    request: async (method, params) => {
+      if (method !== 'session/read') throw new Error(`unexpected ${method}`);
+      reads.push(params.sessionId);
+      if (reads.length === 1) {
+        await gateA;
+        throw new Error('read A failed after the budget');
+      }
+      return { ...brokerCreateSnapshot(params.sessionId, workspacePath), brokerProtocolGeneration: 'b'.repeat(32) };
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const failingRead = client.readSessionDetailed('session-overlap');
+  const completedRead = await client.readSessionDetailed('session-overlap');
+  assert.equal(completedRead.servingGeneration, 'b'.repeat(32), 'read B carries its own stamp');
+  releaseA();
+  await assert.rejects(failingRead, undefined, 'read A rejects and carries NO generation — never read B\'s stamp');
+  assert.equal(client.readServingGeneration('session-overlap'), 'b'.repeat(32),
+    'the shared view shows the last COMPLETED read only');
+});
+
+test('reads thread their abort signal to the protocol request and reject with its reason', async () => {
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  const seenSignals = [];
+  const protocol = {
+    request: (method, params, timeoutMs, signal) => {
+      if (method !== 'session/read') return Promise.reject(new Error(`unexpected ${method}`));
+      seenSignals.push(signal);
+      return new Promise((_, reject) => {
+        const fallback = setTimeout(() => reject(new Error('the read never observed the abort — the signal was not forwarded')), 250);
+        fallback.unref?.();
+        signal?.addEventListener('abort', () => { clearTimeout(fallback); reject(signal.reason); }, { once: true });
+      });
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const controller = new AbortController();
+  const reason = new Error('the bounded read outlived its budget');
+  const pending = client.readSession('session-signal', { signal: controller.signal });
+  await Promise.resolve();
+  assert.equal(seenSignals.at(-1), controller.signal, 'the read forwards its abort signal to the protocol request');
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason, 'the aborted read rejects with the abort reason instead of hanging');
 });
 
 test('conversation subscribe accepts additive fields and rejects malformed consumed fields', async () => {

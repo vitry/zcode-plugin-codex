@@ -24,6 +24,29 @@ test('request accepts an already-scheduled response after its deadline timer bec
   await assert.doesNotReject(response);
 });
 
+test('an aborted request rejects promptly with the abort reason and drops its late response', async () => {
+  // The bounded pre-stop evidence read aborts its underlying request when the
+  // read outlives its budget, so the broker's EXCLUSIVE stop admission is not
+  // serialized behind the orphaned read. The abort must reject the pending
+  // request immediately with the abort reason, and the protocol must survive
+  // the late response for the abandoned id — dropping it silently instead of
+  // resolving anything or failing the connection as uncorrelated.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { try { frames.push(JSON.parse(chunk.toString('utf8'))); } catch { /* partial frame */ } });
+  const controller = new AbortController();
+  const reason = new Error('the bounded read outlived its budget');
+  const pending = protocol.request('session/read', { sessionId: 'session-abort' }, undefined, controller.signal);
+  await Promise.resolve();
+  assert.equal(frames.length, 1, 'the request frame was sent');
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason, 'the abort rejects the pending request immediately');
+  child.stdout.write(`${JSON.stringify({ id: frames.at(-1).id, result: { ok: true } })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(protocol.closed, false, 'the protocol survives a response for an aborted request');
+});
+
 test('real socket response ready at the deadline wins before request timeout', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-ready-response-'));
   const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\zcode-protocol-${randomUUID()}` : join(directory, 'broker.sock');

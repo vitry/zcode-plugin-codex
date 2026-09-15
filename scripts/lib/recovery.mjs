@@ -1066,9 +1066,13 @@ async function settleEndedRescueThroughReconciler(input, current) {
    * adapter supplies: the stop must be answered by the SAME upstream protocol
    * generation, proven by response stamps rather than client-socket
    * continuity, and held only within this one attempt so a later pass can
-   * never dress itself in an earlier pass's generation).
-   * @type {{job:any,client?:any,jobLog?:any,guard?:any,racedWinner?:any,upstream?:string|null}} */
-  const context = { job: current };
+   * never dress itself in an earlier pass's generation; and the reread's OWN
+   * per-response serving-generation stamp captured by this attempt's reread
+   * adapter, which the no-report publication attests against (a failed reread
+   * carries none — per-read correlation, never the shared last-completed
+   * view an overlapping read could repopulate).
+   * @type {{job:any,client?:any,jobLog?:any,guard?:any,racedWinner?:any,upstream?:string|null,rereadGeneration?:string|null}} */
+  const context = { job: current, rereadGeneration: null };
   // A queued reservation never reached a remote session, so there is no remote
   // stop for the exact-binding guard to fence: skip revalidation (whose 'no
   // active anchor' stale classification must not skip queued terminalization)
@@ -1110,7 +1114,8 @@ async function settleEndedRescueThroughReconciler(input, current) {
         // first-stop skip — the post-stop reread owns its terminal evidence.
         const retryStop = joined.job.status === 'cancelling' && validStopIntent(joined.job.stopIntent);
         if (retryStop) try {
-          const preStop = endedRemoteEvidence(await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
+          const preStopRead = await raceRecoveryControl(readWithServingGeneration(context.client, joined.job.zcodeSessionId), options?.signal);
+          const preStop = endedRemoteEvidence(preStopRead.snapshot, joined.job);
           if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
             return { acknowledged: true, preExistingTerminal: preStop };
           }
@@ -1121,7 +1126,10 @@ async function settleEndedRescueThroughReconciler(input, current) {
           // generation. The stop may still run, but its response can never
           // qualify for the no-report settlement.
           if (preStop.kind === 'evidence' && preStop.attributable !== true) upstreamContinuous = false;
-          const stopSiteGeneration = servingGenerationOf(context.client, joined.job.zcodeSessionId);
+          // The pre-stop read's OWN response stamp (per-read correlation —
+          // never the shared last-completed view an overlapping read could
+          // repopulate).
+          const stopSiteGeneration = preStopRead.servingGeneration;
           if (stopSiteGeneration !== null && stopSiteGeneration !== joinedUpstream) upstreamContinuous = false;
         } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
         options?.signal?.throwIfAborted();
@@ -1142,11 +1150,15 @@ async function settleEndedRescueThroughReconciler(input, current) {
       },
       rereadRemote: async (/** @type {any} */ joined, /** @type {any} */ options) => {
         options?.signal?.throwIfAborted();
-        let snapshot;
-        try { snapshot = await raceRecoveryControl(context.client.readSession(joined.job.zcodeSessionId), options?.signal); }
-        catch (error) { options?.signal?.throwIfAborted(); return { kind: 'unreadable', error }; }
+        let read;
+        try { read = await raceRecoveryControl(readWithServingGeneration(context.client, joined.job.zcodeSessionId), options?.signal); }
+        catch (error) { options?.signal?.throwIfAborted(); context.rereadGeneration = null; return { kind: 'unreadable', error }; }
         options?.signal?.throwIfAborted();
-        return endedRemoteEvidence(snapshot, joined.job);
+        // The reread's OWN response stamp (per-read correlation): the
+        // no-report publication attests the reread leg against it, and a
+        // failed reread carries none.
+        context.rereadGeneration = read.servingGeneration;
+        return endedRemoteEvidence(read.snapshot, joined.job);
       },
       publishWinner: (/** @type {any} */ joined, /** @type {any} */ specification, /** @type {any} */ options) => publishEndedWinner(input, context, joined, specification, options),
       retainUnresolved: async (/** @type {any} */ joined, /** @type {any} */ evidence) => {
@@ -1216,24 +1228,43 @@ async function loadEndedRescueJoinedState(input, context, request) {
     throwIfRecoveryInterrupted(input);
     return endedJoined(job, { kind: 'unavailable', error: unavailableOrphanError('existing-broker-missing') }, receiptEvidence);
   }
-  let snapshot;
-  try { snapshot = await context.client.readSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
-  catch (error) {
+  let snapshot; let joinedReadGeneration;
+  try {
+    ({ snapshot, servingGeneration: joinedReadGeneration } = await readWithServingGeneration(context.client, job.zcodeSessionId));
+    throwIfRecoveryInterrupted(input);
+  } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     return endedJoined(job, unavailableOrReadableEvidence(error), receiptEvidence);
   }
   const evidence = endedRemoteEvidence(snapshot, job);
   // Record the broker's serving-generation stamp that produced this joined
-  // evidence: the stop adapter may attest continuity ONLY against the same
-  // stamp on the stop response, and the no-report publication ONLY against the
-  // same stamp on the reread (spec 4.2 — the broker can reconstruct its
-  // upstream behind one unchanged client socket, so only the stamps prove the
-  // generation; a serving path that proves no generation never qualifies).
-  if (evidence.kind === 'evidence') context.upstream = servingGenerationOf(context.client, job.zcodeSessionId);
+  // evidence — the stamp THIS read's own response carried (per-read
+  // correlation): the stop adapter may attest continuity ONLY against the
+  // same stamp on the stop response, and the no-report publication ONLY
+  // against the same stamp on the reread (spec 4.2 — the broker can
+  // reconstruct its upstream behind one unchanged client socket, so only the
+  // stamps prove the generation; a serving path that proves no generation
+  // never qualifies).
+  if (evidence.kind === 'evidence') context.upstream = boundedUpstreamStamp(joinedReadGeneration);
   return endedJoined(job, evidence, receiptEvidence);
 }
 
-/** The serving protocol generation one recovery control client observed on its most recent session/read for the session (see ZCodeClient.readServingGeneration). A client that cannot prove its serving generation carries no continuity evidence, so its stop response can never qualify the no-report settlement. @param {any} client @param {string} sessionId */
+/** One per-response-correlated session/read: resolves the snapshot together
+ * with the serving generation THAT response carried — never a stamp from the
+ * client's shared last-completed view, which an overlapping read can
+ * repopulate before the caller observes it. Control clients predating
+ * per-read correlation (test fixtures with single-threaded read sequences)
+ * fall back to that view. @param {any} client @param {string} sessionId */
+async function readWithServingGeneration(client, sessionId) {
+  if (typeof client?.readSessionDetailed === 'function') {
+    const detailed = await client.readSessionDetailed(sessionId);
+    return { snapshot: detailed.snapshot, servingGeneration: boundedUpstreamStamp(detailed?.servingGeneration) };
+  }
+  const snapshot = await client.readSession(sessionId);
+  return { snapshot, servingGeneration: servingGenerationOf(client, sessionId) };
+}
+
+/** The serving protocol generation one recovery control client observed on its most recent session/read for the session (see ZCodeClient.readServingGeneration). A client that cannot prove its serving generation carries no continuity evidence, so its stop response can never qualify the no-report settlement. Legacy fallback for clients without per-read correlation. @param {any} client @param {string} sessionId */
 function servingGenerationOf(client, sessionId) {
   try {
     return boundedUpstreamStamp(typeof client?.readServingGeneration === 'function' ? client.readServingGeneration(sessionId) : null);
@@ -1432,7 +1463,7 @@ function racedResumableEvidence(winner) {
   return { acceptedSession: typeof winner.zcodeSessionId === 'string', bindingCurrent: false, permissionMatch: true };
 }
 
-/** Publish one durable settlement winner through the existing cancellation and result machinery. The no-report cancellation (spec 2026-09-14 section 4.3) is the one exception on the cancelled branch: an EXTERNAL SessionEnd/child-loss publisher without terminal evidence must prove the exact worker claim, so it settles ONLY through the dedicated guarded lease-acquiring publication — never through the lease-free recovery helper the authoritative-terminal path keeps. @param {any} input @param {{job:any,jobLog?:any,client?:any,guard?:any,upstream?:string|null}} context @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] */
+/** Publish one durable settlement winner through the existing cancellation and result machinery. The no-report cancellation (spec 2026-09-14 section 4.3) is the one exception on the cancelled branch: an EXTERNAL SessionEnd/child-loss publisher without terminal evidence must prove the exact worker claim, so it settles ONLY through the dedicated guarded lease-acquiring publication — never through the lease-free recovery helper the authoritative-terminal path keeps. @param {any} input @param {{job:any,jobLog?:any,client?:any,guard?:any,upstream?:string|null,rereadGeneration?:string|null}} context @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] */
 async function publishEndedWinner(input, context, joined, specification, options) {
   options?.signal?.throwIfAborted();
   if (specification.status === 'cancelled') {
@@ -1444,21 +1475,23 @@ async function publishEndedWinner(input, context, joined, specification, options
     if (specification.noFinalReport === true) {
       // The reread must close the same-generation loop (spec 4.2: the read,
       // the stop, AND the reread share one upstream protocol generation): the
-      // generation that served this attempt's LAST session/read must still be
-      // the one that carried the joined pre-stop evidence. A readable reread
-      // answered by a REPLACED generation — the broker reconstructed its
-      // upstream between the stop and the reread — breaks the attempt's
+      // generation that served this attempt's reread must still be the one
+      // that carried the joined pre-stop evidence, and the reread's stamp is
+      // captured PER RESPONSE by this attempt's reread adapter. A readable
+      // reread answered by a REPLACED generation — the broker reconstructed
+      // its upstream between the stop and the reread — breaks the attempt's
       // continuity chain, so the no-report publication refuses and the
-      // cancelling guard stays for the next bounded pass. Natural outcomes are
-      // unaffected: their evidence is attributable to the persisted turn
+      // cancelling guard stays for the next bounded pass. Natural outcomes
+      // are unaffected: their evidence is attributable to the persisted turn
       // boundary, not to generation continuity. A FAILED reread carries no
-      // stamp at all (the client voids its cached generation on every failed
-      // read), so null is exactly "no readable-reread proof" — never
-      // proof-of-continuity — and per spec 4.2 a continuity chain that cannot
-      // be established keeps this entry point cancelling: the decision-layer's
-      // unreadable-reread relaxation only routes the attempt here, and the
-      // refusal below is what the retained guard records.
-      const rereadGeneration = servingGenerationOf(context.client, joined.job.zcodeSessionId);
+      // stamp at all (per-read correlation — the shared last-completed view
+      // an overlapping read repopulates is never consulted), so null is
+      // exactly "no readable-reread proof" — never proof-of-continuity — and
+      // per spec 4.2 a continuity chain that cannot be established keeps this
+      // entry point cancelling: the decision-layer's unreadable-reread
+      // relaxation only routes the attempt here, and the refusal below is
+      // what the retained guard records.
+      const rereadGeneration = boundedUpstreamStamp(context.rereadGeneration);
       if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context.upstream)) {
         // The refusal keeps the cancelling guard AND records its own bounded
         // non-private continuity diagnostic (spec 6) — the same shared

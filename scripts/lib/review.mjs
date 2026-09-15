@@ -29,6 +29,10 @@ const SUBSCRIPTION_BASELINE_FENCE_MS = 100;
  * (spec 4.2): the same bound the cancellation election applies to its retry
  * pre-stop read — a stalled read must never block the exact stop. */
 const FOREGROUND_PRESTOP_READ_BUDGET_MS = 1_000;
+/** The bounded wait for an aborted pre-stop read to release the broker's
+ * exclusive stop admission after its budget abort; expiry never blocks the
+ * stop — the flow proceeds and the leftover uncertainty retains the guard. */
+const FOREGROUND_PRESTOP_READ_RELEASE_MS = 250;
 
 /**
  * The foreground executor's BOUNDED control-evidence retention for its
@@ -127,22 +131,26 @@ export async function executeJob(input) {
    * pre-stop current-turn snapshot, the stop, and the final observation
    * reread — never the bare fact that some stop response returned. */
   const foregroundControlEvidence = createForegroundControlEvidence();
-  /** One evidence-carrying session/read: the snapshot plus the broker's
-   * serving-generation stamp observed with it (null when the serving path
-   * proves none — which can never qualify continuity).
-   * @param {string} id */
-  const observeReadSession = async (id) => {
+  /** One evidence-carrying session/read: the snapshot plus the serving
+   * generation carried by THAT read's own response (per-response
+   * correlation). On failure the record carries NO generation — a failed read
+   * has none, and the client's shared last-completed view must never be
+   * consulted for it, since an overlapping read's stamp is not this read's
+   * continuity proof. `options.signal` aborts the underlying request.
+   * @param {string} id @param {{signal?:AbortSignal}} [options] */
+  const observeReadSession = async (id, options = {}) => {
     try {
-      const snapshot = await client.readSession(id);
+      if (typeof client.readSessionDetailed === 'function') {
+        const { snapshot, servingGeneration } = await client.readSessionDetailed(id, options);
+        foregroundControlEvidence.observeRead({ snapshot, generation: servingGeneration ?? null });
+        return snapshot;
+      }
+      const snapshot = await client.readSession(id, options);
       foregroundControlEvidence.observeRead({ snapshot,
         generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
       return snapshot;
     } catch (error) {
-      // The failure record keeps the serving-generation stamp observable AT
-      // failure time (null after the client voids its cache on the failed
-      // read): the no-report qualification reads it as the failed reread's
-      // only possible positive continuity attestation (spec 4.2).
-      foregroundControlEvidence.observeRead({ error, generation: typeof client.readServingGeneration === 'function' ? client.readServingGeneration(id) : null });
+      foregroundControlEvidence.observeRead({ error, generation: null });
       throw error;
     }
   };
@@ -153,18 +161,40 @@ export async function executeJob(input) {
    * prior completion wake — so the executor obtains its own pre-stop
    * current-turn snapshot, paired with its serving-generation stamp, before
    * the exact stop is issued. Skipped when evidence already exists; an
-   * unreadable or timed-out read never blocks the exact stop.
-   * @returns {Promise<void>} */
+   * unreadable or timed-out read never blocks the exact stop, and a read
+   * that outlives its budget is aborted (with a bounded admission-release
+   * wait) so the broker's exclusive stop admission is never serialized
+   * behind it. @returns {Promise<void>} */
   const boundedPreStopEvidenceRead = async () => {
     const preStopSessionId = sessionId;
     if (acceptedTurnBoundary === null || preStopSessionId === undefined) return;
     if (foregroundControlEvidence.lastRead) return;
-    try {
-      await new Promise((resolvePre) => {
-        const timer = setTimeout(() => resolvePre(undefined), FOREGROUND_PRESTOP_READ_BUDGET_MS);
-        Promise.resolve().then(() => observeReadSession(preStopSessionId)).then(() => resolvePre(undefined), () => resolvePre(undefined)).finally(() => clearTimeout(timer));
-      });
-    } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
+    // The broker admits session/read requests as SHARED and session/stop as
+    // EXCLUSIVE: a read that outlives its budget must never keep holding
+    // admission while the exact stop is issued (spec lines 81-82 — the
+    // bounded read never prevents the authorized stop attempt). When the
+    // budget expires the attempt ABORTS the underlying request and waits
+    // (bounded) for its admission release before returning; if the read
+    // cannot be cancelled within that release window the flow still proceeds
+    // — the stop is issued, and the leftover uncertainty retains the durable
+    // cancelling guard for the next bounded pass.
+    const controller = new AbortController();
+    let readSettled = false;
+    const readSettledGate = observeReadSession(preStopSessionId, { signal: controller.signal })
+      .then(() => { readSettled = true; }, () => { readSettled = true; });
+    let budgetExpired = false;
+    await new Promise((resolvePre) => {
+      const timer = setTimeout(() => { budgetExpired = true; resolvePre(undefined); }, FOREGROUND_PRESTOP_READ_BUDGET_MS);
+      timer.unref?.();
+      readSettledGate.finally(() => { if (!budgetExpired) resolvePre(undefined); clearTimeout(timer); });
+    });
+    if (budgetExpired && !readSettled) {
+      controller.abort(new PluginError('ZCODE_REQUEST_ABORTED', 'The bounded pre-stop evidence read outlived its budget.', { category: 'timeout', remedy: 'Retry the operation.' }));
+      await Promise.race([
+        readSettledGate,
+        new Promise((resolve) => { const timer = setTimeout(resolve, FOREGROUND_PRESTOP_READ_RELEASE_MS); timer.unref?.(); }),
+      ]);
+    }
   };
   /** @type {any} */ let jobLog;
   let jobLogCleaned = false;
