@@ -351,20 +351,25 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
   if (!stop?.acknowledged) {
     // A failed stop never terminalizes on its own: worker exit, broker
     // unreachability, session inactivity, or a clean local sweep are not
-    // substitutes for the acknowledgement (spec 4.2). But the explicit
-    // cancellation procedure's own passes — an explicit stop request or the
-    // replay of a persisted cancelling intent, over an execution shape whose
-    // applicable cleanup this reconciler can verify — perform ONE bounded
-    // reread: a terminal interrupted snapshot independently confirmed for the
+    // substitutes for the acknowledgement (spec 4.2). But THIS pass holds
+    // STOP AUTHORITY for the exact job — an explicit stop request, the replay
+    // of a persisted cancelling intent, a matching SessionEnd receipt, or
+    // Host coordination loss — which is precisely what brought it through
+    // stopExactTurn; the authority, never the request intent kind, gates the
+    // failed-stop probe: over an execution shape whose applicable cleanup
+    // this reconciler can verify, the pass performs ONE bounded reread in
+    // which a terminal interrupted snapshot independently confirmed for the
     // current turn is the only evidence that may substitute for the
     // acknowledgement, and it settles through the same post-stop election as
-    // an acknowledged stop's interruption evidence. A natural engine failure
-    // observed by that reread never substitutes (see the race-winner guard
-    // below); coherent natural success keeps its own precedence there.
-    // Derived-authority observation passes keep today's retained guard; their
-    // next pass then observes the terminal interruption directly on its
-    // initial joined read.
-    if (attempt?.explicitCancellation === true && typeof adapters.terminateMarkedRunner === 'function') {
+    // an acknowledged stop's interruption evidence (SessionEnd and child-loss
+    // use the same rules). A natural engine failure observed by that reread
+    // never substitutes (see the race-winner guard below); coherent natural
+    // success keeps its own precedence there. Passes without the applicable
+    // cleanup seam perform no probe reread; derived-authority observation
+    // passes without stop authority never reach the stop seam at all (their
+    // observation path keeps today's retained guard), and their next pass
+    // observes the terminal interruption directly on its initial joined read.
+    if (typeof adapters.terminateMarkedRunner === 'function') {
       const failureReread = await adapters.rereadRemote(stopping, { signal, guard: revalidated?.guard });
       return stopAttemptedOutcome(settleRemoteEvidence(adapters, { ...stopping, remote: failureReread }, stopCauseOf(stopping, cause), signal,
         revalidated?.guard ?? null, runnerCleanup, evidence, attempt));

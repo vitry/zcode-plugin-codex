@@ -2818,6 +2818,46 @@ test('a crash after the qualified acknowledgement leaves no replayable receipt: 
   await cleanupRecoveryFixture(fixture);
 });
 
+test('a receipt-authorized child-loss pass probes its failed stop and settles the confirmed interruption', async () => {
+  // Child-loss reconciliation authorized by a matching SessionEnd receipt
+  // supplies an OBSERVE intent, but the pass holds STOP AUTHORITY for the
+  // exact job and its stopExactTurn runs. Spec 4.2 (design lines 104-111):
+  // independently confirmed current-turn interruption substitutes for the
+  // failed stop acknowledgement, and SessionEnd and child-loss use the same
+  // rules — so the failed-stop probe is gated on that authority, never on the
+  // request intent kind. With the interruption confirmed on the probe reread
+  // and the cleanup verified, the job settles cancelled in THIS pass instead
+  // of waiting cancelling until another pass.
+  const fixture = await context();
+  const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'receipt-probe-child' });
+  let client;
+  const { settleRescueChildOwnedJob, endedObligationSettled } = await import('../scripts/lib/recovery.mjs');
+  const settlement = await settleRescueChildOwnedJob({
+    store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: job.ownerSessionId,
+    epoch: null, receiptMatched: true,
+    createClient: async (current) => (client = stampedSessionEndClient(current, {
+      stopError: new Error('the stop channel failed'),
+      reads: [
+        () => activeCurrentTurn(current.inputId),
+        () => activeCurrentTurn(current.inputId),
+        () => coherentCurrentTurn(current.inputId, 'interrupted on its own', 'cancelled'),
+      ],
+    })),
+  }, job.id);
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(settlement.kind, 'confirmed-cancellation',
+    'the independently confirmed interruption settles despite the failed stop');
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end', 'the receipt-authorized cause labels the winner');
+  assert.equal(client.stopCount(), 1, 'the authorized exact stop still ran');
+  assert.equal(client.readCount(), 3, 'the joined read, the pre-stop read, and the one bounded probe reread');
+  assert.equal(endedObligationSettled(settlement), true);
+  // The settled winner releases the writable guard: a new reservation is admitted.
+  await store.reserveJob({ workspace, ownerSessionId: 'next-owner', ownerTurnId: 'after-receipt-probe', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await cleanupRecoveryFixture(fixture);
+});
+
 test('the next pass may reobserve the active turn and re-stop to settle the no-report cancellation', async () => {
   const fixture = await context();
   const { store, workspace, job } = await markedRunnerRescue(fixture, { status: 'running', agent: 'reobserve-after-crash' });

@@ -642,12 +642,19 @@ test('the unavailable remote-control exit terminates the marked runner before th
   assert.deepEqual(events, ['persist-stop-intent', 'terminate-marked-runner', 'settle-unavailable']);
 });
 
-test('an unacknowledged stop still terminates the marked runner and retains the guard', async () => {
+test('an unacknowledged stop still terminates the marked runner and settles the confirmed interruption', async () => {
+  // A receipt-authorized pass (observe intent) holds stop authority: its
+  // failed stop performs the ONE bounded probe reread, and the default remote
+  // shape here is the independently confirmed current-turn interruption — the
+  // only evidence that substitutes for the acknowledgement (spec 4.2;
+  // SessionEnd and child-loss use the same rules). The marked runner still
+  // terminates before the cancelled publication, exactly as before.
   const events = [];
   const fixture = fixtureAdapters({ events, terminateRunner: 'record', host: 'absent', placement: 'background', receipt: 'matching', stopAcknowledged: false });
   const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
-  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' });
-  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'terminate-marked-runner', 'retain-unresolved']);
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'session-end', resumable: true });
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+  assert.equal(fixture.stopCalls, 1);
 });
 
 test('the terminal early return keeps the marked-runner cleanup duty under stop authority', async () => {
@@ -831,6 +838,43 @@ test('independently confirmed current-turn interruption settles cancelled despit
   assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
   assert.ok(events.indexOf('terminate-marked-runner') < events.indexOf('publish-cancelled'),
     'the required cleanup still precedes the cancelled publication');
+});
+
+test('a receipt-authorized observation pass probes its failed stop and settles the confirmed interruption', async () => {
+  // SessionEnd receipt-authorized child-loss reconciliation supplies an
+  // OBSERVE intent, yet holds STOP AUTHORITY for this exact job — the matching
+  // receipt — and its stopExactTurn runs. Spec 4.2 (design lines 104-111):
+  // independent interruption evidence substitutes for the failed stop
+  // acknowledgement, and SessionEnd and child-loss use the same rules, so the
+  // failed-stop probe is gated on that authority — never on the request intent
+  // kind. With the interruption confirmed on the probe reread and the cleanup
+  // verified, the job settles cancelled in THIS pass.
+  const events = [];
+  const fixture = fixtureAdapters({ events, receipt: 'matching', stopAcknowledged: false,
+    stopFailureReread: 'interrupted', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'session-end', resumable: true },
+    'the independently confirmed interruption settles despite the failed stop');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.filter((event) => event === 'reread-remote').length, 1, 'one bounded probe reread');
+  assert.deepEqual(events, ['persist-stop-intent', 'revalidate-generation', 'stop-exact-turn', 'reread-remote', 'terminate-marked-runner', 'publish-cancelled']);
+  assert.ok(events.indexOf('terminate-marked-runner') < events.indexOf('publish-cancelled'),
+    'the required cleanup still precedes the cancelled publication');
+});
+
+test('a receipt-authorized observation pass with a failed stop and no independent interruption retains', async () => {
+  // The counterpart: stop authority alone never manufactures a settlement.
+  // With no independently confirmed interruption on the probe reread, the
+  // failed stop keeps the retained cancelling guard exactly as before.
+  const events = [];
+  const fixture = fixtureAdapters({ events, receipt: 'matching', stopAcknowledged: false,
+    remote: 'idle-empty', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
+    'without independent interruption evidence the failed stop keeps the retained guard');
+  assert.equal(fixture.stopCalls, 1);
+  assert.equal(events.some((event) => event.startsWith('publish-')), false);
+  assert.ok(events.includes('terminate-marked-runner') && events.includes('retain-unresolved'));
 });
 
 test('a natural engine failure observed after a failed stop is never claimed as the stop-caused race winner', async () => {
