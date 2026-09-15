@@ -5096,9 +5096,21 @@ test('terminateMarkedRunnerTree serializes a concurrent broker startup past the 
   // the moment the lookup provably holds that lock, so whichever side wins the
   // lock after the lookup's own acquisition decides whether a newly published
   // broker pid could ever be missing from the kill's exclusion snapshot.
+  // The poll MUST terminate: when the duty's whole broker-lock hold completes
+  // inside one 2ms poll interval (observed on Node 22.13 and fast warm-cache
+  // machines), no probe ever observes the held lock and an unbounded loop
+  // would spin its REFERENCED 2ms timer forever — keeping the node:test
+  // runner alive past the test's own timeout (a 1.5h CI hang). On deadline
+  // expiry the poller simply proceeds to publish: the duty has settled by
+  // then, so the publish trivially lands after the kill seam and the
+  // assertions below decide — every assertion is unchanged, and whenever the
+  // race actually engages, the withFileLock acquisition still queues behind
+  // the held lock exactly as before.
+  const pollDeadline = Date.now() + 10_000;
   const racingStartup = (async () => {
     for (;;) {
       if (await brokerLockHeld()) break;
+      if (Date.now() >= pollDeadline) break;
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
     await withFileLock(brokerLockPath, async () => {
@@ -5107,6 +5119,10 @@ test('terminateMarkedRunnerTree serializes a concurrent broker startup past the 
       startupPublishedPid = published.pid;
     }, { timeoutMs: 10_000 });
   })();
+  // A rejection after the test's own timeout must not surface as an unhandled
+  // rejection while the runner is exiting; the awaited consumer below still
+  // observes it inside the try.
+  racingStartup.catch(() => {});
   try {
     /** @type {Array<{pid:number,options:any}>} */
     const observed = [];
