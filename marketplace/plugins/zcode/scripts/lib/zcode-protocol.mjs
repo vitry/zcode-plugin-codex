@@ -26,7 +26,7 @@ export class ZCodeProtocolClient {
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
     this.completionTimeoutMs = options.completionTimeoutMs === undefined ? undefined : boundedInteger(options.completionTimeoutMs, options.completionTimeoutMs, 1, 86_400_000);
     this.maxFrameBytes = boundedInteger(options.maxFrameBytes, DEFAULT_MAX_FRAME_BYTES, 128, 16 * 1024 * 1024);
-    /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string}>} */
+    /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string,aborted?:boolean}>} */
     this.pending = new Map();
     /** @type {Map<string, any[]>} */ this.completed = new Map();
     /** @type {Map<string,NodeJS.Timeout>} */ this.completionExpiry = new Map();
@@ -63,10 +63,11 @@ export class ZCodeProtocolClient {
     child.once('exit', (code, signal) => this.fail(new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.', details: { code, signal } })));
   }
 
-  /** @param {string} method @param {Record<string,unknown>} params @param {number} [timeoutMs] */
-  request(method, params, timeoutMs) {
+  /** @param {string} method @param {Record<string,unknown>} params @param {number} [timeoutMs] @param {AbortSignal} [signal] */
+  request(method, params, timeoutMs, signal) {
     if (this.closed) return Promise.reject(disconnected());
-    if (!nonEmpty(method) || !plainObject(params) || timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.requestTimeoutMs)) return Promise.reject(protocolInputError());
+    if (!nonEmpty(method) || !plainObject(params) || timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.requestTimeoutMs)
+      || signal !== undefined && (typeof signal !== 'object' || typeof signal.addEventListener !== 'function' || typeof signal.aborted !== 'boolean')) return Promise.reject(protocolInputError());
     if (this.pending.size >= 1024) return Promise.reject(new PluginError('ZCODE_PENDING_OVERFLOW', 'Too many pending ZCode requests.', { category: 'protocol', remedy: 'Wait for pending requests to finish.' })); const id = this.nextId++;
     const effectiveTimeoutMs = timeoutMs ?? this.requestTimeoutMs;
     return new Promise((resolve, reject) => {
@@ -78,9 +79,23 @@ export class ZCodeProtocolClient {
         });
       }, effectiveTimeoutMs);
       timer.unref?.();
-      const pending = { resolve, reject, timer, method };
+      const onAbort = () => {
+        if (this.pending.get(id) !== pending) return;
+        // Keep the marked entry installed: a late response for the abandoned
+        // id must be dropped SILENTLY instead of failing the connection as
+        // uncorrelated. The original deadline timer still reaps the entry, so
+        // the marker never outlives the request budget.
+        pending.aborted = true;
+        reject(signal?.reason instanceof Error ? signal.reason
+          : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
+      };
+      const pending = { resolve, reject, timer, method, aborted: false };
       this.pending.set(id, pending);
-      try { this.sendFrame({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
+      if (signal !== undefined) {
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      try { this.sendFrame({ id, method, params }); } catch (error) { this.pending.delete(id); clearTimeout(timer); reject(error); }
     });
   }
 
@@ -264,6 +279,10 @@ export class ZCodeProtocolClient {
     const pending = this.pending.get(message.id);
     if (!pending) { this.fail(new PluginError('ZCODE_RESPONSE_UNCORRELATED', 'ZCode sent an uncorrelated response.', { category: 'protocol', remedy: 'Restart ZCode and retry.', details: { id: message.id } })); return; }
     this.pending.delete(message.id); clearTimeout(pending.timer);
+    // A response for an ABORTED request is dropped silently: the caller's
+    // promise already rejected through the abort, and the broker's late
+    // answer must neither resolve anything nor fail the connection.
+    if (pending.aborted === true) return;
     if ('error' in message) {
       if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const provesRejection = !this.acceptBrokerControl || message.error.data?.requestProvenance === CORRELATED_RESPONSE_PROVENANCE;
