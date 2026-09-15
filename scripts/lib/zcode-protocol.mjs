@@ -19,6 +19,16 @@ export function isCorrelatedZCodeResponseError(error) {
 /** @template {Error} T @param {T} error @returns {T} */
 function markCorrelatedResponseError(error) { correlatedResponseErrors.add(error); return error; }
 
+/** The bounded hex shape of a broker serving-generation stamp an ERROR frame
+ * may carry (`error.data.protocolGeneration`): only a peer that stamped the
+ * error response with the protocol generation that produced it includes the
+ * field, and only this bounded shape is continuity evidence. Anything else —
+ * including every unstamped and transport-level failure — is null.
+ * @param {unknown} value */
+function brokerErrorGeneration(value) {
+  return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
+}
+
 export class ZCodeProtocolClient {
   /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number, acceptBrokerControl?:boolean }} [options] */
   constructor(child, options = {}) {
@@ -26,7 +36,7 @@ export class ZCodeProtocolClient {
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
     this.completionTimeoutMs = options.completionTimeoutMs === undefined ? undefined : boundedInteger(options.completionTimeoutMs, options.completionTimeoutMs, 1, 86_400_000);
     this.maxFrameBytes = boundedInteger(options.maxFrameBytes, DEFAULT_MAX_FRAME_BYTES, 128, 16 * 1024 * 1024);
-    /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string}>} */
+    /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string,aborted?:boolean}>} */
     this.pending = new Map();
     /** @type {Map<string, any[]>} */ this.completed = new Map();
     /** @type {Map<string,NodeJS.Timeout>} */ this.completionExpiry = new Map();
@@ -50,6 +60,12 @@ export class ZCodeProtocolClient {
     this.consumeTerminal = false;
     this.terminalObserver = null;
     this.acceptBrokerControl = options.acceptBrokerControl === true;
+    // Whether an aborted in-flight request should NOTIFY the peer (a broker
+    // that advertised the cancel capability at authentication) so it can
+    // release the request's session admission immediately. Never enabled for
+    // direct engine connections: a peer that never advertised the capability
+    // must not receive the notification frame.
+    this.requestCancellation = false;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
     this.drainTimeoutMs = boundedInteger(options.drainTimeoutMs, DEFAULT_DRAIN_TIMEOUT_MS, 1, MAX_DRAIN_TIMEOUT_MS);
@@ -63,26 +79,91 @@ export class ZCodeProtocolClient {
     child.once('exit', (code, signal) => this.fail(new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.', details: { code, signal } })));
   }
 
-  /** @param {string} method @param {Record<string,unknown>} params @param {number} [timeoutMs] */
-  request(method, params, timeoutMs) {
+  /** @param {string} method @param {Record<string,unknown>} params @param {number} [timeoutMs] @param {AbortSignal} [signal] */
+  request(method, params, timeoutMs, signal) {
     if (this.closed) return Promise.reject(disconnected());
-    if (!nonEmpty(method) || !plainObject(params) || timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.requestTimeoutMs)) return Promise.reject(protocolInputError());
+    if (!nonEmpty(method) || !plainObject(params) || timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.requestTimeoutMs)
+      || signal !== undefined && (typeof signal !== 'object' || typeof signal.addEventListener !== 'function' || typeof signal.aborted !== 'boolean')) return Promise.reject(protocolInputError());
     if (this.pending.size >= 1024) return Promise.reject(new PluginError('ZCODE_PENDING_OVERFLOW', 'Too many pending ZCode requests.', { category: 'protocol', remedy: 'Wait for pending requests to finish.' })); const id = this.nextId++;
     const effectiveTimeoutMs = timeoutMs ?? this.requestTimeoutMs;
+    const startedAt = Date.now();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         setImmediate(() => {
           if (this.pending.get(id) !== pending) return;
           this.pending.delete(id);
-          reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
+          pending.reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
         });
       }, effectiveTimeoutMs);
       timer.unref?.();
-      const pending = { resolve, reject, timer, method };
+      const onAbort = () => {
+        if (this.pending.get(id) !== pending) return;
+        // Keep the marked entry installed: a late response for the abandoned
+        // id must be dropped SILENTLY instead of failing the connection as
+        // uncorrelated. The original deadline timer still reaps the entry, so
+        // the marker never outlives the request budget.
+        pending.aborted = true;
+        // PROPAGATE the cancellation to a peer that advertised it (spec
+        // 2026-09-14 lines 81-82): the broker keeps the request's shared
+        // session admission until the upstream read settles, which would fence
+        // the following exclusive stop as a conflicting operation. One
+        // best-effort notification releases that admission immediately; a peer
+        // that never advertised the capability is never sent the frame, and a
+        // failed send leaves today's bounded-release-wait fallback intact.
+        if (this.requestCancellation) { try { this.sendFrame({ method: 'broker/cancelRequest', params: { requestId: id } }); } catch { /* best effort: the bounded release wait remains the fallback */ } }
+        pending.reject(signal?.reason instanceof Error ? signal.reason
+          : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
+        // RE-ARM the reap for the retained entry: the settlement cleanup above
+        // just cleared the ORIGINAL deadline timer, and against a peer that
+        // never answers nothing else deletes the marker — repeated bounded-
+        // read aborts would accumulate until the pending limit rejects every
+        // later request. The re-armed timer fires at (or immediately after)
+        // the request's own remaining budget and silently removes the entry
+        // with no second settlement: a late response before it is still
+        // dropped by the marker path, and every later path observes an empty
+        // slot exactly like a timed-out request.
+        const reap = setTimeout(() => { if (this.pending.get(id) === pending) this.pending.delete(id); }, Math.max(0, effectiveTimeoutMs - (Date.now() - startedAt)));
+        // Kept REFERENCED for its bounded lifetime: an aborted-but-retained
+        // entry whose silent peer never answers may leave this timer as the
+        // only event-loop work in the caller's abort path — an unref'd timer
+        // would let the loop drain mid-await and strand the caller's
+        // settlement (observed on Node 22.13 as `Promise resolution is still
+        // pending but the event loop has already resolved`). The hold is
+        // bounded by the request's own remaining budget, and every settlement
+        // path (late response, close, fail) clears it through pending.timer.
+        pending.timer = reap;
+      };
+      // EVERY settlement path (success, failure, timeout, abort) detaches the
+      // abort listener: callers hold long-lived signals (e.g. repeated
+      // status-wait reads), and listeners that survive settlement would
+      // accumulate closures until the listener warnings start.
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+      const pending = {
+        aborted: false, method, timer,
+        resolve: (/** @type {any} */ value) => { cleanup(); resolve(value); },
+        reject: (/** @type {Error} */ error) => { cleanup(); reject(error); },
+      };
       this.pending.set(id, pending);
-      try { this.sendFrame({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
+      // An ALREADY-aborted signal never sends: reject fast with its reason and
+      // leave nothing in pending — there is no in-flight operation whose late
+      // response would need the silent-drop marker.
+      if (signal?.aborted) {
+        this.pending.delete(id);
+        cleanup();
+        pending.reject(signal.reason instanceof Error ? signal.reason
+          : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try { this.sendFrame({ id, method, params }); } catch (error) { this.pending.delete(id); pending.reject(error instanceof Error ? error : new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode request could not be sent.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); }
     });
   }
+
+  /** Enable best-effort abort notifications for a peer that advertised the
+   * broker cancel capability (see connectZCodeBroker). Once enabled, every
+   * in-flight abort additionally sends one `broker/cancelRequest` notification
+   * frame naming the abandoned request id. */
+  enableRequestCancellation() { this.requestCancellation = true; }
 
   /** @param {((params:any,signal:AbortSignal)=>Promise<any>|any)|null} handler */
   setPermissionHandler(handler) {
@@ -264,18 +345,32 @@ export class ZCodeProtocolClient {
     const pending = this.pending.get(message.id);
     if (!pending) { this.fail(new PluginError('ZCODE_RESPONSE_UNCORRELATED', 'ZCode sent an uncorrelated response.', { category: 'protocol', remedy: 'Restart ZCode and retry.', details: { id: message.id } })); return; }
     this.pending.delete(message.id); clearTimeout(pending.timer);
+    // A response for an ABORTED request is dropped silently: the caller's
+    // promise already rejected through the abort, and the broker's late
+    // answer must neither resolve anything nor fail the connection.
+    if (pending.aborted === true) return;
     if ('error' in message) {
       if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const provesRejection = !this.acceptBrokerControl || message.error.data?.requestProvenance === CORRELATED_RESPONSE_PROVENANCE;
+      // Serving-generation provenance on a CORRELATED ERROR frame (spec 4.4
+      // line 73 through 4.2 continuity): a broker may stamp the error response
+      // with the protocol generation that PRODUCED the error, and only the
+      // bounded hex shape is proof. The stamp rides inside the existing error
+      // payload as `details.brokerProtocolGeneration` — internal continuity
+      // evidence only, never public output; peers that do not include it keep
+      // today's unstamped (null) failure semantics.
+      const errorGeneration = brokerErrorGeneration(message.error.data?.protocolGeneration);
       const remote = message.error.data?.pluginError;
       if (plainObject(remote) && nonEmpty(remote.code) && nonEmpty(remote.category) && nonEmpty(remote.remedy)) {
-        const error = new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} });
+        const remoteDetails = plainObject(remote.details) ? remote.details : {};
+        const error = new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: errorGeneration === null ? remoteDetails : { ...remoteDetails, brokerProtocolGeneration: errorGeneration } });
         pending.reject(provesRejection ? markCorrelatedResponseError(error) : error);
         return;
       }
-      /** @type {{method:string,rpcCode:unknown,remoteCode?:string}} */
+      /** @type {{method:string,rpcCode:unknown,remoteCode?:string,brokerProtocolGeneration?:string}} */
       const details = { method: pending.method, rpcCode: message.error.code };
       if (isSafeRemoteCode(message.error.data?.code)) details.remoteCode = message.error.data.code;
+      if (errorGeneration !== null) details.brokerProtocolGeneration = errorGeneration;
       const error = new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details });
       pending.reject(provesRejection ? markCorrelatedResponseError(error) : error);
     } else pending.resolve(message.result);
@@ -432,6 +527,12 @@ export async function connectZCodeBroker(endpoint, options) {
     const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) }, requiredRequestTime(deadline, 'broker/auth', requestTimeoutMs));
     if (!plainObject(authenticated) || authenticated.authenticated !== true
       || options.existingProtocolOnly === true && authenticated.existingProtocolOnly !== true) throw brokerCapabilityUnavailable();
+    // Additive wire negotiation: a broker that understands request
+    // cancellation advertises it beside `authenticated`, and only then do
+    // aborted in-flight requests notify it. An older broker answers without
+    // the field and never receives the notification frame — its bounded
+    // release-wait behavior remains the fallback.
+    if (authenticated.requestCancellation === true) protocol.enableRequestCancellation();
     return protocol;
   } catch (error) {
     socket.destroy();

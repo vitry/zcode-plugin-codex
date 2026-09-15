@@ -1433,6 +1433,14 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     if (nextStatus !== 'queued') delete updated.rescueJobSpecCommitment;
     if (nextStatus !== 'queued') delete updated.rescueLegacyJobSpecProof;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
+    // A settled cancellation clears any obsolete stop-retry diagnostic
+    // (spec 2026-09-14 section 6): the terminal winner explains itself through
+    // its stop cause and completion-time fields, never through a stale
+    // stop-failure message from an earlier bounded pass. The schema still
+    // admits legacy cancelled records that carry one; only new cancelled
+    // publications clear it, and the retained cancelling/running retry
+    // surfaces are untouched.
+    if (nextStatus === 'cancelled') delete updated.lastCancelError;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
     if (job.status === 'queued' && migrationRollback && TERMINAL_STATUSES.has(nextStatus)
       && queuedClassification?.bindingState !== 'revoked') {
