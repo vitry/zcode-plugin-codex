@@ -1191,7 +1191,12 @@ test('SessionEnd settles a qualified acknowledged stop without a final report be
   assert.equal(released.status, 'queued');
 });
 
-test('a qualified SessionEnd stop acknowledgement never settles an unmarked record without a final report', async () => {
+test('a qualified SessionEnd stop acknowledgement retains an unmarked record whose reread still shows active execution', async () => {
+  // The unmarked record settles without a report ONLY through the guarded
+  // publisher's lease-proven cleanup (a FREE exact lease after its foreground
+  // executor exited, spec 4.3) — this first-stop shape's one bounded reread
+  // still shows the current turn EXECUTING, so contrary evidence retains the
+  // guard regardless of the acknowledgement.
   const input = await fixture(); const value = await job(input);
   let client;
   const settlement = await settleOutcome(input, async (current) => (client = stampedClient(current)));

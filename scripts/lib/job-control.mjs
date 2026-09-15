@@ -1571,9 +1571,11 @@ export async function publishGuardedNoReportCancellation(input, job, stopCause) 
   const workerLeaseId = current.workerLeaseId;
   // No digest lease means no provable exact worker claim for an external
   // publisher: the no-report settlement never publishes over an unprovable
-  // claim (an unmarked record cannot reach this path — its cleanup evidence is
-  // never the required completed-clean sweep — but the publication stays
-  // fail-closed regardless).
+  // claim. An UNMARKED external foreground record DOES reach this helper after
+  // its executor exited (spec 4.3 recovery-after-worker-gone): the acquisition
+  // below is then the applicable cleanup proof itself — FREE proves the worker
+  // gone, HELD proves a live claim and retains — so the claim must stay
+  // provable regardless of how the pass arrived here.
   if (!isDigestValue(workerLeaseId)) return current;
   const publish = async () => {
     const latest = await input.store.readJob(input.workspace, job.id);

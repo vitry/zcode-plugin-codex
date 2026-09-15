@@ -3683,25 +3683,75 @@ test('a binding closed after the pre-lease revalidation is refused inside the gu
   }
 });
 
-test('an unmarked foreground record never settles the no-report path and is never a termination target', async () => {
+test('an exited unmarked foreground executor settles the no-report path through the guarded lease acquisition and is never a termination target', async () => {
+  // Spec 4.3 recovery-after-worker-gone: the attached foreground executor
+  // exited BEFORE its owner-held publication completed — nobody holds its
+  // exact worker lease, so this later pass observes it FREE — and this
+  // persisted-cancelling status-retry pass (the durable stop intent already
+  // exists; the pass replays it) obtains a NEW qualified exact-runtime
+  // acknowledgement with no final report. The unmarked record names no
+  // signalable process, so the cleanup duty reports `unmarked` and the
+  // guarded publisher's own zero-timeout exact-lease acquisition is the
+  // applicable cleanup proof: FREE proves the worker gone (acquisition +
+  // in-hold identity/binding revalidation + CAS settles cancelled), and the
+  // record itself is never a process-tree termination target.
   const fixture = await noReportSettlementFixture({ unmarked: true });
   const control = noReportControlClient();
   /** @type {{pid:number}[]} */ const terminated = [];
   const reconcile = managementReconcileFor(fixture, control, {
     // The direct spy at the reconciler's own termination seam: an unmarked
-    // attached foreground record names NO signalable process, so the guarded
-    // duty must reach the kill decision without ever dispatching one.
+    // attached foreground record names NO signalable process, so neither the
+    // cleanup duty nor the lease-proven settlement may ever dispatch one.
     terminateProcessTree: async (/** @type {number} */ pid) => { terminated.push({ pid }); },
   });
   try {
     const outcome = await reconcile.reconcileStop();
+    assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true },
+      `the free exact lease proves the exited foreground worker gone, so the qualified acknowledgement settles without a report: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'exactly one exact stop through the managed control path');
+    assert.deepEqual(terminated, [], 'the unmarked foreground executor is never a process-tree termination target');
+    const winner = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(winner.status, 'cancelled');
+    assert.ok(winner.finishedAt, 'the lease-proven cancelled winner carries a completion time');
+    assert.equal(winner.resultArtifact, undefined, 'no success artifact is fabricated for a no-report cancellation');
+    // Guard release is durable: a new writable reservation is admitted again.
+    await fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'after-unmarked-lease-proven-release' });
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test('a live unmarked foreground claim retains the no-report cancellation behind its held exact lease', async () => {
+  // The counterpart proof: the attached foreground executor still HOLDS its
+  // exact worker lease (a live claim), so the guarded publisher's zero-timeout
+  // acquisition fails closed with LOCK_TIMEOUT — the cleanup proof the free
+  // lease provided is absent, the publication is refused, and the cancelling
+  // guard stays for the next bounded pass. The unmarked record is still never
+  // a process-tree termination target.
+  const fixture = await noReportSettlementFixture({ unmarked: true });
+  const control = noReportControlClient();
+  /** @type {{pid:number}[]} */ const terminated = [];
+  const reconcile = managementReconcileFor(fixture, control, {
+    terminateProcessTree: async (/** @type {number} */ pid) => { terminated.push({ pid }); },
+  });
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    jobId: fixture.reserved.job.id, workerLeaseId: fixture.workerLeaseId, timeoutMs: 0 },
+  () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    const outcome = await reconcile.reconcileStop();
     assert.deepEqual(outcome, { kind: 'unresolved-stop', status: 'cancelling' },
-      `unmarked is not foreground-exit evidence: external management cannot supply the attached executor's own finalization: ${JSON.stringify(outcome)}`);
-    assert.equal(control.stops(), 1);
+      `a HELD exact lease proves a live claim the external publisher may not publish over: ${JSON.stringify(outcome)}`);
+    assert.equal(control.stops(), 1, 'the qualified stop still ran; only the publication was refused');
     assert.deepEqual(terminated, [], 'the unmarked foreground executor is never a process-tree termination target');
     assert.equal((await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id)).status, 'cancelling');
-    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-unmarked' }), { code: 'WRITABLE_JOB_EXISTS' });
+    await assert.rejects(fixture.store.reserveJob({ workspace: fixture.workspace, ...reservation, ownerTurnId: 'blocked-unmarked-held-lease' }), { code: 'WRITABLE_JOB_EXISTS' });
   } finally {
+    releaseHolder();
+    await holder;
     await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
   }
 });
