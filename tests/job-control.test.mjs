@@ -5051,7 +5051,7 @@ test('terminateMarkedRunnerTree keeps the broker startup lock held across the ki
 });
 
 test('terminateMarkedRunnerTree serializes a concurrent broker startup past the kill dispatch so no identity can publish between lookup and kill', { timeout: 20_000 }, async () => {
-  const { writeBrokerIdentity } = await import('../scripts/zcode-broker.mjs');
+  const { writeBrokerIdentity, inspectBrokerIdentity } = await import('../scripts/zcode-broker.mjs');
   const root = await mkdtemp(join(tmpdir(), 'zcode-runner-lookup-kill-race-'));
   const dataRoot = join(root, 'data');
   await mkdir(join(root, 'workspace'));
@@ -5082,38 +5082,49 @@ test('terminateMarkedRunnerTree serializes a concurrent broker startup past the 
       throw error;
     }
   };
-  // Ordering ledger: the kill seam and the racing startup's identity publication
-  // must observe the broker lock in exactly this order — kill dispatch FIRST,
-  // startup engagement strictly after it, publication strictly after that.
-  // Everything starts past every recorded event, so an event that never ran
-  // leaves Infinity and fails the ordering.
+  // Ordering ledger: the racing startup must ENGAGE (its lock-acquisition
+  // attempt begin) during the lookup-to-kill GAP — while the duty still holds
+  // the broker startup lock — and publish strictly after the kill. Everything
+  // starts past every recorded event, so an event that never ran leaves
+  // Infinity and fails the ordering.
   let order = 0;
   let killSeamOrder = Number.POSITIVE_INFINITY;
   let startupEngagedOrder = Number.POSITIVE_INFINITY;
   let startupPublishedOrder = Number.POSITIVE_INFINITY;
   let startupPublishedPid = null;
   let lockHeldAtKillSeam = null;
-  // The racing broker startup (the ensureZCodeBroker critical section): it can
-  // publish its identity ONLY while HOLDING the broker startup lock. Engagement
-  // is DETERMINISTIC — the kill seam resolves the latch below while the duty
-  // still holds the lock (proven by lockHeldAtKillSeam), and the startup makes
-  // its withFileLock acquisition attempt immediately upon that latch, so the
-  // attempt always begins while the lock is held and deterministically queues
-  // behind it. No polling and no deadline: a probe loop could miss the short
-  // hold entirely (its REFERENCED 2ms timer then spun the node:test runner
-  // forever past the test's own timeout — a 1.5h CI hang), and a deadline
-  // fall-through let the startup publish uncontended, making the ordering
-  // assertions vacuous. The kill seam fires by this test's premise, so the
-  // latch always resolves; the 20s test timeout remains the backstop.
-  let killSeamDispatched = () => {};
-  const killSeamDispatchedLatch = new Promise((resolveLatch) => { killSeamDispatched = () => resolveLatch(undefined); });
+  // Engagement is DETERMINISTIC at the duty's LOOKUP seam: the identity scan
+  // (inspectIdentityFn, forwarded through terminateMarkedRunnerTree to the
+  // recordedWorkspaceBrokerPids test seam) runs INSIDE the held broker startup
+  // lock. The scan resolves lookupSeamFired and then waits for this startup's
+  // startupEnteredLock confirmation — fired immediately before the
+  // withFileLock call — so the acquisition attempt ALWAYS begins during the
+  // lookup-to-kill gap, while the lock is still held, and deterministically
+  // queues behind it. A production regression that released the lock during
+  // that gap would let this queued startup acquire and publish BEFORE the
+  // kill and fail the ordering assertion below. (Earlier attempts: a probe
+  // loop could miss the short hold and spin its REFERENCED 2ms timer forever
+  // — a 1.5h CI hang — and a deadline fall-through let the startup publish
+  // uncontended, making the ordering assertions vacuous. The 20s test timeout
+  // remains the backstop.)
+  let lookupSeamFired = () => {};
+  const lookupSeamFiredLatch = new Promise((resolveLatch) => { lookupSeamFired = () => resolveLatch(undefined); });
+  let startupEnteredLock = () => {};
+  const startupEnteredLockLatch = new Promise((resolveLatch) => { startupEnteredLock = () => resolveLatch(undefined); });
+  let lookupSeamUsed = false;
+  const inspectIdentityFn = async (/** @type {string} */ identityPath, /** @type {any} */ inspectOptions) => {
+    const inspected = await inspectBrokerIdentity(identityPath, inspectOptions);
+    if (!lookupSeamUsed) {
+      lookupSeamUsed = true;
+      lookupSeamFired();
+      await startupEnteredLockLatch;
+    }
+    return inspected;
+  };
   const racingStartup = (async () => {
-    await killSeamDispatchedLatch;
-    // The acquisition ATTEMPT begins here — still inside the duty's held-lock
-    // window, one microtask after the seam recorded it (the latch resolves
-    // before the seam returns, so this continuation runs before the duty's
-    // own post-seam continuation can advance toward the lock release).
+    await lookupSeamFiredLatch;
     startupEngagedOrder = order + 1; order = startupEngagedOrder;
+    startupEnteredLock();
     await withFileLock(brokerLockPath, async () => {
       startupPublishedOrder = order + 1; order = startupPublishedOrder;
       const published = await writeBrokerIdentity(join(brokerDirectory, 'identity-1111111111111111.json'), { endpoint: 'racing-startup-endpoint', pid: 222_000_001 });
@@ -5129,17 +5140,18 @@ test('terminateMarkedRunnerTree serializes a concurrent broker startup past the 
     const observed = [];
     const settled = await terminateMarkedRunnerTree({
       store, dataRoot, workspace, ownerSessionId: 'session-a', epoch: 'b'.repeat(64), deadlineMs: Date.now() + 5_000,
+      inspectIdentityFn,
     }, selection, async (pid, options) => {
       observed.push({ pid, options });
       killSeamOrder = order + 1; order = killSeamOrder;
       lockHeldAtKillSeam = await brokerLockHeld();
-      killSeamDispatched();
       releaseHolder();
     });
     assert.deepEqual(settled, { kind: 'settled' });
     assert.deepEqual(observed[0].options.excludeBrokers, [{ pid: identity.pid, command: raceLaunch.command, args: raceLaunch.args }], 'the exclusion snapshot names exactly the identities published before the termination, each with its recorded launch signature');
     await racingStartup;
-    assert.equal(startupEngagedOrder, killSeamOrder + 1, 'the racing startup engaged deterministically at the kill seam — its acquisition attempt began while the termination still held the startup lock, so the serialization is never vacuously skipped');
+    assert.ok(startupEngagedOrder < killSeamOrder,
+      `the racing startup engaged during the lookup-to-kill gap (engaged=${startupEngagedOrder}, kill=${killSeamOrder}) — its acquisition attempt began before the dispatch, so the serialization below is never vacuous`);
     assert.equal(startupPublishedPid, 222_000_001, 'the racing startup eventually published — it was serialized, not starved');
     assert.equal(lockHeldAtKillSeam, true, 'the startup lock is still held by the termination when the kill seam fires');
     assert.ok(killSeamOrder < startupPublishedOrder,
