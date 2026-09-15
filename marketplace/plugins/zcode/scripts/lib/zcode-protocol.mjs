@@ -50,6 +50,12 @@ export class ZCodeProtocolClient {
     this.consumeTerminal = false;
     this.terminalObserver = null;
     this.acceptBrokerControl = options.acceptBrokerControl === true;
+    // Whether an aborted in-flight request should NOTIFY the peer (a broker
+    // that advertised the cancel capability at authentication) so it can
+    // release the request's session admission immediately. Never enabled for
+    // direct engine connections: a peer that never advertised the capability
+    // must not receive the notification frame.
+    this.requestCancellation = false;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
     this.drainTimeoutMs = boundedInteger(options.drainTimeoutMs, DEFAULT_DRAIN_TIMEOUT_MS, 1, MAX_DRAIN_TIMEOUT_MS);
@@ -70,6 +76,7 @@ export class ZCodeProtocolClient {
       || signal !== undefined && (typeof signal !== 'object' || typeof signal.addEventListener !== 'function' || typeof signal.aborted !== 'boolean')) return Promise.reject(protocolInputError());
     if (this.pending.size >= 1024) return Promise.reject(new PluginError('ZCODE_PENDING_OVERFLOW', 'Too many pending ZCode requests.', { category: 'protocol', remedy: 'Wait for pending requests to finish.' })); const id = this.nextId++;
     const effectiveTimeoutMs = timeoutMs ?? this.requestTimeoutMs;
+    const startedAt = Date.now();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         setImmediate(() => {
@@ -86,8 +93,28 @@ export class ZCodeProtocolClient {
         // uncorrelated. The original deadline timer still reaps the entry, so
         // the marker never outlives the request budget.
         pending.aborted = true;
+        // PROPAGATE the cancellation to a peer that advertised it (spec
+        // 2026-09-14 lines 81-82): the broker keeps the request's shared
+        // session admission until the upstream read settles, which would fence
+        // the following exclusive stop as a conflicting operation. One
+        // best-effort notification releases that admission immediately; a peer
+        // that never advertised the capability is never sent the frame, and a
+        // failed send leaves today's bounded-release-wait fallback intact.
+        if (this.requestCancellation) { try { this.sendFrame({ method: 'broker/cancelRequest', params: { requestId: id } }); } catch { /* best effort: the bounded release wait remains the fallback */ } }
         pending.reject(signal?.reason instanceof Error ? signal.reason
           : new PluginError('ZCODE_REQUEST_ABORTED', `ZCode request aborted: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method } }));
+        // RE-ARM the reap for the retained entry: the settlement cleanup above
+        // just cleared the ORIGINAL deadline timer, and against a peer that
+        // never answers nothing else deletes the marker — repeated bounded-
+        // read aborts would accumulate until the pending limit rejects every
+        // later request. The re-armed timer fires at (or immediately after)
+        // the request's own remaining budget and silently removes the entry
+        // with no second settlement: a late response before it is still
+        // dropped by the marker path, and every later path observes an empty
+        // slot exactly like a timed-out request.
+        const reap = setTimeout(() => { if (this.pending.get(id) === pending) this.pending.delete(id); }, Math.max(0, effectiveTimeoutMs - (Date.now() - startedAt)));
+        reap.unref?.();
+        pending.timer = reap;
       };
       // EVERY settlement path (success, failure, timeout, abort) detaches the
       // abort listener: callers hold long-lived signals (e.g. repeated
@@ -114,6 +141,12 @@ export class ZCodeProtocolClient {
       try { this.sendFrame({ id, method, params }); } catch (error) { this.pending.delete(id); pending.reject(error instanceof Error ? error : new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode request could not be sent.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); }
     });
   }
+
+  /** Enable best-effort abort notifications for a peer that advertised the
+   * broker cancel capability (see connectZCodeBroker). Once enabled, every
+   * in-flight abort additionally sends one `broker/cancelRequest` notification
+   * frame naming the abandoned request id. */
+  enableRequestCancellation() { this.requestCancellation = true; }
 
   /** @param {((params:any,signal:AbortSignal)=>Promise<any>|any)|null} handler */
   setPermissionHandler(handler) {
@@ -467,6 +500,12 @@ export async function connectZCodeBroker(endpoint, options) {
     const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) }, requiredRequestTime(deadline, 'broker/auth', requestTimeoutMs));
     if (!plainObject(authenticated) || authenticated.authenticated !== true
       || options.existingProtocolOnly === true && authenticated.existingProtocolOnly !== true) throw brokerCapabilityUnavailable();
+    // Additive wire negotiation: a broker that understands request
+    // cancellation advertises it beside `authenticated`, and only then do
+    // aborted in-flight requests notify it. An older broker answers without
+    // the field and never receives the notification frame — its bounded
+    // release-wait behavior remains the fallback.
+    if (authenticated.requestCancellation === true) protocol.enableRequestCancellation();
     return protocol;
   } catch (error) {
     socket.destroy();

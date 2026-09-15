@@ -160,15 +160,19 @@ export async function executeJob(input) {
    * terminal wake yet), and the no-report qualification must not depend on a
    * prior completion wake — so the executor obtains its own pre-stop
    * current-turn snapshot, paired with its serving-generation stamp, before
-   * the exact stop is issued. Skipped when evidence already exists; an
-   * unreadable or timed-out read never blocks the exact stop, and a read
-   * that outlives its budget is aborted (with a bounded admission-release
-   * wait) so the broker's exclusive stop admission is never serialized
-   * behind it. @returns {Promise<void>} */
+   * the exact stop is issued. Skipped ONLY when the retained observation is
+   * already valid pre-stop evidence (an attributable, generation-stamped
+   * snapshot — spec line 40); a recorded transient read failure, an
+   * unstamped response, or an unattributable snapshot is NOT evidence, and
+   * skipping on it would acknowledge the stop without qualifying the claim —
+   * leaving the job cancelling unnecessarily. An unreadable or timed-out
+   * read never blocks the exact stop, and a read that outlives its budget is
+   * aborted (with a bounded admission-release wait) so the broker's exclusive
+   * stop admission is never serialized behind it. @returns {Promise<void>} */
   const boundedPreStopEvidenceRead = async () => {
     const preStopSessionId = sessionId;
     if (acceptedTurnBoundary === null || preStopSessionId === undefined) return;
-    if (foregroundControlEvidence.lastRead) return;
+    if (foregroundControlEvidence.lastRead && validPreStopReadEvidence(foregroundControlEvidence.lastRead, acceptedTurnBoundary)) return;
     // The broker admits session/read requests as SHARED and session/stop as
     // EXCLUSIVE: a read that outlives its budget must never keep holding
     // admission while the exact stop is issued (spec lines 81-82 — the
@@ -593,6 +597,22 @@ const FOREGROUND_ACTIVE_PROJECTION_STATUSES = new Set(['running', 'waiting', 'pa
  * @param {unknown} value */
 function boundedGenerationStamp(value) {
   return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
+}
+
+/** Whether one retained read observation already counts as the pre-stop
+ * evidence the no-report qualification reads (spec 2026-09-14 line 40): a
+ * readable snapshot attributable to the accepted turn AND stamped with the
+ * serving generation that produced it — the same positive-proof legs
+ * foregroundNoReportQualified demands of lastPreStopRead. Anything else (a
+ * recorded transient read failure, an unstamped response, or a snapshot the
+ * persisted boundary cannot attribute) is not evidence, so the dedicated
+ * bounded pre-stop read must still run.
+ * @param {{snapshot?:any, error?:unknown, generation:string|null}|null} read
+ * @param {any} boundary */
+function validPreStopReadEvidence(read, boundary) {
+  return read !== null && read.snapshot !== undefined
+    && boundedGenerationStamp(read.generation) !== null
+    && hasCurrentTurnActivity(read.snapshot, boundary);
 }
 
 /**
