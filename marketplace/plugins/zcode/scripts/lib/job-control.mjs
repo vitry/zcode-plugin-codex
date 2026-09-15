@@ -1236,7 +1236,23 @@ async function performCancellation(input, attempts, election) {
     if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
     const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling, observedStop?.guard);
     if (revalidated?.kind === 'stale') return revalidated.job;
-    if (sharedStopRetained) throw new Error('The exact remote stop did not settle; the cancelling guard is retained for the next bounded retry.');
+    if (sharedStopRetained) {
+      // The shared reconciliation pass already attempted this command's exact
+      // remote stop and retained the durable guard — persisting its own
+      // SPECIFIC retry diagnostic when it observed one (a stop-request
+      // failure, incomplete runner cleanup, or the no-report continuity
+      // refusal). The retained-guard catch below re-persists the thrown
+      // message, so the generic text must not ride this throw: it would
+      // overwrite that diagnostic and erase the stop-failure, cleanup, and
+      // continuity distinction Status must expose (spec section 6). The
+      // already-persisted diagnostic (when non-empty) rides the same flow
+      // instead; the generic message remains only for a shared retention that
+      // persisted no diagnostic of its own.
+      const retained = await input.options.store.readJob(input.workspace, job.id).catch(() => null);
+      throw new Error(typeof retained?.lastCancelError === 'string' && retained.lastCancelError.length > 0
+        ? retained.lastCancelError
+        : 'The exact remote stop did not settle; the cancelling guard is retained for the next bounded retry.');
+    }
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
     // A failed remote stop never skips the marked-runner local termination duty;
