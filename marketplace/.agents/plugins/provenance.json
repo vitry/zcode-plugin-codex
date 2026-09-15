@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "d0a2f8645271e73650c5a727d0e09638a8f1de30",
-  "sourceSha": "d0a2f8645271e73650c5a727d0e09638a8f1de30",
+  "sourceRef": "792ad46a66f42bd2234453792ef520f0a41e978f",
+  "sourceSha": "792ad46a66f42bd2234453792ef520f0a41e978f",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "704692da6118e0e2d3918b33fb39185ead4ecf7736c2a8e29996a0d459fc53b9",
+    "sha256": "b07cd5d454a5e00d058b482d3c0ad1936bda00cfe1fd8de705cf9c13214460d9",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -583,8 +583,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/job-control.mjs",
-        "size": 125790,
-        "sha256": "1c744a529686c397d2a5ca2e657afdd0904d2023ee9034aab2031bfbffcab2b2"
+        "size": 126353,
+        "sha256": "70d2ae8d14aaa121b01dc9ddeac837dba2ee5e3a1f3361222e5add411ecc6965"
       },
       {
         "path": "plugins/zcode/scripts/lib/job-log-runtime.mjs",
