@@ -2281,9 +2281,15 @@ test('an aborted read notifies the broker so the exclusive stop is admitted imme
   // notification the broker answers by releasing exactly that request's
   // session admission — instead of waiting for the stalled upstream read to
   // settle on its own.
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-abort-release-'));
-  const endpoint = join(directory, 'broker.sock');
-  const ownershipPath = `${endpoint}.owners.json`;
+  // The broker binds a REAL socket here, so the endpoint follows the repo's
+  // Windows-bound convention: compactBrokerTemp keeps the AF_UNIX sun_path
+  // within the ~104-byte kernel limit on every platform (the runner's long
+  // %TEMP% prefix made a descriptive mkdtemp prefix fail with listen EACCES
+  // on win32), and brokerEndpointFor resolves to a named pipe on win32 and a
+  // short socket under the compact directory elsewhere.
+  const directory = await compactBrokerTemp();
+  const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory });
+  const ownershipPath = join(directory, 'broker-abort-release-owners.json');
   const ownerId = 'broker-abort-release-owner';
   const sessionId = 'broker-abort-release-session';
   let broker; let client;
