@@ -317,7 +317,18 @@ async function settleRemoteEvidence(adapters, joined, cause, signal, guard = und
     // is still attempted. It just cannot qualify for the no-report settlement:
     // without a valid pre-stop current-turn snapshot the empty stop response
     // carries no qualifying evidence (stopResponseEvidence below).
-  } else if (!(remote.active && remote.attributable)) {
+  } else if (remote.attributable !== true) {
+    // Only evidence the persisted turn boundary cannot attribute retains
+    // WITHOUT remote control: an unattributable snapshot (fabricated or
+    // reconstructed idle, regressed revision, missing current-turn root) never
+    // proves anything about this exact turn, so the guard stays and no stop
+    // runs on it. An ATTRIBUTABLE snapshot qualifies as the valid pre-stop
+    // current-turn evidence regardless of its active projection (spec 4.2:
+    // "at least one valid pre-stop snapshot attributable to the current turn
+    // under persistedTurnBoundary" — attribution, not activity; the
+    // attributable idle/completed unfinished shape is exactly the no-report
+    // record a retry pass must stop and settle), so it falls through to the
+    // exact stop below.
     await runRunnerCleanup(adapters, joined, runnerCleanup);
     return retainedOutcome(adapters, joined, stopRetentionDiagnostic(stopEvidence, undefined), signal);
   } else if (guard !== undefined) {
@@ -523,14 +534,18 @@ function stopRetentionDiagnostic(stopEvidence, fallback) {
 /**
  * Whether this attempt's pre-stop read is itself the valid current-turn
  * snapshot the no-report settlement requires (spec 4.2): exact evidence
- * attributable to the current turn while it was still executing, observed in
- * THIS attempt — never a persisted receipt, an old log, a reconstructed
- * runtime's idle state, or the absence of a report. A failed initial read
- * provides no snapshot, so its empty stop response can never qualify.
+ * ATTRIBUTED to the current turn under the persisted turn boundary, observed
+ * in THIS attempt — never a persisted receipt, an old log, or the absence of
+ * a report. Attribution — not the active projection — is the requirement: the
+ * boundary's revision and real-user-root checks already exclude a fabricated
+ * or reconstructed runtime's idle state, so an attributable idle/completed
+ * snapshot with an unfinished assistant qualifies as the pre-stop evidence the
+ * retry pass stops and settles on. A failed initial read provides no
+ * snapshot, so its empty stop response can never qualify.
  * @param {any} remote
  */
 function preStopCurrentTurnSnapshot(remote) {
-  return remote?.kind === 'evidence' && remote.active === true && remote.attributable === true;
+  return remote?.kind === 'evidence' && remote.attributable === true;
 }
 
 /**

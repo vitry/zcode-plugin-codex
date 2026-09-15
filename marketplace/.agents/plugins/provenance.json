@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "792ad46a66f42bd2234453792ef520f0a41e978f",
-  "sourceSha": "792ad46a66f42bd2234453792ef520f0a41e978f",
+  "sourceRef": "f90373e33e334f8bee56135d3573a667d2cb1334",
+  "sourceSha": "f90373e33e334f8bee56135d3573a667d2cb1334",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "b07cd5d454a5e00d058b482d3c0ad1936bda00cfe1fd8de705cf9c13214460d9",
+    "sha256": "17da9f735c69e49f6b6a3e2f0c21473113b3bd669324293d823c4b2e32c9944d",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -583,8 +583,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/job-control.mjs",
-        "size": 126353,
-        "sha256": "70d2ae8d14aaa121b01dc9ddeac837dba2ee5e3a1f3361222e5add411ecc6965"
+        "size": 126296,
+        "sha256": "9102393b36ce1155c86ae5726675337a494938bf301f25974813e218b14fce4e"
       },
       {
         "path": "plugins/zcode/scripts/lib/job-log-runtime.mjs",
@@ -658,8 +658,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-lifecycle.mjs",
-        "size": 45128,
-        "sha256": "a9472c747a1f4f872c3d0da70e067f9037ac58945fbc3d3c34e729e16e1357fe"
+        "size": 46180,
+        "sha256": "211a817e1f97a6c9de159122b403fc134e4d9e33171d07143a47091432a32e16"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-migration.mjs",
