@@ -123,7 +123,14 @@ export class ZCodeProtocolClient {
         // dropped by the marker path, and every later path observes an empty
         // slot exactly like a timed-out request.
         const reap = setTimeout(() => { if (this.pending.get(id) === pending) this.pending.delete(id); }, Math.max(0, effectiveTimeoutMs - (Date.now() - startedAt)));
-        reap.unref?.();
+        // Kept REFERENCED for its bounded lifetime: an aborted-but-retained
+        // entry whose silent peer never answers may leave this timer as the
+        // only event-loop work in the caller's abort path — an unref'd timer
+        // would let the loop drain mid-await and strand the caller's
+        // settlement (observed on Node 22.13 as `Promise resolution is still
+        // pending but the event loop has already resolved`). The hold is
+        // bounded by the request's own remaining budget, and every settlement
+        // path (late response, close, fail) clears it through pending.timer.
         pending.timer = reap;
       };
       // EVERY settlement path (success, failure, timeout, abort) detaches the
