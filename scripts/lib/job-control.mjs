@@ -1257,8 +1257,15 @@ async function performCancellation(input, attempts, election) {
   } catch (error) {
     // A failed remote stop never skips the marked-runner local termination duty;
     // the retained cancelling guard below keeps the remote uncertainty durable
-    // for the next bounded pass (local death never upgrades remote state).
-    await terminateCancellationRunner(input, cancelling);
+    // for the next bounded pass (local death never upgrades remote state). The
+    // one exception is the retained SHARED-stop outcome: the shared
+    // reconciliation pass already ran its own once-per-pass cleanup duty next
+    // to its stop attempt, so re-entering terminateCancellationRunner here
+    // would repeat the process-tree termination and descendant sweep with a
+    // fresh budget inside the same cancel command — duplicating signals past
+    // the one-duty-per-pass bound. The retained outcome below keeps the guard
+    // and the already-persisted specific diagnostic with no second duty.
+    if (!sharedStopRetained) await terminateCancellationRunner(input, cancelling);
     const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
     // An unresolved Host-owned stop keeps its cancelling status and persisted
     // stop intent — the same retainUnresolvedEndedStop discipline as the

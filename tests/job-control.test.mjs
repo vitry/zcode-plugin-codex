@@ -4441,6 +4441,54 @@ test('the cancel election preserves the shared reconciliation diagnostic when it
   }
 });
 
+test('a retained shared stop never repeats the runner cleanup duty inside one cancel command', { timeout: 15_000 }, async () => {
+  // The shared reconciliation pass attempted the exact stop and retained the
+  // guard on incomplete runner cleanup — its own once-per-pass cleanup duty
+  // ran with it. The election's retained outcome must report that retention
+  // WITHOUT re-running the duty: the legacy catch's
+  // terminateCancellationRunner would repeat the process-tree termination and
+  // sweep with a fresh budget inside the same cancel command, duplicating
+  // signals past the intended one-duty-per-pass bound (plan
+  // 2026-09-14 line 80). Public behavior is unchanged: the bounded JOB_CANCEL_FAILED
+  // rejection keeps surfacing the shared pass's specific diagnostic, the job
+  // stays cancelling, and the guard is retained.
+  const fixture = await noReportSettlementFixture();
+  const control = noReportControlClient();
+  /** @type {number[]} */
+  const killInvocations = [];
+  const incompleteKill = async (/** @type {number} */ pid) => { killInvocations.push(pid); return { completed: false, pending: [pid] }; };
+  const reconcile = managementReconcileFor(fixture, control, { terminateProcessTree: incompleteKill });
+  let releaseHolder = () => {};
+  let holderAcquired = () => {};
+  const holderAcquiredPromise = new Promise((resolve) => { holderAcquired = () => resolve(undefined); });
+  const holder = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    jobId: fixture.reserved.job.id, workerLeaseId: fixture.workerLeaseId, timeoutMs: 0 },
+  () => { holderAcquired(); return new Promise((resolve) => { releaseHolder = () => resolve(undefined); }); });
+  await holderAcquiredPromise;
+  try {
+    const controller = createJobController({ store: fixture.store, dataRoot: fixture.dataRoot,
+      reconcile: (/** @type {any} */ request) => (request.intent?.kind === 'stop' ? reconcile.reconcileStop(request.intent) : reconcile.reconcileStop({ kind: 'observe' })),
+      terminateProcessTree: incompleteKill,
+      stopSession: async () => { throw new Error('the election must never duplicate the shared pass stop'); },
+      readSession: async () => { throw new Error('the pre-stop read is skipped for a retained shared stop'); },
+      publishSucceededSnapshot: async () => { throw new Error('no result publication is expected for a retained shared stop'); } });
+    await assert.rejects(controller.cancel(fixture.workspace, fixture.reserved.job.id, 'session-a'),
+      (/** @type {any} */ error) => error?.code === 'JOB_CANCEL_FAILED'
+        && error.message.includes('The executor cleanup did not complete; the cancelling guard is retained for the next bounded retry.'),
+      'the public rejection still surfaces the shared pass specific diagnostic');
+    assert.deepEqual(killInvocations, [999_999_999],
+      `exactly the shared pass's own cleanup duty ran for the whole cancel command: ${JSON.stringify(killInvocations)}`);
+    const retained = await fixture.store.readJob(fixture.workspace, fixture.reserved.job.id);
+    assert.equal(retained.status, 'cancelling', 'the durable guard stays cancelling');
+    assert.equal(retained.lastCancelError, 'The executor cleanup did not complete; the cancelling guard is retained for the next bounded retry.',
+      'the shared pass specific retry diagnostic is preserved');
+  } finally {
+    releaseHolder();
+    await holder;
+    await rm(fixture.root, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
 test('a genuine pre-stop engine failure without a shared stop attempt still publishes failed from the election read', async () => {
   // The legitimate path the retained-shared-stop guard must keep reachable:
   // the shared reconciler pass retained WITHOUT attempting any stop (the
