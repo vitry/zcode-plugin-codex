@@ -19,6 +19,16 @@ export function isCorrelatedZCodeResponseError(error) {
 /** @template {Error} T @param {T} error @returns {T} */
 function markCorrelatedResponseError(error) { correlatedResponseErrors.add(error); return error; }
 
+/** The bounded hex shape of a broker serving-generation stamp an ERROR frame
+ * may carry (`error.data.protocolGeneration`): only a peer that stamped the
+ * error response with the protocol generation that produced it includes the
+ * field, and only this bounded shape is continuity evidence. Anything else —
+ * including every unstamped and transport-level failure — is null.
+ * @param {unknown} value */
+function brokerErrorGeneration(value) {
+  return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
+}
+
 export class ZCodeProtocolClient {
   /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number, acceptBrokerControl?:boolean }} [options] */
   constructor(child, options = {}) {
@@ -335,15 +345,25 @@ export class ZCodeProtocolClient {
     if ('error' in message) {
       if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const provesRejection = !this.acceptBrokerControl || message.error.data?.requestProvenance === CORRELATED_RESPONSE_PROVENANCE;
+      // Serving-generation provenance on a CORRELATED ERROR frame (spec 4.4
+      // line 73 through 4.2 continuity): a broker may stamp the error response
+      // with the protocol generation that PRODUCED the error, and only the
+      // bounded hex shape is proof. The stamp rides inside the existing error
+      // payload as `details.brokerProtocolGeneration` — internal continuity
+      // evidence only, never public output; peers that do not include it keep
+      // today's unstamped (null) failure semantics.
+      const errorGeneration = brokerErrorGeneration(message.error.data?.protocolGeneration);
       const remote = message.error.data?.pluginError;
       if (plainObject(remote) && nonEmpty(remote.code) && nonEmpty(remote.category) && nonEmpty(remote.remedy)) {
-        const error = new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} });
+        const remoteDetails = plainObject(remote.details) ? remote.details : {};
+        const error = new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: errorGeneration === null ? remoteDetails : { ...remoteDetails, brokerProtocolGeneration: errorGeneration } });
         pending.reject(provesRejection ? markCorrelatedResponseError(error) : error);
         return;
       }
-      /** @type {{method:string,rpcCode:unknown,remoteCode?:string}} */
+      /** @type {{method:string,rpcCode:unknown,remoteCode?:string,brokerProtocolGeneration?:string}} */
       const details = { method: pending.method, rpcCode: message.error.code };
       if (isSafeRemoteCode(message.error.data?.code)) details.remoteCode = message.error.data.code;
+      if (errorGeneration !== null) details.brokerProtocolGeneration = errorGeneration;
       const error = new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details });
       pending.reject(provesRejection ? markCorrelatedResponseError(error) : error);
     } else pending.resolve(message.result);

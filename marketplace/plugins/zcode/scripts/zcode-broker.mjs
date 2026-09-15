@@ -864,7 +864,20 @@ export class ZCodeBroker {
           if (ownerCommitToken && this.ownerCommitTokens.get(ownerCommitToken) === protocol) this.ownerCommitTokens.delete(ownerCommitToken);
           const pluginError = error instanceof PluginError ? { code: error.code, category: error.category, remedy: error.remedy, details: error.details } : null;
           const requestProvenance = frame.method === 'session/send' && isCorrelatedZCodeResponseError(error) ? CORRELATED_RESPONSE_PROVENANCE : undefined;
-          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError, ...(requestProvenance ? { requestProvenance } : {}) } } : {}) } });
+          // Serving-generation stamp for a FAILED session/read (spec 4.4 line
+          // 73 through the 4.2 continuity chain): the same internal
+          // protocolGeneration the success path attaches, now on the error
+          // frame, so a CORRELATED same-generation read failure (e.g. a
+          // same-generation inactive-session error response) carries the
+          // provenance a qualified no-report publication can attest the reread
+          // leg with — a read failure no longer independently vetoes complete
+          // evidence. The currency guard mirrors the success path: only the
+          // protocol generation that SERVED this read attempt, and only while
+          // it is still the current generation. Pre-upstream failures (no
+          // protocol bound) and retired/replaced generations stay unstamped,
+          // and old clients simply ignore the extra error payload field.
+          const readErrorGeneration = frame.method === 'session/read' && protocol && this.protocol === protocol && typeof this.protocolGeneration === 'string' ? this.protocolGeneration : null;
+          writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError, ...(requestProvenance ? { requestProvenance } : {}), ...(readErrorGeneration ? { protocolGeneration: readErrorGeneration } : {}) } } : {}) } });
         }
       } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.clientRequestCancellations.get(socket)?.delete(frame.id); this.admission.finishSessionRequest(sessionAdmission); }
     } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }

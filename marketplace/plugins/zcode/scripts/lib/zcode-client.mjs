@@ -96,10 +96,13 @@ export class ZCodeClient {
   /** Correlate one session/read per response: resolves the validated engine
    * snapshot TOGETHER with the serving generation that served THIS response —
    * never a stamp from the shared last-completed view, which an overlapping
-   * read can repopulate before the caller observes it. A rejected read has no
-   * generation at all, so cancellation paths can never mistake an unrelated
-   * or stale stamp for this read's continuity proof (spec 2026-09-14 section
-   * 4.2). `options.signal` aborts the pending protocol request.
+   * read can repopulate before the caller observes it. A rejected read carries
+   * a generation ONLY through its own CORRELATED error frame (the broker's
+   * same-generation stamp on session/read error responses); transport drops
+   * and unstamped failures have none, so cancellation paths can never mistake
+   * an unrelated or stale stamp for this read's continuity proof (spec
+   * 2026-09-14 section 4.2). `options.signal` aborts the pending protocol
+   * request.
    * @param {string} sessionId @param {{signal?:AbortSignal}} [options] @returns {Promise<{snapshot:any, servingGeneration:string|null}>} */
   async readSessionDetailed(sessionId, options = {}) {
     requireSessionId(sessionId);
@@ -108,19 +111,34 @@ export class ZCodeClient {
     // post-stop reread an upstream reconstruction drops — must leave nothing
     // behind that legacy callers could mistake for this attempt's proof.
     this.readGenerations.delete(sessionId);
-    const result = await this.protocol.request('session/read', { sessionId }, undefined, options.signal);
-    // The broker stamps the upstream protocol generation that actually served
-    // this read BESIDE the engine snapshot (see ZCodeBroker). Strip it before
-    // schema validation — the engine snapshot contract never includes it —
-    // and correlate it with THIS response. A serving path that proves no
-    // generation (a direct protocol connection, a stamp-less broker) records
-    // null, which can never qualify continuity.
-    const { brokerProtocolGeneration, ...snapshot } = result ?? {};
-    validateSnapshot(snapshot, sessionId, this.expectedWorkspace(sessionId), 'session/read');
-    this.sessionCatalogs.set(sessionId, snapshot.settings.model);
-    const servingGeneration = boundedServingGeneration(brokerProtocolGeneration);
-    this.readGenerations.set(sessionId, servingGeneration);
-    return { snapshot, servingGeneration };
+    try {
+      const result = await this.protocol.request('session/read', { sessionId }, undefined, options.signal);
+      // The broker stamps the upstream protocol generation that actually served
+      // this read BESIDE the engine snapshot (see ZCodeBroker). Strip it before
+      // schema validation — the engine snapshot contract never includes it —
+      // and correlate it with THIS response. A serving path that proves no
+      // generation (a direct protocol connection, a stamp-less broker) records
+      // null, which can never qualify continuity.
+      const { brokerProtocolGeneration, ...snapshot } = result ?? {};
+      validateSnapshot(snapshot, sessionId, this.expectedWorkspace(sessionId), 'session/read');
+      this.sessionCatalogs.set(sessionId, snapshot.settings.model);
+      const servingGeneration = boundedServingGeneration(brokerProtocolGeneration);
+      this.readGenerations.set(sessionId, servingGeneration);
+      return { snapshot, servingGeneration };
+    } catch (error) {
+      // Serving-generation provenance on a CORRELATED read failure (spec 4.4
+      // line 73 through the 4.2 continuity chain): the broker stamps
+      // session/read ERROR frames with the protocol generation that PRODUCED
+      // the error, and the protocol client surfaces it as
+      // `details.brokerProtocolGeneration`. A failed read CAN therefore carry
+      // its own per-response stamp — recorded here exactly like a successful
+      // read's — while transport drops and unstamped errors stay null: the
+      // attempt-start void above still ran, so no overlapping read's stamp can
+      // ever pose as this failure's proof.
+      const failureGeneration = error instanceof PluginError ? boundedServingGeneration(error.details?.brokerProtocolGeneration) : null;
+      if (failureGeneration !== null) this.readGenerations.set(sessionId, failureGeneration);
+      throw error;
+    }
   }
   /** @param {string} sessionId @param {{signal?:AbortSignal}} [options] */
   async readSession(sessionId, options = {}) { return (await this.readSessionDetailed(sessionId, options)).snapshot; }

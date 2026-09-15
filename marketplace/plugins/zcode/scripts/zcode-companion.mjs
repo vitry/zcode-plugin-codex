@@ -389,11 +389,20 @@ export function createManagementRescueReconcile(input) {
       options?.signal?.throwIfAborted();
       let read;
       try { read = await raceControlOperation(readWithServingGeneration(context.client, joined.job.zcodeSessionId), options?.signal); }
-      catch (error) { options?.signal?.throwIfAborted(); context.rereadGeneration = null; return { kind: 'unreadable', error }; }
+      catch (error) {
+        options?.signal?.throwIfAborted();
+        // The reread FAILED, but a CORRELATED error frame still carries the
+        // protocol generation that PRODUCED the failure (see ZCodeBroker and
+        // ZCodeClient.readSessionDetailed): spec 4.4 line 73 — a read failure
+        // must not independently veto otherwise complete evidence — so the
+        // failed reread's own error stamp may attest the reread leg. Transport
+        // drops and unstamped failures carry none (null), exactly as before.
+        context.rereadGeneration = failedReadGeneration(error);
+        return { kind: 'unreadable', error };
+      }
       options?.signal?.throwIfAborted();
       // The reread's OWN response stamp (per-read correlation): the no-report
-      // publication attests the reread leg against it, and a failed reread
-      // carries none.
+      // publication attests the reread leg against it.
       context.rereadGeneration = read.servingGeneration;
       return endedRemoteEvidence(read.snapshot, joined.job);
     },
@@ -676,6 +685,20 @@ function boundedUpstreamStamp(value) {
   return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
 }
 
+/** The serving-generation stamp a FAILED session/read carries through its own
+ * CORRELATED error frame: the broker stamps session/read error responses with
+ * the protocol generation that produced the error, and the protocol client
+ * surfaces it as `details.brokerProtocolGeneration` (see
+ * ZCodeClient.readSessionDetailed). Spec 4.4 line 73 — a read failure must
+ * not independently veto otherwise complete evidence — so this stamp may
+ * attest a failed reread's continuity leg. Transport drops, unstamped errors,
+ * and non-plugin failures carry none: null keeps the round-4/8 fail-closed
+ * proof exactly as before.
+ * @param {unknown} error */
+function failedReadGeneration(error) {
+  return boundedUpstreamStamp(error instanceof PluginError ? error.details?.brokerProtocolGeneration : null);
+}
+
 /** Persist the durable stop intent before any remote control, mirroring the election's own transition order. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
 async function persistManagementStopIntent(input, joined, cause, options) {
   options?.signal?.throwIfAborted();
@@ -715,9 +738,11 @@ async function publishManagementWinner(input, joined, specification, options, co
         // and the cancelling guard stays for the next bounded pass. Natural
         // outcomes are unaffected: their evidence is attributable to the
         // persisted turn boundary, not to generation continuity. A FAILED
-        // reread carries no stamp at all (per-read correlation — the shared
-        // last-completed view an overlapping read repopulates is never
-        // consulted), so null keeps this entry point cancelling.
+        // reread carries a stamp ONLY through its own CORRELATED error frame
+        // (spec 4.4 line 73: the read failure must not independently veto
+        // otherwise complete evidence); a transport drop or unstamped failure
+        // keeps null — and the shared last-completed view an overlapping read
+        // repopulates is never consulted — so both retain exactly as before.
         const rereadGeneration = boundedUpstreamStamp(context?.rereadGeneration);
         if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context?.upstream)) {
           // The refusal keeps the cancelling guard AND records its own bounded
