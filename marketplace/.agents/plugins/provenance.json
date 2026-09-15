@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "f90373e33e334f8bee56135d3573a667d2cb1334",
-  "sourceSha": "f90373e33e334f8bee56135d3573a667d2cb1334",
+  "sourceRef": "293a39e1f3c925c57526e6c708c02cc988a15f03",
+  "sourceSha": "293a39e1f3c925c57526e6c708c02cc988a15f03",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "17da9f735c69e49f6b6a3e2f0c21473113b3bd669324293d823c4b2e32c9944d",
+    "sha256": "528a578179e45442411b4b853c749c7396b5525b239b678c480d60cdd9bd3299",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -658,8 +658,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-lifecycle.mjs",
-        "size": 46180,
-        "sha256": "211a817e1f97a6c9de159122b403fc134e4d9e33171d07143a47091432a32e16"
+        "size": 46576,
+        "sha256": "9a3793e5ef0b0c86f505d22288913e51752205c41c75c4d1085718cfa1cd3ab4"
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-migration.mjs",
