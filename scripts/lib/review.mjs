@@ -9,6 +9,7 @@ import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, publishOwnerHeldNoReportCancellation, revalidateBoundRescueStop, withJobCancellationLock } from './job-control.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord } from './rescue-binding.mjs';
+import { validDetachedRescueRunnerRecord } from './rescue-execution-input.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
@@ -447,10 +448,11 @@ export async function executeJob(input) {
       /* Otherwise recovery owns the durable running job and retained result artifact. */
     }
     else if (!resumeFailureSettlementRejected && isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
-      // A background Host-owned placement keeps its remote turn alive on child
-      // loss: no branch below stops it — only a matching SessionEnd receipt
-      // authorizes stopping background work (design lines 261-265).
-      if (backgroundInterruptRetainsTurn(job)) {
+      // A Host-owned background placement, and any record with valid detached
+      // runner evidence, keeps its remote turn alive on child loss: no branch
+      // below stops it — only a matching SessionEnd receipt authorizes
+      // stopping retained work (placement-split design).
+      if (interruptionRetainsRemoteTurn(job)) {
         /* retain the durable record and the remote turn for reconciliation */
       } else if (current.status === 'queued' && sessionId) {
         let stopped = false;
@@ -473,7 +475,7 @@ export async function executeJob(input) {
           await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
             const candidate = await input.store.readJob(workspace, job.id);
             if (candidate.status !== 'running' || candidate.zcodeSessionId !== sessionId) return;
-            if (backgroundInterruptRetainsTurn(candidate)) return; /* child loss alone never stops a background turn */
+            if (interruptionRetainsRemoteTurn(candidate)) return; /* child loss alone never stops retained remote work */
             const finalStop = await revalidateBoundRescueStop(input.store, workspace, candidate, observedBoundStop?.guard, sessionId);
             if (finalStop?.kind === 'stale') return;
             await client.stopSession(sessionId);
@@ -482,7 +484,7 @@ export async function executeJob(input) {
             await input.store.finishJob(workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null, ...hostOwnedCancelledPatch(cancelling, stopCause) });
           });
         } catch { /* retain the writable guard when the known no-send session cannot be stopped */ }
-      } else if (backgroundInterruptRetainsTurn(job) === false) {
+      } else if (interruptionRetainsRemoteTurn(job) === false) {
         let cancellationPublicationApplied = false;
         let ownStopAcknowledged = false;
         const cancellation = createJobController({
@@ -766,9 +768,10 @@ async function settleRemoteInterruption({ input, job, workspace, dataRoot }) {
   return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
     let current = await input.store.readJob(workspace, job.id);
     if (['cancelled', 'failed', 'succeeded'].includes(current.status)) return current;
-    // A background Host-owned placement retains its turn on child loss: the
-    // durable record is left for reconciliation (only SessionEnd stops it).
-    if (backgroundInterruptRetainsTurn(job)) return current;
+    // A Host-owned background placement, and any record with valid detached
+    // runner evidence, retains its turn on child loss: the durable record is
+    // left for reconciliation (only SessionEnd stops it).
+    if (interruptionRetainsRemoteTurn(job)) return current;
     if (current.status === 'queued') return settleInterruptedFinish(input.store, workspace, job.id, ['queued']);
     if (current.status === 'running') {
       // An unrequested remote interruption is NOT a user cancellation: label
@@ -969,14 +972,20 @@ function isInterruption(error) { return error instanceof PluginError && error.co
 
 /**
  * Whether one interruption observed by this attached companion authorizes
- * stopping the remote turn: a Host-owned BACKGROUND placement was interrupted
- * by Host child loss, which does NOT authorize a stop — only a genuine
- * matching SessionEnd receipt does (design lines 261-265). The caller keeps
- * the durable record untouched so reconciliation can settle it later.
+ * stopping the remote turn: child loss retains the remote turn whenever the
+ * Host-owned record is BACKGROUND placement OR carries valid detached-runner
+ * evidence. Detached Companion execution makes the executor's own exit after
+ * the accepted enqueue expected handoff completion — runner-process or child
+ * loss is never reclassified as permission to stop the remote turn; only a
+ * genuine matching SessionEnd receipt authorizes stopping retained work
+ * (placement-split design, "Child-stop and coordination-loss policy"). The
+ * caller keeps the durable record untouched so reconciliation can settle it
+ * later.
  * @param {any} job
  */
-function backgroundInterruptRetainsTurn(job) {
-  return job.hostPlacement === 'background' && validHostLifecycleRecord(job);
+function interruptionRetainsRemoteTurn(job) {
+  return validHostLifecycleRecord(job)
+    && (job.hostPlacement === 'background' || validDetachedRescueRunnerRecord(job));
 }
 
 /**

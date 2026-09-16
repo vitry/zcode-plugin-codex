@@ -33,7 +33,7 @@ import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { RESCUE_RUNNER_SUBCOMMAND, spawnRescueRunner } from './lib/rescue-runner.mjs';
-import { queuedRescueAcknowledgement, RESCUE_EXECUTION_INPUT_VERSION, validDetachedRescueRunnerJob, validDetachedRescueRunnerRecord, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
+import { queuedRescueAcknowledgement, RESCUE_EXECUTION_INPUT_VERSION, validDetachedRescueRunnerJob, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
 import { createStateStore, resumableHostOwnedCancellation, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -530,6 +530,12 @@ async function loadManagementJoinedState(input, context, request) {
     winner: MANAGEMENT_TERMINAL_STATUSES.has(job.status) ? job : null,
     hostState: 'idle',
     hostPlacement: job.hostPlacement ?? null,
+    // The Companion-execution dimension derives from the durable detached-
+    // runner evidence — the split marker with either Host placement, or the
+    // historical v1 marker keeping its stored background-only interpretation —
+    // never from `hostPlacement`, so the reconciler's child-loss policy always
+    // joins both placement dimensions.
+    companionExecution: validDetachedRescueRunnerJob(job) ? 'background' : 'foreground',
     hostOwned: job.command === 'rescue' && job.readOnly === false ? validHostLifecycleRecord(job) : false,
     sessionEndReceipt: null,
     stopIntent: job.stopIntent ?? null,

@@ -7290,8 +7290,8 @@ const incident = Object.freeze({
  * the coordinator suite. The fake Codex app-server serves both the persisted
  * child graph (thread/list discovery) and the exact failed terminal-turn
  * evidence (thread/read); no planner or recovery seam is stubbed.
- * @param {any} t @param {{placement?:string,job?:('succeeded'|'running')}} [options] */
-async function stuckRescueChildIncident(t, { placement = 'foreground', job = 'succeeded' } = {}) {
+ * @param {any} t @param {{placement?:string,job?:('succeeded'|'running'),detached?:boolean}} [options] */
+async function stuckRescueChildIncident(t, { placement = 'foreground', job = 'succeeded', detached = false } = {}) {
   const context = await fixture();
   const workspace = await realpath(context.workspace);
   const { session, spawnTurn, retryTurn, child, childPath, childTurn, zcodeSessionId } = incident;
@@ -7317,6 +7317,7 @@ async function stuckRescueChildIncident(t, { placement = 'foreground', job = 'su
     executor: { parentSessionId: session, parentTurnId: spawnTurn, agentId: child, agentType: 'zcode-rescue',
       agentPath: childPath, workspace, parentPermissionMode: 'workspace-write' },
     lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
+    ...(detached ? { executionInput: { version: 1, task: 'bounded private task' } } : {}),
   });
   const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
   let tracked = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running',
@@ -7549,6 +7550,28 @@ test('unresolved foreground settlement blocks the real-entry prepare as pending 
   const after = await incidentHookRecords(dataRoot, workspace, child);
   assert.equal(after.route.state, 'active', 'child records stay untouched while settlement is unresolved');
   assert.deepEqual(await preparedRecords(dataRoot, workspace), [], 'no preparation is saved over pending settlement');
+});
+
+test('detached Companion-background child loss keeps the job running without a coordination-loss intent', async (t) => {
+  // The no-flag complex shape: the Rescue child exits after its accepted
+  // detached enqueue. Normal child-loss settlement must NOT create a
+  // host-coordination-loss stop intent, cancel the detached job, or revoke its
+  // binding: the runner keeps the job as its live completion surface, so the
+  // continuation stays blocked by the live detached work — never by an
+  // invented coordination loss.
+  const fixtureState = await stuckRescueChildIncident(t, { job: 'running', detached: true });
+  const { workspace, dataRoot, store, job, env, child } = fixtureState;
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env, input: PassThrough.from([continuationFrame()]) }),
+    (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_RECOVERY_PENDING', 'the live detached job still owns the writable binding');
+      return true;
+    });
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'running', 'the detached job is not cancelled by its child exit');
+  assert.equal(stored.stopIntent, undefined, 'no host-coordination-loss stop intent is written for detached execution');
+  const after = await incidentHookRecords(dataRoot, workspace, child);
+  assert.equal(after.route.state, 'active', 'child records stay untouched while the detached job owns the binding');
+  assert.deepEqual(await preparedRecords(dataRoot, workspace), [], 'no preparation is saved over the live detached job');
 });
 
 test('ambiguous stuck children preserve the planner ambiguity diagnostic without any evidence read', async (t) => {

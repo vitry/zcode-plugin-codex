@@ -54,6 +54,29 @@ async function hostOwnedJob(input, child = 'host-owned-diagnostic-child') {
   return value;
 }
 
+/**
+ * A queued Host-owned Rescue reservation carrying the exact placement and
+ * detached-runner evidence whose JOIN shapes the child-loss retain policy: the
+ * local executeJob wrapper claims it, so the interruption lands on a running
+ * accepted turn exactly like the production attached executor.
+ * @param {any} input @param {{child:string,placement:('foreground'|'background'),detached?:boolean}} options
+ */
+async function hostOwnedInterruptionReservation(input, { child, placement, detached = false }) {
+  const executor = exactExecutor(input.workspace, child);
+  const reserved = await input.store.reserveFreshRescueJob({
+    workspace: input.workspace,
+    reservation: {
+      workspace: input.workspace, ownerSessionId: executor.parentSessionId,
+      ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    },
+    executor,
+    lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: placement },
+    ...(detached ? { executionInput: { version: 1, task: 'bounded private task' } } : {}),
+  });
+  return reserved.job;
+}
+
 async function job(input, options = {}) {
   let value = await input.store.reserveJob({
     workspace: input.workspace,
@@ -915,6 +938,48 @@ test('executeJob interruption observes the accepted turn through coherent cancel
   }), (error) => error === interruption);
   assert.equal(stops, 2); assert.equal(reads, 3);
   assert.equal((await input.store.readJob(input.workspace, reservation.id)).status, 'cancelled');
+});
+
+test('executeJob interruption retains the remote turn for a foreground record with valid detached-runner evidence', async () => {
+  // The no-flag complex shape: actual Host placement foreground plus the valid
+  // runner-format marker. The executor's own interruption is detached handoff
+  // completion — never authority to stop the remote turn — so the exact remote
+  // session keeps executing and the durable record stays untouched for
+  // reconciliation (placement-split design, interruption-retain policy).
+  const input = await fixture();
+  const reservation = await hostOwnedInterruptionReservation(input, { child: 'detached-retain-child', placement: 'foreground', detached: true });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'foreground interrupted', { category: 'runtime', remedy: 'stop' });
+  let stops = 0;
+  const client = { ...executorClient(), stopSession: async () => { stops += 1; } };
+  await assert.rejects(executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client, task: 'interrupt', signal: controller.signal,
+    onBoundaryPersisted: async () => { controller.abort(interruption); },
+  }), (error) => error === interruption);
+  assert.equal(stops, 0, 'valid detached-runner evidence retains the remote turn — no session/stop is issued');
+  const stored = await input.store.readJob(input.workspace, reservation.id);
+  assert.equal(stored.status, 'running', 'the durable record is retained for reconciliation');
+  assert.equal(stored.stopIntent, undefined, 'no stop intent is minted for retained detached work');
+  assert.equal(stored.stopCause, undefined, 'no stop cause labels a retained detached record');
+});
+
+test('executeJob interruption retains the remote turn for a Host-owned background placement', async () => {
+  // A Host-owned BACKGROUND placement keeps its pre-existing retain semantics:
+  // child loss alone never stops the remote turn — only a genuine matching
+  // SessionEnd receipt authorizes stopping retained background work.
+  const input = await fixture();
+  const reservation = await hostOwnedInterruptionReservation(input, { child: 'background-retain-child', placement: 'background' });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'foreground interrupted', { category: 'runtime', remedy: 'stop' });
+  let stops = 0;
+  const client = { ...executorClient(), stopSession: async () => { stops += 1; } };
+  await assert.rejects(executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client, task: 'interrupt', signal: controller.signal,
+    onBoundaryPersisted: async () => { controller.abort(interruption); },
+  }), (error) => error === interruption);
+  assert.equal(stops, 0, 'background placement retains the remote turn — no session/stop is issued');
+  const stored = await input.store.readJob(input.workspace, reservation.id);
+  assert.equal(stored.status, 'running', 'the durable record is retained for reconciliation');
+  assert.equal(stored.stopIntent, undefined, 'no stop intent is minted for retained background work');
+  assert.equal(stored.stopCause, undefined, 'no stop cause labels a retained background record');
 });
 
 test('executeJob interruption returns coherent success as the terminal winner', async () => {
