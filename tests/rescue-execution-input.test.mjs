@@ -5,13 +5,22 @@ import {
   EFFORT_LEVELS,
   RESCUE_EXECUTION_INPUT_MAX_BYTES,
   RESCUE_EXECUTION_MODEL_MAX_BYTES,
+  RESCUE_RUNNER_HISTORICAL_VERSION,
   RESCUE_RUNNER_VERSION,
   validateRescueExecutionInput,
+  validDetachedRescueRunnerJob,
+  validDetachedRescueRunnerRecord,
+  validHistoricalDetachedRescueRunnerRecord,
+  markedRescueRunnerVersion,
 } from '../scripts/lib/rescue-execution-input.mjs';
+import { validHostLifecycleRecord } from '../scripts/lib/rescue-binding.mjs';
 import { RESCUE_TASK_MAX_BYTES } from '../scripts/lib/rescue-preparation.mjs';
 
 test('runner input constants keep the bounded private execution envelope', () => {
-  assert.equal(RESCUE_RUNNER_VERSION, 1);
+  // The split-schema marker versions NEW detached reservations; the historical
+  // pre-split marker keeps its stored background-only interpretation.
+  assert.equal(RESCUE_RUNNER_VERSION, 2);
+  assert.equal(RESCUE_RUNNER_HISTORICAL_VERSION, 1);
   assert.equal(RESCUE_EXECUTION_INPUT_MAX_BYTES, 512 * 1024);
   assert.equal(RESCUE_EXECUTION_MODEL_MAX_BYTES, 4 * 1024);
   assert.deepEqual([...EFFORT_LEVELS], ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -152,6 +161,90 @@ function rejectedExecutionInput(value) {
   try { validateRescueExecutionInput(value); } catch (error) { return error; }
   return undefined;
 }
+
+/** One complete Host-owned detached-runner record shape for the given placement. @param {string} hostPlacement */
+function detachedRunnerRecord(hostPlacement) {
+  return {
+    command: 'rescue', readOnly: false, rescueRunnerVersion: RESCUE_RUNNER_VERSION,
+    ownerLifecycleEpoch: 'a'.repeat(64), executionOwner: 'host-child', hostPlacement,
+  };
+}
+
+test('validDetachedRescueRunnerRecord admits complete Host lifecycle evidence with either placement', () => {
+  // Either recorded Host placement is lifecycle evidence only: the SPLIT-schema
+  // marker (version 2) keys admission on the complete Host lifecycle authority
+  // plus the exact runner-format marker, never on the placement value itself.
+  assert.equal(validDetachedRescueRunnerRecord(detachedRunnerRecord('foreground')), true);
+  assert.equal(validDetachedRescueRunnerRecord(detachedRunnerRecord('background')), true);
+  // The predicate builds on the complete Host lifecycle trio, not a placement
+  // comparison.
+  assert.equal(validHostLifecycleRecord(detachedRunnerRecord('foreground')), true);
+});
+
+test('the historical v1 marker keeps its stored background-only interpretation', () => {
+  const historical = (/** @type {string} */ hostPlacement) => ({
+    command: 'rescue', readOnly: false, rescueRunnerVersion: RESCUE_RUNNER_HISTORICAL_VERSION,
+    ownerLifecycleEpoch: 'a'.repeat(64), executionOwner: 'host-child', hostPlacement,
+  });
+  // Historical admission keeps exactly the historical requirements: complete
+  // lifecycle AND background placement. A pre-upgrade in-flight record is never
+  // reinterpreted as split evidence.
+  assert.equal(validHistoricalDetachedRescueRunnerRecord(historical('background')), true);
+  assert.equal(validDetachedRescueRunnerJob(historical('background')), true);
+  assert.equal(validDetachedRescueRunnerRecord(historical('background')), false,
+    'the split predicate never admits the historical format');
+  // THE REGRESSION: a v1 marker with foreground placement is malformed/tampered
+  // state that the pre-split schema always rejected — it fails every detached
+  // predicate and must never pass validation, admission, or child-exit policy.
+  assert.equal(validHistoricalDetachedRescueRunnerRecord(historical('foreground')), false);
+  assert.equal(validDetachedRescueRunnerJob(historical('foreground')), false);
+  assert.equal(validDetachedRescueRunnerRecord(historical('foreground')), false);
+  // The historical predicate stays closed on the same record shape.
+  assert.equal(validHistoricalDetachedRescueRunnerRecord({ ...historical('background'), readOnly: true }), false);
+  assert.equal(validHistoricalDetachedRescueRunnerRecord({ ...historical('background'), command: 'review' }), false);
+  assert.equal(validHistoricalDetachedRescueRunnerRecord({ ...historical('background'), ownerLifecycleEpoch: 'not-a-digest' }), false);
+  // The combined admission covers exactly the two valid persisted formats.
+  assert.equal(validDetachedRescueRunnerJob({ ...detachedRunnerRecord('background'), rescueRunnerVersion: 3 }), false);
+  assert.equal(validDetachedRescueRunnerJob(null), false);
+  assert.equal(validDetachedRescueRunnerJob([]), false);
+});
+
+test('markedRescueRunnerVersion names exactly the claimable marker versions', () => {
+  // Both persisted formats name a local detached runner process for the
+  // claim/lease/stop-fence duties; anything else is unmarked.
+  assert.equal(markedRescueRunnerVersion(RESCUE_RUNNER_HISTORICAL_VERSION), true);
+  assert.equal(markedRescueRunnerVersion(RESCUE_RUNNER_VERSION), true);
+  for (const unmarked of [undefined, null, 0, 3, '1', '2', true]) {
+    assert.equal(markedRescueRunnerVersion(unmarked), false, String(unmarked));
+  }
+});
+
+test('validDetachedRescueRunnerRecord fails closed without the exact closed evidence', () => {
+  for (const invalid of /** @type {unknown[]} */ ([
+    // Non-record shapes.
+    null, undefined, 'rescue', 1, true, [], [detachedRunnerRecord('foreground')],
+    // Attached and non-Rescue commands never carry the detached marker.
+    { ...detachedRunnerRecord('foreground'), command: 'review' },
+    { ...detachedRunnerRecord('foreground'), command: 'transfer' },
+    // A read-only Rescue is never a detached runner record.
+    { ...detachedRunnerRecord('foreground'), readOnly: true },
+    // The marker must be exactly the split-schema version; the historical v1
+    // never admits through the split predicate.
+    { ...detachedRunnerRecord('foreground'), rescueRunnerVersion: RESCUE_RUNNER_HISTORICAL_VERSION },
+    { ...detachedRunnerRecord('foreground'), rescueRunnerVersion: 3 },
+    { ...detachedRunnerRecord('foreground'), rescueRunnerVersion: '2' },
+    // Incomplete or invalid Host lifecycle authority fails closed.
+    { ...detachedRunnerRecord('foreground'), ownerLifecycleEpoch: undefined },
+    { ...detachedRunnerRecord('foreground'), ownerLifecycleEpoch: 'not-a-digest' },
+    { ...detachedRunnerRecord('foreground'), ownerLifecycleEpoch: 'a'.repeat(63) },
+    { ...detachedRunnerRecord('background'), executionOwner: undefined },
+    { ...detachedRunnerRecord('background'), executionOwner: 'detached-worker' },
+    { ...detachedRunnerRecord('background'), hostPlacement: undefined },
+    { ...detachedRunnerRecord('background'), hostPlacement: 'detached' },
+  ])) {
+    assert.equal(validDetachedRescueRunnerRecord(invalid), false, JSON.stringify(invalid) ?? String(invalid));
+  }
+});
 
 test('validateRescueExecutionInput rejects unknown shapes before traversing their values', () => {
   // A deeply self-similar value under an unknown key must reach the bounded

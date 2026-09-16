@@ -1841,7 +1841,7 @@ test('new runner queued jobs never fail from age alone and settle only with a pr
   const failed = await unclaimed.store.readJob(workspaceB, claimed.job.id);
   assert.equal(failed.status, 'failed');
   assert.equal('rescueExecutionInput' in failed, false);
-  assert.equal(failed.rescueRunnerVersion, 1);
+  assert.equal(failed.rescueRunnerVersion, 2);
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -1873,7 +1873,7 @@ test('unclaimed queued runner jobs settle a durable stop intent as cancelled dur
     assert.equal(settled.stopCause, 'user', kind);
     assert.equal(settled.stopIntent.cause, 'user', kind);
     assert.equal('rescueExecutionInput' in settled, false, `${kind}: the runner input is removed with the cancelled settlement`);
-    assert.equal(settled.rescueRunnerVersion, 1, kind);
+    assert.equal(settled.rescueRunnerVersion, 2, kind);
     assert.equal(await caseContext.store.rescueBindingForJob({ workspace: selectedWorkspace, ownerSessionId: 'owner', jobId: caseContext.job.id }), null,
       `${kind}: the cancelled settlement closes the exact operation binding`);
   }
@@ -1967,7 +1967,7 @@ test('a durable queued stop intent wins recovery settlement over pre-start failu
   assert.equal(settled.stopCause, 'session-end');
   assert.equal(settled.stopIntent.cause, 'session-end');
   assert.equal('rescueExecutionInput' in settled, false);
-  assert.equal(settled.rescueRunnerVersion, 1);
+  assert.equal(settled.rescueRunnerVersion, 2);
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -2367,7 +2367,7 @@ async function hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent, epoch
   const fenced = await store.readJob(workspace, stored.id);
   assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
   assert.equal(fenced.rescueExecutionReservation.workerLeaseId, lease, 'the fixture must carry the fence lease');
-  assert.equal(fenced.rescueRunnerVersion, 1, 'the fixture must model a marked runner reservation');
+  assert.equal(fenced.rescueRunnerVersion, 2, 'the fixture must model a marked runner reservation');
   return { store, job: fenced, workerLeaseId: lease };
 }
 
@@ -2618,7 +2618,7 @@ test('SessionEnd settles a claimed queued marked runner as intent -> kill -> acq
   assert.equal(outcome.job.status, 'cancelled');
   assert.equal(outcome.job.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in outcome.job, false, 'the queued terminal removes the private input');
-  assert.equal(outcome.job.rescueRunnerVersion, 1, 'the marker persists through the terminal record');
+  assert.equal(outcome.job.rescueRunnerVersion, 2, 'the marker persists through the terminal record');
   assert.equal(endedObligationSettled(outcome), true, 'the settled terminal discharges the receipt');
   await cleanupRecoveryFixture(fixture);
 });
@@ -3008,7 +3008,7 @@ test('discovery surfaces a terminal marked runner still holding its lease and th
     assert.equal(outcome.job.status, 'succeeded', 'the terminal winner is untouched');
     assert.equal(processAlive(held.holderChild.pid), false, 'the still-held marked runner lease drives the bounded process-tree termination');
     const stored = await held.store.readJob(workspace, held.job.id);
-    assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists for the cleanup selection until the executor releases it');
+    assert.equal(stored.rescueRunnerVersion, 2, 'the marker persists for the cleanup selection until the executor releases it');
     void free;
   } finally { try { process.kill(-held.holderChild.pid, 'SIGKILL'); } catch { /* already terminated by the pass */ } }
   await cleanupRecoveryFixture(fixture);

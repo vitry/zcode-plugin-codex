@@ -1,13 +1,87 @@
 import { PluginError } from './errors.mjs';
+import { validHostLifecycleRecord } from './rescue-binding.mjs';
 import { RESCUE_TASK_MAX_BYTES } from './rescue-preparation.mjs';
 
 /**
- * Durable execution-format identity of one new detached Rescue runner job.
- * The marker is immutable evidence retained through terminal state; unknown
- * versions fail closed. Absence preserves historical attached-background and
- * legacy detached handling.
+ * Durable execution-format identity of one SPLIT-schema detached Rescue runner
+ * job. Version 2 markers are written only by the split-placement reservations
+ * (either recorded Host placement is lifecycle evidence) and admitted by the
+ * closed predicate below. The marker is immutable evidence retained through
+ * terminal state; unknown versions fail closed.
  */
-export const RESCUE_RUNNER_VERSION = 1;
+export const RESCUE_RUNNER_VERSION = 2;
+
+/**
+ * The historical runner-format marker of every PRE-split detached Rescue job.
+ * Historical records keep their stored interpretation — a v1 marker is valid
+ * detached evidence only beside a background Host placement, exactly as the
+ * pre-split schema required — and are never migrated or reinterpreted as
+ * split evidence.
+ */
+export const RESCUE_RUNNER_HISTORICAL_VERSION = 1;
+
+/**
+ * The private `rescueExecutionInput` envelope version, decided independently
+ * of the marker: the bounded execution envelope predates the placement split,
+ * keeps version 1 across it, and never rides the marker's format version.
+ */
+export const RESCUE_EXECUTION_INPUT_VERSION = 1;
+
+/**
+ * The closed detached-runner admission predicate of one split-schema Rescue
+ * record: complete Host lifecycle authority plus valid detached Companion
+ * execution evidence (the exact split marker). The recorded `hostPlacement`
+ * is lifecycle evidence of the Host side only — it neither authorizes nor
+ * rejects a runner by itself — so admission keys on the complete trio, the
+ * writable Rescue command, and the known marker version, and never compares
+ * placement.
+ * @param {any} record @returns {boolean}
+ */
+export function validDetachedRescueRunnerRecord(record) {
+  return record !== null && typeof record === 'object' && !Array.isArray(record)
+    && record.command === 'rescue' && record.readOnly === false
+    && record.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+    && validHostLifecycleRecord(record);
+}
+
+/**
+ * The retained historical-format predicate: a pre-split v1 marker record is
+ * valid detached evidence exactly as the pre-split schema required — complete
+ * Host lifecycle authority AND background Host placement — never reinterpreted
+ * for foreground records, which that schema always rejected. Historical
+ * records keep their stored interpretation; nothing migrates.
+ * @param {any} record @returns {boolean}
+ */
+export function validHistoricalDetachedRescueRunnerRecord(record) {
+  return record !== null && typeof record === 'object' && !Array.isArray(record)
+    && record.command === 'rescue' && record.readOnly === false
+    && record.rescueRunnerVersion === RESCUE_RUNNER_HISTORICAL_VERSION
+    && validHostLifecycleRecord(record) && record.hostPlacement === 'background';
+}
+
+/**
+ * Every persisted detached-runner format that state validation, runner
+ * admission, and detached-semantics selection admit: the split-schema marker
+ * with either Host placement, or the historical marker with its stored
+ * background-only interpretation. Any other marker shape (unknown versions, a
+ * historical version beside a foreground placement) fails closed.
+ * @param {any} record @returns {boolean}
+ */
+export function validDetachedRescueRunnerJob(record) {
+  return validDetachedRescueRunnerRecord(record) || validHistoricalDetachedRescueRunnerRecord(record);
+}
+
+/**
+ * Whether one durable `rescueRunnerVersion` value names a detached-runner
+ * marker of a still-claimable format: the claim/lease/stop-fence duties
+ * recognize the exact claim of either persisted format (both already passed
+ * state validation), so an in-flight historical runner keeps its local
+ * cleanup/termination semantics.
+ * @param {unknown} value @returns {boolean}
+ */
+export function markedRescueRunnerVersion(value) {
+  return value === RESCUE_RUNNER_HISTORICAL_VERSION || value === RESCUE_RUNNER_VERSION;
+}
 
 /** Serialized `rescueExecutionInput` envelope bound, measured as UTF-8 JSON text bytes. */
 export const RESCUE_EXECUTION_INPUT_MAX_BYTES = 512 * 1024;
@@ -68,7 +142,7 @@ export function validateRescueExecutionInput(value) {
   const task = fields.get('task');
   const model = fields.get('model');
   const effort = fields.get('effort');
-  if (version !== RESCUE_RUNNER_VERSION) invalidFields.push('version');
+  if (version !== RESCUE_EXECUTION_INPUT_VERSION) invalidFields.push('version');
   if (!isBoundedTask(task)) invalidFields.push('task');
   if (model !== undefined && !isBoundedModel(model)) invalidFields.push('model');
   if (effort !== undefined && !EFFORT_LEVELS.includes(effort)) invalidFields.push('effort');

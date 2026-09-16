@@ -775,7 +775,7 @@ test('claimed queued cancellation persists its stop intent and a later controlle
   assert.deepEqual(kills, [process.pid], 'a released lease never authorizes another signal of the recorded pid');
   const settled = await store.readJob(workspace, job.id);
   assert.equal('rescueExecutionInput' in settled, false);
-  assert.equal(settled.rescueRunnerVersion, 1);
+  assert.equal(settled.rescueRunnerVersion, 2);
 });
 
 test('claimed queued cancellation converges when a delegated intent wins the persistence race', async () => {
@@ -837,7 +837,7 @@ async function reserveFencedRunnerRescue(workspace, store, agentId) {
   const fenced = await store.readJob(workspace, reserved.job.id);
   assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
   assert.equal(fenced.rescueExecutionReservation.workerLeaseId, workerLeaseId, 'the fixture must carry the fence lease');
-  assert.equal(fenced.rescueRunnerVersion, 1, 'the fixture must model a marked runner reservation');
+  assert.equal(fenced.rescueRunnerVersion, 2, 'the fixture must model a marked runner reservation');
   return { job: fenced, workerLeaseId };
 }
 
@@ -868,7 +868,7 @@ test('cancellation defers a fenced not-yet-claimed queued runner to its live res
   assert.equal(winner.stopIntent.cause, 'user');
   const settled = await store.readJob(workspace, job.id);
   assert.equal('rescueExecutionInput' in settled, false);
-  assert.equal(settled.rescueRunnerVersion, 1);
+  assert.equal(settled.rescueRunnerVersion, 2);
 });
 
 test('cancellation settles a fenced queued runner through its free reservation lease, never the unclaimed shortcut', async () => {
@@ -3253,7 +3253,7 @@ test('management reconciliation terminates the live marked runner before reporti
     const winner = await store.readJob(workspace, reserved.job.id);
     assert.equal(winner.status, 'cancelled');
     assert.equal(winner.stopCause, 'user');
-    assert.equal(winner.rescueRunnerVersion, 1, 'the marker persists through the terminal record');
+    assert.equal(winner.rescueRunnerVersion, 2, 'the marker persists through the terminal record');
   } finally {
     try { process.kill(-holderPid, 'SIGKILL'); } catch { /* terminated by the reconciliation */ }
     await rm(root, { force: true, recursive: true }).catch(() => {});

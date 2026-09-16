@@ -9,7 +9,7 @@ import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
-import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
+import { markedRescueRunnerVersion } from './rescue-execution-input.mjs';
 import { isJobNotFound } from './state.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
@@ -235,7 +235,7 @@ export async function discoverSessionEndObligations(input) {
  * (a durably-stopped marked claim still owes its cleanup duty before its
  * broker owner may be released). @param {any} job */
 export function isMarkedRunnerClaim(job) {
-  return isWritableRescueObligation(job) && job.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+  return isWritableRescueObligation(job) && markedRescueRunnerVersion(job.rescueRunnerVersion)
     && isDigest(job.workerLeaseId) && Number.isSafeInteger(job.childPid) && job.childPid > 0;
 }
 
@@ -741,7 +741,7 @@ async function settleSelectedJob(input) {
     // exactly, and cleanup failures leave the durable evidence re-arming the
     // duty for the next bounded pass — no separate cleanup ledger.
     let runnerCleanupOutcome = null;
-    if (isDigest(workerLeaseId) && current.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+    if (isDigest(workerLeaseId) && markedRescueRunnerVersion(current.rescueRunnerVersion)
       && validStopIntent(current.stopIntent)) {
       // THE SETTLEMENT INVARIANT (recovery-pass convergence): the kill decision
       // and the dead-root descendant sweep run in the SAME pass inside the

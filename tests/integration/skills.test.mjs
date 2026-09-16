@@ -2093,7 +2093,7 @@ test('named and generic Rescue children enqueue true background work and return 
       assert.ok(job, `the ${route} child must reserve exactly one job`);
       assert.equal(job.executionOwner, 'host-child');
       assert.equal(job.hostPlacement, 'background');
-      assert.equal(job.rescueRunnerVersion, 1);
+      assert.equal(job.rescueRunnerVersion, 2);
       // The acknowledgement is the accepted-reservation snapshot only: queued
       // text naming the pull interfaces, never a readiness or terminal claim.
       assert.equal(launched.stdout, `Rescue job ${job.id} queued for background execution.\nCheck progress with $zcode:status; read the final result with $zcode:result.\n`);

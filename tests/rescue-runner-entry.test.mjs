@@ -157,7 +157,7 @@ test('a real detached runner child claims and executes its exact Host-owned back
   const context = await fixture();
   const reserved = await context.reserveBackground();
   assert.equal(reserved.status, 'queued');
-  assert.equal(reserved.rescueRunnerVersion, 1);
+  assert.equal(reserved.rescueRunnerVersion, 2);
   const record = context.record;
   await writeFile(record, '');
   // The REAL OS spawn adapter with no test overrides: the child is the
@@ -192,7 +192,7 @@ test('a real detached runner child claims and executes its exact Host-owned back
   // Task 3's settled behavior holds because the shared seams ran: the private
   // input is removed on running publication while the marker is retained.
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   // The turn ran exactly once against the fake ZCode with the private task.
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean)
     .map((/** @type {string} */ line) => JSON.parse(line));
@@ -256,7 +256,7 @@ test('a linked-worktree runner claims and executes by resolving admission agains
   // The reservation authority persisted the origin-workspace provenance beside
   // the runner marker, while execution stays bound to the linked workspace.
   assert.equal(reserved.rescueOriginWorkspace, originWorkspace);
-  assert.equal(reserved.rescueRunnerVersion, 1);
+  assert.equal(reserved.rescueRunnerVersion, 2);
   assert.equal(reserved.workspace, executionWorkspace);
   const record = join(directory, 'fake-zcode-requests.jsonl');
   await writeFile(record, '');
@@ -270,7 +270,7 @@ test('a linked-worktree runner claims and executes by resolving admission agains
   assert.equal(typeof job.childPid, 'number');
   assert.equal(/^\b[a-f0-9]{64}\b$/u.test(job.workerLeaseId ?? ''), true);
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   const requests = await recordedRequests(record);
   assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/create').length, 1);
   assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 1);
@@ -382,7 +382,40 @@ test('a superseded lifecycle epoch rejects dispatch with no remote call', {
   assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 0);
 });
 
-test('the runner entry rejects a foreground placement job with a bounded error and no partial state', async () => {
+/** Task 5 admission: Host placement is lifecycle evidence, not an admission
+ * gate. A foreground lifecycle record with complete detached evidence is
+ * claimed and executed exactly like the historical background record. */
+test('a foreground placement job with complete detached evidence is claimed and executed by the runner entry', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = (await context.store.reserveFreshRescueJob({
+    workspace: context.workspace, reservation: context.reservation('turn-runner-detached-fg'),
+    executor: context.executor('detached-fg', 'turn-runner-detached-fg'),
+    lifecycle: { ...context.lifecycle, hostPlacement: 'foreground' },
+    executionInput: { version: 1, task: PRIVATE_TASK },
+  })).job;
+  assert.equal(reserved.hostPlacement, 'foreground');
+  assert.equal(reserved.rescueRunnerVersion, 2);
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  await runRunnerEntry(context, ['run-host-rescue-job', reserved.id]);
+  const job = await context.store.readJob(context.workspace, reserved.id);
+  assert.equal(job.status, 'succeeded',
+    `the runner must execute the foreground placement job; error: ${JSON.stringify(job.error ?? null)}`);
+  assert.equal(typeof job.childPid, 'number');
+  assert.equal(job.rescueExecutionInput, undefined);
+  assert.equal(job.rescueRunnerVersion, 2);
+  const requests = await recordedRequests(context.record);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 1);
+  assert.ok(JSON.stringify(requests.find((/** @type {any} */ request) => request.method === 'session/send')).includes(PRIVATE_TASK));
+});
+
+/** Admission keys on the detached-runner evidence, never on the placement: a
+ * Host-owned record WITHOUT the runner marker is not a runner job, whatever
+ * its placement. */
+test('the runner entry rejects a placement job without detached runner evidence with a bounded error and no partial state', async () => {
   const context = await fixture();
   const reserved = (await context.store.reserveFreshRescueJob({
     workspace: context.workspace, reservation: context.reservation('turn-runner-foreground'),
@@ -395,6 +428,66 @@ test('the runner entry rejects a foreground placement job with a bounded error a
   assert.equal(job.status, 'queued');
   assert.equal(job.childPid, undefined);
   assert.equal(job.workerLeaseId, undefined);
+});
+
+/** Historical-format preservation: a pre-upgrade in-flight v1 background
+ * runner job (its marker rewritten to the historical version on the durable
+ * record) stays claimable and executable — readers and controllers for
+ * historical detached jobs are retained, and the format is never migrated. */
+test('an in-flight historical v1 background runner job is still claimed and executed', {
+  timeout: scaleTestTimeout(120_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = await context.reserveBackground();
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const jobPath = join(storage.directory, 'jobs', `${reserved.id}.json`);
+  const record = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(record.rescueRunnerVersion, 2);
+  await atomicWriteJson(jobPath, { ...record, rescueRunnerVersion: 1 });
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  await runRunnerEntry(context, ['run-host-rescue-job', reserved.id]);
+  const job = await context.store.readJob(context.workspace, reserved.id);
+  assert.equal(job.status, 'succeeded', `the historical runner must execute; error: ${JSON.stringify(job.error ?? null)}`);
+  assert.equal(job.rescueRunnerVersion, 1, 'the historical format is preserved through execution');
+  assert.equal(job.rescueExecutionInput, undefined);
+  const requests = await recordedRequests(context.record);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((/** @type {any} */ request) => request.method === 'session/send').length, 1);
+});
+
+/** THE REGRESSION: a v1 marker beside a foreground placement is malformed/
+ * tampered state the pre-split schema always rejected — the runner entry must
+ * fail closed (state validation rejects the record before any claim), never
+ * admit it as a detached job. */
+test('a historical v1 marker with foreground placement fails runner admission closed', {
+  timeout: scaleTestTimeout(60_000),
+}, async (t) => {
+  const context = await fixture();
+  const reserved = (await context.store.reserveFreshRescueJob({
+    workspace: context.workspace, reservation: context.reservation('turn-runner-historical-fg'),
+    executor: context.executor('historical-fg', 'turn-runner-historical-fg'),
+    lifecycle: { ...context.lifecycle, hostPlacement: 'foreground' },
+    executionInput: { version: 1, task: PRIVATE_TASK },
+  })).job;
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const jobPath = join(storage.directory, 'jobs', `${reserved.id}.json`);
+  const record = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(record.rescueRunnerVersion, 2);
+  await atomicWriteJson(jobPath, { ...record, rescueRunnerVersion: 1 });
+  await writeFile(context.record, '');
+  t.after(() => rm(context.directory, { force: true, recursive: true }).catch(() => {}));
+  await assert.rejects(() => runRunnerEntry(context, ['run-host-rescue-job', reserved.id]),
+    (/** @type {any} */ error) => typeof error.code === 'string' && error.category !== undefined);
+  // Fail closed: the tampered record is never claimed and never settled —
+  // state validation rejects it before the runner can even see a queued job.
+  const job = await context.store.readJob(context.workspace, reserved.id).catch(() => null);
+  assert.ok(job === null, 'the tampered v1 foreground record fails persisted validation');
+  const persisted = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(persisted.status, 'queued');
+  assert.equal(persisted.childPid, undefined);
+  assert.equal(persisted.workerLeaseId, undefined);
+  assert.deepEqual(await recordedRequests(context.record), [], 'no remote call is ever made for tampered state');
 });
 
 test('the runner entry rejects a legacy unmarked job with a bounded error and no partial state', async () => {
@@ -514,7 +607,7 @@ test('a setup failure before send settles the runner\'s own exact claim as faile
   assert.match(job.error?.message ?? '', /fixture runner setup failed before send/u);
   assert.ok(job.error.message.length <= 2048);
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.equal(/^\b[a-f0-9]{64}\b$/u.test(job.workerLeaseId ?? ''), true);
   assert.equal(job.zcodeSessionId, undefined);
   assert.equal(job.startedAt, undefined);

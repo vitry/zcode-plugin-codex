@@ -33,7 +33,7 @@ import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { RESCUE_RUNNER_SUBCOMMAND, spawnRescueRunner } from './lib/rescue-runner.mjs';
-import { RESCUE_RUNNER_VERSION, queuedRescueAcknowledgement, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
+import { queuedRescueAcknowledgement, RESCUE_EXECUTION_INPUT_VERSION, validDetachedRescueRunnerJob, validDetachedRescueRunnerRecord, validateRescueExecutionInput } from './lib/rescue-execution-input.mjs';
 import { createStateStore, resumableHostOwnedCancellation, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -1452,10 +1452,12 @@ async function startPublic(context) {
   // bounds unchanged and never touches `validateRescueExecutionInput`.
   // Validation still runs BEFORE any reservation write, so an invalid
   // task/model/effort never writes state, and the StateStore accepts the input
-  // only on a valid Host-owned background Rescue reservation (the marker rides
-  // along with the input inside the locked publication).
+  // only on a valid Host-owned detached Rescue reservation (the marker rides
+  // along with the input inside the locked publication). The input envelope
+  // keeps its own version identity — the split marker's format version never
+  // changes the bounded execution envelope.
   const buildRescueExecutionInput = () => validateRescueExecutionInput({
-    version: RESCUE_RUNNER_VERSION,
+    version: RESCUE_EXECUTION_INPUT_VERSION,
     task: parsed.positionals.join(' ') || context.originalPrompt,
     ...(parsed.options.model === undefined ? {} : { model: parsed.options.model }),
     ...(parsed.options.effort === undefined ? {} : { effort: parsed.options.effort }),
@@ -2015,11 +2017,12 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
  * automatically. The canonical workspace and installed data root are resolved
  * by the ordinary runtime configuration — never CLI options — and the exact
  * stored job carries every execution parameter. The runner is placement, not
- * authority: foreground, legacy, malformed, terminal, and non-background
- * records are rejected before any claim, the task never crosses argv or
- * model-visible output, and the detached process exits only after the shared
- * path has published a terminal winner or completed its retained-error
- * cleanup.
+ * authority: admission keys on the shared detached-runner predicate — complete
+ * Host lifecycle plus the exact marker — never on Host placement, and legacy
+ * unmarked, malformed, and terminal records are rejected before any claim.
+ * The task never crosses argv or model-visible output, and the detached
+ * process exits only after the shared path has published a terminal winner or
+ * completed its retained-error cleanup.
  * @param {any} input
  */
 async function runHostRescueJob({ parsed, cwd, env, dataRoot, store, dependencies, signal }) {
@@ -2074,19 +2077,18 @@ function hostRescueRunnerAdmissionGate({ dataRoot, workspace, job }) {
 }
 
 /**
- * Read and fully validate the one exact queued Host-owned background runner
- * job: `rescueRunnerVersion` 1, a complete Host-owned background lifecycle
- * trio, and a stored `rescueExecutionInput` revalidated against the closed
- * schema. Everything else fails closed with a bounded error and no partial
- * state.
+ * Read and fully validate the one exact queued detached runner job through the
+ * shared closed predicates: a complete Host-owned writable Rescue record
+ * carrying the split-schema runner marker (either recorded Host placement,
+ * which is lifecycle evidence only) or an in-flight historical v1 marker
+ * keeping its stored background-only interpretation — plus a stored
+ * `rescueExecutionInput` revalidated against the closed schema. Everything
+ * else fails closed with a bounded error and no partial state.
  * @param {any} store @param {string} cwd @param {string} jobId
  */
 async function readRunnableHostRescueJob(store, cwd, jobId) {
   const job = await store.readJob(cwd, jobId);
-  if (job.command !== 'rescue' || job.readOnly !== false
-    || job.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
-    || !validHostLifecycleRecord(job) || job.hostPlacement !== 'background'
-    || job.executionOwner !== 'host-child') throw hostRescueRunnerJobRejected('format');
+  if (!validDetachedRescueRunnerJob(job)) throw hostRescueRunnerJobRejected('format');
   if (job.status !== 'queued') throw hostRescueRunnerJobRejected('status');
   // The durable record reader already enforces the stored shape; this second
   // closed-schema validation is the execution-boundary gate.
@@ -2121,7 +2123,7 @@ async function hostRescueRunnerSpec(store, cwd, job, executionInput) {
 
 /** @param {'format'|'status'} reason */
 function hostRescueRunnerJobRejected(reason) {
-  return new PluginError('RESCUE_RUNNER_JOB_NOT_EXECUTABLE', 'The selected Rescue job is not a queued Host-owned background runner job.', {
+  return new PluginError('RESCUE_RUNNER_JOB_NOT_EXECUTABLE', 'The selected Rescue job is not a queued detached Rescue runner job.', {
     category: 'authorization',
     remedy: 'Public knowledge of a job ID is not execution authorization; start a new background Rescue from the active parent turn.',
     details: { reason },

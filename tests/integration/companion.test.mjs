@@ -2763,7 +2763,7 @@ test('new background Rescue reserves privately, spawns one detached runner, and 
   // no-flag complex mapping keeps Host foreground beside the detached marker.
   assert.equal(job.hostPlacement, 'foreground');
   assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'true background child' });
   // The enqueue executed nothing: the fake ZCode observed no frames, and the
   // queued acknowledgement claimed no completion notification.
@@ -2830,7 +2830,7 @@ test('background enqueue returns queued while the detached runner is blocked bef
   const job = await store.readJob(workspace, output.job.id);
   assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(frames.filter((frame) => frame.method === 'session/send').length, 1);
 });
@@ -2868,7 +2868,7 @@ test('a runner that finishes before the queued acknowledgement still receives th
   const job = await store.readJob(workspace, output.job.id);
   assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   // Neither ordering claims the completion notification: the terminal job
   // stays unread for the next UserPromptSubmit.
   assert.deepEqual(await peekUnreadJobs(context.dataRoot, workspace, parentSessionId), [{ id: output.job.id, status: 'succeeded' }]);
@@ -2895,7 +2895,7 @@ test('a deterministic runner launch failure settles the fresh queued job failed 
   assert.equal(job.startedAt, undefined);
   assert.equal(job.zcodeSessionId, undefined);
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1, 'the runner marker is retained through the terminal settlement');
+  assert.equal(job.rescueRunnerVersion, 2, 'the runner marker is retained through the terminal settlement');
   assert.equal(await readFile(record, 'utf8'), '');
   // The surfaced launch error's own public envelope carries no private data.
   assert.doesNotMatch(renderOutput(errorEnvelope(failure), { json: true }), /unlaunchable fresh child/u);
@@ -2935,7 +2935,7 @@ test('a deterministic runner launch failure restores an active continuation to i
   assert.equal(failed?.zcodeSessionId, undefined);
   assert.equal(failed?.rescueContinuationOrigin, undefined);
   assert.equal(failed?.rescueExecutionInput, undefined);
-  assert.equal(failed?.rescueRunnerVersion, 1);
+  assert.equal(failed?.rescueRunnerVersion, 2);
   // The exact prior binding was restored: the anchor is current again, and a
   // late runner claim for the failed attempt rejects.
   const binding = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
@@ -2979,7 +2979,7 @@ test('a launch failure whose pre-start settlement also fails surfaces both failu
   // the boundary owner's later settlement, and nothing executed.
   const [queued] = await realStore.listJobs(workspace);
   assert.equal(queued.status, 'queued');
-  assert.equal(queued.rescueRunnerVersion, 1);
+  assert.equal(queued.rescueRunnerVersion, 2);
   assert.deepEqual(queued.rescueExecutionInput, { version: 1, task: 'unlaunchable faulted settlement child' });
   assert.equal(await readFile(record, 'utf8'), '');
   const recovered = await realStore.finishJob(workspace, queued.id, ['queued'], 'failed',
@@ -3025,7 +3025,7 @@ test('a launch failure whose settlement lost to a confirmed concurrent winner su
   assert.equal(job.status, 'failed');
   assert.equal(job.error.message, 'concurrent recovery settled the job');
   assert.equal(job.rescueExecutionInput, undefined);
-  assert.equal(job.rescueRunnerVersion, 1, 'the runner marker is retained through the terminal settlement');
+  assert.equal(job.rescueRunnerVersion, 2, 'the runner marker is retained through the terminal settlement');
 });
 
 test('a failed queued-acknowledgement delivery leaves the accepted job intact without a relaunch', async (t) => {
@@ -3049,7 +3049,7 @@ test('a failed queued-acknowledgement delivery leaves the accepted job intact wi
   const store = createStateStore({ dataRoot: context.dataRoot });
   const job = await store.readJob(workspace, output.job.id);
   assert.equal(job.status, 'queued');
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'lost acknowledgement child' });
 });
 
@@ -3193,7 +3193,7 @@ for (const resume of /** @type {const} */ (['fresh', 'resume'])) for (const exec
       'the matrix runner never finished', scaleTestTimeout(60_000));
     const job = await store.readJob(workspace, output.job.id);
     assert.equal(job.status, 'succeeded', `error: ${JSON.stringify(job.error ?? null)}`);
-    assert.equal(job.rescueRunnerVersion, 1);
+    assert.equal(job.rescueRunnerVersion, 2);
     assert.equal(job.rescueExecutionInput, undefined);
     if (resume === 'resume') {
       assert.equal(job.zcodeSessionId, anchorSessionId,
@@ -3250,7 +3250,7 @@ test('child-authorized bound continuations reserve the Host lifecycle trio and p
   assert.equal(job.executionOwner, 'host-child');
   assert.equal(job.hostPlacement, 'background');
   assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'continue attached' });
   assert.equal(job.rescueContinuationOrigin?.priorBinding?.anchorJobId, first.job.id,
     'the continuation reserves the exact original anchor session');
@@ -3324,7 +3324,7 @@ test('prepared v4 placements route Companion execution and Host placement indepe
         statusCommand: '$zcode:status',
       });
       assert.equal(runnerSpawns.count, 1);
-      assert.equal(job.rescueRunnerVersion, 1);
+      assert.equal(job.rescueRunnerVersion, 2);
       assert.deepEqual(job.rescueExecutionInput, { version: 1, task: `v4 matrix ${index}` });
       assert.equal(job.executionOwner, 'host-child');
       assert.equal(job.ownerLifecycleEpoch, hostLifecycleEpoch(parentSessionId, startedAt));
@@ -3366,7 +3366,7 @@ test('v3 preparation keeps the coupled placement contract', async (t) => {
   assert.equal(runnerSpawns.count, 1);
   const job = await store.readJob(workspace, output.job.id);
   assert.equal(job.hostPlacement, 'background');
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.deepEqual(job.rescueExecutionInput, { version: 1, task: 'v3 coupled child' });
 });
 
@@ -3610,7 +3610,7 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) for
   assert.equal(failed?.rescueContinuationOrigin, undefined); assert.equal(failed?.rescueExecutionClaim, undefined);
   assert.equal(failed?.rescueExecutionReservation, undefined);
   if (execution === 'background') {
-    assert.equal(failed?.rescueRunnerVersion, 1, 'the runner marker survives the rollback settlement');
+    assert.equal(failed?.rescueRunnerVersion, 2, 'the runner marker survives the rollback settlement');
     assert.equal(failed?.childPid === undefined || (await waitForProcessExit(failed.childPid, 15_000)), true,
       'the failed detached runner exits after its settlement');
   }
@@ -5805,7 +5805,7 @@ test('cancel responses are allowlists and never expose the persisted rescue runn
   const queued = (await store.reserveFreshRescueJob({
     workspace: context.workspace, reservation: reservation('turn-cancel-projection'), executor: executor('queued'), lifecycle, executionInput: runnerInput,
   })).job;
-  assert.equal(queued.rescueRunnerVersion, 1);
+  assert.equal(queued.rescueRunnerVersion, 2);
   assert.equal(queued.rescueExecutionInput.task, runnerInput.task);
   const queuedCancel = await runCompanion(['cancel', queued.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-cancel-queued', permissionMode: 'workspace-write' } });
   assertAllowlistedCancelResponse(queuedCancel, 'queued cancel');
@@ -5840,7 +5840,7 @@ test('cancel responses are allowlists and never expose the persisted rescue runn
   };
   const runningCancel = await runCompanion(['cancel', running.id], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-cancel-running', permissionMode: 'workspace-write' }, dependencies });
   assertAllowlistedCancelResponse(runningCancel, 'running cancel');
-  assert.equal((await store.readJob(context.workspace, running.id)).rescueRunnerVersion, 1, 'the runner marker stays retained through terminal state in the durable record');
+  assert.equal((await store.readJob(context.workspace, running.id)).rescueRunnerVersion, 2, 'the runner marker stays retained through terminal state in the durable record');
 });
 
 test('successful Result views are allowlisted and lose resumability once the exact binding advances', async () => {

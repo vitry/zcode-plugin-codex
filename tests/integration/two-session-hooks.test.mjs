@@ -1250,7 +1250,7 @@ test('SessionEnd terminates a claimed-queued marked runner tree and settles its 
   assert.equal(stored.status, 'cancelled', 'queued stopIntent -> kill -> acquire lease -> cancelled through the real hook');
   assert.equal(stored.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in stored, false);
-  assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists on the terminal record');
+  assert.equal(stored.rescueRunnerVersion, 2, 'the marker persists on the terminal record');
   await waitFor(() => !isPidAlive(holderPid), 'the authorized stop must terminate the exact runner process tree');
   assert.equal(await leaseLockHeld(ctx.dataRoot, canonicalWorkspace, job.id, job.id), false, 'the executor released its lease');
   const receipt = await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).readReceipt(epoch);
