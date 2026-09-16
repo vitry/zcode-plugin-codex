@@ -1,6 +1,6 @@
 # Rescue Placement Semantics Parity Design
 
-Status: proposed for written user review. Implementation planning is blocked until approval.
+Status: approved on 2026-09-16. Implementation planning may proceed.
 
 ## Executive decision
 
@@ -107,6 +107,7 @@ Rules:
 
 - `hostPlacement` and `companionExecution` are required for every new Rescue preparation.
 - Each is exactly `foreground` or `background`.
+- Version 4 accepts only the three combinations produced by the authoritative matrix: foreground/foreground, background/foreground, and foreground/background. Background/background has no authorized entry and fails closed.
 - Explicit `--background` maps only to `hostPlacement: background`; explicit `--wait` maps only to `hostPlacement: foreground`. Both force `companionExecution: foreground`.
 - No-flag inference forces `hostPlacement: foreground` and selects `companionExecution` by complexity.
 - Public flags are removed before task normalization and never reconstructed from task text.
@@ -198,15 +199,16 @@ Contract and integration coverage must prove:
 2. Explicit `--wait` produces Host foreground plus Companion foreground.
 3. No-flag small work produces Host foreground plus Companion foreground.
 4. No-flag complex work produces Host foreground plus Companion background and queued acknowledgement.
-5. Explicit flags are absent from normalized task text and Companion argv.
-6. Root waiting depends only on Host placement.
-7. Companion routing depends only on Companion execution.
-8. Both cross-combinations persist correct lifecycle evidence without inferring detachment from `hostPlacement`.
-9. Normal SubagentStop after detached enqueue does not create Host Coordination Loss or cancel the job; loss before or during enqueue follows existing pre-start/uncertainty settlement without duplicate launch.
-10. New runner admission accepts `hostPlacement: foreground` only when complete detached Companion evidence is valid, and rejects foreground jobs without that evidence.
-11. Resume/fresh, model/effort, permission, exact binding, cancellation, SessionEnd, Status/Result, and terminal winner behavior remain unchanged.
-12. Version 3 envelopes retain their coupled read-compatibility behavior; version 1 and 2 private preparation envelopes fail closed, while unrelated versioned durable formats remain accepted as required by their own contracts.
-13. Source, generated plugin, packaged artifact, and installed qualification fixtures agree.
+5. Version 4 rejects Host background plus Companion background because no authoritative branch emits it.
+6. Explicit flags are absent from normalized task text and Companion argv.
+7. Root waiting depends only on Host placement.
+8. Companion routing depends only on Companion execution.
+9. Both authorized cross-combinations persist correct lifecycle evidence without inferring detachment from `hostPlacement`.
+10. Normal SubagentStop after detached enqueue does not create Host Coordination Loss or cancel the job; loss before or during enqueue follows existing pre-start/uncertainty settlement without duplicate launch.
+11. New runner admission accepts `hostPlacement: foreground` only when complete detached Companion evidence is valid, and rejects foreground jobs without that evidence.
+12. Resume/fresh, model/effort, permission, exact binding, cancellation, SessionEnd, Status/Result, and terminal winner behavior remain unchanged.
+13. Version 3 envelopes retain their coupled read-compatibility behavior; version 1 and 2 private preparation envelopes fail closed, while unrelated versioned durable formats remain accepted as required by their own contracts.
+14. Source, generated plugin, packaged artifact, and installed qualification fixtures agree.
 
 The placement suite must not make a provider call. A real Host qualification must separately exercise explicit Host background completion and no-flag complex queued execution.
 
