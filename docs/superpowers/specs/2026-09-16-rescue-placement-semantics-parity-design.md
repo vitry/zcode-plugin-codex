@@ -112,7 +112,8 @@ Rules:
 - Public flags are removed before task normalization and never reconstructed from task text.
 - `resume`, `model`, `effort`, and `continuationTarget` retain their existing meanings and validation.
 - Version 4 retains version 3's path-only exact `continuationTarget` selection and activation/binding checks. Splitting placement must not weaken exact-child continuation.
-- Historical envelope versions 1 through 3 remain accepted under their existing contracts. Version 3 `options.execution` retains its historical coupled meaning and is never emitted by updated instructions.
+- Version 3 remains the only accepted legacy private preparation envelope. Its `options.execution` retains the historical coupled meaning and updated instructions never emit it.
+- Version 1 targetless and version 2 child-ID/path-pair private preparation envelopes are removed rather than carried into this change. They are short-lived preparation inputs, not durable Rescue job or binding formats, and receive no migration.
 
 The exact field names may change only if implementation discovery finds an existing closed-schema naming convention that represents the same two dimensions without ambiguity. The two independent values and matrix are normative.
 
@@ -180,7 +181,8 @@ Host background does not authorize execution past Host SessionEnd. Existing Sess
 
 ## Compatibility and documentation
 
-- Continue accepting private envelope versions 1 through 3 under their historical contracts during the compatibility window; version 3 keeps its coupled placement contract.
+- Continue accepting private preparation envelope version 3 under its historical coupled placement contract during the compatibility window.
+- Reject private preparation envelope versions 1 and 2 after upgrade and remove their validators and compatibility fixtures. This removal is scoped only to the private preparation envelope protocol; it does not authorize deleting unrelated versioned preparation records, route directives, bindings, jobs, runner evidence, execution capabilities, or other persisted schemas.
 - Emit only the split new schema after upgrade.
 - Preserve readers/controllers for historical detached jobs.
 - Amend ADR 0018 so explicit Host background is attached Companion foreground.
@@ -203,7 +205,8 @@ Contract and integration coverage must prove:
 9. Normal SubagentStop after detached enqueue does not create Host Coordination Loss or cancel the job; loss before or during enqueue follows existing pre-start/uncertainty settlement without duplicate launch.
 10. New runner admission accepts `hostPlacement: foreground` only when complete detached Companion evidence is valid, and rejects foreground jobs without that evidence.
 11. Resume/fresh, model/effort, permission, exact binding, cancellation, SessionEnd, Status/Result, and terminal winner behavior remain unchanged.
-12. Source, generated plugin, packaged artifact, and installed qualification fixtures agree.
+12. Version 3 envelopes retain their coupled read-compatibility behavior; version 1 and 2 private preparation envelopes fail closed, while unrelated versioned durable formats remain accepted as required by their own contracts.
+13. Source, generated plugin, packaged artifact, and installed qualification fixtures agree.
 
 The placement suite must not make a provider call. A real Host qualification must separately exercise explicit Host background completion and no-flag complex queued execution.
 
