@@ -33,7 +33,7 @@ const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
 // Independent byte contract for the current source template after replacing
 // every launcher command with the canonical placeholder.
-const canonicalNamedRoleDigest = '4c2813923d43d53b057129892e708cd150d73808f975ca93244f177606ee1765';
+const canonicalNamedRoleDigest = '18c45245e586614cbd06cd160a371abee72b7a768222feee0ae7a04f81385ecc';
 const launcherCommandLine = /^(?<launcher>\{\{RESCUE_LAUNCHER_COMMAND\}\}|<rescue-launcher-command>|node "(?<path>[^"\r\n]{1,2048})") (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {

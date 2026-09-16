@@ -74,6 +74,23 @@ function assertRescueSpawnContracts(source) {
   assert.equal(genericMessage.text, expectedGenericRescueMessage);
 }
 
+function assertRescuePlacementContract(source) {
+  assert.match(source, /explicit `--background`[^\n]+Host[^\n]+background[^\n]+Companion[^\n]+foreground/i);
+  assert.match(source, /explicit `--wait`[^\n]+Host[^\n]+foreground[^\n]+Companion[^\n]+foreground/i);
+  assert.match(source, /no flag[\s\S]+small[^\n]+Host[^\n]+foreground[^\n]+Companion[^\n]+foreground/i);
+  assert.match(source, /no flag[\s\S]+complex[^\n]+Host[^\n]+foreground[^\n]+Companion[^\n]+background/i);
+  assert.match(source, /`hostPlacement`[^\n]+`foreground`[^\n]+`background`/i);
+  assert.match(source, /`companionExecution`[^\n]+`foreground`[^\n]+`background`/i);
+  assert.match(source, /Host placement[^\n]+only[^\n]+`wait_agent`/i);
+  assert.match(source, /Companion execution[^\n]+only[^\n]+detached runner/i);
+  assert.doesNotMatch(source, /private `execution` enum/);
+  assert.match(source, /"version":4[^\n]+"hostPlacement":"foreground"[^\n]+"companionExecution":"background"/);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
+  assert.match(source, /version 3[^\n]+only[^\n]+read-compatible/i);
+  assert.match(source, /[Vv]ersions? 1 and 2[^\n]+removed/i);
+  assert.match(source, /[Vv]ersions? 1 and 2[^\n]+rejected/i);
+}
+
 test('ships exactly the eight namespaced ZCode skills', () => {
   assert.deepEqual(readdirSync(new URL('skills/', root), { withFileTypes: true })
     .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(), expected);
@@ -149,7 +166,7 @@ test('public skills enforce authorization and do not expose removed flags', () =
   }
 });
 
-test('review skills are read-only and Rescue placement is complexity-inferred', () => {
+test('review skills are read-only and Rescue placement follows the four-row matrix', () => {
   for (const name of ['review', 'adversarial-review']) {
     const source = skill(name);
     assert.match(source, /always read-only/i);
@@ -157,8 +174,7 @@ test('review skills are read-only and Rescue placement is complexity-inferred', 
   }
   const source = skill('rescue');
   assertRescueLauncherGate(source);
-  assert.match(source, /task complexity decides/);
-  assert.match(source, /an explicit `?--wait`? or `?--background`? flag is authoritative/);
+  assertRescuePlacementContract(source);
   assert.match(source, /role-status rescue/);
   assertRescueNamingContract(source);
   assertRescueSpawnContracts(source);
@@ -306,10 +322,9 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
-  assert.match(source, /exact version-3 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
-  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 3/i);
-  assert.match(source, /versions? 1 and 2[^\n]+compatibility/i);
-  assert.match(source, /options[\s\S]+`execution`[\s\S]+`resume`[\s\S]+`model`[\s\S]+`effort`/i);
+  assert.match(source, /exact version-4 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
+  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 4/i);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
   assert.match(source, /omit[^\n]+absent[^\n]+(?:never|not)[^\n]+null/i);
 });
 
@@ -520,7 +535,7 @@ test('named and generic Rescue forwarders supervise the original handle with lon
   assert.match(source, /Inspect the exact child only when route discovery or lifecycle reconciliation requires evidence\./);
   assert.match(source, /Do not expect ordinary progress messages/);
   assert.match(source, /native child completion\/error delivery and the original execution remain authoritative\./);
-  assert.match(source, /Background acknowledgement ends runner supervision as specified above\./);
+  assert.match(source, /Companion `?background`? acknowledgement ends runner supervision as specified above\./);
   assert.match(source, /update from the exact `rescueChildPath`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
   assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
 });

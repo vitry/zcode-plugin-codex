@@ -542,7 +542,7 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   // stays observed to its durable terminal winner, while the background run is
   // executed by one detached session-bound runner after a queued acknowledgement.
   assert.match(role, /placement/i);
-  assert.match(role, /foreground placement the command observes the run through its original companion process/i);
+  assert.match(role, /Companion `foreground` execution the command observes the original companion process to terminal/i);
   assert.match(role, /durable terminal winner/i);
   assert.match(role, /detached session-bound runner/i);
   assert.match(role, /queued means accepted for execution only/i);
@@ -552,9 +552,10 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   assert.match(skill, /without asking the user another placement question/i);
   assert.match(skill, /flag is authoritative/i);
   assert.match(skill, /small and clearly bounded/i);
-  assert.match(skill, /multi-step, open-ended, or likely long/i);
+  assert.match(skill, /No flag, complex, open-ended, multi-step, or likely long/i);
   assert.match(skill, /without asking for confirmation/i);
-  assert.match(skill, /`execution` is only `foreground` or `background`/);
+  assert.match(skill, /`hostPlacement` is exactly `foreground` or `background`/);
+  assert.match(skill, /`companionExecution` is exactly `foreground` or `background`/);
   assert.match(skill, /never adds task text or a private identifier/i);
   assert.match(skill, /one detached session-bound runner, and returns only a queued acknowledgement/i);
   assert.match(skill, /Queued means accepted for execution only/);
