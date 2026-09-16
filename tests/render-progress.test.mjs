@@ -235,6 +235,61 @@ test('terminal views expose resumable and Stop Cause without a ZCode session id'
   assert.doesNotMatch(renderOutput({ type: 'job', job: cancelled }), /Resumable:|Stop cause:/u);
 });
 
+test('a cancelled run without a final report renders the bounded no-final-report notice beside its retained log link and stop cause', () => {
+  // Spec 2026-09-14 section 6: a durable cancelled winner may settle without
+  // any final assistant report. The notice presents exactly that bounded
+  // fact — never a success claim, a test verdict, or a guarantee that
+  // background tools exited — while the existing partial-log link, stop
+  // cause, and progress previews stay in place. The job schema admits a
+  // result artifact only on succeeded records, so the durable cancelled
+  // status itself proves no final report exists; rendering never derives
+  // cancellation for a nonterminal record.
+  const cancelled = {
+    id,
+    command: 'rescue',
+    status: 'cancelled',
+    phase: 'running',
+    createdAt: '2026-09-14T00:00:00.000Z',
+    startedAt: '2026-09-14T00:00:01.000Z',
+    finishedAt: '2026-09-14T00:01:00.000Z',
+    lastActivityAt: '2026-09-14T00:00:59.000Z',
+    logFile: `/private/zcode/jobs/${id}.log`,
+    owned: true,
+    owner: 'same-owner',
+    stopCause: 'user',
+    progressPreview: ['ZCode is running a delegated tool call.'],
+  };
+  const output = renderOutput({ job: cancelled });
+  assert.match(output, /^Status: cancelled$/mu);
+  assert.match(output, /^Run cancelled; no final ZCode report was produced\.$/mu);
+  assert.match(output, new RegExp(`^Log: /private/zcode/jobs/${id}\\.log$`, 'mu'));
+  assert.match(output, /^Stop cause: user$/mu);
+  assert.match(output, / {2}- ZCode is running a delegated tool call\./);
+  // The notice sits between the identity block and the derived detail lines,
+  // never replacing the partial-log link or the stop cause.
+  const noticeAt = output.indexOf('Run cancelled; no final ZCode report was produced.');
+  assert.ok(noticeAt > output.indexOf('Status: cancelled'));
+  assert.ok(noticeAt < output.indexOf('Stop cause: user'));
+  assert.ok(noticeAt < output.indexOf('Progress:'));
+  // No claim of execution success, passing tests, or universal termination.
+  assert.doesNotMatch(output, /succeeded|passed|all (background )?tools exited|guarantee/iu);
+  // An already-available result keeps its existing render exactly: the notice
+  // belongs only to the no-final-report presentation.
+  assert.equal(renderOutput({ job: cancelled, result: 'stored final report' }), 'stored final report\n');
+  // Active, cancelling, and succeeded views never carry the notice — the
+  // render never infers cancellation on its own.
+  for (const status of ['running', 'cancelling', 'succeeded']) {
+    assert.doesNotMatch(renderOutput({ job: { ...cancelled, status } }), /no final ZCode report/u, status);
+  }
+  // The machine JSON transport carries the durable fields only: no result or
+  // success artifact is fabricated for the cancelled record.
+  const json = JSON.parse(renderOutput({ job: cancelled }, { json: true }));
+  assert.equal(json.job.status, 'cancelled');
+  assert.equal(json.job.stopCause, 'user');
+  assert.equal('result' in json, false);
+  assert.equal('resultArtifact' in json.job, false);
+});
+
 test('successful result rendering wins over terminal job error rendering', () => {
   assert.equal(renderOutput({
     result: 'exact successful result',

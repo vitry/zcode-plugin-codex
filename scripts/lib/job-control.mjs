@@ -327,7 +327,7 @@ async function waitForWorkerLeaseRelease(input, job, budgetMs) {
  * - `unmarked` — no marked claim: no local duty exists and the caller's
  *   settlement is not gated.
  * - `unproven` / `not-proven` — the claim identity is unprovable: retention.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>,inspectIdentityFn?:(identityPath:string,options:{healthProbe?:(record:any)=>Promise<boolean>})=>Promise<{status:string,record:any,reason?:string}>}} input
  * @param {any} selection the durable record this cleanup was selected for
  * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
  * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
@@ -379,7 +379,7 @@ function emitWindowsDutyDiagnostic(outcome, stageTimings, startedAtMs) {
 /** The marked-runner cleanup duty itself (see terminateMarkedRunnerTree for
  * the contract). The optional `input.dutyStageTimings` record accumulates the
  * per-stage elapsed-ms accounting the Windows diagnostic surfaces.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,dutyStageTimings?:Record<string,number|string>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch?:string|null,deadlineMs?:number,timeoutMs?:number,platform?:string,dutyStageTimings?:Record<string,number|string>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,sweepDeadRootDescendants?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[]})=>Promise<{kind:'root-alive'}|{kind:'clean'}|{kind:'swept',killed:number[],pending:number[]}|{kind:'incomplete',pending:number[]}>,scanBrokerIdentities?:(brokerDirectory:string,options:{timeoutMs?:number})=>Promise<{status:'resolved'|'absent'|'failed',pids:number[],brokers:{pid:number,command:string,args:string[]}[]}>,inspectIdentityFn?:(identityPath:string,options:{healthProbe?:(record:any)=>Promise<boolean>})=>Promise<{status:string,record:any,reason?:string}>}} input
  * @param {any} selection the durable record this cleanup was selected for
  * @param {(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>} [terminateProcessTree]
  * @returns {Promise<{kind:'unmarked'|'unproven'|'budget-expired'|'not-proven'|'settled'|'pending',sweep?:('swept'|'incomplete'|'root-alive'),pending?:number[]}>}
@@ -501,7 +501,11 @@ async function runMarkedRunnerDuty(input, selection, terminateProcessTree = term
       // STARTUP SYNCHRONIZATION above); the finally releases it. Below the
       // minimal slice, the lookup is skipped and the default fail-closed state
       // lets the guarded kill keep the entire remaining budget pid-only.
-      try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true }); }
+      try { exclusions = await recordedWorkspaceBrokerPids({ dataRoot: input.dataRoot, workspace: input.workspace, timeoutMs: lookupBudgetMs, holdResolvedLock: true,
+        // Test seam passthrough (see recordedWorkspaceBrokerPids): the identity
+        // scan runs INSIDE the held broker startup lock, so a unit test can
+        // observe and coordinate the lookup-to-dispatch gap deterministically.
+        ...(typeof input.inspectIdentityFn === 'function' ? { inspectIdentityFn: input.inspectIdentityFn } : {}) }); }
       catch { exclusions = { status: 'failed', pids: [], brokers: [] }; }
     }
     markStage('lookupMs', lookupStartedAtMs);
@@ -1060,6 +1064,12 @@ async function performCancellation(input, attempts, election) {
   // mutating reconciliation: a corrupt journal must never be bypassed by a
   // stop-intent persistence or a remote stop.
   if (election.observedError) throw election.observedError;
+  // The first-stop shape: a running record whose stop intent this election's
+  // reconciler pass is about to persist. Persist-before-control keeps that
+  // pass's joined load client-free, so ONLY this shape needs the shared
+  // convergence pass below — a cancelling record already joined its evidence.
+  const initiallyRunning = job.status === 'running';
+  let sharedStopRetained = false;
   if (typeof input.reconcileLifecycle === 'function') {
     // Serialized under the cancellation lock: the Reconciler persists the
     // durable stop intent (persist-before-control) and may already hold a
@@ -1074,6 +1084,49 @@ async function performCancellation(input, attempts, election) {
     if (outcome !== null && outcome !== undefined) {
       job = await input.options.store.readJob(input.workspace, input.jobId);
       if (TERMINAL.has(job.status)) return job;
+      // Shared-decision convergence (spec 2026-09-14 section 5): this
+      // election's pass just persisted the durable stop decision, so exactly
+      // ONE more reconciler pass may now join the exact remote turn over the
+      // managed control path and let the SAME shared decision own the stop,
+      // the reread, the executor cleanup, and any no-report settlement —
+      // instead of the election duplicating its own stop/observe verdict. The
+      // reconciler's stop intents never reacquire this already-held
+      // cancellation lock, and every shape the shared pass still retains falls
+      // through to the election's own machinery below unchanged, exactly as
+      // for callers without the reconciler seam.
+      if (initiallyRunning && job.status === 'cancelling' && validStopIntent(job.stopIntent)) {
+        const converged = await input.reconcileLifecycle({ kind: 'stop', cause: job.stopIntent.cause }, input.reconcileWorkspace ?? input.workspace, input.ownerSessionId, input.jobId);
+        if (converged?.kind === 'settled-terminal') {
+          const settled = await input.options.store.readJob(input.workspace, input.jobId).catch(() => null);
+          if (settled && TERMINAL.has(settled.status)) return settled;
+        }
+        if (converged !== null && converged !== undefined) {
+          job = await input.options.store.readJob(input.workspace, input.jobId);
+          if (TERMINAL.has(job.status)) return job;
+          // The shared pass OWNS this command's one remote stop attempt ONLY
+          // when it actually attempted one (`remoteStopAttempted` — the
+          // reconciler marks outcomes produced after its exact-stop seam): a
+          // nonterminal retention alone also happens WITHOUT any stop (an
+          // unattributable snapshot retains before the stop), and suppressing
+          // the election's stop there would strand the durable intent with NO
+          // remote control this command. When marked, the retained outcome is
+          // the bounded stop failure this election reports below (the election
+          // never issues a second stop inside the same command — the durable
+          // intent re-arms the next bounded pass).
+          if (/** @type {any} */ (converged)?.remoteStopAttempted === true) sharedStopRetained = true;
+        }
+      } else if (!initiallyRunning && job.status === 'cancelling' && validStopIntent(job.stopIntent)) {
+        // The RETRY shape — the record was already cancelling with its durable
+        // stop intent at entry, so the shared pass above IS this command's
+        // convergence pass. Defer ONLY when that pass actually attempted the
+        // exact remote stop (`remoteStopAttempted`, see the reconciler's
+        // stop-seam marker): a retention without a stop attempt — an
+        // unattributable snapshot — still owes this command's stop, which the
+        // election issues below. The election never duplicates a shared pass's
+        // stop inside one command, and the durable intent re-arms the next
+        // bounded pass.
+        if (/** @type {any} */ (outcome)?.remoteStopAttempted === true) sharedStopRetained = true;
+      }
     }
   }
   const current = await attempts.read(job.id, input.ownerSessionId); let attempt;
@@ -1151,9 +1204,16 @@ async function performCancellation(input, attempts, election) {
   // intent from an earlier reconciliation pass — a turn that already reached
   // a terminal outcome BEFORE this stop keeps its own semantics instead of
   // being misclassified as caused by the stop. An unreadable or expired read
-  // never blocks the exact stop.
+  // never blocks the exact stop. An unresolved SHARED stop is handled first:
+  // when the shared reconciler pass already attempted this command's exact
+  // remote stop and retained the guard, any failure this read could observe is
+  // POST-stop evidence — publishing it as a natural pre-stop engine failure
+  // would misclassify the race winner and release the writable guard over an
+  // unproven runner sweep — so the read/publication branch below is skipped
+  // entirely and the retained guard flow (the sharedStopRetained check inside
+  // the try) keeps the durable intent for the next bounded pass.
   const retainedRetryStop = job.status === 'cancelling' && validStopIntent(cancelling.stopIntent);
-  if (retainedRetryStop && cancelling.zcodeSessionId && input.options.readSession) {
+  if (retainedRetryStop && !sharedStopRetained && cancelling.zcodeSessionId && input.options.readSession) {
     try {
       // Bounded: a stalled or gate-held read must never block the exact stop,
       // and the timer is cleared as soon as the read settles so a fast read
@@ -1179,12 +1239,36 @@ async function performCancellation(input, attempts, election) {
     if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
     const revalidated = await revalidateBoundRescueStop(input.options.store, input.workspace, cancelling, observedStop?.guard);
     if (revalidated?.kind === 'stale') return revalidated.job;
+    if (sharedStopRetained) {
+      // The shared reconciliation pass already attempted this command's exact
+      // remote stop and retained the durable guard — persisting its own
+      // SPECIFIC retry diagnostic when it observed one (a stop-request
+      // failure, incomplete runner cleanup, or the no-report continuity
+      // refusal). The retained-guard catch below re-persists the thrown
+      // message, so the generic text must not ride this throw: it would
+      // overwrite that diagnostic and erase the stop-failure, cleanup, and
+      // continuity distinction Status must expose (spec section 6). The
+      // already-persisted diagnostic (when non-empty) rides the same flow
+      // instead; the generic message remains only for a shared retention that
+      // persisted no diagnostic of its own.
+      const retained = await input.options.store.readJob(input.workspace, job.id).catch(() => null);
+      throw new Error(typeof retained?.lastCancelError === 'string' && retained.lastCancelError.length > 0
+        ? retained.lastCancelError
+        : 'The exact remote stop did not settle; the cancelling guard is retained for the next bounded retry.');
+    }
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
     // A failed remote stop never skips the marked-runner local termination duty;
     // the retained cancelling guard below keeps the remote uncertainty durable
-    // for the next bounded pass (local death never upgrades remote state).
-    await terminateCancellationRunner(input, cancelling);
+    // for the next bounded pass (local death never upgrades remote state). The
+    // one exception is the retained SHARED-stop outcome: the shared
+    // reconciliation pass already ran its own once-per-pass cleanup duty next
+    // to its stop attempt, so re-entering terminateCancellationRunner here
+    // would repeat the process-tree termination and descendant sweep with a
+    // fresh budget inside the same cancel command — duplicating signals past
+    // the one-duty-per-pass bound. The retained outcome below keeps the guard
+    // and the already-persisted specific diagnostic with no second duty.
+    if (!sharedStopRetained) await terminateCancellationRunner(input, cancelling);
     const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
     // An unresolved Host-owned stop keeps its cancelling status and persisted
     // stop intent — the same retainUnresolvedEndedStop discipline as the
@@ -1419,6 +1503,206 @@ export async function revalidateBoundRescueStop(store, workspace, job, expected,
     status: job.status, ...(zcodeSessionId === undefined ? {} : { zcodeSessionId }),
     ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
     ...(expected === undefined ? {} : { expected }) });
+}
+
+/**
+ * The bounded non-private retention for one no-report publication that
+ * refused on broken upstream continuity (spec 2026-09-14 sections 4.2/6):
+ * the stop itself was acknowledged over the qualifying generation, but the
+ * reread was answered by a REPLACED upstream, so the attempt's continuity
+ * chain never closed and the cancelling guard stays for the next bounded
+ * pass. The retained guard records its own bounded public diagnostic through
+ * the existing safe lastCancelError surface — one that DISTINGUISHES this
+ * continuity refusal from a stop-request failure and from incomplete cleanup
+ * (the stop succeeded; the cleanup completed) — and never exposes the private
+ * generation stamps that proved the refusal. A terminal race winner is
+ * returned untouched; a non-cancelling record or one without the persisted
+ * intent (the schema admits the diagnostic only beside a valid intent) is
+ * returned without a write; transition conflicts reread the durable record.
+ * @param {any} store @param {string} workspace @param {any} job
+ */
+export async function retainNoReportContinuityRefusal(store, workspace, job) {
+  const current = await store.readJob(workspace, job.id);
+  if (TERMINAL.has(current.status)) return current;
+  if (current.status !== 'cancelling' || !validStopIntent(current.stopIntent)) return current;
+  try {
+    return await store.transitionJob(workspace, job.id, ['cancelling'], 'cancelling', {
+      lastCancelError: boundedCancelMessage('The acknowledged stop could not be proven against the same ZCode upstream; the cancelling guard is retained for the next bounded retry.'),
+    });
+  } catch (error) {
+    if (error instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT', 'JOB_INVALID_TRANSITION', 'JOB_PATCH_INVALID'].includes(error.code)) {
+      return await store.readJob(workspace, job.id).catch(() => current);
+    }
+    throw error;
+  }
+}
+
+/**
+ * The DEDICATED guarded publication for cancelling one exact job WITHOUT a
+ * final assistant report (spec 2026-09-14 section 4.3): unlike the existing
+ * authoritative-terminal path (whose terminal evidence with a report keeps
+ * today's direct finishJob semantics), an EXTERNAL publisher of the no-report
+ * settlement must prove it owns the exact worker claim before publishing.
+ * Within the caller's already-held cancellation lock — this helper never
+ * reacquires it — it revalidates the durable stop decision and the
+ * owner/binding generation as a pre-lease fast-path, acquires the EXACT worker
+ * lease with a zero-timeout probe, re-reads and revalidates the exact
+ * owner/session/worker claim and stopIntent inside the hold, revalidates the
+ * BINDING GENERATION again inside the hold immediately before the CAS (spec
+ * 2026-09-14 section 4.3: the pre-lease answer cannot see a binding that
+ * closes or is superseded while the lease is acquired), and publishes through
+ * the expected-statuses CAS. A held lease, a moved claim, a stale
+ * generation, or a raced winner retains the cancelling record or returns the
+ * durable winner; uncertainty never publishes and never throws out of the
+ * reconciler — the nonterminal return is the caller's unresolved-stop
+ * retention. A foreground worker publishing from its OWN finalization flow
+ * already holds its claim and must NOT call this helper.
+ * @param {{store:any,dataRoot:string,workspace:string,guard?:any}} input
+ * @param {any} job the joined record the settlement attempt validated
+ * @param {string} stopCause the durable stop decision's bounded cause
+ */
+export async function publishGuardedNoReportCancellation(input, job, stopCause) {
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status)) return current;
+  // Only the durable stop decision this attempt settles may publish here: an
+  // unpersisted or missing intent is not cancellation authority.
+  if (current.status !== 'cancelling' || !validStopIntent(current.stopIntent)) return current;
+  // Exact identity revalidation against the joined record the evidence chain
+  // qualified: owner, workspace partition job, and the accepted session.
+  if (current.ownerSessionId !== job.ownerSessionId || current.command !== 'rescue' || current.readOnly !== false
+    || current.zcodeSessionId !== job.zcodeSessionId) return current;
+  // Binding-generation fast-path under the reconciler's guard: a successor or
+  // closed binding known BEFORE the lease is acquired spares the probe, but
+  // this pre-lease answer is NOT publication authority — a binding may still
+  // close or be superseded while the exact lease is acquired, so the
+  // authoritative revalidation runs inside the hold (spec 4.3).
+  const revalidated = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
+  if (revalidated?.kind === 'stale') return revalidated.job;
+  const workerLeaseId = current.workerLeaseId;
+  // No digest lease means no provable exact worker claim for an external
+  // publisher: the no-report settlement never publishes over an unprovable
+  // claim. An UNMARKED external foreground record DOES reach this helper after
+  // its executor exited (spec 4.3 recovery-after-worker-gone): the acquisition
+  // below is then the applicable cleanup proof itself — FREE proves the worker
+  // gone, HELD proves a live claim and retains — so the claim must stay
+  // provable regardless of how the pass arrived here.
+  if (!isDigestValue(workerLeaseId)) return current;
+  const publish = async () => {
+    const latest = await input.store.readJob(input.workspace, job.id);
+    if (TERMINAL.has(latest.status)) return latest;
+    // The exact worker claim must be unchanged inside the hold: a newer claim,
+    // session, or intent replacement owns the record instead of this attempt.
+    if (latest.status !== 'cancelling' || !validStopIntent(latest.stopIntent)
+      || latest.workerLeaseId !== workerLeaseId || latest.childPid !== current.childPid
+      || latest.zcodeSessionId !== current.zcodeSessionId || latest.ownerSessionId !== job.ownerSessionId) return latest;
+    // Binding-generation revalidation INSIDE the acquired lease, immediately
+    // before the CAS (spec 4.3): the pre-lease answer cannot see a binding
+    // that closed or was superseded between that check and this hold, so the
+    // in-hold generation — not the stale earlier one — owns the publication
+    // decision. A stale answer returns the raced durable record; the guard is
+    // retained for the next bounded pass.
+    const inHold = await revalidateBoundRescueStop(input.store, input.workspace, latest, input.guard);
+    if (inHold?.kind === 'stale') return inHold.job;
+    try {
+      return await finishJob(input.store, input.workspace, job.id, ['cancelling'], 'cancelled',
+        { exitCode: null, ...hostOwnedCancelledPatch(latest, stopCause) });
+    } catch {
+      // Conflicts return the durable winner or retain cancelling: the CAS
+      // boundary, not the acknowledgement, decides the raced outcome.
+      const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
+      if (winner && TERMINAL.has(winner.status)) return winner;
+      return winner ?? latest;
+    }
+  };
+  try {
+    return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId, timeoutMs: 0 }, publish);
+  } catch (error) {
+    // A LOCK_TIMEOUT proves a live holder still owns the exact claim: the
+    // external publisher retains the cancelling guard for the next pass. Any
+    // other failure equally fails closed to the durable record.
+    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT'].includes(error.code)) {
+      return await input.store.readJob(input.workspace, job.id).catch(() => current);
+    }
+    const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
+    if (winner && TERMINAL.has(winner.status)) return winner;
+    return winner ?? current;
+  }
+}
+
+/**
+ * The FOREGROUND EXECUTOR's own owner-held publication for cancelling its exact
+ * job WITHOUT a final assistant report (spec 2026-09-14 section 4.3): the
+ * internal counterpart of publishGuardedNoReportCancellation, callable ONLY
+ * from the executor's own finalization flow — after it stopped sending,
+ * released its original transport turn, and entered its exit path — while it
+ * still holds its original worker claim. It is structurally unreachable by
+ * external callers: the claim must name THIS process (the recorded executor
+ * pid), the exact worker claim must be the unchanged durable record, and the
+ * exact lease must be provably HELD right now (a zero-timeout probe that never
+ * acquires it — a free lease means this executor already exited and lost the
+ * owner-held standing; an external management process fails the pid gate
+ * before any probe). Identity and binding generation are revalidated before
+ * the probe as a fast-path and the binding generation is revalidated AGAIN
+ * inside the proven standing immediately before the CAS (spec 2026-09-14
+ * section 4.3, the owner-held counterpart of the external path's in-lease
+ * revalidation), the publication runs through the same expected-statuses CAS,
+ * contention returns
+ * the durable winner, and invalid identity retains cancelling without
+ * publishing. The helper never reacquires the caller's own worker lease and
+ * never takes the cancellation lock (the caller's finalization serializes
+ * under it).
+ * @param {{store:any,dataRoot:string,workspace:string,guard?:any}} input
+ * @param {any} job the joined record the executor's own attempt validated
+ * @param {string} stopCause the durable stop decision's bounded cause
+ * @param {{workerLeaseId:string,childPid:number}} claim the executor's own recorded worker claim
+ */
+export async function publishOwnerHeldNoReportCancellation(input, job, stopCause, claim) {
+  // INTERNAL-only gate: the publishing process must BE the recorded executor.
+  if (!claim || !isDigestValue(claim.workerLeaseId) || claim.childPid !== process.pid) {
+    return input.store.readJob(input.workspace, job.id);
+  }
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status)) return current;
+  if (current.status !== 'cancelling' || !validStopIntent(current.stopIntent)) return current;
+  // Exact worker-claim ownership: the unchanged original claim this executor
+  // recorded, for the same owner and accepted session it validated.
+  if (current.ownerSessionId !== job.ownerSessionId || current.command !== 'rescue' || current.readOnly !== false
+    || current.zcodeSessionId !== job.zcodeSessionId
+    || current.workerLeaseId !== claim.workerLeaseId || current.childPid !== claim.childPid) return current;
+  // Binding-generation fast-path under the caller's guard: a successor or
+  // closed binding known BEFORE the held-lease probe spares the probe, but
+  // this answer is NOT publication authority — the authoritative revalidation
+  // runs inside the proven standing below (spec 4.3).
+  const revalidated = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
+  if (revalidated?.kind === 'stale') return revalidated.job;
+  // Owner-held proof WITHOUT acquisition: the exact lease must still be HELD
+  // (by this executor). The probe never waits and never publishes inside the
+  // hold — a free lease means the executor already released its claim, so the
+  // external guarded path (not this one) owns any publication after that.
+  let held = false;
+  try {
+    await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, workerLeaseId: claim.workerLeaseId, timeoutMs: 0 }, async () => { held = false; });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') held = true;
+    else throw error;
+  }
+  if (!held) return current;
+  // Binding-generation revalidation INSIDE the proven owner-held standing,
+  // immediately before the CAS (spec 4.3): the pre-probe answer cannot see a
+  // binding that closed or was superseded while the held-lease probe ran, so
+  // the in-standing generation — not the stale earlier one — owns the
+  // publication decision. A stale answer returns the raced durable record.
+  const revalidatedHeld = await revalidateBoundRescueStop(input.store, input.workspace, current, input.guard);
+  if (revalidatedHeld?.kind === 'stale') return revalidatedHeld.job;
+  try {
+    return await finishJob(input.store, input.workspace, job.id, ['cancelling'], 'cancelled',
+      { exitCode: null, ...hostOwnedCancelledPatch(current, stopCause) });
+  } catch {
+    // Contention returns the durable winner or retains cancelling.
+    const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
+    if (winner && TERMINAL.has(winner.status)) return winner;
+    return winner ?? current;
+  }
 }
 
 /** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */

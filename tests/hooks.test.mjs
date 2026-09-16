@@ -2214,7 +2214,17 @@ test('hung owner stops are broker-bounded and retain every unconfirmed and sibli
 test('owner release does not spawn ZCode when a live broker has only historical ownership', async () => {
   const { cwd, data } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const ownerA = ownerIdForSession('historical-a'); const ownerB = ownerIdForSession('historical-b');
   await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: ownerA, ownedSessionIds: ['historical-a-session'] }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: ownerB, ownedSessionIds: ['historical-b-session'] });
-  const identity = await ensureZCodeBroker({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, env: { ...process.env, FAKE_ZCODE_RECORD: record } }); const started = Date.now();
+  const identity = await ensureZCodeBroker({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, env: { ...process.env, FAKE_ZCODE_RECORD: record } });
+  // This is the only releaseManagedZCodeOwner test whose broker is COLD at
+  // the timed release window (every sibling first connects a client). A
+  // windows-latest runner under load made that cold first accept — pipe
+  // connect, auth, and the first owner-store lock layout — overrun the
+  // bounded release budget, surfacing as ZCODE_OWNER_RELEASE_INCOMPLETE.
+  // Pay the warm-up here through the same readiness probe the legacy-broker
+  // tests use, so the release window measures the release, not the cold
+  // broker; the record file below still proves no ZCode PEER is ever spawned.
+  assert.equal(await probeBrokerHealth(identity, brokerTestRequestTimeoutMs), true, 'the broker must be healthy before the bounded release window opens');
+  const started = Date.now();
   const result = await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: ownerA, requestTimeoutMs: brokerTestRequestTimeoutMs }); assert.ok(Date.now() - started < 2_000); assert.deepEqual(result, { releasedSessionIds: ['historical-a-session'], failedSessionIds: [], deferredSessionCount: 0 }); assert.equal(await readFile(record, 'utf8'), '', 'cleanup must not spawn the configured ZCode peer');
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); assert.deepEqual(JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions, { 'historical-b-session': ownerB });
   const deadline = Date.now() + 2_000; while (Date.now() < deadline && processAlive(identity.pid)) await new Promise((resolve) => setTimeout(resolve, 25)); assert.equal(processAlive(identity.pid), false);

@@ -14,7 +14,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { isSafeIdentifier } from './lib/identifier.mjs';
-import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus, resumableJobIndicator, withJobCancellationLock } from './lib/job-control.mjs';
+import { WINDOWS_RUNNER_DUTY_FALLBACK_MS, createJobController, durableCancelledWinner, ownerIdForSession, publishGuardedNoReportCancellation, readBoundRescueStatus, resumableJobIndicator, retainNoReportContinuityRefusal, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
@@ -308,11 +308,11 @@ async function bindingCurrencyEvidence(store, workspace, ownerSessionId, job) {
  * Host child observation and SessionEnd receipts; the joined Host state
  * therefore stays 'idle' with no receipt evidence, so management observation
  * never authorizes a stop on its own.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>,createRescueLifecycleReconciler:(adapters:any)=>{reconcile:(request:any)=>Promise<any>}}} input
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>,createRescueLifecycleReconciler:(adapters:any)=>{reconcile:(request:any)=>Promise<any>},terminateProcessTree?:(pid:number,options:{timeoutMs?:number,excludeBrokers?:readonly {pid:number,command:string,args:string[]}[],excludeUnknown?:boolean})=>Promise<unknown>}} input
  */
 export function createManagementRescueReconcile(input) {
-  /** One management reconciliation context: the exact joined job, the on-demand control client, and the revalidation guard. @type {{job:any,client?:any,guard?:any}} */
-  const context = { job: undefined };
+  /** One management reconciliation context: the exact joined job, the on-demand control client, the revalidation guard, the broker's serving-generation stamp observed with this attempt's joined remote evidence (spec 2026-09-14 section 4.2 — the stop must be answered by the SAME upstream protocol generation, proven by response stamps rather than client-socket continuity, and reset every pass so a later attempt can never dress itself in an earlier pass's generation), and the reread's OWN per-response serving-generation stamp captured by this attempt's reread adapter (a failed reread carries none — per-read correlation). @type {{job:any,client?:any,guard?:any,upstream?:string|null,rereadGeneration?:string|null}} */
+  const context = { job: undefined, rereadGeneration: null };
   const reconciler = input.createRescueLifecycleReconciler({
     loadJoinedState: (/** @type {any} */ request) => loadManagementJoinedState(input, context, request),
     persistStopIntent: (/** @type {any} */ joined, /** @type {string} */ cause, /** @type {any} */ options) => persistManagementStopIntent(input, joined, cause, options),
@@ -334,20 +334,52 @@ export function createManagementRescueReconcile(input) {
       return { kind: 'current', job: context.job, guard: context.guard };
     },
     stopExactTurn: async (/** @type {any} */ joined, /** @type {any} */ options) => {
+      // The broker's serving-generation stamp observed with this attempt's
+      // joined pre-stop snapshot: the continuity attestation below may name
+      // 'same' ONLY when the stop response carries the SAME upstream protocol
+      // generation stamp (spec 4.2). Client-socket continuity is deliberately
+      // NOT the proof — the broker can lazily reconstruct its upstream engine
+      // behind one unchanged client socket, and only the response stamps
+      // expose that replacement.
+      const joinedUpstream = boundedUpstreamStamp(context.upstream);
+      let upstreamContinuous = joinedUpstream !== null;
       // Pre-stop read: a turn that already reached a terminal outcome BEFORE
       // this stop keeps its own semantics instead of being misclassified as
-      // caused by the stop. The read reuses the already-open control client.
+      // caused by the stop. The read reuses the already-open control client
+      // under the composed observation budget — and when the budget expires
+      // the read is aborted (with a bounded admission-release wait) so the
+      // orphaned shared admission never rejects the EXCLUSIVE stop below
+      // (spec lines 81-83: the best-effort stop follows a failed or
+      // unreadable read).
       try {
-        const preStop = endedRemoteEvidence(await raceControlOperation(context.client.readSession(joined.job.zcodeSessionId), options?.signal), joined.job);
+        const preStopBudget = options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs);
+        const preStopRead = await boundedManagementRead(context.client, joined.job.zcodeSessionId, preStopBudget);
+        const preStop = endedRemoteEvidence(preStopRead.snapshot, joined.job);
         if (preStop.kind === 'evidence' && (preStop.classification === 'succeeded' || preStop.classification === 'failed')) {
           return { acknowledged: true, preExistingTerminal: preStop };
         }
+        // Contrary upstream-generation evidence at the stop site: a READABLE
+        // snapshot the persisted turn boundary cannot attribute (the
+        // reconstructed-runtime shape — regressed revision, no current-turn
+        // root), or a readable snapshot already served by a PROVEN different
+        // generation. The stop may still run, but its response can never
+        // qualify for the no-report settlement.
+        if (preStop.kind === 'evidence' && preStop.attributable !== true) upstreamContinuous = false;
+        // The pre-stop read's OWN response stamp (per-read correlation).
+        const stopSiteGeneration = preStopRead.servingGeneration;
+        if (stopSiteGeneration !== null && stopSiteGeneration !== joinedUpstream) upstreamContinuous = false;
       } catch { /* an unreadable pre-stop read never blocks the exact stop */ }
       options?.signal?.throwIfAborted();
       try {
-        await raceControlOperation(context.client.stopSession(joined.job.zcodeSessionId), options?.signal);
+        const stopped = await raceControlOperation(context.client.stopSession(joined.job.zcodeSessionId), options?.signal);
         options?.signal?.throwIfAborted();
-        return { acknowledged: true };
+        // Re-derive continuity AT the stop response: the generation stamp that
+        // answered the stop must be the same one that served the joined
+        // pre-stop snapshot — an empty response from a reconstructed
+        // replacement generation (or an unstamped serving path) never
+        // qualifies.
+        const stopGeneration = boundedUpstreamStamp(stopped?.brokerProtocolGeneration);
+        return { acknowledged: true, ...(upstreamContinuous && stopGeneration !== null && stopGeneration === joinedUpstream ? { upstreamGeneration: 'same' } : {}) };
       } catch (error) {
         options?.signal?.throwIfAborted();
         return { acknowledged: false, error };
@@ -355,13 +387,26 @@ export function createManagementRescueReconcile(input) {
     },
     rereadRemote: async (/** @type {any} */ joined, /** @type {any} */ options) => {
       options?.signal?.throwIfAborted();
-      let snapshot;
-      try { snapshot = await raceControlOperation(context.client.readSession(joined.job.zcodeSessionId), options?.signal); }
-      catch (error) { options?.signal?.throwIfAborted(); return { kind: 'unreadable', error }; }
+      let read;
+      try { read = await raceControlOperation(readWithServingGeneration(context.client, joined.job.zcodeSessionId), options?.signal); }
+      catch (error) {
+        options?.signal?.throwIfAborted();
+        // The reread FAILED, but a CORRELATED error frame still carries the
+        // protocol generation that PRODUCED the failure (see ZCodeBroker and
+        // ZCodeClient.readSessionDetailed): spec 4.4 line 73 — a read failure
+        // must not independently veto otherwise complete evidence — so the
+        // failed reread's own error stamp may attest the reread leg. Transport
+        // drops and unstamped failures carry none (null), exactly as before.
+        context.rereadGeneration = failedReadGeneration(error);
+        return { kind: 'unreadable', error };
+      }
       options?.signal?.throwIfAborted();
-      return endedRemoteEvidence(snapshot, joined.job);
+      // The reread's OWN response stamp (per-read correlation): the no-report
+      // publication attests the reread leg against it.
+      context.rereadGeneration = read.servingGeneration;
+      return endedRemoteEvidence(read.snapshot, joined.job);
     },
-    publishWinner: (/** @type {any} */ joined, /** @type {any} */ specification, /** @type {any} */ options) => publishManagementWinner(input, joined, specification, options),
+    publishWinner: (/** @type {any} */ joined, /** @type {any} */ specification, /** @type {any} */ options) => publishManagementWinner(input, joined, specification, options, context),
     retainUnresolved: async (/** @type {any} */ joined, /** @type {any} */ evidence) => {
       // Persist a bounded retry diagnostic only when an actual remote failure
       // was observed — the first pass of a cancel reaches this adapter before
@@ -392,6 +437,7 @@ export function createManagementRescueReconcile(input) {
       store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
       ownerSessionId: input.ownerSessionId,
       ...(typeof joined.job?.ownerLifecycleEpoch === 'string' ? { epoch: joined.job.ownerLifecycleEpoch } : {}),
+      ...(typeof input.terminateProcessTree === 'function' ? { terminateProcessTree: input.terminateProcessTree } : {}),
     }, joined.job),
     // Executor absence is never provable from the management caller: a live
     // host child may still hold its worker lease, so an unavailable control
@@ -419,7 +465,7 @@ export function createManagementRescueReconcile(input) {
     // exact historical status/result/cancel behavior (ADR 0018 lines 11-13).
     if (selected.command !== 'rescue' || selected.readOnly !== false
       || selected.ownerLifecycleEpoch === undefined && selected.stopIntent === undefined) return null;
-    context.job = selected; context.guard = undefined;
+    context.job = selected; context.guard = undefined; context.upstream = undefined; context.rereadGeneration = null;
     const run = async () => {
       try {
         return await reconciler.reconcile(request);
@@ -438,6 +484,10 @@ export function createManagementRescueReconcile(input) {
 }
 
 const managementObservationBudgetMs = 2_500;
+/** The bounded wait for a budget-abandoned management read to release the
+ * broker's exclusive stop admission after its budget abort; expiry never
+ * blocks the stop — the flow proceeds and the uncertainty retains the guard. */
+const managementReadReleaseMs = 250;
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 
 /** The caller-scoped signal that distinguishes a genuine command abort (SIGINT)
@@ -512,7 +562,7 @@ async function loadManagementJoinedState(input, context, request) {
  * documented Status/Result recovery entry points must retry its exact
  * stop/reread rather than retaining it forever. Terminal, queued, and
  * sessionless jobs keep the inert no-remote view.
- * @param {{dataRoot:string,workspace:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>}} input @param {{client?:any}} context @param {any} request @param {any} job
+ * @param {{dataRoot:string,workspace:string,createClient?:(job:any,ownerId:string,intent?:any)=>Promise<any>}} input @param {{client?:any,upstream?:string|null}} context @param {any} request @param {any} job
  */
 async function loadManagementRemoteEvidence(input, context, request, job) {
   // Observe intents join exact remote evidence for every live Host-owned
@@ -559,10 +609,109 @@ async function loadManagementRemoteEvidence(input, context, request, job) {
   }
   if (!client) return { kind: 'unavailable', error: managementReconcileError('The management control client is unavailable.') };
   context.client = client;
-  let snapshot;
-  try { snapshot = await raceControlOperation(client.readSession(job.zcodeSessionId), request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs)); }
-  catch (error) { return unavailableOrReadableEvidence(error); }
-  return endedRemoteEvidence(snapshot, job);
+  let snapshot; let joinedReadGeneration;
+  const readBudget = request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(managementObservationBudgetMs)]) : AbortSignal.timeout(managementObservationBudgetMs);
+  try {
+    ({ snapshot, servingGeneration: joinedReadGeneration } = await boundedManagementRead(client, job.zcodeSessionId, readBudget));
+  } catch (error) { return unavailableOrReadableEvidence(error); }
+  const evidence = endedRemoteEvidence(snapshot, job);
+  // Record the broker's serving-generation stamp that produced this joined
+  // evidence — the stamp THIS read's own response carried (per-read
+  // correlation): the stop adapter may attest continuity ONLY against the
+  // same stamp on the stop response (spec 4.2 — the broker can reconstruct
+  // its upstream behind one unchanged client socket, so only the stamps prove
+  // the generation; a serving path that proves no generation never
+  // qualifies).
+  if (evidence.kind === 'evidence') context.upstream = boundedUpstreamStamp(joinedReadGeneration);
+  return evidence;
+}
+
+/** One per-response-correlated session/read: resolves the snapshot together
+ * with the serving generation THAT response carried — never a stamp from the
+ * client's shared last-completed view, which an overlapping read can
+ * repopulate before the caller observes it. Control clients predating
+ * per-read correlation (test fixtures with single-threaded read sequences)
+ * fall back to that view. `options.signal` aborts the underlying request.
+ * @param {any} client @param {string} sessionId @param {{signal?:AbortSignal}} [options] */
+async function readWithServingGeneration(client, sessionId, options = {}) {
+  if (typeof client?.readSessionDetailed === 'function') {
+    const detailed = await client.readSessionDetailed(sessionId, options);
+    return { snapshot: detailed.snapshot, servingGeneration: boundedUpstreamStamp(detailed?.servingGeneration) };
+  }
+  const snapshot = await client.readSession(sessionId, options);
+  return { snapshot, servingGeneration: servingGenerationOf(client, sessionId) };
+}
+
+/** One bounded per-response-correlated management read, mirroring the
+ * foreground executor's pre-stop pattern: the read is armed with the composed
+ * budget through an AbortController, and when the budget expires the
+ * underlying request is ABORTED and the helper waits (bounded) for its
+ * admission release — the broker admits session/read as SHARED and
+ * session/stop as EXCLUSIVE, so an orphaned read must never hold admission
+ * while the authorized stop is issued (spec lines 81-83). Expiry propagates
+ * the budget's abort reason to the caller; the stop flow proceeds regardless.
+ * @param {any} client @param {string} sessionId @param {AbortSignal|undefined} budget */
+async function boundedManagementRead(client, sessionId, budget) {
+  const controller = new AbortController();
+  const onBudgetAbort = () => controller.abort(budget?.reason);
+  if (budget?.aborted) onBudgetAbort();
+  else budget?.addEventListener('abort', onBudgetAbort, { once: true });
+  let readSettled = false;
+  const readSettledGate = readWithServingGeneration(client, sessionId, { signal: controller.signal })
+    .then((read) => { readSettled = true; return read; }, (error) => { readSettled = true; throw error; });
+  // The observation budget may ride `AbortSignal.timeout`, which never keeps
+  // the event loop alive: with a stalled read, this await can be the stop
+  // flow's ONLY pending resolver, and on Node 22.13 the loop then drains
+  // mid-await (`Promise resolution is still pending but the event loop has
+  // already resolved`) before the budget abort ever fires. One REFERENCED
+  // keep-alive timer covers the bounded observation window; it is cleared as
+  // soon as this helper settles, so the process never outlives the budget.
+  const keepAlive = budget ? setTimeout(() => {}, managementObservationBudgetMs) : undefined;
+  try {
+    return await raceControlOperation(readSettledGate, budget);
+  } catch (error) {
+    if (!readSettled) {
+      if (!controller.signal.aborted) controller.abort(error);
+      await Promise.race([
+        readSettledGate.catch(() => {}),
+        // Kept REFERENCED for its bounded 250ms lifetime: this race may be the
+        // stop flow's only pending resolver after the budget abort, and an
+        // unref'd timer would let the event loop drain mid-await (observed on
+        // Node 22.13 as a pending-promise stall).
+        new Promise((resolve) => { setTimeout(resolve, managementReadReleaseMs); }),
+      ]);
+    }
+    throw error;
+  } finally {
+    budget?.removeEventListener('abort', onBudgetAbort);
+    if (keepAlive !== undefined) clearTimeout(keepAlive);
+  }
+}
+
+/** The serving protocol generation one management control client observed on its most recent session/read for the session: the production ZCodeClient surfaces the broker's `brokerProtocolGeneration` stamp per response (see ZCodeClient.readServingGeneration). A client that cannot prove its serving generation carries no continuity evidence, so its stop response can never qualify the no-report settlement. @param {any} client @param {string} sessionId */
+function servingGenerationOf(client, sessionId) {
+  try {
+    return boundedUpstreamStamp(typeof client?.readServingGeneration === 'function' ? client.readServingGeneration(sessionId) : null);
+  } catch { return null; }
+}
+
+/** The bounded hex shape of one upstream-generation stamp; anything else is no proven generation. @param {unknown} value */
+function boundedUpstreamStamp(value) {
+  return typeof value === 'string' && /^[a-f0-9]{16,64}$/.test(value) ? value : null;
+}
+
+/** The serving-generation stamp a FAILED session/read carries through its own
+ * CORRELATED error frame: the broker stamps session/read error responses with
+ * the protocol generation that produced the error, and the protocol client
+ * surfaces it as `details.brokerProtocolGeneration` (see
+ * ZCodeClient.readSessionDetailed). Spec 4.4 line 73 — a read failure must
+ * not independently veto otherwise complete evidence — so this stamp may
+ * attest a failed reread's continuity leg. Transport drops, unstamped errors,
+ * and non-plugin failures carry none: null keeps the round-4/8 fail-closed
+ * proof exactly as before.
+ * @param {unknown} error */
+function failedReadGeneration(error) {
+  return boundedUpstreamStamp(error instanceof PluginError ? error.details?.brokerProtocolGeneration : null);
 }
 
 /** Persist the durable stop intent before any remote control, mirroring the election's own transition order. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {string} cause @param {{signal?:AbortSignal}} [options] */
@@ -584,14 +733,46 @@ async function persistManagementStopIntent(input, joined, cause, options) {
   }
 }
 
-/** Publish only the rollback-aware unclaimed queued stop, exactly as the election's own queued branch; a claimed queued reservation defers to the election's worker-start guard; reconciler-settled queued cancels bypass the cancel-attempt journal/cancellation lock here because durable terminality is authoritative. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] */
-async function publishManagementWinner(input, joined, specification, options) {
+/** Publish only the rollback-aware unclaimed queued stop, exactly as the election's own queued branch; a claimed queued reservation defers to the election's worker-start guard; reconciler-settled queued cancels bypass the cancel-attempt journal/cancellation lock here because durable terminality is authoritative. The no-report cancellation (spec 2026-09-14 section 4.3) is the one exception on the remote-settled branch: an external publisher without terminal evidence must prove the exact worker claim, so it settles ONLY through the dedicated guarded publication and never through the lease-free recovery helper. @param {{store:any,dataRoot:string,workspace:string}} input @param {any} joined @param {any} specification @param {{signal?:AbortSignal}} [options] @param {{guard?:any,upstream?:string|null,client?:any,rereadGeneration?:string|null}} [context] */
+async function publishManagementWinner(input, joined, specification, options, context) {
   options?.signal?.throwIfAborted();
   // Remote-settled winners publish through the same recovery publication
   // helpers the SessionEnd settlement uses, so a retried stop settles the
   // durable winner even while the live host child holds its worker lease.
   if (joined.job.status !== 'queued') {
-    if (specification.status === 'cancelled') return cancelRecoveryJob(input, joined.job, specification.stopCause);
+    if (specification.status === 'cancelled') {
+      if (specification.noFinalReport === true) {
+        // The reread must close the same-generation loop (spec 4.2: the read,
+        // the stop, AND the reread share one upstream protocol generation):
+        // the generation that served this attempt's reread must still be the
+        // one that carried the joined pre-stop evidence, and the reread's
+        // stamp is captured PER RESPONSE by this attempt's reread adapter. A
+        // readable reread answered by a REPLACED generation — the broker
+        // reconstructed its upstream between the stop and the reread — breaks
+        // the attempt's continuity chain, so the no-report publication refuses
+        // and the cancelling guard stays for the next bounded pass. Natural
+        // outcomes are unaffected: their evidence is attributable to the
+        // persisted turn boundary, not to generation continuity. A FAILED
+        // reread carries a stamp ONLY through its own CORRELATED error frame
+        // (spec 4.4 line 73: the read failure must not independently veto
+        // otherwise complete evidence); a transport drop or unstamped failure
+        // keeps null — and the shared last-completed view an overlapping read
+        // repopulates is never consulted — so both retain exactly as before.
+        const rereadGeneration = boundedUpstreamStamp(context?.rereadGeneration);
+        if (rereadGeneration === null || rereadGeneration !== boundedUpstreamStamp(context?.upstream)) {
+          // The refusal keeps the cancelling guard AND records its own bounded
+          // non-private continuity diagnostic (spec 6) through the same safe
+          // lastCancelError surface the other unresolved-stop retentions use —
+          // the shared retention helper distinguishes this continuity refusal
+          // from a stop failure or a cleanup failure without ever exposing the
+          // private generation stamps that proved it.
+          return retainNoReportContinuityRefusal(input.store, input.workspace, joined.job);
+        }
+        return publishGuardedNoReportCancellation({ store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
+          ...(context?.guard === undefined || context?.guard === null ? {} : { guard: context.guard }) }, joined.job, specification.stopCause);
+      }
+      return cancelRecoveryJob(input, joined.job, specification.stopCause);
+    }
     if (specification.status === 'succeeded') {
       const completed = await completeEndedJob(input, joined.job, specification.snapshot, undefined);
       return completed ?? joined.job; /* completion unproven: uncertainty never publishes a terminal claim */

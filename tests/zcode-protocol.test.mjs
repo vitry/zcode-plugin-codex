@@ -5,7 +5,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { mock, test } from 'node:test';
 
@@ -22,6 +22,161 @@ test('request accepts an already-scheduled response after its deadline timer bec
   await Promise.resolve();
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
   await assert.doesNotReject(response);
+});
+
+test('an aborted request rejects promptly with the abort reason and drops its late response', async () => {
+  // The bounded pre-stop evidence read aborts its underlying request when the
+  // read outlives its budget, so the broker's EXCLUSIVE stop admission is not
+  // serialized behind the orphaned read. The abort must reject the pending
+  // request immediately with the abort reason, and the protocol must survive
+  // the late response for the abandoned id — dropping it silently instead of
+  // resolving anything or failing the connection as uncorrelated.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { try { frames.push(JSON.parse(chunk.toString('utf8'))); } catch { /* partial frame */ } });
+  const controller = new AbortController();
+  const reason = new Error('the bounded read outlived its budget');
+  const pending = protocol.request('session/read', { sessionId: 'session-abort' }, undefined, controller.signal);
+  await Promise.resolve();
+  assert.equal(frames.length, 1, 'the request frame was sent');
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason, 'the abort rejects the pending request immediately');
+  child.stdout.write(`${JSON.stringify({ id: frames.at(-1).id, result: { ok: true } })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(protocol.closed, false, 'the protocol survives a response for an aborted request');
+});
+
+test('repeated in-flight aborts against a silent peer are reaped at their budget and never overflow pending', async () => {
+  // The bounded pre-stop read aborts its request and KEEPS the marked entry
+  // installed for the silent late-response drop. Against a peer that never
+  // answers, nothing deletes those entries — so their original deadline
+  // timers must stay armed: repeated bounded-read aborts may not accumulate
+  // until the pending-map limit turns every later request into a
+  // ZCODE_PENDING_OVERFLOW rejection.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { frames.push(JSON.parse(chunk.toString('utf8'))); });
+  const controllers = [];
+  const attempts = [];
+  for (let index = 0; index < 1024; index += 1) {
+    const controller = new AbortController();
+    controllers.push(controller);
+    attempts.push(protocol.request('session/read', { sessionId: `session-reap-${index}` }, 120, controller.signal).then(() => 'resolved', (error) => error));
+  }
+  await Promise.resolve();
+  const reason = new Error('the bounded read outlived its budget');
+  for (const controller of controllers) controller.abort(reason);
+  const outcomes = await Promise.all(attempts);
+  assert.ok(outcomes.every((outcome) => outcome === reason), 'every aborted request rejects with its abort reason');
+  // The original request budgets (120ms) must reap the retained entries even
+  // though the silent peer never answers.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(protocol.pending.size, 0, 'aborted-but-retained entries are reaped at their original budget');
+  assert.equal(protocol.closed, false, 'the silent peer never failed the connection');
+  // The pending map is free again: the next request must be admitted instead
+  // of rejected as pending overflow.
+  const followUp = protocol.request('broker/health', {}, 1_000);
+  for (let turn = 0; turn < 200 && frames.length < 1_025; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  const followUpFrame = frames.at(-1);
+  assert.equal(followUpFrame?.method, 'broker/health', 'the follow-up request was sent and admitted');
+  child.stdout.write(`${JSON.stringify({ id: followUpFrame.id, result: { ok: true } })}\n`);
+  assert.deepEqual(await followUp, { ok: true }, 'a request after the reaped aborts is admitted and answered');
+  await protocol.close();
+});
+
+test('a correlated error frame lends its bounded serving-generation stamp to the rejected request', async () => {
+  // Spec 4.4 line 73 through the 4.2 continuity chain: a broker stamps a
+  // session/read ERROR response with the protocol generation that PRODUCED
+  // the error, and the rejected request surfaces that stamp as internal
+  // `details.brokerProtocolGeneration` evidence — a failed read CAN carry its
+  // own per-response provenance. Unstamped error frames (and every unbounded
+  // or missing shape) stay unstamped: transport-level failures never gain a
+  // generation here.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000, acceptBrokerControl: true });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { frames.push(JSON.parse(chunk.toString('utf8'))); });
+  const stamped = protocol.request('session/read', { sessionId: 'session-error-stamp' }, 1_000).then(() => 'resolved', (error) => error);
+  for (let turn = 0; turn < 100 && frames.length < 1; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  child.stdout.write(`${JSON.stringify({ id: frames[0].id, error: { code: -32000, message: 'ZCode session/read failed: the session is inactive.', data: { pluginError: { code: 'ZCODE_OUTPUT_INVALID', category: 'protocol', remedy: 'Retry the operation.', details: { method: 'session/read' } }, protocolGeneration: 'a'.repeat(32) } } })}\n`);
+  const stampedError = await stamped;
+  assert.equal(stampedError instanceof Error && stampedError.details?.brokerProtocolGeneration, 'a'.repeat(32),
+    'the correlated error frame stamps the rejection with its producing generation');
+  const unstamped = protocol.request('session/read', { sessionId: 'session-error-unstamped' }, 1_000).then(() => 'resolved', (error) => error);
+  for (let turn = 0; turn < 100 && frames.length < 2; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  child.stdout.write(`${JSON.stringify({ id: frames.at(-1).id, error: { code: -32000, message: 'ZCode session/read failed: the session is inactive.', data: { pluginError: { code: 'ZCODE_OUTPUT_INVALID', category: 'protocol', remedy: 'Retry the operation.', details: { method: 'session/read' } }, protocolGeneration: 'not-a-generation' } } })}\n`);
+  const unstampedError = await unstamped;
+  assert.equal(unstampedError instanceof Error && unstampedError.details?.brokerProtocolGeneration, undefined,
+    'an unbounded stamp shape is never surfaced as provenance');
+  await protocol.close();
+});
+
+test('an aborted retained entry is reaped by a timer that keeps the event loop alive', async () => {
+  // CI regression (Node 22.13): the reap timer was unref'd, so when a
+  // caller's abort path left the retained entry's timer as the ONLY
+  // event-loop work, the loop drained mid-await and node:test failed the
+  // composition test with `Promise resolution is still pending but the event
+  // loop has already resolved`. The reap must participate in loop liveness
+  // for its bounded lifetime — the request budget — so the reaping is
+  // observable even when nothing else holds a ref. The observable in-process
+  // seam is the timer's own refness while the entry is retained, plus the
+  // reap itself.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const controllers = [];
+  const attempts = [];
+  for (let index = 0; index < 3; index += 1) {
+    const controller = new AbortController();
+    controllers.push(controller);
+    attempts.push(protocol.request('session/read', { sessionId: `session-reap-ref-${index}` }, 120, controller.signal).then(() => 'resolved', (error) => error));
+  }
+  await Promise.resolve();
+  const reason = new Error('the bounded read outlived its budget');
+  for (const controller of controllers) controller.abort(reason);
+  await Promise.all(attempts);
+  const retained = [...protocol.pending.values()];
+  assert.equal(retained.length, 3, 'the aborted entries stay installed for the silent late-response drop');
+  for (const entry of retained) assert.equal(entry.timer?.hasRef?.(), true,
+    'the reap timer is referenced — it keeps the event loop alive for its bounded budget');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(protocol.pending.size, 0, 'the referenced reap timer reaped every retained entry at its budget');
+  await protocol.close();
+});
+
+test('a settled request leaves zero abort listeners attached to its signal', async () => {
+  // Repeated status-wait reads carry LONG-LIVED signals: an abort listener
+  // that survives settlement would accumulate on every operation until the
+  // listener warnings start. Every settlement path must detach it.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  child.stdin.on('data', (chunk) => {
+    const frame = JSON.parse(chunk.toString('utf8'));
+    setImmediate(() => child.stdout.write(`${JSON.stringify({ id: frame.id, result: { ok: true } })}\n`));
+  });
+  const controller = new AbortController();
+  await protocol.request('session/read', { sessionId: 'session-listeners' }, undefined, controller.signal);
+  await Promise.resolve();
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'the abort listener is detached when the request settles');
+});
+
+test('a request with an already-aborted signal rejects immediately with nothing left in pending', async () => {
+  // A never-sent request has no in-flight operation to release: it must
+  // reject fast and leave the pending map exactly as it found it, instead of
+  // occupying an entry until the full request timeout.
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 5_000 });
+  const frames = [];
+  child.stdin.on('data', (chunk) => { try { frames.push(JSON.parse(chunk.toString('utf8'))); } catch { /* partial frame */ } });
+  const controller = new AbortController();
+  const reason = new Error('the budget expired before the read started');
+  controller.abort(reason);
+  const pendingSizeBefore = protocol.pending.size;
+  await assert.rejects(protocol.request('session/read', { sessionId: 'session-pre-aborted' }, undefined, controller.signal),
+    (error) => error === reason, 'the pre-aborted signal rejects the request fast with its reason');
+  assert.equal(protocol.pending.size, pendingSizeBefore, 'a never-sent request leaves nothing in pending');
+  assert.equal(frames.length, 0, 'no frame is sent for an already-aborted request');
 });
 
 test('real socket response ready at the deadline wins before request timeout', async () => {
@@ -237,4 +392,24 @@ test('explicit stop control still ends an armed legacy turn', () => {
   protocol.releaseTurn('session-legacy');
   assert.equal(protocol.turnState('session-legacy'), null, 'local release must end the turn');
   assert.equal(protocol.closed, false);
+});
+
+test('a failed protocol connection is permanently closed and proves no continuity', async () => {
+  const first = new ZCodeProtocolClient(fakeProtocolChild());
+  const second = new ZCodeProtocolClient(fakeProtocolChild());
+  try {
+    // Socket-level continuity is bounded but NEVER upstream-generation proof:
+    // the broker can reconstruct its engine behind one unchanged client
+    // connection, which is why continuity attestation derives from the
+    // broker's serving-generation stamps instead (see zcode-broker.mjs). No
+    // socket-token primitive exists to be mistaken for generation proof.
+    assert.equal('connectionToken' in first, false);
+    assert.equal(first.closed, false);
+    first.fail(new Error('transport reset mid-attempt'));
+    assert.equal(first.closed, true, 'a failed connection can serve no further request');
+    assert.equal(second.closed, false);
+  } finally {
+    await first.close();
+    await second.close();
+  }
 });

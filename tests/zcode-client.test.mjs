@@ -98,6 +98,138 @@ test('conversation subscription validates options and the exact ack', async () =
   await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'unsupported' }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
+/** The stop acknowledgement is BARE for the engine: through the real broker it
+ * may carry exactly one field — the broker's serving-generation stamp (spec
+ * 2026-09-14 section 4.2) — and never any other additive or engine field.
+ * @param {any} response */
+function assertBareStopAcknowledgement(response) {
+  assert.ok(response && typeof response === 'object', 'the stop acknowledgement is an object');
+  assert.deepEqual(Object.keys(response).filter((key) => key !== 'brokerProtocolGeneration'), [],
+    'the stop acknowledgement carries no fields beyond the optional broker serving-generation stamp');
+  if ('brokerProtocolGeneration' in response) assert.match(String(response.brokerProtocolGeneration), /^[a-f0-9]{16,64}$/, 'the optional stamp keeps its bounded hex shape');
+}
+
+test('the serving-generation stamp is stripped from snapshots, recorded per read, and surfaced for stop continuity', async () => {
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  let stamp = 'a'.repeat(32);
+  const protocol = {
+    request: async (method, params) => {
+      if (method === 'session/read') return { ...brokerCreateSnapshot(params.sessionId, workspacePath), brokerProtocolGeneration: stamp };
+      if (method === 'session/stop') return { brokerProtocolGeneration: stamp };
+      throw new Error(`unexpected ${method}`);
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const first = await client.readSession('session-stamp-1');
+  assert.equal('brokerProtocolGeneration' in first, false, 'the broker-only stamp never leaks into the engine snapshot the client validates and returns');
+  assert.equal(client.readServingGeneration('session-stamp-1'), 'a'.repeat(32), 'the stamp is recorded per read response');
+  stamp = 'b'.repeat(32);
+  await client.readSession('session-stamp-1');
+  assert.equal(client.readServingGeneration('session-stamp-1'), 'b'.repeat(32), 'a reconstructed upstream generation surfaces as the new stamp');
+  assert.equal(client.readServingGeneration('session-stamp-2'), null, 'an unread session proves no generation');
+  assert.deepEqual(await client.stopSession('session-stamp-1'), { brokerProtocolGeneration: 'b'.repeat(32) },
+    'the stop response carries the generation that answered it');
+  stamp = 'not-a-generation';
+  await client.readSession('session-stamp-1');
+  assert.equal(client.readServingGeneration('session-stamp-1'), null, 'an unbounded stamp shape is no proven generation');
+  assert.deepEqual(await client.stopSession('session-stamp-1'), {}, 'an unstamped stop response stays the bare acknowledgement');
+});
+
+test('a failed read carries no per-read serving generation and the next successful read re-establishes it', async () => {
+  // spec 2026-09-14 section 4.2: continuity is proven PER RESPONSE —
+  // readSessionDetailed resolves the serving generation that served ITS OWN
+  // response, and a rejected session/read (exactly the post-stop reread an
+  // upstream reconstruction drops) carries no generation at all, so no
+  // publisher can mistake any cached or overlapping stamp for the failed
+  // reread's continuity proof. The shared readServingGeneration() view stays
+  // the last-completed-read observation for legacy callers — never per-read
+  // proof.
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  const stamp = 'a'.repeat(32);
+  let failRead = false;
+  const protocol = {
+    request: async (method, params) => {
+      if (method === 'session/read') {
+        if (failRead) throw new Error('post-stop read transport closed');
+        return { ...brokerCreateSnapshot(params.sessionId, workspacePath), brokerProtocolGeneration: stamp };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const first = await client.readSessionDetailed('session-stamp-failure');
+  assert.equal(first.servingGeneration, 'a'.repeat(32), 'the successful read carries its own serving generation');
+  assert.equal('brokerProtocolGeneration' in first.snapshot, false, 'the broker-only stamp never leaks into the engine snapshot');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), 'a'.repeat(32), 'the shared view mirrors the last completed read');
+  failRead = true;
+  await assert.rejects(client.readSessionDetailed('session-stamp-failure'), undefined, 'the modeled reread failure rejects — no generation exists for it');
+  assert.equal(client.readServingGeneration('session-stamp-failure'), null, 'the failed read leaves the shared last-completed view empty');
+  failRead = false;
+  const third = await client.readSessionDetailed('session-stamp-failure');
+  assert.equal(third.servingGeneration, 'a'.repeat(32), 'the next successful read re-establishes its own generation');
+});
+
+test('an overlapping read never lends its serving generation to a failed read', async () => {
+  // The race the per-response correlation removes: read A — a caller's own
+  // post-stop reread — hangs and then fails while read B (an overlapping read
+  // for the same session) completes with its own stamp. A's caller must never
+  // observe B's stamp: the detailed API rejects for A and carries no
+  // generation at all, and the shared readServingGeneration() view is
+  // documented as the LAST-COMPLETED read's observation — explicitly not
+  // continuity proof for the failed read.
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  let releaseA = () => {};
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const reads = [];
+  const protocol = {
+    request: async (method, params) => {
+      if (method !== 'session/read') throw new Error(`unexpected ${method}`);
+      reads.push(params.sessionId);
+      if (reads.length === 1) {
+        await gateA;
+        throw new Error('read A failed after the budget');
+      }
+      return { ...brokerCreateSnapshot(params.sessionId, workspacePath), brokerProtocolGeneration: 'b'.repeat(32) };
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const failingRead = client.readSessionDetailed('session-overlap');
+  const completedRead = await client.readSessionDetailed('session-overlap');
+  assert.equal(completedRead.servingGeneration, 'b'.repeat(32), 'read B carries its own stamp');
+  releaseA();
+  await assert.rejects(failingRead, undefined, 'read A rejects and carries NO generation — never read B\'s stamp');
+  assert.equal(client.readServingGeneration('session-overlap'), 'b'.repeat(32),
+    'the shared view shows the last COMPLETED read only');
+});
+
+test('reads thread their abort signal to the protocol request and reject with its reason', async () => {
+  const workspacePath = canonicalTestWorkspace(process.cwd());
+  const seenSignals = [];
+  const protocol = {
+    request: (method, params, timeoutMs, signal) => {
+      if (method !== 'session/read') return Promise.reject(new Error(`unexpected ${method}`));
+      seenSignals.push(signal);
+      return new Promise((_, reject) => {
+        const fallback = setTimeout(() => reject(new Error('the read never observed the abort — the signal was not forwarded')), 250);
+        fallback.unref?.();
+        signal?.addEventListener('abort', () => { clearTimeout(fallback); reject(signal.reason); }, { once: true });
+      });
+    },
+    cancelTurn: () => {},
+  };
+  const client = new ZCodeClient(protocol, workspacePath);
+  const controller = new AbortController();
+  const reason = new Error('the bounded read outlived its budget');
+  const pending = client.readSession('session-signal', { signal: controller.signal });
+  await Promise.resolve();
+  assert.equal(seenSignals.at(-1), controller.signal, 'the read forwards its abort signal to the protocol request');
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason, 'the aborted read rejects with the abort reason instead of hanging');
+});
+
 test('conversation subscribe accepts additive fields and rejects malformed consumed fields', async () => {
   // ZCode 0.16.5 bundle schema/implementation: openTiming is nested under ack
   // with this versioned warm-session timing shape. `future` is unit-only.
@@ -741,7 +873,7 @@ test('turn state proves an accepted send is active until acknowledged stop clear
     await client.send(sessionId, 'active');
     assert.equal(client.turnState(sessionId), 'armed');
     await assert.rejects(client.send(sessionId, 'must reject while active'), { code: 'ZCODE_TURN_ACTIVE' });
-    assert.deepEqual(await client.stopSession(sessionId), {});
+    assertBareStopAcknowledgement(await client.stopSession(sessionId));
     assert.equal(client.turnState(sessionId), null);
     await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
   }, { FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '1' });
@@ -759,7 +891,7 @@ test('stop aborts an observed remote permission barrier for the active turn', { 
     await client.send(sessionId, 'request permission');
     assert.match(await permissionReached, /^permission-/);
     assert.equal(client.turnState(sessionId), 'armed');
-    assert.deepEqual(await client.stopSession(sessionId), {});
+    assertBareStopAcknowledgement(await client.stopSession(sessionId));
     await permissionAborted;
     assert.equal(client.turnState(sessionId), null);
   }, { FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '1' });
@@ -1094,6 +1226,34 @@ test('existing managed client ignores a healthy identity redirected to another w
     await writeBrokerIdentity(identityPathA, { endpoint: brokerB.options.endpoint, pid: process.pid, instanceId: brokerB.options.instanceId, brokerToken: brokerB.options.brokerToken }); const identityBefore = await readFile(identityPathA, 'utf8');
     assert.equal(await createExistingManagedZCodeClient({ dataRoot, workspace: workspaceA, ownerId: 'cross-workspace-existing-owner', requestTimeoutMs: 100, ...wireOptions }), null); assert.equal(brokerB.owners, 0); await assertEndpointPublished(brokerB.options.endpoint); assert.equal(await readFile(identityPathA, 'utf8'), identityBefore); assert.equal((await readdir(join(storageA.directory, 'broker'))).some((name) => name.startsWith('config-')), false);
   } finally { await brokerB?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('the broker stamps its serving protocol generation on reads and stops and re-mints it across a reconstruction', { timeout: scaleTestTimeout(20_000) }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-generation-stamp-')); const dataRoot = join(directory, 'data'); const workspace = join(directory, 'workspace'); let broker;
+  try {
+    await mkdir(workspace, { recursive: true });
+    broker = await createPersistedTestBroker({ dataRoot, workspace, tokenByte: '9', instanceByte: 'b' });
+    const client = await createZCodeClient({ workspace, brokerEndpoint: broker.options.endpoint, brokerToken: broker.options.brokerToken, ownerId: 'generation-stamp-owner' });
+    try {
+      await client.createSession({ workspace, sessionId: 'generation-stamp-session' });
+      await client.readSession('generation-stamp-session');
+      const firstGeneration = client.readServingGeneration('generation-stamp-session');
+      assert.match(String(firstGeneration), /^[a-f0-9]{32}$/, 'the broker stamps the serving generation on session/read and the client records it');
+      assert.deepEqual(await client.stopSession('generation-stamp-session'), { brokerProtocolGeneration: firstGeneration },
+        'the stop response carries the same generation that served the read');
+      // Retire the serving generation behind the SAME broker (the client socket
+      // stays connected throughout): the next engine the broker lazily spawns
+      // must carry a DIFFERENT stamp — this is the reconstruction a continuity
+      // attestation must be able to see.
+      const retired = broker.clearProtocolGeneration(broker.protocol);
+      await retired.closePromise;
+      await client.createSession({ workspace, sessionId: 'generation-stamp-session-2' });
+      await client.readSession('generation-stamp-session-2');
+      const secondGeneration = client.readServingGeneration('generation-stamp-session-2');
+      assert.match(String(secondGeneration), /^[a-f0-9]{32}$/);
+      assert.notEqual(secondGeneration, firstGeneration, 'a reconstructed upstream protocol generation is a new serving generation, not the old socket\'s continuity');
+    } finally { await client.close().catch(() => {}); }
+  } finally { await broker?.close().catch(() => {}); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('managed owner release reports a profile identity redirected to another workspace without connecting it', async () => {
@@ -1773,7 +1933,7 @@ test('same-owner broker stop disconnects the exact active client completion wait
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '1'.repeat(64); const ownerId = 'stop-active-owner-stable';
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
   const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 2_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
-  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); assert.deepEqual(await controller.stopSession(sessionId), {}); await completion; }
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); assertBareStopAcknowledgement(await controller.stopSession(sessionId)); await completion; }
   finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -1781,7 +1941,7 @@ test('same-owner read control requests cannot steal the active completion route 
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-read-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '4'.repeat(64); const ownerId = 'read-active-owner-stable';
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
   const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 500 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
-  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); await controller.readSession(sessionId); assert.deepEqual(await controller.stopSession(sessionId), {}); await completion; }
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); await controller.readSession(sessionId); assertBareStopAcknowledgement(await controller.stopSession(sessionId)); await completion; }
   finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -1796,7 +1956,7 @@ test('a disconnected active turn keeps its exact terminal metadata and permits i
 test('a reconnected owner can stop an exact detached turn without terminal resurrection', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-detached-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '7'.repeat(64); const ownerId = 'detached-stop-owner-stable'; const gate = join(directory, 'completion.gate'); await writeFile(gate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: gate } }).start(); const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); let controller;
   try {
-    const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(sessionId, 'stop after disconnect'); const activeSocket = broker.activeSessionSockets.get(sessionId)?.socket; await worker.close(); for (let index = 0; index < 100 && broker.activeSessionSockets.get(sessionId)?.socket === activeSocket; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.get(sessionId)?.socket, null); controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); assert.deepEqual(await controller.stopSession(sessionId), {}); assert.equal(broker.activeSessionSockets.has(sessionId), false); assert.equal(broker.activeSessions.has(sessionId), false); await writeFile(gate, 'release'); await new Promise((resolvePromise) => setTimeout(resolvePromise, 25)); assert.equal(broker.activeSessionSockets.has(sessionId), false); assert.equal(broker.activeSessions.has(sessionId), false);
+    const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(sessionId, 'stop after disconnect'); const activeSocket = broker.activeSessionSockets.get(sessionId)?.socket; await worker.close(); for (let index = 0; index < 100 && broker.activeSessionSockets.get(sessionId)?.socket === activeSocket; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.get(sessionId)?.socket, null); controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); assertBareStopAcknowledgement(await controller.stopSession(sessionId)); assert.equal(broker.activeSessionSockets.has(sessionId), false); assert.equal(broker.activeSessions.has(sessionId), false); await writeFile(gate, 'release'); await new Promise((resolvePromise) => setTimeout(resolvePromise, 25)); assert.equal(broker.activeSessionSockets.has(sessionId), false); assert.equal(broker.activeSessions.has(sessionId), false);
   } finally { await writeFile(gate, 'release').catch(() => {}); await controller?.close().catch(() => {}); await worker.close().catch(() => {}); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -1807,7 +1967,7 @@ test('stopping one active session does not disconnect a sibling turn on the same
   try {
     const first = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(first, 'first'); const firstCompletion = assert.rejects(worker.waitForCompletion(first), { code: 'ZCODE_SESSION_STOPPED' });
     const second = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(second, 'second'); const secondCompletion = worker.waitForCompletion(second);
-    assert.deepEqual(await controller.stopSession(first), {}); await firstCompletion;
+    assertBareStopAcknowledgement(await controller.stopSession(first)); await firstCompletion;
     await writeFile(gate, 'release'); await secondCompletion;
   } finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -2111,6 +2271,104 @@ test('protocol reset invalidates an owner release acknowledgement and clears its
 test('one session admission prevents subscribe and owner release from entering the same upstream batch', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-subscribe-admission-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'release-subscribe-admission-owner'; const sessionId = 'release-subscribe-admission-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: 'a'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.ownershipStoreEstablished = true; broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.reloadOwnership = async () => {}; let resolveStop; let stopCalls = 0; let subscribeCalls = 0; const protocol = { request: (method) => { if (method === 'session/stop') { stopCalls += 1; return new Promise((resolvePromise) => { resolveStop = resolvePromise; }); } subscribeCalls += 1; return Promise.resolve({ ack: { subscriptionId: 'must-not-subscribe', mode: 'snapshot', logEpoch: 'must-not-subscribe' } }); }, cancelTurn() {} }; broker.protocol = protocol;
   const releasing = broker.releaseOwner(socket, ownerId, [], Date.now() + 2_000); while (!stopCalls) await new Promise((resolvePromise) => setImmediate(resolvePromise)); await broker.handleLocal(socket, JSON.stringify({ id: 60, method: 'v4/conversation/subscribe', params: { topic: `conversation/${sessionId}`, connectionId: 'release-subscribe-admission', clientMode: 'desktop-continuous' } })); assert.equal(subscribeCalls, 0); assert.equal(writes.find((frame) => frame.id === 60)?.error?.data?.pluginError?.code, 'ZCODE_TURN_ACTIVE'); resolveStop({}); const released = await releasing; assert.deepEqual(released.releasedSessionIds, [sessionId]); assert.equal(broker.sessionOwners.has(sessionId), false); assert.equal(broker.stoppingSessions.has(sessionId), false); await rm(directory, { recursive: true, force: true });
+});
+
+test('an aborted read notifies the broker so the exclusive stop is admitted immediately', async () => {
+  // Spec 2026-09-14 lines 81-82: the bounded read that outlives its budget is
+  // aborted, and the best-effort stop after the failed read must not stay
+  // fenced behind the abandoned read's SHARED session admission. The abort
+  // must therefore PROPAGATE to the broker over the client wire — a cancel
+  // notification the broker answers by releasing exactly that request's
+  // session admission — instead of waiting for the stalled upstream read to
+  // settle on its own.
+  // The broker binds a REAL socket here, so the endpoint follows the repo's
+  // Windows-bound convention: compactBrokerTemp keeps the AF_UNIX sun_path
+  // within the ~104-byte kernel limit on every platform (the runner's long
+  // %TEMP% prefix made a descriptive mkdtemp prefix fail with listen EACCES
+  // on win32), and brokerEndpointFor resolves to a named pipe on win32 and a
+  // short socket under the compact directory elsewhere.
+  const directory = await compactBrokerTemp();
+  const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory });
+  const ownershipPath = join(directory, 'broker-abort-release-owners.json');
+  const ownerId = 'broker-abort-release-owner';
+  const sessionId = 'broker-abort-release-session';
+  let broker; let client;
+  let resolveStalledRead;
+  try {
+    await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } }));
+    broker = await newTestBroker({ endpoint, ownershipPath, brokerToken: 'c'.repeat(64), instanceId: 'd'.repeat(48), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }).start();
+    // The upstream read stalls at the broker forever; the upstream stop answers
+    // immediately, so the only thing that can fence the stop is the broker's
+    // own shared-read admission.
+    let stalledReadEntered = false;
+    broker.protocol = {
+      request: (method) => {
+        if (method === 'session/read') { stalledReadEntered = true; return new Promise((resolvePromise) => { resolveStalledRead = resolvePromise; }); }
+        if (method === 'session/stop') return Promise.resolve({});
+        throw new Error(`unexpected upstream ${method}`);
+      },
+      cancelTurn() {},
+    };
+    client = await connectZCodeBroker(endpoint, { brokerToken: 'c'.repeat(64), ownerId, requestTimeoutMs: 2_000 });
+    const controller = new AbortController();
+    const abortReason = new Error('the bounded pre-stop read outlived its budget');
+    const reading = client.request('session/read', { sessionId }, undefined, controller.signal).then(() => 'resolved', (error) => error);
+    for (let turn = 0; turn < 400 && !stalledReadEntered; turn += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    assert.equal(stalledReadEntered, true, 'the stalled read reached the broker upstream');
+    controller.abort(abortReason);
+    assert.equal(await reading, abortReason, 'the abort rejects the abandoned read with its reason');
+    const stopStartedAt = Date.now();
+    const stopped = await client.request('session/stop', { sessionId });
+    const stopElapsedMs = Date.now() - stopStartedAt;
+    assert.deepEqual(stopped, {}, 'the exclusive stop is admitted and acknowledged — no conflicting-operation rejection');
+    assert.ok(stopElapsedMs < 1_000, `the stop was admitted immediately instead of waiting behind the abandoned read (${stopElapsedMs}ms)`);
+    // The stalled upstream answer settles late: its broker-side settlement is
+    // refused by the released admission and the client drops the late frame
+    // silently — the connection survives.
+    resolveStalledRead?.({});
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    assert.equal(client.closed, false, 'the late response for the aborted read is dropped without failing the connection');
+  } finally {
+    // Release the stalled upstream read BEFORE closing the broker: its close
+    // awaits every in-flight local task, so a forever-pending read would hang
+    // the teardown of a deliberately failed attempt.
+    resolveStalledRead?.({});
+    for (let turn = 0; turn < 400 && broker?.localTasks.size; turn += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    await client?.close().catch(() => {});
+    await broker?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed upstream session/read error frame carries the current serving generation only', async () => {
+  // Spec 4.4 line 73: the broker stamps a FAILED session/read with the same
+  // internal protocolGeneration the success path uses, but ONLY while the
+  // protocol that served the attempt is still the current generation — a
+  // correlated same-generation error response carries provenance; pre-upstream
+  // failures and retired generations stay unstamped so old-client and
+  // fail-closed semantics are unchanged.
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-read-error-stamp-')); const endpoint = join(directory, 'broker.sock'); const ownershipPath = `${endpoint}.owners.json`; const ownerId = 'read-error-stamp-owner'; const sessionId = 'read-error-stamp-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+  await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } }));
+  const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '9'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  broker.ownershipStoreEstablished = true; broker.sessionOwners.set(sessionId, { ownerId, socket }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.reloadOwnership = async () => {};
+  broker.protocol = { request: async (method) => { if (method === 'session/read') throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/read result.', { category: 'protocol', remedy: 'Retry the operation.' }); throw new Error(`unexpected upstream ${method}`); }, cancelTurn() {} };
+  broker.protocolGeneration = 'e'.repeat(32);
+  try {
+    await broker.handleLocal(socket, JSON.stringify({ id: 90, method: 'session/read', params: { sessionId } }));
+    const stampedFrame = writes.find((frame) => frame.id === 90);
+    assert.equal(stampedFrame?.error?.data?.pluginError?.code, 'ZCODE_OUTPUT_INVALID', 'the upstream read failure reaches the client as the correlated plugin error');
+    assert.equal(stampedFrame?.error?.data?.protocolGeneration, 'e'.repeat(32), 'the error frame carries the current serving generation that produced the failure');
+    // A retired serving generation is never stamped: the read attempt's
+    // protocol is no longer the broker's current generation.
+    const retired = broker.clearProtocolGeneration(broker.protocol);
+    await broker.handleLocal(socket, JSON.stringify({ id: 91, method: 'session/read', params: { sessionId } }));
+    const unstampedFrame = writes.find((frame) => frame.id === 91);
+    assert.equal(unstampedFrame?.error?.data?.protocolGeneration, undefined, 'a read with no current serving protocol is never stamped');
+    await retired.closePromise;
+  } finally {
+    await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('an idle stop winner remains authoritative when its protocol resets during the durable write', async () => {
@@ -2713,7 +2971,7 @@ test('a pending stop fences new sends until its exact acknowledgement', { timeou
 test('a natural terminal remains waitable when direct-stop cleanup receives additive fields', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-wins-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const ownerId = 'terminal-wins-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1' } }).start(); const client = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
   try {
-    const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-wins-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal wins direct stop'); const stopping = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); for (let index = 0; index < 200 && !client.protocol.completed.get(sessionId)?.length; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(client.protocol.completed.get(sessionId)?.length, 1); await writeFile(stopGate, 'release'); assert.deepEqual(await stopping, {}); const completion = await client.waitForCompletion(sessionId); assert.equal(completion.reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal(broker.conversationSubscriptions.size, 0);
+    const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-wins-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal wins direct stop'); const stopping = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(await readFile(stopReached, 'utf8'), 'blocked'); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); for (let index = 0; index < 200 && !client.protocol.completed.get(sessionId)?.length; index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(client.protocol.completed.get(sessionId)?.length, 1); await writeFile(stopGate, 'release'); assertBareStopAcknowledgement(await stopping); const completion = await client.waitForCompletion(sessionId); assert.equal(completion.reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal(broker.conversationSubscriptions.size, 0);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -2727,7 +2985,7 @@ test('a natural terminal remains waitable when owner-release cleanup receives ad
 test('a direct stop retry consumes its exact natural terminal winner with additive cleanup fields', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-retry-stop-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'a'.repeat(64); const ownerId = 'terminal-retry-stop-owner'; const completionGate = join(directory, 'completion.gate'); const stopGate = join(directory, 'stop.gate'); const stopReached = join(directory, 'stop.reached'); const record = join(directory, 'calls.jsonl'); await writeFile(completionGate, 'hold'); await writeFile(stopGate, 'hold'); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: completionGate, FAKE_ZCODE_STOP_GATE: stopGate, FAKE_ZCODE_STOP_GATE_REACHED: stopReached, FAKE_ZCODE_STOP_ERROR_ONCE: '1', FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED: '1', FAKE_ZCODE_RECORD: record } }).start(); const client = await createPreExactReleaseClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
   try {
-    const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-retry-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal survives direct retry'); const firstStop = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); await writeFile(stopGate, 'release'); await assert.rejects(firstStop, { code: 'ZCODE_REQUEST_FAILED' }); assert.equal(broker.terminalWinnerEvidence.size, 1); assert.deepEqual(await client.stopSession(sessionId), {}); assert.equal(broker.terminalWinnerEvidence.size, 0); assert.equal((await client.waitForCompletion(sessionId)).reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 2);
+    const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await client.subscribeConversation(sessionId, { connectionId: 'terminal-retry-stop-connection', clientMode: 'desktop-continuous' }); await client.send(sessionId, 'terminal survives direct retry'); const firstStop = client.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(stopReached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); await writeFile(completionGate, 'release'); for (let index = 0; index < 200 && broker.activeSessionSockets.has(sessionId); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5)); assert.equal(broker.activeSessionSockets.has(sessionId), false); await writeFile(stopGate, 'release'); await assert.rejects(firstStop, { code: 'ZCODE_REQUEST_FAILED' }); assert.equal(broker.terminalWinnerEvidence.size, 1); assertBareStopAcknowledgement(await client.stopSession(sessionId)); assert.equal(broker.terminalWinnerEvidence.size, 0); assert.equal((await client.waitForCompletion(sessionId)).reason, 'prompt_completed'); assert.ok(broker.protocol); assert.equal((await readRecordedCalls(record)).filter((call) => call.method === 'session/stop').length, 2);
   } finally { await writeFile(completionGate, 'release').catch(() => {}); await writeFile(stopGate, 'release').catch(() => {}); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -2756,7 +3014,7 @@ test('failed same-owner broker stop preserves the active client and its later co
 test('active broker client can stop its own turn without disconnecting itself', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-self-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '3'.repeat(64);
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'stop-self-owner-stable' });
-  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await client.send(sessionId, 'hold'); const completionStopped = assert.rejects(client.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); assert.deepEqual(await client.stopSession(sessionId), {}); await completionStopped; assert.equal((await client.listSessions()).sessions[0].sessionId, sessionId); }
+  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await client.send(sessionId, 'hold'); const completionStopped = assert.rejects(client.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); assertBareStopAcknowledgement(await client.stopSession(sessionId)); await completionStopped; assert.equal((await client.listSessions()).sessions[0].sessionId, sessionId); }
   finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
