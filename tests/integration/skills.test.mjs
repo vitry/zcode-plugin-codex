@@ -13,6 +13,7 @@ import { PluginError } from '../../scripts/lib/errors.mjs';
 import { withFileLock } from '../../scripts/lib/fs.mjs';
 import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
 import { createJobLog } from '../../scripts/lib/job-log.mjs';
+import { RESCUE_RUNNER_VERSION } from '../../scripts/lib/rescue-execution-input.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { writeResultArtifact } from '../../scripts/lib/review.mjs';
@@ -164,7 +165,17 @@ async function prepareRescue(ctx, parentSessionId, envelope, childId) {
 }
 
 async function invokePreparedRescue(ctx, parentSessionId, childId, task, options = { execution: 'foreground', resume: 'fresh' }, env = ctx.env) {
-  await prepareRescue(ctx, parentSessionId, { version: 1, source: 'explicit', task, options }, childId);
+  // Callers speak the historical execution vocabulary, or pass the split v4
+  // placement keys through untouched. Foreground requests carry the split v4
+  // pair; a background request stays on the accepted legacy v3 coupled
+  // envelope because its contract is the historical execution-coupled runner.
+  const { execution, hostPlacement, companionExecution, ...rest } = options;
+  const envelope = hostPlacement !== undefined || companionExecution !== undefined
+    ? { version: 4, source: 'explicit', task, options: { hostPlacement, companionExecution, ...rest }, continuationTarget: null }
+    : execution === 'background'
+      ? { version: 3, source: 'explicit', task, options: { ...options }, continuationTarget: null }
+      : { version: 4, source: 'explicit', task, options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', ...rest }, continuationTarget: null };
+  await prepareRescue(ctx, parentSessionId, envelope, childId);
   return runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, FAKE_CODEX_THREAD_JSON: ctx.codexChildren.get(childId), CODEX_THREAD_ID: childId } });
 }
 
@@ -270,10 +281,10 @@ test('PR #39 fixture manifests contain four independent literal record byte sets
   assert.equal(source.match(/String\.raw`/gu)?.length, 4);
   const manifests = Object.values(PR39_ORIGIN_ROUTE_TEMPLATES); assert.equal(manifests.length, 4); assert.equal(new Set(manifests).size, 4);
   const expected = {
-    prepared: { count: 9, digest: 'ecefe94305f0d20e4de9da226326773a99bf25fb692b21ff41efc9b3854c6cea', oneShot: '/invocations/prepared/' },
+    prepared: { count: 9, digest: '8bfac2d14c6568a496ad236d6564004840fc5296395952e215c5528df965758b', oneShot: '/invocations/prepared/' },
     status: { count: 14, digest: '5876c7822d8275ba7eaebb073fe159e5697ee3679a2f0a451a6a8b2e83fd162b' },
     choice: { count: 15, digest: 'ef78e516d83e5bd0dab5a91c4a8bff58a1e461931d0b29b56c28e63bebe2ed8f', oneShot: '/invocations/pending/' },
-    stopped: { count: 15, digest: 'ccf4d21122c37b0f9a8d169da591c1acc76cd6cf22c68d82d603ffc6f4e2d716', oneShot: '/invocations/prepared/' },
+    stopped: { count: 15, digest: 'fa85096754710212e1d61b0c331ae8a5bfd32f82bd5cb70e6bfe846010e39334', oneShot: '/invocations/prepared/' },
   };
   const filenameTokens = new Set(['ORIGIN_WORKSPACE_HASH', 'TARGET_WORKSPACE_HASH', 'GLOBAL_KEY', 'ORIGIN_INDEX_KEY', 'TARGET_INDEX_KEY', 'CALLER_DIGEST', 'ROUTE_KEY', 'FORWARD_KEY', 'EXECUTOR_KEY', 'PREPARATION_KEY', 'PENDING_KEY', 'BINDING_PARTITION_KEY', 'BINDING_KEY', 'OWNER_DIRECTORY', 'OWNER_ID']);
   const byteTokens = new Set([...filenameTokens, 'JOB_LOG_JSON', 'ORIGIN_JSON', 'TARGET_JSON']);
@@ -371,7 +382,7 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
   assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
     cwd: canonicalTarget,
     env: { ...ctx.env, CODEX_THREAD_ID: 'linked-parent' },
-    input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'repair linked execution', options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
+    input: Readable.from([`${JSON.stringify({ version: 4, source: 'explicit', task: 'repair linked execution', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`]),
     dependencies: legacyPreparationDependencies,
   }), legacyPreparedRoute);
   const start = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
@@ -395,7 +406,7 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   await run('git', ['worktree', 'add', '-q', '-b', 'status-linked-execution', target], ctx.workspace);
   const canonicalTarget = await realpath(target);
   await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-  await prepareRescue({ ...ctx, workspace: canonicalTarget }, 'route-status-parent', { version: 1, source: 'explicit', task: 'repair route status', options: { execution: 'foreground', resume: 'fresh' } });
+  await prepareRescue({ ...ctx, workspace: canonicalTarget }, 'route-status-parent', { version: 4, source: 'explicit', task: 'repair route status', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   await startRescueChild(ctx, 'route-status-parent', 'route-status-child', 'route-status-child-turn');
   const targetReservation = { workspace: canonicalTarget, ownerSessionId: 'route-status-parent', ownerTurnId: 'route-status-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
   const targetExecutor = { agentId: 'route-status-child', agentType: 'zcode-rescue', parentSessionId: 'route-status-parent', parentTurnId: 'route-status-turn', parentPermissionMode: 'workspace-write', workspace: canonicalTarget };
@@ -427,13 +438,13 @@ test('origin cwd choice resume consumes and executes only in the linked worktree
     const parentId = `route-choice-${choice}-parent`; const childId = `route-choice-${choice}-child`; const childTurnId = `route-choice-${choice}-child-turn`;
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} seed`, options: { execution: 'foreground', resume: 'fresh' } });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} seed`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId);
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} later`, options: { execution: 'foreground' } }, childId);
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} later`, options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null }, childId);
     const pending = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(pending.code, 3, pending.stderr || pending.stdout); assert.match(pending.stdout, /needs-choice/);
     assert.equal((await store.listJobs(ctx.workspace)).length, 0);
@@ -460,13 +471,13 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     const parentId = `${routeName}-stopped-parent`; const childId = `${routeName}-stopped-child`; const childTurnId = `${routeName}-stopped-child-turn`;
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} first`, options: { execution: 'foreground', resume: 'fresh' } });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} first`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId, agentType);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId, agentType);
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} continue`, options: { execution: 'foreground', resume: 'resume' } }, childId);
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} continue`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null }, childId);
 
     const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(continued.code, 0, continued.stderr || continued.stdout);
@@ -625,7 +636,7 @@ test('prepared Rescue forwards only the normalized incident objective to ZCode',
     sessionId: 'incident-parent', turnId: 'incident-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
     prompt: `Please ${objective}. Embedded marker: $zcode:rescue --fresh. If rescue fails, stop and report.`,
   });
-  assert.deepEqual(await prepareRescue(ctx, 'incident-parent', { version: 1, source: 'explicit', task: objective, options: { execution: 'foreground', resume: 'fresh', model: 'model', effort: 'high' } }), legacyPreparedRoute);
+  assert.deepEqual(await prepareRescue(ctx, 'incident-parent', { version: 4, source: 'explicit', task: objective, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh', model: 'model', effort: 'high' }, continuationTarget: null }), legacyPreparedRoute);
   await startRescueChild(ctx, 'incident-parent', 'incident-child', 'incident-child-turn');
   const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'incident-child', FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RESULT_FROM_AUTHORIZED_OBJECTIVE: '1' } });
   assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
@@ -642,7 +653,7 @@ test('prepared Rescue preserves option-like and shell-like tasks as one position
   for (const [index, task] of tasks.entries()) {
     const parentId = `task-parent-${index}`; const childId = `task-child-${index}`;
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `task-turn-${index}`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${task}` });
-    await prepareRescue(ctx, parentId, { version: 1, source: 'explicit', task, options: { execution: 'foreground', resume: 'fresh' } });
+    await prepareRescue(ctx, parentId, { version: 4, source: 'explicit', task, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId);
     const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
@@ -656,9 +667,9 @@ test('prepared Rescue preserves option-like and shell-like tasks as one position
 test('prepare Rescue accepts proactive source without a marker and rejects malformed or mismatched input task-free', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'proactive-parent', turnId: 'proactive-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'Implement the approved objective.' });
-  assert.deepEqual(await prepareRescue(ctx, 'proactive-parent', { version: 1, source: 'proactive', task: 'approved objective', options: { resume: 'fresh' } }), legacyPreparedRoute);
+  assert.deepEqual(await prepareRescue(ctx, 'proactive-parent', { version: 4, source: 'proactive', task: 'approved objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null }), legacyPreparedRoute);
   await identity.beginCallerTurn({ sessionId: 'bad-parent', turnId: 'bad-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue protected secret objective' });
-  await assert.rejects(prepareRescue(ctx, 'bad-parent', { version: 1, source: 'proactive', task: 'protected secret objective', options: {} }), (error) => error?.code === 'RESCUE_PREPARATION_SOURCE_MISMATCH' && !`${error.message}${error.remedy}`.includes('protected secret objective'));
+  await assert.rejects(prepareRescue(ctx, 'bad-parent', { version: 4, source: 'proactive', task: 'protected secret objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null }), (error) => error?.code === 'RESCUE_PREPARATION_SOURCE_MISMATCH' && !`${error.message}${error.remedy}`.includes('protected secret objective'));
   await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bad-parent' }, input: Readable.from(['not-json\n']) }), (error) => error?.code === 'RESCUE_PREPARATION_INVALID' && !`${error.message}${error.remedy}`.includes('not-json'));
 });
 
@@ -680,7 +691,7 @@ test('private prepare transport enables raw mode before readiness and accepts on
   t.after(() => { clearTimeout(timeout); input.destroy(); });
   const operation = runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'transport-parent' }, input,
-    preparationTransport: { writeReady: (line) => { events.push(`ready:${line}`); input.write(`${JSON.stringify({ version: 1, source: 'explicit', task, options: { resume: 'fresh' } })}\n`); } },
+    preparationTransport: { writeReady: (line) => { events.push(`ready:${line}`); input.write(`${JSON.stringify({ version: 4, source: 'explicit', task, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`); } },
   });
   const bounded = Promise.race([operation, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('private preparation did not consume its LF frame')), process.platform === 'win32' ? 30_000 : 5_000); })]);
   assert.deepEqual(await bounded, legacyPreparedRoute); clearTimeout(timeout);
@@ -703,7 +714,7 @@ test('private prepare transport rejects bytes after its LF frame without waiting
   const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
   await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'trailing-parent' }, input,
-    preparationTransport: { writeReady: () => input.write(`${JSON.stringify({ version: 1, source: 'proactive', task: 'trailing objective', options: {} })}\nextra`) },
+    preparationTransport: { writeReady: () => input.write(`${JSON.stringify({ version: 4, source: 'proactive', task: 'trailing objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null })}\nextra`) },
   }), { code: 'RESCUE_PREPARATION_INVALID' });
   assert.deepEqual(rawModes, [true, false]); assert.equal(input.destroyed, false);
 });
@@ -713,7 +724,7 @@ test('prepare Rescue forwards an injected abort through a contended save without
   await identity.beginCallerTurn({ sessionId: 'save-abort-parent', turnId: 'save-abort-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'proactive save objective' });
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace }); const lockPath = join(storage.directory, '.rescue-preparation-lock'); let operation; let observed;
   await withFileLock(lockPath, async () => {
-    operation = runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'save-abort-parent' }, input: Readable.from([`${JSON.stringify({ version: 1, source: 'proactive', task: 'save objective', options: {} })}\n`]), signal: controller.signal }).then((value) => ({ value }), (error) => ({ error }));
+    operation = runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'save-abort-parent' }, input: Readable.from([`${JSON.stringify({ version: 4, source: 'proactive', task: 'save objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null })}\n`]), signal: controller.signal }).then((value) => ({ value }), (error) => ({ error }));
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); controller.abort(interruption);
     observed = await Promise.race([operation, new Promise((resolvePromise) => setTimeout(() => resolvePromise({ timeout: true }), 250))]);
   });
@@ -740,7 +751,7 @@ test('prepared Rescue is single-use and bound to the exact parent turn, workspac
   await stopRescueChild(ctx, 'unprepared-parent', 'unprepared-child');
 
   await identity.beginCallerTurn({ sessionId: 'bound-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue exact objective' });
-  await prepareRescue(ctx, 'bound-parent', { version: 1, source: 'explicit', task: 'exact objective', options: { resume: 'fresh' } });
+  await prepareRescue(ctx, 'bound-parent', { version: 4, source: 'explicit', task: 'exact objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   const parent = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-parent' } });
   assert.notEqual(parent.code, 0); assert.match(parent.stdout, /(?:EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)|CODEX_CHILD_METADATA_INVALID)/);
   const sibling = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
@@ -755,7 +766,7 @@ test('prepared Rescue is single-use and bound to the exact parent turn, workspac
   assert.notEqual(replay.code, 0); assert.match(replay.stdout, /RESCUE_PREPARATION_CONSUMED/);
 
   await identity.beginCallerTurn({ sessionId: 'stale-parent', turnId: 'original-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue stale objective' });
-  await prepareRescue(ctx, 'stale-parent', { version: 1, source: 'explicit', task: 'stale objective', options: { resume: 'fresh' } });
+  await prepareRescue(ctx, 'stale-parent', { version: 4, source: 'explicit', task: 'stale objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   await startRescueChild(ctx, 'stale-parent', 'stale-child');
   await identity.beginCallerTurn({ sessionId: 'stale-parent', turnId: 'replacement-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue replacement' });
   const stale = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'stale-child' } });
@@ -853,7 +864,7 @@ test('pending fresh replan spawns a new child that creates exactly one new sessi
   const oldBindingBytes = new Map(bindingBeforeReplan.records.map((binding) => [binding.key, Buffer.from(JSON.stringify(binding))]));
 
   const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
-  const envelope = { version: 1, source: 'explicit', task: 'continue', options: { execution: 'foreground', resume: 'fresh' } };
+  const envelope = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null };
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'cross-turn-parent' }, input: Readable.from([`${JSON.stringify(envelope)}\n`]),
     dependencies: { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) },
@@ -882,6 +893,181 @@ test('pending fresh replan spawns a new child that creates exactly one new sessi
   }), { code: 'RESCUE_PREPARATION_EXISTS' });
 });
 
+for (const [index, pair] of [
+  { label: 'explicit Host background', hostPlacement: 'background', companionExecution: 'foreground' },
+  { label: 'Companion background', hostPlacement: 'foreground', companionExecution: 'background' },
+  { label: 'attached foreground', hostPlacement: 'foreground', companionExecution: 'foreground' },
+].entries()) test(`pending fresh replan keeps the faithful split v4 tombstone for ${pair.label}`, async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const record = join(ctx.directory, `cross-turn-replan-${index}.jsonl`); await writeFile(record, '');
+  await identity.beginCallerTurn({ sessionId: `replan-${index}-parent`, turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
+  await startRescueChild(ctx, `replan-${index}-parent`, 'old-child', 'old-child-start');
+  assert.equal((await invokePreparedRescue(ctx, `replan-${index}-parent`, 'old-child', 'seed', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record })).code, 0);
+  await stopRescueChild(ctx, `replan-${index}-parent`, 'old-child', 'old-child-start');
+
+  // The targetless compatibility flow: no resume, so the exact child answers
+  // needs-choice, and the fresh answer replans the SAME envelope as fresh.
+  await identity.beginCallerTurn({ sessionId: `replan-${index}-parent`, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue' });
+  const undecided = await invokePreparedRescue(ctx, `replan-${index}-parent`, 'old-child', 'continue', { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution }, { ...ctx.env, FAKE_ZCODE_RECORD: record });
+  assert.equal(undecided.code, 3, undecided.stderr || undecided.stdout); assert.match(undecided.stdout, /needs-choice/);
+
+  await identity.beginCallerTurn({ sessionId: `replan-${index}-parent`, turnId: 'answer-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'fresh' });
+  const choice = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'old-child', FAKE_ZCODE_RECORD: record } });
+  assert.equal(choice.code, 0, choice.stderr || choice.stdout); assert.deepEqual(JSON.parse(choice.stdout), { type: 'parent-replan', command: 'rescue' });
+
+  // The consumed pending-fresh tombstone carries the true prepared envelope,
+  // not an argv reconstruction: the Host placement dimension never crosses argv.
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  const tombstoneKey = createHash('sha256').update(JSON.stringify([`replan-${index}-parent`, 'answer-turn', storage.workspacePath, 'rescue'])).digest('hex');
+  const tombstone = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', `${tombstoneKey}.json`), 'utf8'));
+  assert.deepEqual(tombstone.envelope, { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution }, continuationTarget: null });
+
+  const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
+  const replanned = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution, resume: 'fresh' }, continuationTarget: null };
+  const plan = { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) };
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: `replan-${index}-parent` }, input: Readable.from([`${JSON.stringify(replanned)}\n`]),
+    dependencies: plan,
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName } });
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: `replan-${index}-parent` }, input: Readable.from([`${JSON.stringify(replanned)}\n`]),
+    dependencies: plan,
+  }), { code: 'RESCUE_PREPARATION_EXISTS' });
+});
+
+test('pending fresh replan translates a pre-split v3 receipt tombstone to the split v4 pair', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const record = join(ctx.directory, 'cross-turn-v3-replan.jsonl'); await writeFile(record, '');
+  await identity.beginCallerTurn({ sessionId: 'v3-replan-parent', turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
+  await startRescueChild(ctx, 'v3-replan-parent', 'old-child', 'old-child-start');
+  assert.equal((await invokePreparedRescue(ctx, 'v3-replan-parent', 'old-child', 'seed', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record })).code, 0);
+  await stopRescueChild(ctx, 'v3-replan-parent', 'old-child', 'old-child-start');
+
+  // A pre-split-style needs-choice receipt survives within expiry across the
+  // upgrade: its coupled v3 execution enum must become the split v4 pair the
+  // post-upgrade Root re-prepares with, never a v3 tombstone that cannot match.
+  const binding = await createStateStore({ dataRoot: ctx.dataRoot }).resolveRescueBinding({ workspace: ctx.workspace, parentSessionId: 'v3-replan-parent', executorAgentId: 'old-child' });
+  assert.equal(binding.kind, 'bound');
+  await createInvocationStore({ dataRoot: ctx.dataRoot }).savePending({
+    sessionId: 'v3-replan-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
+    command: 'rescue', source: 'explicit', executorAgentId: 'old-child',
+    spec: { argv: ['rescue', '--background', '--', 'continue'] },
+    routeKind: 'bound', candidateJobId: binding.binding.anchorJobId,
+    expectedOperationId: binding.binding.operationId, expectedCurrentJobId: binding.binding.currentJobId,
+    envelope: { version: 3, source: 'explicit', task: 'continue', options: { execution: 'background' }, continuationTarget: null },
+  });
+  await identity.beginCallerTurn({ sessionId: 'v3-replan-parent', turnId: 'answer-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'fresh' });
+  const choice = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'old-child', FAKE_ZCODE_RECORD: record } });
+  assert.equal(choice.code, 0, choice.stderr || choice.stdout); assert.deepEqual(JSON.parse(choice.stdout), { type: 'parent-replan', command: 'rescue' });
+
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  const tombstoneKey = createHash('sha256').update(JSON.stringify(['v3-replan-parent', 'answer-turn', storage.workspacePath, 'rescue'])).digest('hex');
+  const tombstone = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', `${tombstoneKey}.json`), 'utf8'));
+  assert.deepEqual(tombstone.envelope, { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background' }, continuationTarget: null });
+
+  const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
+  const replanned = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background', resume: 'fresh' }, continuationTarget: null };
+  const plan = { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) };
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'v3-replan-parent' }, input: Readable.from([`${JSON.stringify(replanned)}\n`]),
+    dependencies: plan,
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName } });
+});
+
+test('invoke-choice resume restores the private Host placement from the receipt envelope', async (t) => {
+  const observed = [];
+  for (const [index, pair] of [
+    { label: 'explicit Host background', hostPlacement: 'background', companionExecution: 'foreground', detached: false },
+    { label: 'Companion background', hostPlacement: 'foreground', companionExecution: 'background', detached: true },
+    { label: 'attached foreground', hostPlacement: 'foreground', companionExecution: 'foreground', detached: false },
+  ].entries()) {
+    const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+    const record = join(ctx.directory, `resume-replay-${index}.jsonl`); await writeFile(record, '');
+    await identity.beginCallerTurn({ sessionId: `resume-${index}-parent`, turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
+    await startRescueChild(ctx, `resume-${index}-parent`, 'old-child', 'old-child-start');
+    assert.equal((await invokePreparedRescue(ctx, `resume-${index}-parent`, 'old-child', 'seed', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record })).code, 0);
+    await stopRescueChild(ctx, `resume-${index}-parent`, 'old-child', 'old-child-start');
+    await writeFile(record, '');
+
+    // The targetless compatibility flow: no resume, so the exact child answers
+    // needs-choice, and the resume answer replays the retained request.
+    await identity.beginCallerTurn({ sessionId: `resume-${index}-parent`, turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue' });
+    const undecided = await invokePreparedRescue(ctx, `resume-${index}-parent`, 'old-child', 'continue', { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution }, { ...ctx.env, FAKE_ZCODE_RECORD: record });
+    assert.equal(undecided.code, 3, undecided.stderr || undecided.stdout); assert.match(undecided.stdout, /needs-choice/);
+
+    await identity.beginCallerTurn({ sessionId: `resume-${index}-parent`, turnId: 'answer-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
+    const runnerSpawns = { count: 0 };
+    const baseline = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
+    const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], {
+      cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'old-child', FAKE_ZCODE_RECORD: record },
+      dependencies: { spawnRescueRunner: async () => { runnerSpawns.count += 1; return { pid: 424_242 + index }; } },
+    });
+    const [resumedJob] = await findNewJobs(store, ctx.workspace, baseline);
+    assert.ok(resumedJob, `the ${pair.label} resume must reserve exactly one job`);
+    observed.push({ hostPlacement: resumedJob.hostPlacement, detached: runnerSpawns.count === 1 });
+    if (pair.detached) {
+      // Companion background resumes through the detached runner: the queued
+      // acknowledgement carries no session, and the durable record keeps the
+      // runner marker beside the restored independent Host placement.
+      assert.equal(resumed.type, 'background');
+      assert.equal(resumedJob.status, 'queued');
+      assert.equal(runnerSpawns.count, 1, 'Companion background resumes spawn exactly one detached runner');
+      assert.equal(resumedJob.rescueRunnerVersion, RESCUE_RUNNER_VERSION);
+      assert.deepEqual(resumedJob.rescueExecutionInput, { version: 1, task: 'continue' });
+      assert.equal(await readFile(record, 'utf8'), '');
+    } else {
+      // Attached Companion foreground resumes run to the terminal result and
+      // never carry runner evidence.
+      assert.equal(resumedJob.status, 'succeeded', JSON.stringify(resumedJob.error ?? null));
+      assert.equal(runnerSpawns.count, 0, 'attached Companion resumes never spawn the detached runner');
+      assert.equal(resumedJob.rescueRunnerVersion, undefined);
+      assert.equal(resumedJob.rescueExecutionInput, undefined);
+    }
+  }
+  assert.deepEqual(observed, [
+    { hostPlacement: 'background', detached: false },
+    { hostPlacement: 'foreground', detached: true },
+    { hostPlacement: 'foreground', detached: false },
+  ]);
+});
+
+test('invoke-choice resume keeps the historical coupled placement for a pre-split v3 receipt', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const record = join(ctx.directory, 'resume-v3-receipt.jsonl'); await writeFile(record, '');
+  await identity.beginCallerTurn({ sessionId: 'v3-resume-parent', turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
+  await startRescueChild(ctx, 'v3-resume-parent', 'old-child', 'old-child-start');
+  assert.equal((await invokePreparedRescue(ctx, 'v3-resume-parent', 'old-child', 'seed', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record })).code, 0);
+  await stopRescueChild(ctx, 'v3-resume-parent', 'old-child', 'old-child-start');
+
+  // The resume replay EXECUTES the historical v3 semantics directly without
+  // re-emitting an envelope, so v3 coupled background keeps its historical
+  // Host placement 'background' beside detached Companion execution (spec v3
+  // coupled compatibility: options.execution retains its historical meaning).
+  const binding = await store.resolveRescueBinding({ workspace: ctx.workspace, parentSessionId: 'v3-resume-parent', executorAgentId: 'old-child' });
+  assert.equal(binding.kind, 'bound');
+  await createInvocationStore({ dataRoot: ctx.dataRoot }).savePending({
+    sessionId: 'v3-resume-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
+    command: 'rescue', source: 'explicit', executorAgentId: 'old-child',
+    spec: { argv: ['rescue', '--background', '--', 'continue'] },
+    routeKind: 'bound', candidateJobId: binding.binding.anchorJobId,
+    expectedOperationId: binding.binding.operationId, expectedCurrentJobId: binding.binding.currentJobId,
+    envelope: { version: 3, source: 'explicit', task: 'continue', options: { execution: 'background' }, continuationTarget: null },
+  });
+  await identity.beginCallerTurn({ sessionId: 'v3-resume-parent', turnId: 'answer-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
+  const baseline = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'old-child', FAKE_ZCODE_RECORD: record },
+    dependencies: { spawnRescueRunner: async () => ({ pid: 424_242 }) },
+  });
+  assert.equal(resumed.type, 'background');
+  const [resumedJob] = await findNewJobs(store, ctx.workspace, baseline);
+  assert.ok(resumedJob);
+  assert.equal(resumedJob.hostPlacement, 'background');
+  assert.equal(resumedJob.rescueRunnerVersion, RESCUE_RUNNER_VERSION);
+});
+
 test('aged stopped executor cannot resume an eligible latest job when its exact binding is missing', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot }); const peerRecord = join(ctx.directory, 'unbound-aged-peer.jsonl');
   await identity.beginCallerTurn({ sessionId: 'unbound-parent', turnId: 'origin-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
@@ -894,7 +1080,7 @@ test('aged stopped executor cannot resume an eligible latest job when its exact 
   await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: agedAt })}\n`); await writeFile(routePath, `${JSON.stringify({ ...route, createdAt: agedAt })}\n`);
   for (const name of await readdir(storage.directory)) if (name.startsWith('rescue-binding-')) await rm(join(storage.directory, name));
   await identity.beginCallerTurn({ sessionId: 'unbound-parent', turnId: 'later-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'Continue the exact same stopped Rescue child.' });
-  await prepareRescue(ctx, 'unbound-parent', { version: 1, source: 'proactive', task: 'continue', options: { execution: 'foreground', resume: 'resume' } }, 'unbound-child');
+  await prepareRescue(ctx, 'unbound-parent', { version: 4, source: 'proactive', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null }, 'unbound-child');
   const before = await store.listJobs(ctx.workspace);
   const rejected = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'unbound-child', FAKE_ZCODE_RECORD: peerRecord } });
   assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /(?:EXECUTOR_IDENTITY_NOT_FOUND|RESCUE_BINDING_(?:NOT_FOUND|INVALID))/);
@@ -921,7 +1107,7 @@ test('0.147 default compatibility child persists and consumes one same-child Res
 test('initial Rescue invocation must match the parent turn captured by SubagentStart', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'captured-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
-  await prepareRescue(ctx, 'turn-parent', { version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } });
+  await prepareRescue(ctx, 'turn-parent', { version: 4, source: 'explicit', task: 'repair', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   await startRescueChild(ctx, 'turn-parent', 'turn-child');
   await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'replacement-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait different' });
   const result = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'turn-child' } });
@@ -1688,7 +1874,7 @@ test('a stopped Rescue child resumes its exact bound peer session on a later par
   assert.equal(second.code, 0, second.stderr || second.stdout); await stopRescueChild(ctx, 'shared-parent', 'child-b', 'child-b-start');
 
   await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'turn-a-followup', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'continue first' });
-  await prepareRescue(ctx, 'shared-parent', { version: 1, source: 'proactive', task: 'continue first', options: { execution: 'foreground', resume: 'resume' } }, 'child-a');
+  await prepareRescue(ctx, 'shared-parent', { version: 4, source: 'proactive', task: 'continue first', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null }, 'child-a');
   const resumed = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, FAKE_CODEX_THREAD_JSON: ctx.codexChildren.get('child-a'), CODEX_THREAD_ID: 'child-a', FAKE_ZCODE_RECORD: record } });
   assert.equal(resumed.code, 0, resumed.stderr || resumed.stdout); assert.doesNotMatch(resumed.stdout, /needs-choice/);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
@@ -1740,7 +1926,7 @@ test('invoke-prepared resume rejects a structurally valid rewritten executor tur
   await startRescueChild(ctx, 'forged-parent', 'forged-child', 'only-start');
   assert.equal((await invokePreparedRescue(ctx, 'forged-parent', 'forged-child', 'first')).code, 0); await stopRescueChild(ctx, 'forged-parent', 'forged-child', 'only-start');
   await identity.beginCallerTurn({ sessionId: 'forged-parent', turnId: 'later-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume later' });
-  await prepareRescue(ctx, 'forged-parent', { version: 1, source: 'explicit', task: 'later', options: { execution: 'foreground', resume: 'resume' } });
+  await prepareRescue(ctx, 'forged-parent', { version: 4, source: 'explicit', task: 'later', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null });
   await rewriteOnlyExecutor(ctx, { parentTurnId: 'rewritten-origin' });
   const rejected = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'forged-child' } });
   assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /EXECUTOR_ROUTE_INVALID/);

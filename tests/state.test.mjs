@@ -2476,12 +2476,13 @@ test('detached runner reservations publish the execution input inside the initia
   assert.deepEqual((await store.readJob(workspace, continuation.job.id)).rescueExecutionInput, { version: 1, task: 'next attempt' });
 });
 
-test('only valid Host-owned background reservations accept the private execution input', async () => {
+test('only valid Host-owned reservations accept the private execution input', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   for (const attempt of /** @type {any[]} */ ([
     { executionInput: runnerExecutionInput },
-    { lifecycle: foregroundLifecycle('host-runner-reject-foreground'), executionInput: runnerExecutionInput },
     { lifecycle: { ownerLifecycleEpoch: 'not-a-digest', executionOwner: 'host-child', hostPlacement: 'background' }, executionInput: runnerExecutionInput },
+    { lifecycle: { ...backgroundLifecycle('host-runner-reject-placement'), hostPlacement: 'detached' }, executionInput: runnerExecutionInput },
+    { lifecycle: { ...backgroundLifecycle('host-runner-reject-owner'), executionOwner: 'detached-worker' }, executionInput: runnerExecutionInput },
   ])) {
     await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
       executor: legacyExecutor(workspace), ...attempt }), { code: 'RESCUE_BINDING_INVALID' });
@@ -2504,6 +2505,17 @@ test('only valid Host-owned background reservations accept the private execution
     { code: 'RESCUE_EXECUTION_INPUT_INVALID' });
   }
   assert.equal((await store.listJobs(workspace)).length, 0, 'a rejected input value never publishes');
+  // Either recorded Host placement accepts the marker beside a complete
+  // lifecycle: placement is lifecycle evidence, not an admission gate.
+  for (const [index, lifecycle] of [backgroundLifecycle('host-runner-accept-background'), foregroundLifecycle('host-runner-accept-foreground')].entries()) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, `accept-turn-${index}`),
+      executor: { ...legacyExecutor(workspace), agentId: `accept-child-${index}` }, lifecycle, executionInput: runnerExecutionInput });
+    assert.equal(reserved.job.rescueRunnerVersion, 1);
+    assert.deepEqual(reserved.job.rescueExecutionInput, runnerExecutionInput);
+    assert.equal(reserved.job.hostPlacement, index === 0 ? 'background' : 'foreground');
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `accept-anchor-${index}` });
+    await store.finishJob(workspace, reserved.job.id, ['running'], 'succeeded');
+  }
 });
 
 test('the runner input is removed exactly when a marked job leaves queued and the marker is retained', async () => {
@@ -2583,8 +2595,6 @@ test('marked queued records without input, unknown markers, and drifted input fa
     { ...intact, rescueExecutionInput: { version: 1, task: 'bounded private task', extra: true } },
     { ...intact, rescueExecutionInput: { version: 1, task: 'x'.repeat(64 * 1024 + 1) } },
     { ...intact, rescueExecutionInput: 'bounded private task' },
-    // Foreground placement can never carry the detached-runner marker.
-    { ...intact, hostPlacement: 'foreground' },
     missingEpoch,
   ])) {
     await atomicWriteJson(path, invalidJob);

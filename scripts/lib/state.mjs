@@ -1582,16 +1582,19 @@ function validCanonicalWorkspacePath(value) {
 }
 
 /**
- * Only valid Host-owned background reservations accept the private detached-runner
+ * Only valid Host-owned reservations accept the private detached-runner
  * execution input: it rides the initial job JSON of the SAME locked reservation
- * publication, and it never attaches to a foreground, legacy, or incomplete
- * lifecycle record. The validated closed copy is stored; nothing is persisted in
- * a second write.
+ * publication, and it never attaches to a legacy or incomplete lifecycle
+ * record. Either recorded Host placement is valid lifecycle evidence — the
+ * placement dimension records the Host side only and is never an admission
+ * gate for the runner-format marker (that admission keys on the complete
+ * lifecycle plus the marker, not on placement). The validated closed
+ * copy is stored; nothing is persisted in a second write.
  * @param {unknown} value @param {{ownerLifecycleEpoch:string,executionOwner:string,hostPlacement:string}|undefined} lifecycle @param {JobReservation} reservation @returns {Record<string,string>|undefined}
  */
 function hostOwnedExecutionInput(value, lifecycle, reservation) {
   if (value === undefined) return undefined;
-  if (lifecycle === undefined || lifecycle.hostPlacement !== 'background'
+  if (lifecycle === undefined || !validHostLifecycleRecord(lifecycle)
     || lifecycle.executionOwner !== 'host-child'
     || reservation.command !== 'rescue' || reservation.readOnly !== false) throw invalidRescueBinding();
   return validateRescueExecutionInput(value);
@@ -3180,11 +3183,11 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && !('rescueJobSpecCommitment' in job && 'rescueLegacyJobSpecProof' in job)
     && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job)
     // The detached-runner format marker is immutable evidence: exactly the known
-    // version, only on complete Host-owned writable Rescue records with background
-    // placement, retained through queued/running/terminal. Unknown versions fail closed.
+    // version, only on complete Host-owned writable Rescue records, retained
+    // through queued/running/terminal regardless of the recorded Host
+    // placement. Unknown versions fail closed.
     && (!('rescueRunnerVersion' in job) || job.rescueRunnerVersion === RESCUE_RUNNER_VERSION
-      && job.command === 'rescue' && job.readOnly === false && hasHostOwnedLifecycle(job)
-      && job.hostPlacement === 'background')
+      && job.command === 'rescue' && job.readOnly === false && hasHostOwnedLifecycle(job))
     // The private execution input exists only beside its marker and only while
     // the record is queued; a marked queued record without it is corruption that
     // must fail execution, never a historical job to reclassify.

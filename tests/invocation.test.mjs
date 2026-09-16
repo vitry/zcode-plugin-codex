@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -106,6 +106,41 @@ test('v1 executor-bound pending compatibility remains fresh-only', async () => {
   assert.deepEqual(await pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'fresh', executorAgentId: 'child' }), {
     argv: ['rescue', '--fresh', 'task'], source: 'proactive', caller: { sessionId: 'parent', turnId: 'turn', workspace: await realpath(workspace), permissionMode: 'workspace-write' },
   });
+});
+
+test('receipt envelopes are rescue-only and fail closed before publication', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-envelope-')); const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace'); await mkdir(workspace);
+  const pending = createInvocationStore({ dataRoot });
+  // (i) A receipt envelope is a Rescue-only field.
+  await assert.rejects(pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'review',
+    spec: { argv: ['review'] }, envelope: { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } }),
+  { code: 'PENDING_INVOCATION_INVALID' });
+  // (ii) Wrong-version and malformed envelopes are rejected before any write.
+  await assert.rejects(pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
+    spec: { argv: ['rescue', 'task'] }, envelope: { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } }),
+  { code: 'PENDING_INVOCATION_INVALID' });
+  await assert.rejects(pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
+    spec: { argv: ['rescue', 'task'] }, envelope: { version: 4, source: 'explicit', task: 'continue', options: {} } }),
+  { code: 'PENDING_INVOCATION_INVALID' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: await realpath(workspace) });
+  assert.equal(await readdir(join(storage.directory, 'invocations', 'pending')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)).then((names) => names.length), 0,
+    'a rejected receipt envelope never publishes');
+});
+
+test('a doctored receipt envelope fails closed as an unreadable pending', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-doctored-')); const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace'); await mkdir(workspace);
+  const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
+    spec: { argv: ['rescue', 'task'] }, envelope: { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: await realpath(workspace) });
+  const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const path = join(directory, name);
+  const doctored = JSON.parse(await readFile(path, 'utf8'));
+  doctored.envelope = { version: 4, source: 'explicit', task: 'continue', options: {} };
+  await writeFile(path, `${JSON.stringify(doctored, null, 2)}\n`); const before = await readFile(path);
+  await assert.rejects(pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'fresh', executorAgentId: 'child' }),
+    { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  assert.deepEqual(await readFile(path), before);
 });
 
 test('expired v3 pending authority is deleted without issuing a brand', async () => {

@@ -133,10 +133,13 @@ const main = async () => {
       agent_nickname: null, agent_role: 'zcode-rescue',
     } } },
   };
-  const envelope = {
-    version: 1, source: 'explicit', task: args.task,
-    options: { execution: args.placement, resume: args.resume },
-  };
+  // Foreground placements ride the split v4 envelope. The coupled background
+  // placement stays on the accepted legacy v3 envelope: the real detached
+  // runner it spawns still requires the historical coupled placement until the
+  // runner-admission migration.
+  const envelope = args.placement === 'background'
+    ? { version: 3, source: 'explicit', task: args.task, options: { execution: 'background', resume: args.resume }, continuationTarget: null }
+    : { version: 4, source: 'explicit', task: args.task, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: args.resume }, continuationTarget: null };
   await runDirectInvocation(['prepare', 'rescue'], {
     cwd: workspace,
     env: {

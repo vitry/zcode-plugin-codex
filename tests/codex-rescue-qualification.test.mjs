@@ -35,7 +35,7 @@ const expectedWorkspace = process.cwd();
 const expectedCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" role-status rescue';
 const expectedPreparationCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue';
-const expectedPreparationEnvelope = Object.freeze({ version: 1, source: 'explicit', task: 'repair the qualification fixture', options: { execution: 'foreground', resume: 'fresh' } });
+const expectedPreparationEnvelope = Object.freeze({ version: 4, source: 'explicit', task: 'repair the qualification fixture', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
 const expectedPreparationPayload = JSON.stringify(expectedPreparationEnvelope);
 const expectedStatusCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-status rescue';
 const expectedPublicOutput = 'done';
@@ -2292,7 +2292,10 @@ test('preparation qualification independently validates task and every bounded o
         && (envelope.task.trim().length === 0 || !error.message.includes(envelope.task)),
     );
   }
-  const valid = { ...expectedPreparationEnvelope, options: { execution: 'background', resume: 'fresh', effort: 'xhigh', model: 'provider/model' } };
+  // The coupled background contract is the accepted legacy v3 envelope: the
+  // detached runner still admits only the historical coupled placement until
+  // the runner-admission migration.
+  const valid = { ...expectedPreparationEnvelope, version: 3, options: { execution: 'background', resume: 'fresh', effort: 'xhigh', model: 'provider/model' } };
   const preparationPayload = JSON.stringify(valid); const input = fixture();
   parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
   assert.equal(qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput, expectedPublicOutput);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
+import { validateRescuePreparation } from './rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel']);
@@ -57,12 +58,17 @@ export function parseRecordedInvocation(command, prompt) {
 export function createInvocationStore({ dataRoot }) {
   if (typeof dataRoot !== 'string' || !dataRoot) throw invocationError('DATA_ROOT_REQUIRED', 'A plugin data root is required.');
   return {
-    /** @param {{sessionId:string,turnId:string,workspace:string,permissionMode:string,command:string,spec:{argv:string[]},source?:'explicit'|'proactive',executorAgentId?:string,routeKind?:'legacy'|'bound',candidateJobId?:string,expectedOperationId?:string,expectedCurrentJobId?:string,legacyAuthority?:unknown,now?:Date|number|string}} input */
+    /** @param {{sessionId:string,turnId:string,workspace:string,permissionMode:string,command:string,spec:{argv:string[]},source?:'explicit'|'proactive',executorAgentId?:string,routeKind?:'legacy'|'bound',candidateJobId?:string,expectedOperationId?:string,expectedCurrentJobId?:string,envelope?:unknown,legacyAuthority?:unknown,now?:Date|number|string}} input */
     async savePending(input) {
-      if (input?.legacyAuthority !== undefined) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation authority is invalid.');
+      if (input?.legacyAuthority !== undefined) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.');
+      // A prepared Rescue invocation's needs-choice receipt carries the true
+      // validated prepared envelope: the Host placement dimension never
+      // crosses argv, so the fresh-replan authorization must read the faithful
+      // tombstone objective instead of reconstructing one from argv alone.
+      const envelope = input.envelope === undefined ? undefined : validatePendingEnvelope(input);
       validatePendingInput(input); const storage = await pendingStorage(dataRoot, input.workspace); const key = pendingKey(input.sessionId, storage.workspacePath, input.command); const createdAt = timestamp(input.now);
       const exactRoute = input.command === 'rescue' && input.routeKind !== undefined;
-      await withFileLock(storage.lockPath, () => atomicWriteJson(join(storage.directory, `${key}.json`), { version: input.command !== 'rescue' || exactRoute ? PENDING_INVOCATION_VERSION : LEGACY_PENDING_INVOCATION_VERSION, key, sessionId: input.sessionId, originatingTurnId: input.turnId, workspace: storage.workspacePath, permissionMode: input.permissionMode, command: input.command, spec: normalizeSpec(input.spec), ...(input.command === 'rescue' ? { source: input.source ?? 'explicit' } : {}), ...(input.executorAgentId === undefined ? {} : { executorAgentId: input.executorAgentId }), ...(exactRoute ? { routeKind: input.routeKind, candidateJobId: input.candidateJobId, ...(input.routeKind === 'bound' ? { expectedOperationId: input.expectedOperationId, expectedCurrentJobId: input.expectedCurrentJobId } : {}) } : {}), createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + PENDING_LIFETIME_MS).toISOString() }));
+      await withFileLock(storage.lockPath, () => atomicWriteJson(join(storage.directory, `${key}.json`), { version: input.command !== 'rescue' || exactRoute ? PENDING_INVOCATION_VERSION : LEGACY_PENDING_INVOCATION_VERSION, key, sessionId: input.sessionId, originatingTurnId: input.turnId, workspace: storage.workspacePath, permissionMode: input.permissionMode, command: input.command, spec: normalizeSpec(input.spec), ...(input.command === 'rescue' ? { source: input.source ?? 'explicit' } : {}), ...(input.executorAgentId === undefined ? {} : { executorAgentId: input.executorAgentId }), ...(exactRoute ? { routeKind: input.routeKind, candidateJobId: input.candidateJobId, ...(input.routeKind === 'bound' ? { expectedOperationId: input.expectedOperationId, expectedCurrentJobId: input.expectedCurrentJobId } : {}) } : {}), ...(envelope === undefined ? {} : { envelope }), createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + PENDING_LIFETIME_MS).toISOString() }));
     },
     /** @param {{sessionId:string,workspace:string,command:string,choice:string,executorAgentId?:string,turnId?:string,permissionMode?:string,parentGenerationId?:string,originWorkspace?:string,executionWorkspace?:string,requireLegacyAuthority?:boolean,now?:Date|number|string}} input */
     async consumePending(input) {
@@ -83,6 +89,7 @@ export function createInvocationStore({ dataRoot }) {
           argv: [record.command, `--${input.choice}`, ...record.spec.argv.slice(1)],
           ...(record.command === 'rescue' ? { source: legacyExecutorBound ? 'explicit' : record.source } : {}),
           caller: { sessionId: record.sessionId, turnId: record.originatingTurnId, workspace: record.workspace, permissionMode: record.permissionMode },
+          ...(record.command === 'rescue' && record.envelope !== undefined ? { envelope: record.envelope } : {}),
           ...(record.command === 'rescue' && validPending(record) ? { route: { routeKind: record.routeKind, candidateJobId: record.candidateJobId, ...(record.routeKind === 'bound' ? { expectedOperationId: record.expectedOperationId, expectedCurrentJobId: record.expectedCurrentJobId } : {}) } } : {}),
         };
       });
@@ -135,10 +142,15 @@ function validateChoiceInput(input) { if (!plain(input) || !nonempty(input.sessi
 function allowedChoice(command, choice) { return command === 'rescue' ? ['resume', 'fresh'].includes(choice) : ['review', 'adversarial-review'].includes(command) && ['wait', 'background'].includes(choice); }
 /** @param {any} spec */
 function normalizeSpec(spec) { if (!plain(spec) || Object.keys(spec).length !== 1 || !Array.isArray(spec.argv) || spec.argv.some((/** @type {unknown} */ value) => typeof value !== 'string') || !PUBLIC_COMMANDS.has(spec.argv[0])) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); return { argv: [...spec.argv] }; }
+/** Validate the optional needs-choice receipt envelope: rescue-only, stored as one closed validated copy. @param {any} input */
+function validatePendingEnvelope(input) {
+  if (input.command !== 'rescue' || !plain(input.envelope)) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.');
+  try { return validateRescuePreparation(input.envelope); } catch { throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); }
+}
 /** @param {any} value */
-function validPending(value) { return plain(value) && (value.version === PENDING_INVOCATION_VERSION || value.command !== 'rescue' && value.version === LEGACY_PENDING_INVOCATION_VERSION) && exactPendingKeys(value) && /^[a-f0-9]{64}$/.test(value.key) && nonempty(value.sessionId) && nonempty(value.originatingTurnId) && nonempty(value.workspace) && PERMISSION_MODES.includes(value.permissionMode) && PUBLIC_COMMANDS.has(value.command) && (value.command === 'rescue' ? value.version === PENDING_INVOCATION_VERSION && nonempty(value.executorAgentId) && RESCUE_SOURCES.has(value.source) && validRouteInput(value) : value.executorAgentId === undefined && value.source === undefined) && validDate(value.createdAt) && validDate(value.expiresAt) && Date.parse(value.expiresAt) > Date.parse(value.createdAt) && (() => { try { normalizeSpec(value.spec); return true; } catch { return false; } })(); }
+function validPending(value) { return plain(value) && (value.version === PENDING_INVOCATION_VERSION || value.command !== 'rescue' && value.version === LEGACY_PENDING_INVOCATION_VERSION) && exactPendingKeys(value) && /^[a-f0-9]{64}$/.test(value.key) && nonempty(value.sessionId) && nonempty(value.originatingTurnId) && nonempty(value.workspace) && PERMISSION_MODES.includes(value.permissionMode) && PUBLIC_COMMANDS.has(value.command) && (value.command === 'rescue' ? value.version === PENDING_INVOCATION_VERSION && nonempty(value.executorAgentId) && RESCUE_SOURCES.has(value.source) && validRouteInput(value) : value.executorAgentId === undefined && value.source === undefined) && (value.envelope === undefined || (() => { try { validateRescuePreparation(value.envelope); return true; } catch { return false; } })()) && validDate(value.createdAt) && validDate(value.expiresAt) && Date.parse(value.expiresAt) > Date.parse(value.createdAt) && (() => { try { normalizeSpec(value.spec); return true; } catch { return false; } })(); }
 /** @param {any} value */
-function exactPendingKeys(value) { const keys = ['command', 'createdAt', 'expiresAt', 'key', 'originatingTurnId', 'permissionMode', 'sessionId', 'spec', 'version', 'workspace', ...(value.command === 'rescue' ? ['candidateJobId', 'executorAgentId', 'routeKind', 'source', ...(value.routeKind === 'bound' ? ['expectedCurrentJobId', 'expectedOperationId'] : [])] : [])]; return Object.keys(value).sort().join('\0') === keys.sort().join('\0'); }
+function exactPendingKeys(value) { const keys = ['command', 'createdAt', 'expiresAt', 'key', 'originatingTurnId', 'permissionMode', 'sessionId', 'spec', 'version', 'workspace', ...(value.command === 'rescue' ? ['candidateJobId', 'executorAgentId', 'routeKind', 'source', ...(value.routeKind === 'bound' ? ['expectedCurrentJobId', 'expectedOperationId'] : []), ...(value.envelope !== undefined ? ['envelope'] : [])] : [])]; return Object.keys(value).sort().join('\0') === keys.sort().join('\0'); }
 /** @param {any} value */
 function validLegacyAuthorityPending(value) { return plain(value) && value.version === LEGACY_AUTHORITY_PENDING_VERSION
   && Object.keys(value).sort().join('\0') === ['candidateJobId', 'command', 'createdAt', 'executorAgentId', 'expiresAt', 'key', 'legacyAuthority', 'legacyAuthorityDigest', 'originatingTurnId', 'permissionMode', 'routeKind', 'sessionId', 'source', 'spec', 'version', 'workspace',

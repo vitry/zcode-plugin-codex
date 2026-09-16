@@ -830,7 +830,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
       cwd: workspace,
       env: { ...hookEnv, CODEX_THREAD_ID: parentSessionId,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
-      input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
+      input: `${JSON.stringify({ version: 4, source: 'explicit', task: 'repair', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`,
     });
     assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
     const activeKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
@@ -1367,7 +1367,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedPreflightCommand = `${expectedLauncherCommand} role-status rescue`;
   const expectedPreparationCommand = `${expectedLauncherCommand} prepare rescue`;
-  const expectedPreparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: 'repaircanary', options: { execution: 'foreground', resume: 'fresh' } });
+  const expectedPreparationPayload = JSON.stringify({ version: 4, source: 'explicit', task: 'repaircanary', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   const expectedStatusCommand = `${expectedLauncherCommand} invoke-status rescue`;
   const expectedNamedSpawnMessage = expectedNamedRescueMessage;
   const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expectedLauncherCommand);

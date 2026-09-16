@@ -319,7 +319,7 @@ test('compact SessionStart restores one byte-identical launcher without changing
   const identity = createIdentityStore({ dataRoot: data });
   const preparations = createRescuePreparationStore({ dataRoot: data });
   const active = await identity.resolveActiveTurn({ sessionId, workspace: cwd });
-  await preparations.save({ ...active, recordedPrompt: active.prompt, envelope: { version: 1, source: 'proactive', task: 'retain preparation', options: {} } });
+  await preparations.save({ ...active, recordedPrompt: active.prompt, envelope: { version: 4, source: 'proactive', task: 'retain preparation', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
   const store = createStateStore({ dataRoot: data });
   const unread = await store.reserveJob({ workspace: cwd, ownerSessionId: sessionId, ownerTurnId: active.turnId, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: active.permissionMode } });
   await store.transitionJob(cwd, unread.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
@@ -1780,7 +1780,7 @@ test('generic preparation cleanup keeps successor-epoch preparations beyond the 
   const prompt = { session_id: 'prep-fence-parent', turn_id: 'prep-fence-turn', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'finish fenced work' };
   assert.equal((await runHook('user-prompt-hook.mjs', prompt, env)).code, 0);
   const caller = await identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: target, workspaceBinding: 'claim' });
-  const save = () => preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'proactive', task: 'finish fenced work', options: {} } });
+  const save = () => preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 4, source: 'proactive', task: 'finish fenced work', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
   const preparedCount = async () => {
     const { resolveWorkspaceStorage: resolveStorage } = await import('../scripts/lib/workspace.mjs');
     const storage = await resolveStorage({ dataRoot: data, workspace: target });
@@ -1807,7 +1807,7 @@ test('origin cwd Root Stop revokes authority before bound worktree preparation c
   const prompt = { session_id: 'stop-routed-parent', turn_id: 'stop-routed-turn', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'finish target work' };
   assert.equal((await runHook('user-prompt-hook.mjs', prompt, env)).code, 0);
   const caller = await identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: target, workspaceBinding: 'claim' });
-  await preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'proactive', task: 'finish target work', options: {} } });
+  await preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 4, source: 'proactive', task: 'finish target work', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
 
   const stopped = await runHook('stop-review-gate-hook.mjs', { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, env);
   assert.equal(stopped.code, 0, stopped.stderr);
@@ -1831,8 +1831,8 @@ test('origin cwd SessionEnd tombstones before bounded cleanup across two origins
   await identity.beginCallerTurn({ sessionId: 'multi-workspace-parent', turnId: 'turn-b', workspace: originB, permissionMode: 'workspace-write', prompt: 'b', ...proof });
   const callerB = await identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: targetB, workspaceBinding: 'claim' });
   const preparations = createRescuePreparationStore({ dataRoot: data });
-  await preparations.save({ ...callerB, recordedPrompt: callerB.prompt, envelope: { version: 1, source: 'proactive', task: 'b', options: {} } });
-  await preparations.save({ sessionId: 'sibling-session', turnId: 'sibling-turn', workspace: targetB, permissionMode: 'default', recordedPrompt: 'sibling', envelope: { version: 1, source: 'proactive', task: 'sibling', options: {} } });
+  await preparations.save({ ...callerB, recordedPrompt: callerB.prompt, envelope: { version: 4, source: 'proactive', task: 'b', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
+  await preparations.save({ sessionId: 'sibling-session', turnId: 'sibling-turn', workspace: targetB, permissionMode: 'default', recordedPrompt: 'sibling', envelope: { version: 4, source: 'proactive', task: 'sibling', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
 
   await identity.beginCallerTurn({ sessionId: 'multi-workspace-parent', turnId: 'turn-c', workspace: originA, permissionMode: 'workspace-write', prompt: 'c', ...proof });
   await identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: targetA, workspaceBinding: 'claim' });
@@ -2323,7 +2323,7 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     assert.equal(first.code, 0, first.stderr);
     const target = await addLinkedWorktree(cwd, 'bound-replacement-target');
     const caller = await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
-    await prepared.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'explicit', task: 'old bound objective', options: {} } });
+    await prepared.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 4, source: 'explicit', task: 'old bound objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     const replacedGeneration = caller.generationId;
 
     const next = await runHook('user-prompt-hook.mjs', { session_id: sessionId, turn_id: 'new-root-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'new root objective' }, env);
@@ -2337,9 +2337,9 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const prepared = createRescuePreparationStore({ dataRoot: data });
     for (const sessionId of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     await identity.beginCallerTurn({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', prompt: 'old proactive objective' });
-    await prepared.save({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'old proactive objective', envelope: { version: 1, source: 'proactive', task: 'old objective', options: {} } });
+    await prepared.save({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'old proactive objective', envelope: { version: 4, source: 'proactive', task: 'old objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     await identity.beginCallerTurn({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', prompt: 'sibling proactive objective' });
-    await prepared.save({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'sibling proactive objective', envelope: { version: 1, source: 'proactive', task: 'sibling objective', options: {} } });
+    await prepared.save({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'sibling proactive objective', envelope: { version: 4, source: 'proactive', task: 'sibling objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     const submitted = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 'new-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'new prompt' }, env);
     assert.equal(submitted.code, 0, submitted.stderr);
     await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
@@ -2361,14 +2361,14 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     const prompt = { session_id: 'owner', turn_id: 'root-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'root proactive objective' };
     await runHook('user-prompt-hook.mjs', prompt, env);
-    await prepared.save({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: prompt.prompt, envelope: { version: 1, source: 'proactive', task: 'root objective', options: {} } });
+    await prepared.save({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: prompt.prompt, envelope: { version: 4, source: 'proactive', task: 'root objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     const stopped = await runHook('stop-review-gate-hook.mjs', { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, env);
     assert.equal(stopped.code, 0, stopped.stderr);
     await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 
     const forwardingPrompt = { ...prompt, turn_id: 'forwarding-turn', prompt: 'forwarding proactive objective' }; await runHook('user-prompt-hook.mjs', forwardingPrompt, env);
     await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'owner', workspace: cwd, workspaceBinding: 'claim' });
-    await prepared.save({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: forwardingPrompt.prompt, envelope: { version: 1, source: 'proactive', task: 'forwarding objective', options: {} } });
+    await prepared.save({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: forwardingPrompt.prompt, envelope: { version: 4, source: 'proactive', task: 'forwarding objective', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     await runHook('subagent-hook.mjs', { session_id: 'owner', turn_id: 'forwarding-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'default', agent_id: 'forward-child', agent_type: 'zcode-rescue' }, env);
     assert.deepEqual((await runHook('stop-review-gate-hook.mjs', { ...stopFields(forwardingPrompt), hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: 'done' }, env)).json, {});
     assert.equal((await prepared.consume({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'forward-child' })).envelope.task, 'forwarding objective');
@@ -2378,7 +2378,7 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data }); const identity = createIdentityStore({ dataRoot: data });
     for (const sessionId of ['owner', 'sibling']) {
       await identity.beginCallerTurn({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', prompt: `${sessionId} prompt` });
-      await prepared.save({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', recordedPrompt: `${sessionId} proactive objective`, envelope: { version: 1, source: 'proactive', task: `${sessionId} objective`, options: {} } });
+      await prepared.save({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', recordedPrompt: `${sessionId} proactive objective`, envelope: { version: 4, source: 'proactive', task: `${sessionId} objective`, options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } });
     }
     const ended = await runHook('session-end-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
     assert.equal(ended.code, 0, ended.stderr);

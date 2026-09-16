@@ -85,7 +85,7 @@ function canonicalProcessWorkspace() {
   try { return realpathSync(process.cwd()); } catch { return process.cwd(); }
 }
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,creatorAuthority?:any,executor?:any,authority?:any,legacyActivation?:boolean,rescueRoute?:any,rescueActivationKind?:string,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,creatorAuthority?:any,executor?:any,authority?:any,legacyActivation?:boolean,rescueRoute?:any,rescueActivationKind?:string,hostPlacement?:'foreground'|'background',startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? canonicalProcessWorkspace(); const env = runtime.env ?? process.env;
   const pluginRoot = activePluginRoot; const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot, entryPath: invocationEntryPath() }); const { dataRoot } = pluginData;
@@ -253,7 +253,7 @@ export async function runCompanion(argv, runtime = {}) {
     }
     finally { await client?.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, creatorAuthority: runtime.creatorAuthority, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, rescueActivationKind: runtime.rescueActivationKind, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  return startPublic({ parsed, caller, creatorAuthority: runtime.creatorAuthority, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, rescueActivationKind: runtime.rescueActivationKind, hostPlacement: runtime.hostPlacement, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
 const MANAGEMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -1001,12 +1001,15 @@ export async function runDirectInvocation(argv, runtime = {}) {
         ...(migrationProof ? { migrationProof } : {}) };
       await afterPreparedBindingResolution(runtime.dependencies);
     }
-    const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
-    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor,
+    const invocation = rescueInvocationFromPreparation(prepared.envelope);
+    const output = await runCompanion(invocation.argv, { cwd: caller.workspace, env, caller, executor,
       legacyActivation: false, rescueRoute,
       rescueActivationKind: prepared.activation?.kind,
+      // Private prepared-envelope context: the Host placement dimension is
+      // carried BESIDE the argv, never derived from the internal switches.
+      hostPlacement: invocation.hostPlacement,
       originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, argv: preparedArgv, output });
+    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, argv: invocation.argv, envelope: prepared.envelope, output });
     return output;
   }
   if (statusInvocation) {
@@ -1083,10 +1086,16 @@ export async function runDirectInvocation(argv, runtime = {}) {
   }
   const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : invocationWorkspace, env, caller: executionCaller,
     ...(jobCreator ? { creatorAuthority: caller } : {}), executor,
-    legacyActivation: false, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies,
+    legacyActivation: false, rescueRoute: invocation.route,
+    // The replayed choice restores the private Host placement from the
+    // receipt's stored envelope: placement never crosses argv, so without
+    // this context the trio would fall back to the coupled internal switch
+    // and invert the retained request's Host dimension.
+    ...(invocation.envelope === undefined ? {} : { hostPlacement: replayHostPlacementFromReceipt(invocation.envelope) }),
+    originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies,
     progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') {
-    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
+    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, ...(invocation.envelope === undefined ? {} : { envelope: invocation.envelope }), output });
     else {
       const save = () => invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: invocationWorkspace, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
       await withCreatorPartitionFence(identity, caller, save);
@@ -1184,14 +1193,14 @@ function validateExecutorHostIdentity(host, executor) {
   }
 }
 
-/** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,argv:string[],output:any}} input */
-async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor, argv, output }) {
+/** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,argv:string[],envelope?:unknown,output:any}} input */
+async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor, argv, envelope, output }) {
   const route = rescueChoiceRoutes.get(output);
   if (!route) throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route is unavailable.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
   const executorAgentId = executor?.agentId;
   if (!executorAgentId) throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route is unavailable.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
   await createInvocationStore({ dataRoot }).savePending({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode,
-    command: 'rescue', source, executorAgentId, spec: { argv }, ...route });
+    command: 'rescue', source, executorAgentId, spec: { argv }, ...(envelope === undefined ? {} : { envelope }), ...route });
 }
 
 /** @param {{dataRoot:string,caller:any,executorAgentId:string|undefined,invocation:any}} input */
@@ -1202,7 +1211,22 @@ async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, 
   );
   const parsed = parseArgs(invocation.argv);
   const options = { ...parsed.options }; delete options.resume;
-  const envelope = { version: 1, source: invocation.source, task: parsed.positionals.join(' '), options };
+  // The tombstone must equal the Root re-prepare envelope minus resume. The
+  // needs-choice receipt carries the true validated prepared envelope — the
+  // Host placement dimension never crosses argv — translated to the split v4
+  // shape when the consumed preparation spoke the legacy v3 coupled dialect:
+  // post-upgrade Root re-prepares with the independent pair, so a v3 tombstone
+  // could never match. The argv reconstruction remains only as a fallback for
+  // receipts written before the receipt carried an envelope at all.
+  const envelope = invocation.envelope !== undefined ? tombstoneEnvelopeFromReceipt(invocation.envelope)
+    : (() => {
+      const { execution, ...rest } = options;
+      return {
+        version: 4, source: invocation.source, task: parsed.positionals.join(' '),
+        options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', ...rest },
+        continuationTarget: null,
+      };
+    })();
   const preparations = createRescuePreparationStore({ dataRoot });
   await preparations.save({
     ...caller,
@@ -1214,6 +1238,43 @@ async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, 
     },
   });
   await preparations.consume({ ...caller, executorAgentId });
+}
+
+/**
+ * Translate one receipt envelope into the tombstone shape the post-upgrade
+ * Root re-prepare emits. A v4 envelope passes through unchanged; the legacy v3
+ * coupled dialect maps onto its split v4 equivalent — the coupled execution
+ * enum becomes the Companion execution beside a foreground Host placement,
+ * the only authorized pair for coupled background. A v3 tombstone could never
+ * match a v4 re-prepare (exactPendingFreshEnvelope compares versions), so the
+ * translation is what keeps the cross-upgrade fresh-replan window working.
+ * @param {{version:number,source:string,task:string,options:Record<string,string>,continuationTarget:any}} envelope
+ * @returns {{version:number,source:string,task:string,options:Record<string,string>,continuationTarget:any}}
+ */
+function tombstoneEnvelopeFromReceipt(envelope) {
+  if (envelope.version === 4) return { ...envelope };
+  const { execution, ...rest } = envelope.options;
+  return {
+    version: 4, source: envelope.source, task: envelope.task,
+    options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', ...rest },
+    continuationTarget: envelope.continuationTarget,
+  };
+}
+
+/**
+ * Restore the private Host placement for one replayed Rescue choice. Version 4
+ * receipts carry the faithful per-dimension restore. Version 3 keeps its
+ * historical coupled meaning (spec v3 compatibility): the replay EXECUTES the
+ * historical semantics directly without re-emitting an envelope, so coupled
+ * background stays Host background — unlike the fresh-path tombstone, which
+ * must be a validator-acceptable v4 envelope and therefore translates to the
+ * split pair. Receipts without an envelope keep the argv-coupled fallback.
+ * @param {{version:number,options:{hostPlacement?:string,execution?:string}}} envelope
+ * @returns {'foreground'|'background'}
+ */
+function replayHostPlacementFromReceipt(envelope) {
+  if (envelope.version === 4) return /** @type {'foreground'|'background'} */ (envelope.options.hostPlacement);
+  return envelope.options.execution === 'background' ? 'background' : 'foreground';
 }
 
 /** @param {any} executor @param {any} caller */
@@ -1243,15 +1304,31 @@ async function afterPreparedBindingResolution(dependencies) {
   catch { throw new PluginError('PREPARED_BINDING_TEST_FAULT', 'The test-only prepared-binding fault was injected.', { category: 'state', remedy: 'Retry without the test-only prepared-binding callback.' }); }
 }
 
-/** @param {{task:string,options:{execution?:string,resume?:string,model?:string,effort?:string}}} envelope */
-function rescueArgvFromPreparation(envelope) {
+/**
+ * Map one validated Rescue preparation onto the Rescue Child's Companion
+ * invocation. The Companion execution dimension alone drives the internal
+ * argv — the internal `--background` switch is added only for Companion
+ * background, and the user-facing public flags never cross this boundary.
+ * The Host placement dimension travels separately as lifecycle evidence and
+ * is never converted into argv. Version 3 keeps the historical coupled
+ * fallback where one `execution` enum chose both dimensions.
+ * @param {{version:number,task:string,options:{hostPlacement?:'foreground'|'background',companionExecution?:'foreground'|'background',execution?:'foreground'|'background',resume?:string,model?:string,effort?:string}}} envelope
+ * @returns {{argv:string[],hostPlacement:'foreground'|'background'}}
+ */
+function rescueInvocationFromPreparation(envelope) {
+  const companionExecution = envelope.version === 4
+    ? envelope.options.companionExecution
+    : envelope.options.execution ?? 'foreground';
+  const hostPlacement = envelope.version === 4
+    ? /** @type {'foreground'|'background'} */ (envelope.options.hostPlacement)
+    : companionExecution === 'background' ? 'background' : 'foreground';
   const argv = ['rescue'];
-  if (envelope.options.execution === 'background') argv.push('--background');
+  if (companionExecution === 'background') argv.push('--background');
   if (envelope.options.resume) argv.push(`--${envelope.options.resume}`);
   if (envelope.options.model) argv.push('--model', envelope.options.model);
   if (envelope.options.effort) argv.push('--effort', envelope.options.effort);
   argv.push('--', envelope.task);
-  return argv;
+  return { argv, hostPlacement };
 }
 
 /** @param {NodeJS.ReadableStream} input @param {AbortSignal|undefined} signal @returns {Promise<any>} */
@@ -1411,10 +1488,14 @@ async function startPublic(context) {
     const epochPair = typeof context.executor?.ownerLifecycleEpoch === 'string'
       ? { epoch: context.executor.ownerLifecycleEpoch }
       : await recordedSessionStartPair(dataRoot, epochWorkspace, caller.sessionId);
-    const lifecycle = {
+      const lifecycle = {
       ownerLifecycleEpoch: epochPair.epoch,
       executionOwner: 'host-child',
-      hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
+      // The persisted placement records the independent Host dimension only.
+      // Prepared v4 envelopes carry it beside the argv; prepared v3 and the
+      // historical direct paths keep the execution-coupled fallback.
+      hostPlacement: context.hostPlacement
+        ?? (parsed.options.execution === 'background' ? 'background' : 'foreground'),
     };
     const beforePersist = reservationEpochGate(context, epochPair.epoch);
     // Every reservation in this branch carries the Host-managed lifecycle
@@ -1493,7 +1574,10 @@ async function startPublic(context) {
       const lifecycle = {
         ownerLifecycleEpoch: epochPair.epoch,
         executionOwner: 'host-child',
-        hostPlacement: parsed.options.execution === 'background' ? 'background' : 'foreground',
+        // Same independent-placement rule as the child-authorized branch:
+        // prepared context wins, historical paths keep the coupled fallback.
+        hostPlacement: context.hostPlacement
+          ?? (parsed.options.execution === 'background' ? 'background' : 'foreground'),
       };
       // The binding-anchored continuation is a Host-owned reservation (the
       // trio above), so its background placement rides the new runner path
