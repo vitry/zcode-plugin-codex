@@ -32,6 +32,18 @@ _Avoid_: Command execution, request
 A Companion Run for which the Codex Host keeps the initiating interaction attached until a terminal result or interruption.
 _Avoid_: Wait mode, synchronous job
 
+**Foreground Wait Adapter**:
+The host-facing mechanism that keeps a Foreground Companion Run attached and returns its existing public terminal outcome. It carries waiting and interruption but owns no command, binding, permission, job, or lifecycle semantics.
+_Avoid_: Execution engine, lifecycle manager
+
+**Shell Wait Adapter**:
+The Foreground Wait Adapter that starts the Companion CLI and observes that exact process handle without sending routine input.
+_Avoid_: Companion core, polling state machine
+
+**MCP Wait Adapter**:
+The Foreground Wait Adapter that holds one MCP tool call open while the same Companion invocation reaches its authoritative terminal outcome.
+_Avoid_: MCP lifecycle, MCP binding
+
 **Host-managed Companion Run**:
 A Companion Run whose authorization and stop lifecycle remain owned by the Codex Host through exact persisted Host evidence, whether its executor is attached to a Rescue Child or is a Detached Rescue Runner.
 _Avoid_: Independently owned worker job, durable daemon task
