@@ -191,33 +191,41 @@ test('release docs publish exact private Rescue continuation without a public se
 
   assert.match(english, /`--resume` remains an argument-free public choice/i);
   assert.match(english, /Root privately retains(?=[\s\S]{0,200}`task_name`)(?=[\s\S]{0,200}successful `spawn_agent`)(?=[\s\S]{0,260}canonical (?:agent )?path)/i);
-  assert.match(english, /private version-3 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(english, /private version-4 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
   assert.match(english, /plugin.{0,100}(?:discovers|resolves).{0,100}child ID.{0,100}(?:internally|inside)/is);
   assert.match(english, /canonical path.{0,100}(?:selector|narrows selection).{0,100}(?:not authority|grants no authority)/is);
   assert.match(english, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:validate|validation)/is);
-  assert.match(english, /multiple eligible siblings.{0,180}exact version-3 selector.{0,180}only the sibling.{0,120}canonical agent path.{0,180}only that sibling's complete binding.{0,120}original ZCode session/is);
+  assert.match(english, /multiple eligible siblings.{0,180}exact version-4 selector.{0,180}only the sibling.{0,120}canonical agent path.{0,180}only that sibling's complete binding.{0,120}original ZCode session/is);
   assert.match(english, /targetless\/null compatibility route.{0,160}only when exactly one complete binding is eligible/is);
   assert.match(english, /targetless.{0,100}multiple usable bindings.{0,100}fail closed/is);
   assert.match(english, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous.{0,100}fail closed/is);
-  assert.match(english, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
+  assert.match(english, /new flows always emit version 4/is);
+  assert.match(english, /envelope version 3 remains read compatibility only.{0,160}never emitted/is);
+  assert.match(english, /envelope versions 1 and 2 are no longer accepted/is);
+  assert.doesNotMatch(english, /version 2[^.\n]{0,160}read compat/i);
   assert.doesNotMatch(english, /resumes only its own session when it is the sole eligible binding/i);
 
   assert.match(chinese, /`--resume` 仍是无参数的公开选择/);
   assert.match(chinese, /Root 私下保留(?=[\s\S]{0,200}`task_name`)(?=[\s\S]{0,200}成功 `spawn_agent`)(?=[\s\S]{0,260}canonical (?:agent )?path)/i);
-  assert.match(chinese, /private version-3 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(chinese, /private version-4 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
   assert.match(chinese, /插件(?=[\s\S]{0,180}(?:发现|解析))(?=[\s\S]{0,180}child ID)(?=[\s\S]{0,180}(?:内部|插件内))/i);
   assert.match(chinese, /canonical path.{0,100}(?:selector|收窄选择).{0,100}(?:不是 authority|不授予 authority)/is);
   assert.match(chinese, /binding.{0,80}session.{0,80}permission.{0,80}workspace.{0,120}(?:验证|校验)/is);
-  assert.match(chinese, /多个合格 sibling.{0,180}精确 version-3 selector.{0,180}只解析.{0,120}canonical agent path.{0,180}只恢复该 sibling.{0,120}完整 binding.{0,120}原始 ZCode session/is);
+  assert.match(chinese, /多个合格 sibling.{0,180}精确 version-4 selector.{0,180}只解析.{0,120}canonical agent path.{0,180}只恢复该 sibling.{0,120}完整 binding.{0,120}原始 ZCode session/is);
   assert.match(chinese, /targetless\/null 兼容路由.{0,160}仅在.{0,120}唯一 complete binding 合格/is);
   assert.match(chinese, /不带 target.{0,100}多个可用 binding.{0,100}fail closed/is);
   assert.match(chinese, /没有精确 private selector.{0,100}两个可用 binding.{0,100}歧义.{0,100}fail closed/is);
-  assert.match(chinese, /version 2.{0,120}child ID.{0,80}path 对.{0,120}读取兼容/is);
+  assert.match(chinese, /新流程总是发出 version 4/);
+  assert.match(chinese, /envelope version 3 仍是唯一保留读取兼容的旧 envelope.{0,80}绝不被发出/);
+  assert.match(chinese, /envelope version 1 与 2 不再被接受/);
+  assert.doesNotMatch(chinese, /version 2[^.\n。]{0,160}读取兼容/);
   assert.doesNotMatch(chinese, /仅在它是唯一合格 binding 时 resume 自己的 session/i);
 
-  assert.match(security, /authorized private version-3 preparation frame.{0,160}`[^`]*agentPath[^`]*`/is);
+  assert.match(security, /authorized private version-4 preparation frame.{0,300}`[^`]*agentPath[^`]*`/is);
   assert.match(security, /host child ID.{0,120}(?:discovered|resolved).{0,120}exact parent/is);
-  assert.match(security, /version 2.{0,120}child ID.{0,80}path pair.{0,120}read compatibility only/is);
+  assert.match(security, /version 3 remains read compatibility only.{0,160}never emitted/is);
+  assert.match(security, /envelope versions 1 and 2 are rejected.{0,80}removed/is);
+  assert.doesNotMatch(security, /version 2[^.\n]{0,160}read compat/i);
   assert.match(security, /no additional propagation.{0,180}(?:argv|environment).{0,180}(?:status|result|ZCode)/is);
   assert.match(security, /path or identity drift.{0,100}fail closed/is);
   assert.match(security, /without an exact private selector.{0,100}two usable bindings.{0,100}ambiguous/is);
@@ -515,7 +523,8 @@ test('release docs define Host-managed session-bound Rescue', () => {
   for (const source of [english, chinese]) {
     assert.match(source, /(?:placement|放置).{0,200}(?:task complexity|任务复杂度)/is);
     assert.match(source, /(?:explicit `?--wait`? (?:and|和|与|或) `?--background`?|显式 `?--wait`? (?:和|与|或) `?--background`?).{0,120}(?:authoritative|权威)/is);
-    assert.match(source, /(?:Background Rescue is host-managed and session-bound|后台 Rescue 由 host 托管且 session-bound)/i);
+    assert.match(source, /(?:Rescue stays host-managed and session-bound in both placement layers|Rescue 在两个 placement 层都保持 host 托管且 session-bound)/i);
+    assert.doesNotMatch(source, /Background Rescue is host-managed|后台 Rescue 由 host 托管/i);
     // True-background contract (ADR 0021): the child exits after the queued
     // acknowledgement, the legacy detached worker path stays retired, queued is
     // accepted-only, and completion is pull plus PromptSubmit discovery.
@@ -591,6 +600,111 @@ test('ADR 0021 records the session-bound runner supersession with exact cross-li
   assert.match(changelog, /ADR 0021/);
   assert.match(changelog, /queued is accepted-only/i);
   assert.match(changelog, /broker-subtree exclusion/);
+});
+
+test('release docs split Rescue placement into Host and Companion layers', async () => {
+  // Contract: the approved placement vocabulary is normative across release
+  // surfaces. Host background names Root not joining the Rescue Child in the
+  // initiating interaction; Companion background names the Rescue Child
+  // returning queued after starting the session-bound detached runner. The
+  // four authorized mappings are stated explicitly, explicit `--background`
+  // never creates a detached runner, new flows emit envelope version 4 with
+  // version 3 as the only read-compatible legacy envelope, new reservations
+  // mark detached runners with `rescueRunnerVersion: 2`, and no release
+  // document may claim private preparation envelope v2 remains accepted.
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+  const adrNames = (await readdir(new URL('docs/adr/', root))).filter((name) => name.endsWith('.md')).sort();
+  const adrSources = adrNames.map((name) => read(`docs/adr/${name}`));
+  const bindingAdr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  const complexityAdr = read('docs/adr/0015-select-session-bound-background-by-complexity.md');
+  const hostManagedAdr = read('docs/adr/0018-use-host-managed-session-bound-execution.md');
+  const runnerAdr = read('docs/adr/0021-run-rescue-background-in-a-session-bound-runner.md');
+
+  // Layer-explicit vocabulary replacing the unqualified "background Rescue".
+  assert.match(english, /Host background means Root does not join the Rescue Child in the initiating interaction/i);
+  assert.match(english, /Companion background means the Rescue Child returns queued after starting the session-bound detached runner/i);
+  assert.match(chinese, /Host background 指 Root 不会在发起交互中加入 Rescue Child/);
+  assert.match(chinese, /Companion background 指 Rescue Child 在启动 session-bound detached runner 后返回 queued/);
+  assert.match(english, /explicit `--background` is Host background with attached Companion foreground/i);
+  assert.match(chinese, /显式 `--background` 是 Host background 加附着的 Companion foreground/);
+  for (const source of [english, chinese]) {
+    assert.match(source, /(?:explicit `--background`|显式 `--background`)[^.\n。]{0,80}(?:maps to |映射为 )Host background[^.\n。]{0,80}Companion foreground/i);
+    assert.match(source, /(?:explicit `--wait`|显式 `--wait`)[^.\n。]{0,80}(?:maps to |映射为 )Host foreground[^.\n。]{0,80}Companion foreground/i);
+  }
+  assert.match(english, /no flag on small[^.\n。]{0,160}Host foreground[^.\n。]{0,80}Companion foreground/i);
+  assert.match(english, /no flag on complex[^.\n。]{0,160}Host foreground[^.\n。]{0,80}Companion background/i);
+  assert.match(chinese, /无标志的小而边界清晰任务映射为 Host foreground 加 Companion foreground/);
+  assert.match(chinese, /无标志的复杂[^.\n。]{0,100}映射为 Host foreground 加 Companion background/);
+
+  // Explicit `--background` never creates a detached runner; the runner is
+  // Companion-background execution only.
+  const detachedRunnerClaimAfterExplicitBackground = /explicit `?--background`?[^.\n]{0,200}(?<!never |no )(?:launches|starts|spawns|creates|reserves)[^.\n]{0,80}detached runner/i;
+  for (const source of [english, chinese, security, changelog, ...adrSources]) {
+    assert.doesNotMatch(source, detachedRunnerClaimAfterExplicitBackground);
+    assert.doesNotMatch(source, /`--background`, or the complexity inference selecting background\)/i);
+    assert.doesNotMatch(source, /`--background` durably reserves one exact job[^.\n]{0,120}(?:launches|starts)/i);
+    assert.doesNotMatch(source, /显式 `--background` 会持久预留一个精确 job[^。]{0,80}启动/i);
+    assert.doesNotMatch(source, /no job is reserved, no detached runner/i);
+    assert.doesNotMatch(source, /no job, (?:runner|detached runner), or queued acknowledgement is produced/i);
+    assert.doesNotMatch(source, /never reserves a job, never starts the detached runner/i);
+    assert.doesNotMatch(source, /不预留 job、不启动 detached runner/i);
+    assert.doesNotMatch(source, /version 2[^.\n。]{0,160}read compat/i);
+    assert.doesNotMatch(source, /version 2[^.\n。]{0,160}读取兼容/);
+    assert.doesNotMatch(source, /envelope version 2'{0,2}s?[^.\n。]{0,160}(?:remains|remain|accepted)/i);
+    assert.doesNotMatch(source, /private envelope version 2 的[^。]{0,120}读取兼容/);
+  }
+  assert.match(runnerAdr, /applies to Companion-background execution only/i);
+  assert.match(runnerAdr, /still reserves the normal durable job through the foreground reservation path[^.]{0,160}never a detached or queued runner job/i);
+  assert.match(runnerAdr, /Normal Companion-background Rescue[^.\n]{0,90}executes in one session-bound Detached Rescue Runner/i);
+  assert.match(hostManagedAdr, /explicit Host `--background` is Host background with attached Companion foreground/i);
+  assert.match(hostManagedAdr, /still reserved through the foreground reservation path for lifecycle, status\/result, cancellation, and recovery[^.]{0,40}no detached or queued runner job/i);
+
+  // Explicit Host background still reserves the normal durable job through the
+  // foreground reservation path for lifecycle, Status/Result, cancellation,
+  // and recovery; only the detached/queued runner job, its `rescueRunnerVersion`
+  // marker, and the queued acknowledgement are absent.
+  assert.match(english, /still reserved through the foreground reservation path[^.]{0,160}no detached or queued runner job[^.]{0,120}no `rescueRunnerVersion` marker/i);
+  assert.match(chinese, /仍会通过前台预留路径为 lifecycle、Status\/Result、取消与恢复预留[^。]{0,80}不存在 detached\/queued 的 runner job[^。]{0,80}不写入 `rescueRunnerVersion` 标记/);
+  assert.match(changelog, /still reserved through the foreground reservation path for lifecycle, status, cancellation, and recovery[^)]{0,60}no detached or queued runner job/i);
+  assert.match(complexityAdr, /fixes Host placement to `foreground` and selects only Companion execution by task complexity/i);
+  assert.match(complexityAdr, /Host background is reserved for the explicit `--background` flag[^.]{0,120}never selects the detached runner/i);
+
+  // Envelope v4 emission and v3-only read compatibility across release docs.
+  assert.match(english, /private version-4 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(english, /new flows always emit version 4/is);
+  assert.match(english, /envelope versions 1 and 2 are no longer accepted/is);
+  assert.match(chinese, /private version-4 preparation.{0,120}`[^`]*agentPath[^`]*`/is);
+  assert.match(chinese, /新流程总是发出 version 4/);
+  assert.match(chinese, /envelope version 1 与 2 不再被接受/);
+  assert.match(security, /authorized private version-4 preparation frame.{0,300}`[^`]*agentPath[^`]*`/is);
+  assert.match(security, /version 3 remains read compatibility only.{0,160}never emitted/is);
+  assert.match(security, /envelope versions 1 and 2 are rejected.{0,80}removed/is);
+  assert.match(changelog, /new flows always emit version 4/is);
+  assert.match(changelog, /envelope versions 1 and 2 are rejected/is);
+  assert.match(bindingAdr, /versions 1 and 2 are no longer accepted/i);
+  assert.match(bindingAdr, /version 3 remains the only accepted legacy envelope/i);
+  assert.match(bindingAdr, /version-4 envelope/i);
+
+  // Detached runner marker versioning and independence from Host placement.
+  assert.match(security, /Host placement and Companion execution are recorded independently/i);
+  assert.match(security, /`rescueRunnerVersion: 2`/);
+  assert.match(security, /detachment is never inferred from `hostPlacement`/i);
+  assert.match(security, /historical `rescueRunnerVersion: 1` records keep their historical validation and admission/i);
+  assert.match(runnerAdr, /`rescueRunnerVersion: 2`/);
+  assert.match(runnerAdr, /historical `rescueRunnerVersion: 1` records keep their historical validation and admission/i);
+
+  // The changelog records the whole unreleased behavior change.
+  assert.match(changelog, /Changed Rescue placement to two independent layers/i);
+  assert.match(changelog, /explicit `--background` is Host background with Companion foreground/i);
+  assert.match(changelog, /no-flag complex[^.]{0,160}Host foreground with Companion background/is);
+  assert.match(changelog, /returns queued after starting the session-bound detached runner/i);
+  assert.match(changelog, /`rescueRunnerVersion: 2`/);
+  assert.match(changelog, /historical `rescueRunnerVersion: 1` records keep their historical validation and admission/i);
+  assert.match(changelog, /Host Coordination Loss applies only to attached Host-foreground work/i);
+  assert.match(changelog, /detachment is never inferred from `hostPlacement`/i);
 });
 
 test('marketplace catalog and publisher describe an installable vitry snapshot', () => {
@@ -773,7 +887,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(english, /parent thread/i);
   assert.match(english, /child thread/i);
   assert.match(english, /\/ps.{0,180}current(?:ly active)? thread/is);
-  assert.match(english, /Background Rescue is host-managed and session-bound/i);
+  assert.match(english, /Rescue stays host-managed and session-bound in both placement layers/i);
   assert.match(english, /Codex 0\.147/);
   assert.match(english, /unqualified/i);
   assert.match(chinese, /writable root.{0,160}重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
@@ -782,7 +896,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(chinese, /父线程/);
   assert.match(chinese, /子线程/);
   assert.match(chinese, /\/ps.{0,180}当前(?:活动)?线程/is);
-  assert.match(chinese, /后台 Rescue 由 host 托管且 session-bound/i);
+  assert.match(chinese, /Rescue 在两个 placement 层都保持 host 托管且 session-bound/);
   assert.match(chinese, /Codex 0\.147/);
   assert.match(chinese, /unqualified/i);
 

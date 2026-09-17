@@ -526,7 +526,7 @@ test('a hard Rescue Child parent death after queued leaves the detached runner p
     const job = await readJob(ctx, jobId);
     return job.status === 'queued' && job.childPid === runnerPid && job.workerLeaseId ? job : null;
   }, 'the surviving detached runner must claim the job after its parent died');
-  assert.equal(claimed.rescueRunnerVersion, 1, 'the marker rides with the claimed job');
+  assert.equal(claimed.rescueRunnerVersion, 2, 'the marker rides with the claimed job');
   const boundary = await until(async () => {
     const job = await readJob(ctx, jobId);
     return job.status === 'running' && job.inputId ? job : null;
@@ -547,7 +547,7 @@ test('a hard Rescue Child parent death after queued leaves the detached runner p
   }, 'the surviving runner must publish the terminal winner on its own');
   assert.equal(terminal.status, 'succeeded', `the runner must complete the task; error: ${JSON.stringify(terminal.error ?? null)}`);
   assert.equal(terminal.rescueExecutionInput, undefined, 'the private input is removed on running');
-  assert.equal(terminal.rescueRunnerVersion, 1, 'the marker persists through the terminal record');
+  assert.equal(terminal.rescueRunnerVersion, 2, 'the marker persists through the terminal record');
   assert.equal(terminal.childPid, runnerPid);
   const caller = await ownerCaller(ctx, 'turn-background');
   const result = await companionChild(ctx, ['result', jobId], caller);
@@ -603,7 +603,7 @@ test('killing the runner before its claim retains the queued job with no send an
   assert.equal(retained.childPid, undefined);
   assert.equal(retained.workerLeaseId === undefined || retained.workerLeaseId === null, true);
   assert.equal(retained.rescueExecutionInput === undefined, false, 'the private input stays for the still-runnable queued job');
-  assert.equal(retained.rescueRunnerVersion, 1);
+  assert.equal(retained.rescueRunnerVersion, 2);
   assert.equal(await countRequests(recordPath, 'session/create'), 0);
   assert.equal(await countRequests(recordPath, 'session/send'), 0);
   await sleep(scaleTestTimeout(1_500));
@@ -655,7 +655,7 @@ test('killing a claimed runner before its running publication leaves a recovery-
   }, 'the proven orphan claim must be settled by the real recovery path');
   assert.equal(settled.status, 'failed', 'a fresh claimed orphan fails through the pre-start failure policy');
   assert.equal(settled.rescueExecutionInput, undefined, 'the private input is removed with the terminal publication');
-  assert.equal(settled.rescueRunnerVersion, 1, 'the marker is retained');
+  assert.equal(settled.rescueRunnerVersion, 2, 'the marker is retained');
   assert.equal(settled.zcodeSessionId, undefined, 'the job never reached a remote session');
   assert.equal(settled.startedAt, undefined, 'the job never began execution');
   assert.equal(await countRequests(recordPath, 'session/send'), 0, 'no send ever runs for the orphan');
@@ -1004,7 +1004,7 @@ test('a real user cancel of a claimed queued runner persists the stop intent, ki
   assert.equal(stored.status, 'cancelled', 'queued live claim -> stop intent -> kill -> acquire lease -> cancelled');
   assert.equal(stored.stopCause, 'user');
   assert.equal('rescueExecutionInput' in stored, false, 'the queued terminal removes the private input');
-  assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists on the terminal record');
+  assert.equal(stored.rescueRunnerVersion, 2, 'the marker persists on the terminal record');
   await waitForExit(runnerPid, 'the queued-stop reconciliation must terminate the exact claimed runner tree', 15_000);
   // The advertised claimed-queued safety case: cancellation must leave the
   // separately managed broker alive — on every platform, including Windows

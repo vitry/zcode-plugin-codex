@@ -2228,7 +2228,7 @@ test('a marked queued job without its execution input fails execution instead of
     executionOwner: 'host-child', hostPlacement: 'background' };
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
     executor: trusted, lifecycle, executionInput: { version: 1, task: 'bounded private task' } });
-  assert.equal(fresh.job.rescueRunnerVersion, 1);
+  assert.equal(fresh.job.rescueRunnerVersion, 2);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const path = join(storage.directory, 'jobs', `${fresh.job.id}.json`);
   const record = JSON.parse(await readFile(path, 'utf8'));
@@ -2255,19 +2255,19 @@ test('a detached runner reservation carries its marker and private input through
     executor: trusted, lifecycle, executionInput: input });
   const claimed = await store.claimJobWorkerForExecution(workspace, fresh.job.id, { childPid: 999_999_999, workerLeaseId: fresh.job.id });
   assert.equal(claimed.status, 'queued');
-  assert.equal(claimed.rescueRunnerVersion, 1);
+  assert.equal(claimed.rescueRunnerVersion, 2);
   assert.deepEqual(claimed.rescueExecutionInput, input);
   const running = await store.transitionJob(workspace, fresh.job.id, ['queued'], 'running',
     { startedAt: new Date().toISOString(), zcodeSessionId: 'runner-claim-session', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
-  assert.equal(running.rescueRunnerVersion, 1);
+  assert.equal(running.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in running, false);
   const terminal = await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded', { exitCode: 0 });
-  assert.equal(terminal.rescueRunnerVersion, 1);
+  assert.equal(terminal.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in terminal, false);
   // The exact continuation of a marked run is still resumable after terminal input removal.
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     executor: trusted, operationId: fresh.binding.operationId, lifecycle, executionInput: input });
-  assert.equal(continuation.job.rescueRunnerVersion, 1);
+  assert.equal(continuation.job.rescueRunnerVersion, 2);
   assert.deepEqual(continuation.job.rescueExecutionInput, input);
 });
 
@@ -2485,7 +2485,7 @@ test('a queued stop intent prevents claim, dispatch, and failure settlement', as
   assert.equal(cancelled.status, 'cancelled');
   assert.equal(cancelled.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in cancelled, false);
-  assert.equal(cancelled.rescueRunnerVersion, 1);
+  assert.equal(cancelled.rescueRunnerVersion, 2);
 });
 
 test('a fresh pre-session failure stays non-resumable while a new child reserves fresh again', async () => {
@@ -2501,7 +2501,7 @@ test('a fresh pre-session failure stays non-resumable while a new child reserves
     { error: { message: 'setup failed before an accepted session' }, exitCode: 1 });
   assert.equal(failed.status, 'failed');
   assert.equal('rescueExecutionInput' in failed, false);
-  assert.equal(failed.rescueRunnerVersion, 1);
+  assert.equal(failed.rescueRunnerVersion, 2);
   // No resumable remote history exists: the exact resume route rejects the
   // failed fresh attempt, so a later fresh operation needs a new authorized child.
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)),

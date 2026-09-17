@@ -192,7 +192,7 @@ test('real prompt hooks keep direct ambient-thread invocation exact in one works
     assert.doesNotMatch(JSON.stringify(output), /ZCODE_CALLER_CONTEXT|callerContext/);
     assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
       cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: session.id },
-      input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: session.task, options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
+      input: Readable.from([`${JSON.stringify({ version: 4, source: 'explicit', task: session.task, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`]),
     }), { type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' } });
     await hook(ctx, 'subagent-hook.mjs', { session_id: session.id, turn_id: `${session.turn}-child`, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: session.child, agent_type: 'zcode-rescue' });
   }
@@ -1250,7 +1250,7 @@ test('SessionEnd terminates a claimed-queued marked runner tree and settles its 
   assert.equal(stored.status, 'cancelled', 'queued stopIntent -> kill -> acquire lease -> cancelled through the real hook');
   assert.equal(stored.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in stored, false);
-  assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists on the terminal record');
+  assert.equal(stored.rescueRunnerVersion, 2, 'the marker persists on the terminal record');
   await waitFor(() => !isPidAlive(holderPid), 'the authorized stop must terminate the exact runner process tree');
   assert.equal(await leaseLockHeld(ctx.dataRoot, canonicalWorkspace, job.id, job.id), false, 'the executor released its lease');
   const receipt = await createHostLifecycleStore({ dataRoot: ctx.dataRoot }).readReceipt(epoch);

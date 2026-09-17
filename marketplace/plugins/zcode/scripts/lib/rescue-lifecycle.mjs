@@ -39,6 +39,7 @@ import { HOST_PLACEMENTS, STOP_CAUSES } from './rescue-binding.mjs';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const HOST_LOSS_STATES = new Set(['systemError', 'notLoaded', 'absent']);
+const COMPANION_EXECUTIONS = new Set(['foreground', 'background']);
 const INTENT_KINDS = new Set(['observe', 'stop', 'wait']);
 const REQUEST_KEYS = new Set(['intent', 'authority', 'workspace', 'selector', 'signal']);
 const JOB_STATUSES = new Set(['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled']);
@@ -102,21 +103,37 @@ async function reconcile(adapters, request) {
 
 /**
  * Derive the bounded stop cause for this request. An explicit stop carries its
- * caller-validated cause, except that Host Coordination Loss authorizes only a
- * foreground placement; an observation stops only for a SessionEnd receipt
- * matching the job's owning lifecycle epoch or a foreground Host child loss.
- * An older-epoch receipt grants no stop authority over a post-resume job.
+ * caller-validated cause, except that Host Coordination Loss authorizes only
+ * attached foreground work; an observation stops only for a SessionEnd receipt
+ * matching the job's owning lifecycle epoch or an attached foreground Host
+ * child loss. An older-epoch receipt grants no stop authority over a
+ * post-resume job.
  * @param {any} joined @param {any} intent
  * @returns {string | null}
  */
 function stopCauseFor(joined, intent) {
   if (intent.kind === 'stop') {
-    if (intent.cause === 'host-coordination-loss') return joined?.hostPlacement === 'foreground' ? intent.cause : null;
+    if (intent.cause === 'host-coordination-loss') return attachedForegroundHostLoss(joined) ? intent.cause : null;
     return intent.cause;
   }
   if (joined?.sessionEndReceipt === 'matching') return 'session-end';
-  if (joined?.hostPlacement === 'foreground' && HOST_LOSS_STATES.has(joined?.hostState)) return 'host-coordination-loss';
+  if (attachedForegroundHostLoss(joined) && HOST_LOSS_STATES.has(joined?.hostState)) return 'host-coordination-loss';
   return null;
+}
+
+/**
+ * The single Host Coordination Loss gate over the joined placement state:
+ * actual Host placement foreground AND attached Companion execution. A valid
+ * detached-runner record makes the joined Companion execution background, so a
+ * child exiting after its accepted enqueue is expected handoff completion —
+ * never a coordination loss, never a stop authority — even though the Host
+ * placement is foreground. SessionEnd receipts and explicit user cancellation
+ * keep their existing authority (they never pass through this gate).
+ * @param {any} joined
+ */
+function attachedForegroundHostLoss(joined) {
+  return joined.hostPlacement === 'foreground'
+    && joined.companionExecution === 'foreground';
 }
 
 /**
@@ -690,6 +707,7 @@ function validateJoinedState(joined) {
   if (!isPlainObject(joined.job) || !JOB_STATUSES.has(joined.job.status)) throw invalidJoinedState();
   if (!HOST_OBSERVATION_STATES.has(joined.hostState)) throw invalidJoinedState();
   if (!(joined.hostPlacement === null || HOST_PLACEMENTS.has(joined.hostPlacement))) throw invalidJoinedState();
+  if (!COMPANION_EXECUTIONS.has(joined.companionExecution)) throw invalidJoinedState();
   if (!(joined.sessionEndReceipt === null || SESSION_END_RECEIPT_EVIDENCE.has(joined.sessionEndReceipt))) throw invalidJoinedState();
   if (joined.stopIntent !== null && joined.stopIntent !== undefined
     && (!isPlainObject(joined.stopIntent) || !STOP_CAUSES.has(joined.stopIntent.cause))) throw invalidJoinedState();

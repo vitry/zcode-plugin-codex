@@ -1223,13 +1223,14 @@ test('SessionEnd settlement retains cancelling when the control channel is unava
   await cleanupRecoveryFixture(fixture);
 });
 
-async function hostOwnedRunningRescueInWorkspace(fixture, workspace, { session, input, agent, epoch, placement = 'background' }) {
+async function hostOwnedRunningRescueInWorkspace(fixture, workspace, { session, input, agent, epoch, placement = 'background', detached = false }) {
   const store = createStateStore({ dataRoot: fixture.dataRoot });
   const reserved = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ownerSessionId: 'owner',
     ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
     executor: { parentSessionId: 'owner', parentTurnId: 'turn', agentId: agent, agentType: 'zcode-rescue',
       agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' },
-    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement } });
+    lifecycle: { ownerLifecycleEpoch: epoch, executionOwner: 'host-child', hostPlacement: placement },
+    ...(detached ? { executionInput: { version: 1, task: 'bounded private task' } } : {}) });
   const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, { childPid: 999_999_999, workerLeaseId: reserved.job.id });
   await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(),
     zcodeSessionId: session, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
@@ -1841,7 +1842,7 @@ test('new runner queued jobs never fail from age alone and settle only with a pr
   const failed = await unclaimed.store.readJob(workspaceB, claimed.job.id);
   assert.equal(failed.status, 'failed');
   assert.equal('rescueExecutionInput' in failed, false);
-  assert.equal(failed.rescueRunnerVersion, 1);
+  assert.equal(failed.rescueRunnerVersion, 2);
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -1873,7 +1874,7 @@ test('unclaimed queued runner jobs settle a durable stop intent as cancelled dur
     assert.equal(settled.stopCause, 'user', kind);
     assert.equal(settled.stopIntent.cause, 'user', kind);
     assert.equal('rescueExecutionInput' in settled, false, `${kind}: the runner input is removed with the cancelled settlement`);
-    assert.equal(settled.rescueRunnerVersion, 1, kind);
+    assert.equal(settled.rescueRunnerVersion, 2, kind);
     assert.equal(await caseContext.store.rescueBindingForJob({ workspace: selectedWorkspace, ownerSessionId: 'owner', jobId: caseContext.job.id }), null,
       `${kind}: the cancelled settlement closes the exact operation binding`);
   }
@@ -1967,7 +1968,7 @@ test('a durable queued stop intent wins recovery settlement over pre-start failu
   assert.equal(settled.stopCause, 'session-end');
   assert.equal(settled.stopIntent.cause, 'session-end');
   assert.equal('rescueExecutionInput' in settled, false);
-  assert.equal(settled.rescueRunnerVersion, 1);
+  assert.equal(settled.rescueRunnerVersion, 2);
   await cleanupRecoveryFixture(fixture);
 });
 
@@ -2367,7 +2368,7 @@ async function hostOwnedFencedQueuedRunnerJob(fixture, workspace, { agent, epoch
   const fenced = await store.readJob(workspace, stored.id);
   assert.equal(fenced.workerLeaseId, undefined, 'the fixture must model the pre-claim fence gap');
   assert.equal(fenced.rescueExecutionReservation.workerLeaseId, lease, 'the fixture must carry the fence lease');
-  assert.equal(fenced.rescueRunnerVersion, 1, 'the fixture must model a marked runner reservation');
+  assert.equal(fenced.rescueRunnerVersion, 2, 'the fixture must model a marked runner reservation');
   return { store, job: fenced, workerLeaseId: lease };
 }
 
@@ -2618,7 +2619,7 @@ test('SessionEnd settles a claimed queued marked runner as intent -> kill -> acq
   assert.equal(outcome.job.status, 'cancelled');
   assert.equal(outcome.job.stopCause, 'session-end');
   assert.equal('rescueExecutionInput' in outcome.job, false, 'the queued terminal removes the private input');
-  assert.equal(outcome.job.rescueRunnerVersion, 1, 'the marker persists through the terminal record');
+  assert.equal(outcome.job.rescueRunnerVersion, 2, 'the marker persists through the terminal record');
   assert.equal(endedObligationSettled(outcome), true, 'the settled terminal discharges the receipt');
   await cleanupRecoveryFixture(fixture);
 });
@@ -3008,7 +3009,7 @@ test('discovery surfaces a terminal marked runner still holding its lease and th
     assert.equal(outcome.job.status, 'succeeded', 'the terminal winner is untouched');
     assert.equal(processAlive(held.holderChild.pid), false, 'the still-held marked runner lease drives the bounded process-tree termination');
     const stored = await held.store.readJob(workspace, held.job.id);
-    assert.equal(stored.rescueRunnerVersion, 1, 'the marker persists for the cleanup selection until the executor releases it');
+    assert.equal(stored.rescueRunnerVersion, 2, 'the marker persists for the cleanup selection until the executor releases it');
     void free;
   } finally { try { process.kill(-held.holderChild.pid, 'SIGKILL'); } catch { /* already terminated by the pass */ } }
   await cleanupRecoveryFixture(fixture);
@@ -3861,6 +3862,98 @@ test('child-owned settlement observes a background job without a receipt and nev
   await cleanupRecoveryFixture(fixture);
 });
 
+test('child-owned settlement never stops a detached Companion-background child exit without a receipt', async () => {
+  // The no-flag complex shape: actual Host placement foreground plus valid
+  // detached runner evidence. The child exiting after its accepted enqueue is
+  // expected handoff completion — the joined reconciler state (Host placement
+  // joined with the runner marker), never the Host placement alone, selects
+  // the policy: no stop intent, no cancel, no remote stop.
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-child-detached', input: 'input-child-detached', agent: 'child-detached', epoch: EPOCH, placement: 'foreground', detached: true });
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  let stops = 0;
+  const outcome = await settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, hostPlacement: 'foreground', receiptMatched: false,
+    createClient: async () => ({
+      readSession: async () => activeCurrentTurn('input-child-detached'),
+      stopSession: async () => { stops += 1; }, close: async () => {},
+    }) }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard', 'the detached job keeps its writable guard for its runner');
+  assert.equal(stops, 0, 'the detached child exit never stops the exact remote turn');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'running', 'the detached job stays running for its runner');
+  assert.equal(stored.stopIntent, undefined, 'no coordination-loss intent is minted for an observed detached job');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a matching SessionEnd receipt stays authoritative over a detached foreground job', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-child-detached-receipt', input: 'input-child-detached-receipt', agent: 'child-detached-receipt', epoch: EPOCH, placement: 'foreground', detached: true });
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  let stops = 0; let stoppedRemotely = false;
+  const outcome = await settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, hostPlacement: 'foreground', receiptMatched: true,
+    createClient: async () => ({
+      readSession: async () => stoppedRemotely
+        ? coherentCurrentTurn('input-child-detached-receipt', 'settled by session-end', 'cancelled')
+        : activeCurrentTurn('input-child-detached-receipt'),
+      stopSession: async () => { stoppedRemotely = true; stops += 1; }, close: async () => {},
+    }) }, job.id);
+  assert.equal(outcome.kind, 'confirmed-cancellation', 'a matching receipt authorizes the session-end stop even for detached execution');
+  assert.equal(stops, 1);
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'session-end', 'the matching receipt owns the stop cause');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a detached pre-enqueue queued job keeps its existing pre-start uncertainty rules without a duplicate runner', async () => {
+  // Child loss while the enqueue is still uncertain: the reserved-and-marked
+  // queued record follows the existing pre-start rules — it stays queued for
+  // its runner (or the boundary owner's later settlement) and never becomes a
+  // coordination-loss cancellation or a replacement launch.
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { store, job } = await markedRunnerRescue(fixture, { status: 'queued', placement: 'foreground', agent: 'child-preenqueue', childPid: false });
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  const outcome = await settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: job.ownerLifecycleEpoch, hostPlacement: 'foreground', receiptMatched: false,
+    createClient: async () => { throw new Error('a queued pre-enqueue job has no remote session to control'); } }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard', 'the pre-enqueue uncertainty retains the writable guard');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'queued', 'the pre-enqueue uncertainty stays with the existing queued rules');
+  assert.equal(stored.stopIntent, undefined, 'no coordination-loss intent is minted before the accepted enqueue');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an explicit user cancellation stays authoritative over a detached foreground job', async () => {
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const { hostOwnedStopIntentPatch } = await import('../scripts/lib/rescue-binding.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-child-detached-cancel', input: 'input-child-detached-cancel', agent: 'child-detached-cancel', epoch: EPOCH, placement: 'foreground', detached: true });
+  const current = await store.readJob(workspace, job.id);
+  await store.transitionJob(workspace, job.id, ['running'], 'cancelling', hostOwnedStopIntentPatch(current, 'user'));
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  let stoppedRemotely = false;
+  const outcome = await settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, hostPlacement: 'foreground', receiptMatched: false,
+    createClient: async () => ({
+      readSession: async () => stoppedRemotely
+        ? coherentCurrentTurn('input-child-detached-cancel', 'stopped by the durable user decision', 'cancelled')
+        : activeCurrentTurn('input-child-detached-cancel'),
+      stopSession: async () => { stoppedRemotely = true; }, close: async () => {},
+    }) }, job.id);
+  assert.equal(outcome.kind, 'confirmed-cancellation', 'the durable user decision still settles the detached job');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(stored.stopCause, 'user', 'the persisted user cause wins; detached execution never blocks an explicit cancel');
+  await cleanupRecoveryFixture(fixture);
+});
+
 test('child-owned settlement follows the matching-epoch receipt precedence over the placement', async () => {
   const fixture = await context(); const workspace = await realpath(fixture.workspace);
   const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
@@ -3941,5 +4034,72 @@ test('child-owned settlement keeps a pre-existing durable stop intent winning ov
   const stored = await store.readJob(workspace, job.id);
   assert.equal(stored.status, 'cancelled');
   assert.equal(stored.stopCause, 'user', 'the durable user intent wins the published cause over the coordination-loss caller cause');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('an in-flight historical v1 background runner keeps detached child-exit semantics', async () => {
+  // Pre-upgrade records are never reinterpreted or migrated: a historical v1
+  // marker beside its stored background placement stays a valid detached
+  // record, so its child exiting after the accepted enqueue is still observed
+  // as expected handoff completion — never a coordination loss, never a stop.
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-child-historical', input: 'input-child-historical', agent: 'child-historical', epoch: EPOCH, placement: 'background', detached: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${job.id}.json`);
+  const record = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(record.rescueRunnerVersion, 2);
+  await atomicWriteJson(jobPath, { ...record, rescueRunnerVersion: 1 });
+  const historical = await store.readJob(workspace, job.id);
+  assert.equal(historical.rescueRunnerVersion, 1, 'the historical format survives persisted validation unchanged');
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  let stops = 0;
+  const outcome = await settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, hostPlacement: 'background', receiptMatched: false,
+    createClient: async () => ({
+      readSession: async () => activeCurrentTurn('input-child-historical'),
+      stopSession: async () => { stops += 1; }, close: async () => {},
+    }) }, job.id);
+  assert.equal(outcome.kind, 'retained-writable-guard', 'the historical detached job keeps its writable guard for its runner');
+  assert.equal(stops, 0, 'the historical detached child exit never stops the exact remote turn');
+  const stored = await store.readJob(workspace, job.id);
+  assert.equal(stored.status, 'running', 'the historical detached job stays running for its runner');
+  assert.equal(stored.stopIntent, undefined, 'no coordination-loss intent is minted for the historical detached job');
+  assert.equal(stored.rescueRunnerVersion, 1, 'the historical format is retained, never migrated');
+  await cleanupRecoveryFixture(fixture);
+});
+
+test('a historical v1 foreground marker fails closed and never reaches detached child-exit handling', async () => {
+  // THE marker-versioning regression: the pre-split schema never admitted a v1
+  // marker beside a foreground placement, so such a record is malformed or
+  // tampered state. It must fail persisted validation, and the child-exit
+  // settlement must propagate that corruption instead of observing detached
+  // semantics — the caller keeps the obligation pending, nothing is stopped,
+  // and the durable bytes stay untouched.
+  const fixture = await context(); const workspace = await realpath(fixture.workspace);
+  const { hostLifecycleEpoch } = await import('../scripts/lib/host-lifecycle.mjs');
+  const EPOCH = hostLifecycleEpoch('owner', '2026-01-01T00:00:00.000Z');
+  const { store, job } = await hostOwnedRunningRescueInWorkspace(fixture, workspace, { session: 'zs-child-tampered', input: 'input-child-tampered', agent: 'child-tampered', epoch: EPOCH, placement: 'foreground', detached: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${job.id}.json`);
+  const record = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(record.rescueRunnerVersion, 2);
+  await atomicWriteJson(jobPath, { ...record, rescueRunnerVersion: 1 });
+  await assert.rejects(store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+    'the tampered v1 foreground record fails persisted validation');
+  const { settleRescueChildOwnedJob } = await import('../scripts/lib/recovery.mjs');
+  await assert.rejects(settleRescueChildOwnedJob({ store, dataRoot: fixture.dataRoot, workspace, ownerSessionId: 'owner',
+    epoch: EPOCH, hostPlacement: 'foreground', receiptMatched: false,
+    createClient: async () => ({
+      readSession: async () => { throw new Error('no remote read expected for unreadable state'); },
+      stopSession: async () => { throw new Error('no remote stop expected for unreadable state'); }, close: async () => {},
+    }) }, job.id),
+  (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+    'the corrupted record propagates instead of selecting detached child-exit semantics');
+  const persisted = JSON.parse(await readFile(jobPath, 'utf8'));
+  assert.equal(persisted.status, 'running', 'the tampered record is retained exactly as it was');
+  assert.equal(persisted.stopIntent, undefined, 'no stop intent is ever minted for unreadable state');
   await cleanupRecoveryFixture(fixture);
 });

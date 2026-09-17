@@ -542,7 +542,7 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   // stays observed to its durable terminal winner, while the background run is
   // executed by one detached session-bound runner after a queued acknowledgement.
   assert.match(role, /placement/i);
-  assert.match(role, /foreground placement the command observes the run through its original companion process/i);
+  assert.match(role, /Companion `foreground` execution the command observes the original companion process to terminal/i);
   assert.match(role, /durable terminal winner/i);
   assert.match(role, /detached session-bound runner/i);
   assert.match(role, /queued means accepted for execution only/i);
@@ -552,9 +552,10 @@ test('installed Host-managed Rescue contract selects placement by complexity wit
   assert.match(skill, /without asking the user another placement question/i);
   assert.match(skill, /flag is authoritative/i);
   assert.match(skill, /small and clearly bounded/i);
-  assert.match(skill, /multi-step, open-ended, or likely long/i);
+  assert.match(skill, /No flag, complex, open-ended, multi-step, or likely long/i);
   assert.match(skill, /without asking for confirmation/i);
-  assert.match(skill, /`execution` is only `foreground` or `background`/);
+  assert.match(skill, /`hostPlacement` is exactly `foreground` or `background`/);
+  assert.match(skill, /`companionExecution` is exactly `foreground` or `background`/);
   assert.match(skill, /never adds task text or a private identifier/i);
   assert.match(skill, /one detached session-bound runner, and returns only a queued acknowledgement/i);
   assert.match(skill, /Queued means accepted for execution only/);
@@ -829,7 +830,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
       cwd: workspace,
       env: { ...hookEnv, CODEX_THREAD_ID: parentSessionId,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
-      input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
+      input: `${JSON.stringify({ version: 4, source: 'explicit', task: 'repair', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`,
     });
     assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
     const activeKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
@@ -1366,7 +1367,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedPreflightCommand = `${expectedLauncherCommand} role-status rescue`;
   const expectedPreparationCommand = `${expectedLauncherCommand} prepare rescue`;
-  const expectedPreparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: 'repaircanary', options: { execution: 'foreground', resume: 'fresh' } });
+  const expectedPreparationPayload = JSON.stringify({ version: 4, source: 'explicit', task: 'repaircanary', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   const expectedStatusCommand = `${expectedLauncherCommand} invoke-status rescue`;
   const expectedNamedSpawnMessage = expectedNamedRescueMessage;
   const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expectedLauncherCommand);

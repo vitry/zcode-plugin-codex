@@ -13,6 +13,11 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const BASE_TASK_NAME = 'zcode_rescue_task';
 const BASE_AGENT_PATH = `/root/${BASE_TASK_NAME}`;
+// The private preparation envelope versions whose continuation targets this
+// planner admits: the current version and the only legacy read-compatibility
+// version. Both select exact continuations by canonical path alone.
+const RESCUE_ENVELOPE_VERSION = 4;
+const LEGACY_RESCUE_ENVELOPE_VERSION = 3;
 export const MAX_RESCUE_CHILDREN = 1024;
 const MAX_ORDINAL = 9999;
 const MAX_DIRECTIVE_BYTES = 2048;
@@ -61,11 +66,7 @@ export async function planRescueActivation(input) {
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
   let candidateChildren = hostChildren;
   if (continuationTarget !== null) {
-    const selectedHost = input.envelope.version === 3
-      ? hostChildren.find((host) => host.agentPath === continuationTarget.agentPath)
-      : hostChildren.find((host) => (
-        host.id === continuationTarget.childId && host.agentPath === continuationTarget.agentPath
-      ));
+    const selectedHost = hostChildren.find((host) => host.agentPath === continuationTarget.agentPath);
     if (selectedHost === undefined) throw plannerError('RESCUE_BINDING_INVALID');
     candidateChildren = [selectedHost];
   }
@@ -222,8 +223,9 @@ export function validateRescueRouteDirective(value) {
  * The shared caller-and-envelope validity core for the Rescue selection seams
  * (the read-only planner and the recovery coordinator): one exact caller
  * identity, one private envelope whose version, continuation target, and
- * resume coupling agree. The planner adds its own read-only seam checks on
- * top; the coordinator adds its recovery seams.
+ * resume coupling agree. Only envelope versions 3 and 4 are admitted, and
+ * both select continuations by canonical path alone. The planner adds its own
+ * read-only seam checks on top; the coordinator adds its recovery seams.
  * @param {any} input
  * @returns {boolean}
  */
@@ -232,13 +234,9 @@ export function validRescueSelectionRequest(input) {
   const continuationTarget = input?.envelope?.continuationTarget;
   const hasContinuationTarget = plain(input?.envelope)
     && Object.hasOwn(input.envelope, 'continuationTarget');
-  const validTarget = input?.envelope?.version === 1
-    ? !hasContinuationTarget
-    : input?.envelope?.version === 2
-      ? hasContinuationTarget && (continuationTarget === null || validPairContinuationTarget(continuationTarget))
-      : input?.envelope?.version === 3
-        ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
-        : false;
+  const validTarget = [LEGACY_RESCUE_ENVELOPE_VERSION, RESCUE_ENVELOPE_VERSION].includes(input?.envelope?.version)
+    ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
+    : false;
   return plain(input) && typeof input.dataRoot === 'string' && input.dataRoot.length > 0 && plain(caller)
     && safeId(caller.sessionId) && safeId(caller.turnId) && typeof caller.workspace === 'string' && caller.workspace.length > 0
     && !(caller.originWorkspace !== undefined && (typeof caller.originWorkspace !== 'string' || caller.originWorkspace.length === 0))
@@ -255,14 +253,6 @@ function validatePlannerInput(input) {
     || input.resolveStoppedExecutor !== undefined && typeof input.resolveStoppedExecutor !== 'function'
     || input.resolveBinding !== undefined && typeof input.resolveBinding !== 'function'
     || input.appServerOptions !== undefined && !plain(input.appServerOptions)) throw plannerError('RESCUE_ROUTE_INVALID');
-}
-
-/** @param {unknown} value */
-function validPairContinuationTarget(value) {
-  if (!plain(value)) return false;
-  const target = /** @type {Record<string, unknown>} */ (value);
-  return sameKeys(target, ['agentPath', 'childId'])
-    && boundedIdentifier(target.childId) && validAgentPath(target.agentPath);
 }
 
 /** @param {unknown} value */

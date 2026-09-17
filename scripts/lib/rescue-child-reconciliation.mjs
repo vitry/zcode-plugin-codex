@@ -161,9 +161,7 @@ export async function reconcileRescueChildForPreparation(input) {
   const hostChildren = validateRescueChildren(children, caller.sessionId);
   const continuationTarget = envelope.continuationTarget ?? null;
   const candidateChildren = (continuationTarget === null ? hostChildren
-    : hostChildren.filter((/** @type {any} */ host) => envelope.version === 3
-      ? host.agentPath === continuationTarget.agentPath
-      : host.id === continuationTarget.childId && host.agentPath === continuationTarget.agentPath))
+    : hostChildren.filter((/** @type {any} */ host) => host.agentPath === continuationTarget.agentPath))
     // The planner's own eligibility classification: occupancy children —
     // unmanaged agent paths or unapproved Roles — are never Rescue candidates,
     // so they are never probed, never raise executor errors, and never create

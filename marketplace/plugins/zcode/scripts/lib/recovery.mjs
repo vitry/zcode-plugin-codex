@@ -9,7 +9,7 @@ import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { createRescueLifecycleReconciler } from './rescue-lifecycle.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
-import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
+import { markedRescueRunnerVersion, validDetachedRescueRunnerJob } from './rescue-execution-input.mjs';
 import { isJobNotFound } from './state.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
@@ -235,7 +235,7 @@ export async function discoverSessionEndObligations(input) {
  * (a durably-stopped marked claim still owes its cleanup duty before its
  * broker owner may be released). @param {any} job */
 export function isMarkedRunnerClaim(job) {
-  return isWritableRescueObligation(job) && job.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+  return isWritableRescueObligation(job) && markedRescueRunnerVersion(job.rescueRunnerVersion)
     && isDigest(job.workerLeaseId) && Number.isSafeInteger(job.childPid) && job.childPid > 0;
 }
 
@@ -385,21 +385,28 @@ export async function settleEndedRescueJob(input, jobId) {
 /**
  * Settle the exact Rescue job one terminated Rescue child owns, through the
  * existing bounded settlement machinery (`settleEndedRescueJob` and the Rescue
- * Lifecycle Reconciler it drives), with the established SubagentStop
- * coordination-loss intent precedence: a matching-epoch SessionEnd receipt
- * always authorizes the session-end stop (background placement included);
- * without one, only a foreground placement carries Host Coordination Loss
- * authority, and a live-session background Rescue is merely observed — never
- * stopped. An existing durable stop intent keeps winning over any caller
- * cause, unconfirmed remote control retains the durable cancelling guard
- * instead of archiving, and a receipt published before the stop intent is
- * persisted wins the cause. A terminal record keeps its winner and discharges
- * its execution-reservation cleanup duty without any remote control. The
- * bounded recovery budget (signal and/or timeoutMs) threads through every
- * store seam — the job-cancellation lock draws the REMAINING budget rather
- * than failing fast, so a contended concurrent settlement waits for the
- * in-flight winner inside the same shared deadline — and the injected
- * `createClient` stays the only remote seam.
+ * Lifecycle Reconciler it drives). SubagentStop is pure OBSERVATION: this
+ * adapter always submits `{ kind: 'observe' }` with the caller's proven
+ * receipt evidence, and the Reconciler derives the stop cause from the
+ * complete joined state — actual Host placement joined with detached-runner
+ * evidence. A matching-epoch SessionEnd receipt always authorizes the
+ * session-end stop; an attached foreground child loss (foreground placement
+ * AND no valid detached runner record) derives Host Coordination Loss; a
+ * detached Companion-background child exiting after its accepted enqueue is
+ * expected handoff completion and is merely observed — never stopped, never
+ * cancelled, never stripped of its binding. An existing durable stop intent
+ * keeps winning over any derived cause, unconfirmed remote control retains the
+ * durable cancelling guard instead of archiving, and a receipt published
+ * before the stop intent is persisted wins the cause. A terminal record keeps
+ * its winner and discharges its execution-reservation cleanup duty without any
+ * remote control. The bounded recovery budget (signal and/or timeoutMs)
+ * threads through every store seam — the job-cancellation lock draws the
+ * REMAINING budget rather than failing fast, so a contended concurrent
+ * settlement waits for the in-flight winner inside the same shared deadline —
+ * and the injected `createClient` stays the only remote seam. The accepted
+ * `hostPlacement` caller field is historical: the joined state derives the
+ * execution dimension itself, so a caller-asserted placement never selects
+ * the policy.
  * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,epoch:string|null,hostPlacement?:string,receiptMatched?:boolean,identity?:any,signal?:AbortSignal,timeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>}} input
  * @param {string} jobId
  * @returns {Promise<any>} the bounded settlement outcome (settlement evidence included)
@@ -416,9 +423,7 @@ export async function settleRescueChildOwnedJob(input, jobId) {
     includeSettlementEvidence: true,
     unavailableOutcome: 'retain',
     revalidateReceiptBeforeStop: true,
-    intent: receiptMatched || input.hostPlacement !== 'foreground'
-      ? { kind: 'observe' }
-      : { kind: 'stop', cause: 'host-coordination-loss' },
+    intent: { kind: 'observe' },
     sessionEndReceiptEvidence: receiptMatched ? 'matching' : 'older',
     ...(input.identity === undefined ? {} : { identity: input.identity }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -741,7 +746,7 @@ async function settleSelectedJob(input) {
     // exactly, and cleanup failures leave the durable evidence re-arming the
     // duty for the next bounded pass — no separate cleanup ledger.
     let runnerCleanupOutcome = null;
-    if (isDigest(workerLeaseId) && current.rescueRunnerVersion === RESCUE_RUNNER_VERSION
+    if (isDigest(workerLeaseId) && markedRescueRunnerVersion(current.rescueRunnerVersion)
       && validStopIntent(current.stopIntent)) {
       // THE SETTLEMENT INVARIANT (recovery-pass convergence): the kill decision
       // and the dead-root descendant sweep run in the SAME pass inside the
@@ -1319,6 +1324,9 @@ export function unavailableOrReadableEvidence(error) {
  * the SessionEnd caller's matching receipt; a SubagentStop coordination-loss
  * caller threads its own computed evidence ('matching'|'older') so the
  * Reconciler's stop-cause policy sees exactly the authority its caller proved.
+ * The Companion-execution dimension is derived from the durable record's
+ * detached-runner evidence — never from `hostPlacement` — so the Reconciler's
+ * child-loss policy joins both placement dimensions.
  * @param {any} job @param {any} remote @param {('matching'|'older')} [sessionEndReceipt]
  */
 function endedJoined(job, remote, sessionEndReceipt = 'matching') {
@@ -1327,6 +1335,7 @@ function endedJoined(job, remote, sessionEndReceipt = 'matching') {
     winner: null,
     hostState: 'absent',
     hostPlacement: job.hostPlacement ?? null,
+    companionExecution: validDetachedRescueRunnerJob(job) ? 'background' : 'foreground',
     hostOwned: validHostLifecycleRecord(job),
     sessionEndReceipt,
     stopIntent: job.stopIntent ?? null,

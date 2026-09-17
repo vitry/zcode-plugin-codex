@@ -424,7 +424,7 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
   assert.deepEqual(JSON.parse(role.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready', continuation: { state: 'none' } });
   const afterRoleStat = await stat(activePath);
   const roleMutated = !beforeRole.equals(await readFile(activePath)) || beforeRoleStat.mtimeMs !== afterRoleStat.mtimeMs;
-  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: initialTask, options: { execution: 'foreground', resume: 'fresh', ...(model ? { model } : {}) } })}\n`;
+  const frame = `${JSON.stringify({ version: 4, source: 'explicit', task: initialTask, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh', ...(model ? { model } : {}) }, continuationTarget: null })}\n`;
   const prepared = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], { cwd: executionWorkspace, env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
   assert.match(prepared.stdout, /"type":"prepared"/u);
@@ -441,7 +441,7 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
     stopChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStop', childId)); assert.equal(result.code, 0, result.stderr || result.stdout);
       launcherEnv.FAKE_CODEX_THREAD_LIST_RESULTS_JSON = JSON.stringify({ data: [persistedChild], nextCursor: null, backwardsCursor: null }); },
     prepareProactive: async ({ task, model: nextModel }) => {
-      const nextFrame = `${JSON.stringify({ version: 1, source: 'proactive', task, options: { execution: 'foreground', resume: 'resume', ...(nextModel ? { model: nextModel } : {}) } })}\n`;
+      const nextFrame = `${JSON.stringify({ version: 4, source: 'proactive', task, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume', ...(nextModel ? { model: nextModel } : {}) }, continuationTarget: null })}\n`;
       const result = await runSpawn(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
         env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: nextFrame });
       assert.equal(result.code, 0, result.stderr || result.stdout); assert.match(result.stdout, /"type":"prepared"/u); return JSON.parse(result.stdout.trim().split('\n').at(-1));

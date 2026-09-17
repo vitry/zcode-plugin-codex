@@ -33,6 +33,11 @@ import { hostLifecycleEpoch } from '../scripts/lib/host-lifecycle.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import {
+  validDetachedRescueRunnerJob,
+  validDetachedRescueRunnerRecord,
+  validHistoricalDetachedRescueRunnerRecord,
+} from '../scripts/lib/rescue-execution-input.mjs';
 import { createHostLifecycleStore } from './helpers/host-lifecycle-store.mjs';
 import { assertNoPendingPriorEpochReceipts, recordSession, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
@@ -2440,11 +2445,11 @@ test('detached runner reservations publish the execution input inside the initia
   const { job, binding } = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
     executor: legacyExecutor(workspace), lifecycle: backgroundLifecycle('host-runner-fresh'), executionInput: requestedInput });
   assert.equal(binding.currentJobId, job.id);
-  assert.equal(job.rescueRunnerVersion, 1);
+  assert.equal(job.rescueRunnerVersion, 2);
   assert.deepEqual(job.rescueExecutionInput, requestedInput);
   assert.notEqual(job.rescueExecutionInput, requestedInput, 'the stored input is a fresh validated copy, not a caller reference');
   const reread = await store.readJob(workspace, job.id);
-  assert.equal(reread.rescueRunnerVersion, 1);
+  assert.equal(reread.rescueRunnerVersion, 2);
   assert.deepEqual(reread.rescueExecutionInput, requestedInput);
   // One atomic initial publication: the persisted JSON equals the returned job exactly.
   const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace });
@@ -2471,17 +2476,47 @@ test('detached runner reservations publish the execution input inside the initia
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-d'),
     executor: legacyExecutor(workspace), operationId: binding.operationId,
     lifecycle: backgroundLifecycle('host-runner-fresh'), executionInput: { version: 1, task: 'next attempt' } });
-  assert.equal(continuation.job.rescueRunnerVersion, 1);
+  assert.equal(continuation.job.rescueRunnerVersion, 2);
   assert.deepEqual(continuation.job.rescueExecutionInput, { version: 1, task: 'next attempt' });
   assert.deepEqual((await store.readJob(workspace, continuation.job.id)).rescueExecutionInput, { version: 1, task: 'next attempt' });
 });
 
-test('only valid Host-owned background reservations accept the private execution input', async () => {
+test('a foreground lifecycle record with complete runner evidence persists as a valid detached record', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  // A Host-owned foreground record with complete detached evidence IS a valid
+  // detached record: the shared predicate — never Host placement — decides
+  // admission, on both the fresh and the continuation reservation route.
+  const { job, binding } = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle: foregroundLifecycle('host-runner-detached-foreground'),
+    executionInput: runnerExecutionInput });
+  assert.equal(job.hostPlacement, 'foreground');
+  assert.equal(validDetachedRescueRunnerRecord(job), true);
+  assert.deepEqual((await store.readJob(workspace, job.id)).rescueExecutionInput, runnerExecutionInput);
+  // The unchanged lifecycle rules hold through the claim, the running
+  // publication, and the terminal winner: marker retained, input removed
+  // exactly when the record leaves queued.
+  const claimed = await store.claimJobWorkerForExecution(workspace, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+  assert.equal(validDetachedRescueRunnerRecord(claimed), true);
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'foreground-runner', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  assert.equal(validDetachedRescueRunnerRecord(running), true);
+  assert.equal('rescueExecutionInput' in running, false);
+  const succeeded = await store.finishJob(workspace, job.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(validDetachedRescueRunnerRecord(succeeded), true);
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+    executor: legacyExecutor(workspace), operationId: binding.operationId,
+    lifecycle: foregroundLifecycle('host-runner-detached-foreground'), executionInput: runnerExecutionInput });
+  assert.equal(validDetachedRescueRunnerRecord(continuation.job), true);
+  assert.deepEqual(continuation.job.rescueExecutionInput, runnerExecutionInput);
+});
+
+test('only valid Host-owned reservations accept the private execution input', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   for (const attempt of /** @type {any[]} */ ([
     { executionInput: runnerExecutionInput },
-    { lifecycle: foregroundLifecycle('host-runner-reject-foreground'), executionInput: runnerExecutionInput },
     { lifecycle: { ownerLifecycleEpoch: 'not-a-digest', executionOwner: 'host-child', hostPlacement: 'background' }, executionInput: runnerExecutionInput },
+    { lifecycle: { ...backgroundLifecycle('host-runner-reject-placement'), hostPlacement: 'detached' }, executionInput: runnerExecutionInput },
+    { lifecycle: { ...backgroundLifecycle('host-runner-reject-owner'), executionOwner: 'detached-worker' }, executionInput: runnerExecutionInput },
   ])) {
     await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
       executor: legacyExecutor(workspace), ...attempt }), { code: 'RESCUE_BINDING_INVALID' });
@@ -2504,6 +2539,17 @@ test('only valid Host-owned background reservations accept the private execution
     { code: 'RESCUE_EXECUTION_INPUT_INVALID' });
   }
   assert.equal((await store.listJobs(workspace)).length, 0, 'a rejected input value never publishes');
+  // Either recorded Host placement accepts the marker beside a complete
+  // lifecycle: placement is lifecycle evidence, not an admission gate.
+  for (const [index, lifecycle] of [backgroundLifecycle('host-runner-accept-background'), foregroundLifecycle('host-runner-accept-foreground')].entries()) {
+    const reserved = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, `accept-turn-${index}`),
+      executor: { ...legacyExecutor(workspace), agentId: `accept-child-${index}` }, lifecycle, executionInput: runnerExecutionInput });
+    assert.equal(reserved.job.rescueRunnerVersion, 2);
+    assert.deepEqual(reserved.job.rescueExecutionInput, runnerExecutionInput);
+    assert.equal(reserved.job.hostPlacement, index === 0 ? 'background' : 'foreground');
+    await startWritableRescueForTest(store, workspace, reserved.job, { startedAt: new Date().toISOString(), zcodeSessionId: `accept-anchor-${index}` });
+    await store.finishJob(workspace, reserved.job.id, ['running'], 'succeeded');
+  }
 });
 
 test('the runner input is removed exactly when a marked job leaves queued and the marker is retained', async () => {
@@ -2512,16 +2558,16 @@ test('the runner input is removed exactly when a marked job leaves queued and th
   const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
     executor: legacyExecutor(workspace), lifecycle: backgroundLifecycle('host-runner-live'), executionInput: runnerExecutionInput });
   const claimed = await store.claimJobWorkerForExecution(workspace, first.job.id, { childPid: 999_999_999, workerLeaseId: first.job.id });
-  assert.equal(claimed.rescueRunnerVersion, 1);
+  assert.equal(claimed.rescueRunnerVersion, 2);
   assert.deepEqual(claimed.rescueExecutionInput, runnerExecutionInput);
   // queued -> running: input removed atomically, marker retained.
   const running = await store.transitionJob(workspace, first.job.id, ['queued'], 'running',
     { startedAt: new Date().toISOString(), zcodeSessionId: 'runner-live', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
-  assert.equal(running.rescueRunnerVersion, 1);
+  assert.equal(running.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in running, false);
   // running -> terminal: marker retained, input stays gone.
   const succeeded = await store.finishJob(workspace, first.job.id, ['running'], 'succeeded', { exitCode: 0 });
-  assert.equal(succeeded.rescueRunnerVersion, 1);
+  assert.equal(succeeded.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in succeeded, false);
 
   // queued -> cancelled (pre-session stop): input removed, marker retained.
@@ -2530,7 +2576,7 @@ test('the runner input is removed exactly when a marked job leaves queued and th
     executionInput: runnerExecutionInput });
   const cancelled = await store.finishJob(workspace, second.job.id, ['queued'], 'cancelled',
     { stopIntent: { version: 1, cause: 'user', requestedAt: '2026-09-02T00:00:00.000Z' }, stopCause: 'user' });
-  assert.equal(cancelled.rescueRunnerVersion, 1);
+  assert.equal(cancelled.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in cancelled, false);
 
   // queued -> failed through the recovery lease: input removed, marker retained.
@@ -2540,7 +2586,7 @@ test('the runner input is removed exactly when a marked job leaves queued and th
   const failed = await store.finishQueuedJobAfterRecoveryLease(workspace, third.job.id, null, undefined, 'failed',
     { error: { message: 'pre-start infrastructure failure' }, exitCode: 1 });
   assert.equal(failed.status, 'failed');
-  assert.equal(failed.rescueRunnerVersion, 1);
+  assert.equal(failed.rescueRunnerVersion, 2);
   assert.equal('rescueExecutionInput' in failed, false);
 });
 
@@ -2553,11 +2599,11 @@ test('the specialized active-continuation rollback removes the runner input from
   await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
     executor: legacyExecutor(workspace), operationId: first.binding.operationId, lifecycle, executionInput: runnerExecutionInput });
-  assert.equal(continuation.job.rescueRunnerVersion, 1);
+  assert.equal(continuation.job.rescueRunnerVersion, 2);
   const failed = await store.finishActiveRescueContinuationFailure(workspace, continuation.job.id, null,
     continuation.job.rescueContinuationOrigin, 'failed', {});
   assert.equal(failed.status, 'failed');
-  assert.equal(failed.rescueRunnerVersion, 1, 'the format marker survives the specialized rollback');
+  assert.equal(failed.rescueRunnerVersion, 2, 'the format marker survives the specialized rollback');
   assert.equal('rescueExecutionInput' in failed, false, 'the specialized rollback removes the private input');
 });
 
@@ -2575,16 +2621,16 @@ test('marked queued records without input, unknown markers, and drifted input fa
   for (const invalidJob of /** @type {any[]} */ ([
     // Marker without input is corruption that must fail execution, never a historical job.
     drained,
-    { ...intact, rescueRunnerVersion: 2 },
-    { ...intact, rescueRunnerVersion: '1' },
+    { ...intact, rescueRunnerVersion: 3 },
+    { ...intact, rescueRunnerVersion: '2' },
+    // The detached marker never attaches to a read-only record.
+    { ...intact, readOnly: true },
     // Input without the marker, and drifted or invalid input shapes.
     unmarked,
     { ...intact, rescueExecutionInput: { version: 1, task: ' ' } },
     { ...intact, rescueExecutionInput: { version: 1, task: 'bounded private task', extra: true } },
     { ...intact, rescueExecutionInput: { version: 1, task: 'x'.repeat(64 * 1024 + 1) } },
     { ...intact, rescueExecutionInput: 'bounded private task' },
-    // Foreground placement can never carry the detached-runner marker.
-    { ...intact, hostPlacement: 'foreground' },
     missingEpoch,
   ])) {
     await atomicWriteJson(path, invalidJob);
@@ -2593,7 +2639,51 @@ test('marked queued records without input, unknown markers, and drifted input fa
   }
   // The marker alone remains valid on queued (with input) and running/terminal records.
   await atomicWriteJson(path, intact);
-  assert.equal((await store.readJob(workspace, job.id)).rescueRunnerVersion, 1);
+  assert.equal((await store.readJob(workspace, job.id)).rescueRunnerVersion, 2);
+});
+
+test('historical v1 detached records keep their stored background-only interpretation', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace });
+  // A pre-upgrade in-flight record: the historical v1 marker with background
+  // placement stays a valid detached record through every status, and its
+  // stored private input keeps validating against the unchanged codec.
+  const background = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace), lifecycle: backgroundLifecycle('host-runner-historical-background'),
+    executionInput: runnerExecutionInput });
+  const backgroundPath = join(storage.directory, 'jobs', `${background.job.id}.json`);
+  const backgroundRecord = JSON.parse(await readFile(backgroundPath, 'utf8'));
+  assert.equal(backgroundRecord.rescueRunnerVersion, 2);
+  await atomicWriteJson(backgroundPath, { ...backgroundRecord, rescueRunnerVersion: 1 });
+  const historical = await store.readJob(workspace, background.job.id);
+  assert.equal(historical.rescueRunnerVersion, 1, 'the historical format is preserved, never migrated');
+  assert.equal(validHistoricalDetachedRescueRunnerRecord(historical), true);
+  assert.equal(validDetachedRescueRunnerJob(historical), true);
+  assert.equal(validDetachedRescueRunnerRecord(historical), false, 'the split predicate never admits the historical format');
+  const claimed = await store.claimJobWorkerForExecution(workspace, background.job.id, { childPid: 999_999_999, workerLeaseId: background.job.id });
+  assert.equal(claimed.rescueRunnerVersion, 1);
+  const running = await store.transitionJob(workspace, background.job.id, ['queued'], 'running',
+    { startedAt: new Date().toISOString(), zcodeSessionId: 'historical-runner', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
+  assert.equal(running.rescueRunnerVersion, 1);
+  const succeeded = await store.finishJob(workspace, background.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  assert.equal(succeeded.rescueRunnerVersion, 1);
+  // THE REGRESSION: the pre-split schema never admitted a v1 marker beside a
+  // foreground placement — such a record is malformed/tampered state that must
+  // fail persisted validation closed, never pass as a detached job.
+  const foreground = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-historical-fg'),
+    executor: { ...legacyExecutor(workspace), agentId: 'historical-foreground-child' },
+    lifecycle: foregroundLifecycle('host-runner-historical-foreground'), executionInput: runnerExecutionInput });
+  const foregroundPath = join(storage.directory, 'jobs', `${foreground.job.id}.json`);
+  const foregroundRecord = JSON.parse(await readFile(foregroundPath, 'utf8'));
+  assert.equal(foregroundRecord.rescueRunnerVersion, 2);
+  assert.equal(validDetachedRescueRunnerRecord({ ...foregroundRecord, rescueRunnerVersion: 1 }), false);
+  await atomicWriteJson(foregroundPath, { ...foregroundRecord, rescueRunnerVersion: 1 });
+  await assert.rejects(store.readJob(workspace, foreground.job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID');
+  // The tampered bytes stay untouched: validation never repairs or reclassifies.
+  const retained = JSON.parse(await readFile(foregroundPath, 'utf8'));
+  assert.equal(retained.rescueRunnerVersion, 1);
+  assert.equal(retained.status, 'queued');
 });
 
 test('runner reservation publication seams never expose a partial or drained queued runner job', async () => {
@@ -2616,15 +2706,15 @@ test('runner reservation publication seams never expose a partial or drained que
     assert.equal(jobs.length, 1);
     const queued = jobs[0];
     assert.equal(queued.status, 'queued');
-    assert.equal(queued.rescueRunnerVersion, 1, `${seam}: the marker never disappears from a still-runnable queued job`);
+    assert.equal(queued.rescueRunnerVersion, 2, `${seam}: the marker never disappears from a still-runnable queued job`);
     assert.deepEqual(queued.rescueExecutionInput, runnerExecutionInput, `${seam}: the input never disappears from a still-runnable queued job`);
     // No runner is exposed to a drained or partial record: the existing claim guard keeps both fields.
     const claimed = await clean.claimJobWorkerForExecution(workspace, queued.id, { childPid: 999_999_999, workerLeaseId: queued.id });
-    assert.equal(claimed.rescueRunnerVersion, 1);
+    assert.equal(claimed.rescueRunnerVersion, 2);
     assert.deepEqual(claimed.rescueExecutionInput, runnerExecutionInput);
     const running = await clean.transitionJob(workspace, queued.id, ['queued'], 'running',
       { startedAt: new Date().toISOString(), zcodeSessionId: 'runner-fault-recovered', childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId });
-    assert.equal(running.rescueRunnerVersion, 1);
+    assert.equal(running.rescueRunnerVersion, 2);
     assert.equal('rescueExecutionInput' in running, false);
   }
 });
@@ -2650,7 +2740,7 @@ test('runner continuation publication seams retain the input on the queued attem
     }
     assert.ok(attempt);
     assert.equal(attempt.status, 'queued');
-    assert.equal(attempt.rescueRunnerVersion, 1, `${seam}: the queued attempt keeps its marker`);
+    assert.equal(attempt.rescueRunnerVersion, 2, `${seam}: the queued attempt keeps its marker`);
     assert.deepEqual(attempt.rescueExecutionInput, runnerExecutionInput, `${seam}: the queued attempt keeps its input`);
   }
 });

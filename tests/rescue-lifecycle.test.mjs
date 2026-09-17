@@ -45,7 +45,12 @@ const HOST_STATES = ['active', 'idle', 'notLoaded', 'systemError', 'absent'];
  * reread (`remote`) never reports it, and the two are never merged into one
  * boolean.
  *
- * @param {{ events?: string[], host?: string, placement?: 'foreground'|'background', receipt?: 'matching'|'older'|null,
+ * `companionExecution` selects the joined Companion-execution dimension the
+ * real adapters derive from the durable record: 'foreground' = no valid
+ * detached runner evidence (attached observation), 'background' = a valid new
+ * runner-format marker (detached child-exit semantics).
+ *
+ * @param {{ events?: string[], host?: string, placement?: 'foreground'|'background', companionExecution?: 'foreground'|'background', receipt?: 'matching'|'older'|null,
  *   remote?: 'succeeded'|'failed'|'interrupted'|'pending'|'unreadable'|'idle-empty'|'unattributable'|'running',
  *   loadRemote?: 'none'|'unavailable'|'unreadable'|'succeeded'|'failed'|'interrupted'|'idle-empty'|'unattributable'|'running',
  *   stopAcknowledged?: boolean, stopUpstream?: 'same'|'replaced', stopFailureReread?: 'interrupted'|'failed',
@@ -57,7 +62,7 @@ const HOST_STATES = ['active', 'idle', 'notLoaded', 'systemError', 'absent'];
  */
 function fixtureAdapters(overrides = {}) {
   const options = {
-    host: 'active', placement: 'foreground', receipt: null, remote: 'interrupted',
+    host: 'active', placement: 'foreground', companionExecution: 'foreground', receipt: null, remote: 'interrupted',
     stopAcknowledged: true, jobStatus: 'running', hostOwned: true, ...overrides,
   };
   const events = overrides.events ?? [];
@@ -93,6 +98,7 @@ function fixtureAdapters(overrides = {}) {
           : { status: options.winner, ...(options.winner === 'cancelled' ? { stopCause: options.winnerStopCause ?? 'user' } : {}) },
         hostState: options.host,
         hostPlacement: options.hostOwned ? options.placement : null,
+        companionExecution: options.companionExecution,
         hostOwned: options.hostOwned,
         sessionEndReceipt: options.receipt,
         stopIntent: persistedIntent ?? null,
@@ -299,6 +305,85 @@ test('explicit coordination-loss stop authority is foreground-only', async () =>
   assert.deepEqual(outcome, { kind: 'wait-current', status: 'running' });
   assert.equal(fixture.stopCalls, 0);
   assert.equal(fixture.events.includes('persist-stop-intent'), false);
+});
+
+test('host coordination loss requires the attached foreground combination on both placement dimensions', async () => {
+  // Host loss without a matching SessionEnd receipt: only the attached
+  // foreground combination keeps coordination-loss authority. A valid detached
+  // runner record (Companion background) makes child exit after the accepted
+  // enqueue expected handoff completion — never a coordination loss, even
+  // though the actual Host placement is foreground.
+  const expected = [
+    ['foreground', 'foreground', 'host-coordination-loss'],
+    ['background', 'foreground', null],
+    ['foreground', 'background', null],
+    ['background', 'background', null],
+  ];
+  for (const [placement, companionExecution, cause] of expected) {
+    const fixture = fixtureAdapters({ host: 'absent', placement, companionExecution, receipt: null, remote: 'interrupted' });
+    const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+    const label = `${placement}/${companionExecution}`;
+    if (cause === null) {
+      assert.deepEqual(outcome, { kind: 'wait-current', status: 'running' }, label);
+      assert.equal(fixture.stopCalls, 0, label);
+      assert.equal(fixture.events.includes('persist-stop-intent'), false, label);
+      assert.equal(fixture.events.includes('publish-cancelled'), false, label);
+    } else {
+      assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: cause, resumable: true }, label);
+      assert.equal(fixture.stopCalls, 1, label);
+    }
+  }
+});
+
+test('an explicit coordination-loss intent is gated on the attached foreground combination too', async () => {
+  const fixture = fixtureAdapters({ host: 'absent', placement: 'foreground', companionExecution: 'background', receipt: null, remote: 'interrupted' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'host-coordination-loss' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'wait-current', status: 'running' },
+    'a detached Companion-background child exit is expected handoff completion, never a coordination loss');
+  assert.equal(fixture.stopCalls, 0);
+  assert.equal(fixture.events.includes('persist-stop-intent'), false);
+});
+
+test('normal SubagentStop of a detached child neither stops the session, cancels, nor terminates the runner', async () => {
+  for (const jobStatus of ['running', 'queued']) {
+    const events = [];
+    const fixture = fixtureAdapters({ events, host: 'absent', placement: 'foreground', companionExecution: 'background',
+      receipt: null, remote: 'running', terminateRunner: 'record', jobStatus });
+    const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+    assert.deepEqual(outcome, { kind: 'wait-current', status: jobStatus }, jobStatus);
+    assert.equal(fixture.stopCalls, 0, jobStatus);
+    assert.deepEqual(fixture.events, [], `${jobStatus}: observation performs no session stop, no stop intent, no cancel, and no runner kill`);
+  }
+});
+
+test('a detached child lost before the enqueue settles through the existing failure rules without a duplicate runner', async () => {
+  // Pre-start failure settlement: the observed engine terminal failure keeps
+  // its own semantics — published failed with no stop, no stop intent, and no
+  // runner termination or relaunch — never reclassified as attached foreground
+  // coordination loss.
+  const events = [];
+  const fixture = fixtureAdapters({ events, host: 'absent', placement: 'foreground', companionExecution: 'background',
+    receipt: null, loadRemote: 'failed', remote: 'interrupted', terminateRunner: 'record' });
+  const outcome = await createRescueLifecycleReconciler(fixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+  assert.deepEqual(outcome, { kind: 'settled-terminal', status: 'failed', resumable: true });
+  assert.deepEqual(fixture.events, ['publish-failed']);
+  assert.equal(fixture.stopCalls, 0);
+});
+
+test('matching SessionEnd receipts and explicit user cancellation stay authoritative for every placement combination', async () => {
+  for (const placement of ['foreground', 'background']) {
+    for (const companionExecution of ['foreground', 'background']) {
+      const label = `${placement}/${companionExecution}`;
+      const receiptFixture = fixtureAdapters({ host: 'absent', placement, companionExecution, receipt: 'matching', remote: 'interrupted' });
+      const receiptOutcome = await createRescueLifecycleReconciler(receiptFixture.adapters).reconcile({ intent: { kind: 'observe' }, authority, workspace });
+      assert.deepEqual(receiptOutcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'session-end', resumable: true }, label);
+      assert.equal(receiptFixture.stopCalls, 1, label);
+      const cancelFixture = fixtureAdapters({ host: 'absent', placement, companionExecution, receipt: null, remote: 'interrupted' });
+      const cancelOutcome = await createRescueLifecycleReconciler(cancelFixture.adapters).reconcile({ intent: { kind: 'stop', cause: 'user' }, authority, workspace });
+      assert.deepEqual(cancelOutcome, { kind: 'settled-terminal', status: 'cancelled', stopCause: 'user', resumable: true }, label);
+      assert.equal(cancelFixture.stopCalls, 1, label);
+    }
+  }
 });
 
 test('a failed observation on a merely-authorized cancelling record publishes failed', async () => {

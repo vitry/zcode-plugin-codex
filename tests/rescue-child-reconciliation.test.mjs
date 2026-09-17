@@ -203,6 +203,108 @@ test('reconciles the terminal-job incident: exact failed Host turn, succeeded jo
   assert.deepEqual(seams.hostReads[1], seams.hostReads[0]);
 });
 
+test('a v4 continuation target reconciles only its exact path and fails closed without siblings or fresh routes', async (t) => {
+  const { reconcileRescueChildForPreparation } = await import('../scripts/lib/rescue-child-reconciliation.mjs');
+  const v4Envelope = (continuationTarget) => ({
+    version: 4, source: 'explicit', task: 'continue exact operation',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' },
+    continuationTarget,
+  });
+
+  await t.test('reconciles the exact targeted child under v4 parity with v3', async () => {
+    const fixture = await reconciliationFixture(t, { job: 'succeeded' });
+    const seams = observationSeams(fixture, incidentProof(fixture));
+    const outcome = await reconcileRescueChildForPreparation({
+      dataRoot: fixture.dataRoot,
+      caller: fixture.caller,
+      envelope: v4Envelope({ agentPath: AGENT_PATH }),
+      appServerOptions: {},
+      dependencies: seams.dependencies,
+    });
+    assert.deepEqual(outcome, { kind: 'reconciled', executionWorkspace: fixture.workspace });
+    assert.deepEqual(seams.hostReads[0], { childId: AGENT, parentId: SESSION, expectedTurnId: CHILD_TURN });
+    assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.workspace, SESSION, CHILD_TURN)).state, 'stopped');
+    assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, false);
+  });
+
+  await t.test('a wrong path never selects the sibling or a fresh route', async () => {
+    const fixture = await reconciliationFixture(t, { job: 'succeeded' });
+    const seams = observationSeams(fixture, incidentProof(fixture));
+    seams.dependencies.listChildren = async () => [
+      { id: `${AGENT}-second`, parentThreadId: SESSION, agentPath: '/root/zcode_rescue_task_second', agentRole: 'zcode-rescue', cwd: fixture.workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 },
+    ];
+    const outcome = await reconcileRescueChildForPreparation({
+      dataRoot: fixture.dataRoot,
+      caller: fixture.caller,
+      envelope: v4Envelope({ agentPath: '/root/zcode_rescue_task_wrong' }),
+      appServerOptions: {},
+      dependencies: seams.dependencies,
+    });
+    assert.deepEqual(outcome, { kind: 'not-needed' }, 'the planner owns the rejection; recovery never selects a sibling');
+    assert.equal(seams.hostReads.length, 0, 'no sibling evidence is read');
+    assert.equal(seams.remoteStops.length, 0);
+    assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.workspace, SESSION, CHILD_TURN)).state, 'active', 'no record is stopped and no fresh route is taken');
+    assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, true);
+  });
+
+  await t.test('a missing exact host never selects the sibling', async () => {
+    const fixture = await reconciliationFixture(t, { job: 'succeeded' });
+    const seams = observationSeams(fixture, incidentProof(fixture));
+    seams.dependencies.listChildren = async () => [
+      { id: `${AGENT}-second`, parentThreadId: SESSION, agentPath: '/root/zcode_rescue_task_second', agentRole: 'zcode-rescue', cwd: fixture.workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 },
+    ];
+    const outcome = await reconcileRescueChildForPreparation({
+      dataRoot: fixture.dataRoot,
+      caller: fixture.caller,
+      envelope: v4Envelope({ agentPath: AGENT_PATH }),
+      appServerOptions: {},
+      dependencies: seams.dependencies,
+    });
+    assert.deepEqual(outcome, { kind: 'not-needed' }, 'an absent targeted host is never replaced by a sibling');
+    assert.equal(seams.hostReads.length, 0);
+    assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.workspace, SESSION, CHILD_TURN)).state, 'active');
+  });
+
+  await t.test('a duplicate targeted path is ambiguous instead of selecting one child', async () => {
+    const fixture = await reconciliationFixture(t, { job: 'succeeded' });
+    const seams = observationSeams(fixture, incidentProof(fixture));
+    seams.dependencies.listChildren = async () => [
+      { id: AGENT, parentThreadId: SESSION, agentPath: AGENT_PATH, agentRole: 'zcode-rescue', cwd: fixture.workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 },
+      { id: `${AGENT}-duplicate`, parentThreadId: SESSION, agentPath: AGENT_PATH, agentRole: 'zcode-rescue', cwd: fixture.workspace, status: { type: 'notLoaded' }, createdAt: 3, updatedAt: 4 },
+    ];
+    await assert.rejects(reconcileRescueChildForPreparation({
+      dataRoot: fixture.dataRoot,
+      caller: fixture.caller,
+      envelope: v4Envelope({ agentPath: AGENT_PATH }),
+      appServerOptions: {},
+      dependencies: seams.dependencies,
+    }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
+    assert.equal(seams.hostReads.length, 0, 'no evidence is read past the ambiguity');
+    assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.workspace, SESSION, CHILD_TURN)).state, 'active');
+  });
+
+  await t.test('a changed binding supersedes the v4 recovery without any write', async () => {
+    const fixture = await reconciliationFixture(t, { job: 'succeeded' });
+    const proof = incidentProof(fixture);
+    const seams = observationSeams(fixture, (call) => {
+      if (call === 1) void mutateBindingRecord(fixture, (record) => ({ ...record, permissionMode: 'acceptEdits' }));
+      return proof;
+    });
+    await assert.rejects(reconcileRescueChildForPreparation({
+      dataRoot: fixture.dataRoot,
+      caller: fixture.caller,
+      envelope: v4Envelope({ agentPath: AGENT_PATH }),
+      appServerOptions: {},
+      dependencies: seams.dependencies,
+    }), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_CHILD_RECOVERY_SUPERSEDED');
+      return true;
+    });
+    assert.equal(JSON.parse(await readFile(fixture.executorPath, 'utf8')).active, true, 'the executor record is never deactivated for a superseded recovery');
+    assert.equal((await resolveForwardingRoute(fixture.dataRoot, fixture.workspace, SESSION, CHILD_TURN)).state, 'active');
+  });
+});
+
 test('skips fresh requests entirely without any read or write', async (t) => {
   const { reconcileRescueChildForPreparation } = await import('../scripts/lib/rescue-child-reconciliation.mjs');
   const fixture = await reconciliationFixture(t, { job: 'succeeded' });
@@ -881,15 +983,25 @@ test('validates the recovery request against the shared planner envelope rules a
   const { reconcileRescueChildForPreparation } = await import('../scripts/lib/rescue-child-reconciliation.mjs');
   const fixture = await reconciliationFixture(t, { job: 'succeeded' });
   const base = { dataRoot: fixture.dataRoot, caller: fixture.caller, appServerOptions: {}, dependencies: observationSeams(fixture, incidentProof(fixture)).dependencies };
-  // A version-1 envelope is valid (and fresh skips entirely).
-  assert.deepEqual(await reconcileRescueChildForPreparation({ ...base, envelope: { version: 1, options: { resume: 'fresh' } } }), { kind: 'not-needed' });
+  // A fresh v4 envelope is valid (and fresh skips entirely).
+  assert.deepEqual(await reconcileRescueChildForPreparation({ ...base, envelope: { version: 4, source: 'explicit', task: 'skip',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null } }), { kind: 'not-needed' });
   const invalid = async (envelope, dependencies = base.dependencies) => assert.rejects(
     reconcileRescueChildForPreparation({ ...base, envelope, dependencies }), { code: 'RESCUE_ROUTE_INVALID' });
+  await invalid({ version: 1, options: { resume: 'fresh' } }, base.dependencies, 'a v1 targetless envelope fails closed');
   await invalid({ version: 1, options: { resume: 'resume' }, continuationTarget: null }, base.dependencies, 'v1 cannot carry a continuation target');
-  await invalid({ version: 2, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH } }, base.dependencies, 'a v2 pair target needs the child id');
-  await invalid({ version: 2, options: { resume: 'fresh' }, continuationTarget: { agentPath: AGENT_PATH, childId: AGENT } }, base.dependencies, 'a non-null target requires resume');
+  await invalid({ version: 2, options: { resume: 'resume' }, continuationTarget: null }, base.dependencies, 'a v2 targetless envelope fails closed');
+  await invalid({ version: 2, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH, childId: AGENT } }, base.dependencies, 'a v2 pair target fails closed');
+  await invalid({ version: 4, options: { resume: 'fresh' }, continuationTarget: { agentPath: AGENT_PATH } }, base.dependencies, 'a non-null target requires resume');
   await invalid({ version: 3, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH, childId: AGENT } }, base.dependencies, 'a v3 path target admits no child id');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH, childId: AGENT } }, base.dependencies, 'a v4 path target admits no child id');
   await invalid({ version: 3, options: { resume: 'resume' }, continuationTarget: { agentPath: '/root/../escape' } }, base.dependencies, 'agent paths stay canonical');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: { agentPath: '/root/../escape' } }, base.dependencies, 'v4 agent paths stay canonical');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: AGENT_PATH }, base.dependencies, 'a v4 string target fails closed');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: 7 }, base.dependencies, 'a v4 numeric target fails closed');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: [AGENT_PATH] }, base.dependencies, 'a v4 array target fails closed');
+  await invalid({ version: 4, options: { resume: 'resume' }, continuationTarget: { agentPath: 7 } }, base.dependencies, 'a v4 numeric agentPath fails closed');
+  await invalid({ version: 3, options: { resume: 'resume' }, continuationTarget: AGENT_PATH }, base.dependencies, 'a v3 string target fails closed');
   await invalid(undefined, base.dependencies, 'an envelope is required');
   await assert.rejects(reconcileRescueChildForPreparation({ ...base, envelope: { version: 3, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH } }, caller: { ...fixture.caller, permissionMode: 'superuser' } }), { code: 'RESCUE_ROUTE_INVALID' }, 'the permission mode stays validated');
   await assert.rejects(reconcileRescueChildForPreparation({ ...base, envelope: { version: 3, options: { resume: 'resume' }, continuationTarget: { agentPath: AGENT_PATH } }, dependencies: { ...base.dependencies, unknownSeam: async () => {} } }), { code: 'RESCUE_ROUTE_INVALID' }, 'unknown dependency keys are rejected');
