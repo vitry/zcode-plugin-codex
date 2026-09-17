@@ -11,7 +11,7 @@ import { waitForCompletionOrAbort } from './progress.mjs';
 import { recordedWorkspaceBrokerPids, scanBrokerIdentityDirectory } from '../zcode-broker.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './rescue-binding.mjs';
 import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
-import { RESCUE_RUNNER_VERSION } from './rescue-execution-input.mjs';
+import { markedRescueRunnerVersion } from './rescue-execution-input.mjs';
 import { classifyCurrentTurnSnapshot, hasCurrentTurnActivity, persistedTurnBoundary } from './turn-terminal.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -387,7 +387,7 @@ function emitWindowsDutyDiagnostic(outcome, stageTimings, startedAtMs) {
 async function runMarkedRunnerDuty(input, selection, terminateProcessTree = terminateRecordedProcessTree) {
   // Marker requirement FIRST: absence means an attached/legacy record, whose
   // process group may be the caller's own — never a termination target here.
-  if (!isPlainRecord(selection) || selection.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
+  if (!isPlainRecord(selection) || !markedRescueRunnerVersion(selection.rescueRunnerVersion)
     || selection.command !== 'rescue' || selection.readOnly !== false) return { kind: 'unmarked' };
   if (!isDigestValue(selection.workerLeaseId) || !Number.isSafeInteger(selection.childPid) || selection.childPid <= 0) return { kind: 'unproven' };
   // One platform resolution drives every budget split below (the caller may
@@ -420,7 +420,7 @@ async function runMarkedRunnerDuty(input, selection, terminateProcessTree = term
   if (!isPlainRecord(current) || current.id !== selection.id
     || current.ownerSessionId !== input.ownerSessionId
     || current.command !== 'rescue' || current.readOnly !== false
-    || current.rescueRunnerVersion !== RESCUE_RUNNER_VERSION
+    || !markedRescueRunnerVersion(current.rescueRunnerVersion)
     // Exact claim: the recorded executor PID + lease pair must be unchanged.
     || current.childPid !== selection.childPid || current.workerLeaseId !== selection.workerLeaseId
     || (typeof input.epoch === 'string' && current.ownerLifecycleEpoch !== input.epoch)
@@ -1365,7 +1365,7 @@ async function settleClaimedQueuedCancellation(input, job, stopCause) {
   // released claim as cancelled — queued stopIntent -> kill -> acquire lease ->
   // cancelled. An unmarked legacy claim keeps the existing defer-to-starting-
   // worker behavior exactly.
-  if (current.rescueRunnerVersion === RESCUE_RUNNER_VERSION) {
+  if (markedRescueRunnerVersion(current.rescueRunnerVersion)) {
     // THE SETTLEMENT INVARIANT: the lease-acquiring cancelled publication below
     // happens only behind a duty that ran the kill decision AND a completed-
     // clean same-pass sweep. Every other outcome (budget-expired, pending

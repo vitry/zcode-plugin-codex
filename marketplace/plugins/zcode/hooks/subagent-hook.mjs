@@ -75,14 +75,17 @@ catch (error) { process.stderr.write(`ZCode subagent hook failed safely: ${error
  * Settle the exact Host-owned writable Rescue job one stopped Rescue child owns.
  * The stopped child's route proves its execution workspace, and its agent ID is
  * cross-checked against the parent's durable binding partition, so a sibling
- * child's stop can never inherit the one live run. Receipt evidence for the
- * job's own lifecycle epoch selects the reconciler's cause: a matching receipt
- * always stops for session-end (background placement included); without one,
- * only a foreground placement carries Host Coordination Loss authority, and a
- * live-session background Rescue is merely observed. Every stage shares the
- * single advisory deadline (the forwarding publication's budget included);
- * uncertainty keeps the durable record and the writable guard — never a
- * claimed stopped terminal.
+ * child's stop can never inherit the one live run. SubagentStop is pure
+ * OBSERVATION: this adapter submits `{ kind: 'observe' }` with the proven
+ * receipt evidence, and the Reconciler derives the stop cause from the
+ * complete joined state — actual Host placement joined with detached-runner
+ * evidence. A matching receipt always stops for session-end; an attached
+ * foreground child loss derives Host Coordination Loss; a detached
+ * Companion-background child exiting after its accepted enqueue is expected
+ * handoff completion and never creates a stop intent, cancels the job, or
+ * revokes its binding. Every stage shares the single advisory deadline (the
+ * forwarding publication's budget included); uncertainty keeps the durable
+ * record and the writable guard — never a claimed stopped terminal.
  * @param {{dataRoot:string,input:any,deadline?:number}} arguments0
  * @returns {Promise<void>}
  */
@@ -114,9 +117,11 @@ export async function settleStoppedRescueChild({ dataRoot, input, deadline = Dat
     const receipt = await createHostLifecycleStore({ dataRoot }).readReceipt(job.ownerLifecycleEpoch).catch(() => null);
     stage = stageWindow(deadline);
     if (stage === null) return deferStoppedRescueSettlement();
-    const intent = receipt === null && job.hostPlacement === 'foreground'
-      ? { kind: 'stop', cause: 'host-coordination-loss' }
-      : { kind: 'observe' };
+    // Pure observation: the reconciler derives coordination loss from the
+    // complete joined state (Host placement joined with detached-runner
+    // evidence), so a pre-classified stop intent can never select the policy
+    // from the Host placement alone.
+    const intent = { kind: 'observe' };
     await settleEndedRescueJob({
       store: createStateStore({ dataRoot }), dataRoot, workspace: stopped.executionWorkspace,
       ownerSessionId: input.session_id, epoch: job.ownerLifecycleEpoch,
