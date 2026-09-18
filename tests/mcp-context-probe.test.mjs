@@ -391,13 +391,13 @@ test('serverLoadedWithConfig requires canonical observer paths for positive star
   const mutated = qualifiedEventSequence();
   for (const record of mutated) {
     if (record.event.kind === 'server-started') {
-      record.event.eventsPath = '/elsewhere/events.jsonl';
-      record.event.lockPath = '/elsewhere/events.lock';
+      record.event.eventsPath = join('/elsewhere', 'events.jsonl');
+      record.event.lockPath = join('/elsewhere', 'events.lock');
     }
   }
   const result = reduceProbeEvents(mutated, { runNonce: HEX_NONCE, runDirectory: '/run-dir' });
   assert.equal(result.serverLoadedWithConfig, false);
-  const canonical = qualifiedEventSequence({ eventsPath: '/run-dir/events.jsonl', lockPath: '/run-dir/events.lock' });
+  const canonical = qualifiedEventSequence({ eventsPath: join('/run-dir', 'events.jsonl'), lockPath: join('/run-dir', 'events.lock') });
   const positive = reduceProbeEvents(canonical, { runNonce: HEX_NONCE, runDirectory: '/run-dir' });
   assert.equal(positive.serverLoadedWithConfig, true);
 });
