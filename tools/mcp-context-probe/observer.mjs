@@ -274,7 +274,11 @@ export async function appendProbeEvent(input) {
     try {
       const handleStats = await handle.stat();
       if (!handleStats.isFile()) throw probeError('PROBE_LOG_SYMLINK', 'The probe event log must be a regular file.');
-      if (pathStats && (handleStats.dev !== pathStats.dev || handleStats.ino !== pathStats.ino)) {
+      // The inode stays stable across lstat and FileHandle.stat on every
+      // platform, including Windows; only the device value is unstable
+      // there (scripts/lib/fs.mjs samePathHandleIdentity), so the identity
+      // comparison always runs and dev joins it on POSIX alone.
+      if (pathStats && (handleStats.ino !== pathStats.ino || (process.platform !== 'win32' && handleStats.dev !== pathStats.dev))) {
         throw probeError('PROBE_LOG_REPLACED', 'The probe event log was replaced while it was opened.');
       }
       await handle.writeFile(line);

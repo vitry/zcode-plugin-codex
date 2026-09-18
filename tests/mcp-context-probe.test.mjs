@@ -450,8 +450,8 @@ test('probeObserverFromEnv requires the three probe environment variables', () =
   try {
     for (const name of names) delete process.env[name];
     assert.throws(() => probeObserverFromEnv(), /ZCODE_MCP_PROBE/);
-    process.env.ZCODE_MCP_PROBE_EVENTS = '/tmp/events.jsonl';
-    process.env.ZCODE_MCP_PROBE_LOCK = '/tmp/events.lock';
+    process.env.ZCODE_MCP_PROBE_EVENTS = join(tmpdir(), 'events.jsonl');
+    process.env.ZCODE_MCP_PROBE_LOCK = join(tmpdir(), 'events.lock');
     process.env.ZCODE_MCP_PROBE_NONCE = HEX_NONCE;
     const observer = probeObserverFromEnv();
     assert.equal(observer.runNonce, HEX_NONCE);
