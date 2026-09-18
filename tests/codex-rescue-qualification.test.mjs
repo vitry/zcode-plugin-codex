@@ -1125,6 +1125,15 @@ test('required yielded qualification exposes only non-sensitive execution facts'
   );
 });
 
+test('supervised forwarder assignments request a 30000 ms launch then 60000 ms empty-input same-handle waits', async () => {
+  const roleTemplate = await readFile(new URL('../agents/zcode-rescue.toml.template', import.meta.url), 'utf8');
+  for (const source of [roleTemplate, expectedGenericRescueMessage]) {
+    assert.match(source, /initial[^\n]+30000/);
+    assert.match(source, /empty-input[^\n]+60000/);
+    assert.doesNotMatch(source, /yield_time_ms:\s*300000/);
+  }
+});
+
 test('quiet supervision qualifies long inner waits, outer-cell continuations, and native terminal delivery', () => {
   const evidence = qualifyCodexRescueEvidence(supervisedYieldedFixture(), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
   assert.equal(evidence.terminalDeliveryChecked, true);
@@ -1135,7 +1144,7 @@ test('quiet supervision qualifies long inner waits, outer-cell continuations, an
     requestedOuterContinuations: 0,
     mailboxNotifications: 0,
     observedElapsedPollMs: 2,
-    appliedPollYieldMs: 300000,
+    appliedPollYieldMs: 60000,
     appliedInitialYieldMs: 30000,
     appliedRootWaitMs: 600000,
     appliedOuterContinuationYieldMs: 30000,
@@ -1144,7 +1153,7 @@ test('quiet supervision qualifies long inner waits, outer-cell continuations, an
   assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
   assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
 
-  // A 300000 ms inner poll outlasting its outer code cell yields the cell; the
+  // A 60000 ms inner poll outlasting its outer code cell yields the cell; the
   // child continues only that cell with the `wait` continuation tool at the
   // longest permitted wait, then the same-handle observation resumes.
   const continued = outerContinuationYieldedFixture();
@@ -1157,7 +1166,7 @@ test('quiet supervision qualifies long inner waits, outer-cell continuations, an
     requestedOuterContinuations: 1,
     mailboxNotifications: 0,
     observedElapsedPollMs: 2,
-    appliedPollYieldMs: 300000,
+    appliedPollYieldMs: 60000,
     appliedInitialYieldMs: 30000,
     appliedRootWaitMs: 600000,
     appliedOuterContinuationYieldMs: 30000,
@@ -1368,7 +1377,7 @@ test('quiet supervision resolves the original terminal result through the linked
     requestedOuterContinuations: 1,
     mailboxNotifications: 0,
     observedElapsedPollMs: 1,
-    appliedPollYieldMs: 300000,
+    appliedPollYieldMs: 60000,
     appliedInitialYieldMs: 30000,
     appliedRootWaitMs: 600000,
     appliedOuterContinuationYieldMs: 30000,
@@ -1437,7 +1446,7 @@ test('quiet supervision keeps semantic progress that streams through the resolvi
   assert.equal(evidence.terminalDeliveryChecked, true);
 });
 
-test('quiet supervision rejects short inner waits without explicit fixture tool-bound evidence', () => {
+test('quiet supervision rejects off-contract inner waits without explicit fixture tool-bound evidence', () => {
   const throwsBound = (input) => assert.throws(
     () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true, requireQuietSupervision: true })),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'quiet-supervision-wait-bound',
@@ -1445,11 +1454,23 @@ test('quiet supervision rejects short inner waits without explicit fixture tool-
   throwsBound(supervisedYieldedFixture({ pollYieldMs: 500 }));
   throwsBound(supervisedYieldedFixture({ pollYieldMs: 1000 }));
   throwsBound(supervisedYieldedFixture({ pollYieldMs: 30000 }));
+  // The legacy 300000 ms poll request is out of the fixed 60-second contract.
+  throwsBound(supervisedYieldedFixture({ pollYieldMs: 300000 }));
   const hostBound = qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: 30000 }),
     options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedPollYieldMs: 30000 }));
   assert.equal(hostBound.quietSupervisionChecked, true);
   assert.equal(hostBound.supervisionFacts.requestedInnerPolls, 2);
   assert.equal(hostBound.supervisionFacts.mailboxNotifications, 0);
+});
+
+test('quiet supervision qualifies the fixed 60000 ms same-handle polls through the default bounds', () => {
+  const evidence = qualifyCodexRescueEvidence(supervisedYieldedFixture({ pollYieldMs: 60000 }),
+    options({ requireYieldedExecution: true, requireQuietSupervision: true }));
+  assert.equal(evidence.quietSupervisionChecked, true);
+  assert.equal(evidence.terminalDeliveryChecked, true);
+  assert.equal(evidence.supervisionFacts.requestedInnerPolls, 2);
+  assert.equal(evidence.supervisionFacts.appliedPollYieldMs, 60000);
+  assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
 });
 
 test('quiet supervision records applied wait bounds and rejects implausible bound evidence', () => {
@@ -1471,7 +1492,7 @@ test('quiet supervision records applied wait bounds and rejects implausible boun
   assert.equal(oneSecondInitial.quietSupervisionChecked, true);
   assert.equal(oneSecondInitial.supervisionFacts.appliedInitialYieldMs, 1000);
   const evidence = qualifyCodexRescueEvidence(supervisedYieldedFixture(), options({ requireYieldedExecution: true, requireQuietSupervision: true }));
-  assert.equal(evidence.supervisionFacts.appliedPollYieldMs, 300000);
+  assert.equal(evidence.supervisionFacts.appliedPollYieldMs, 60000);
   assert.equal(evidence.supervisionFacts.appliedInitialYieldMs, 30000);
   assert.equal(evidence.supervisionFacts.appliedRootWaitMs, 600000);
   assert.equal(evidence.supervisionFacts.appliedOuterContinuationYieldMs, 30000);
@@ -1479,7 +1500,7 @@ test('quiet supervision records applied wait bounds and rejects implausible boun
     options({ requireYieldedExecution: true, requireQuietSupervision: true, permittedPollYieldMs: 30000 }));
   assert.equal(boundAdapted.quietSupervisionChecked, true);
   assert.equal(boundAdapted.supervisionFacts.appliedPollYieldMs, 30000);
-  assert.notEqual(boundAdapted.supervisionFacts.appliedPollYieldMs, 300000);
+  assert.notEqual(boundAdapted.supervisionFacts.appliedPollYieldMs, 60000);
 });
 
 test('quiet supervision requires the long initial exec yield or explicit bound evidence', () => {
@@ -3036,12 +3057,12 @@ function yieldedFixture() {
   return input;
 }
 
-function supervisedYieldedFixture({ pollYieldMs = 300000, rootWaitTimeoutMs = 600000, initialYieldMs = 30000 } = {}) {
+function supervisedYieldedFixture({ pollYieldMs = 60000, rootWaitTimeoutMs = 600000, initialYieldMs = 30000 } = {}) {
   const input = yieldedFixture();
   const child = input.rollouts[1];
   const execCall = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call');
   execCall.payload.input = structuredExecResult(expectedCommand, 'exec-1', initialYieldMs === null ? {} : { yield_time_ms: initialYieldMs }).payload.input;
-  if (pollYieldMs !== 300000) {
+  if (pollYieldMs !== 60000) {
     for (const poll of childPolls(input)) poll.payload.input = structuredPoll(41, poll.payload.call_id, '', pollYieldMs).payload.input;
   }
   // Stamp the whole live interval so requested waits and actual elapsed waits
@@ -3074,7 +3095,7 @@ function supervisedYieldedFixture({ pollYieldMs = 300000, rootWaitTimeoutMs = 60
 function outerContinuationYieldedFixture() {
   const input = supervisedYieldedFixture();
   const child = input.rollouts[1];
-  // The 300000 ms inner poll outlasts its outer code cell: the host yields the
+  // The 60000 ms inner poll outlasts its outer code cell: the host yields the
   // cell with the companion handle still running and reports the runtime cell
   // ID in the script-status header. The wrapper has not reached
   // text(JSON.stringify(r)) yet, so the yielded output carries no completed
@@ -3650,7 +3671,7 @@ function parseFixturePollInput(source) {
 }
 function fixtureExecInput(value) { return `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n`; }
 
-function structuredPoll(sessionId, callId, chars = '', yieldTimeMs = chars === '' ? 300000 : undefined) {
+function structuredPoll(sessionId, callId, chars = '', yieldTimeMs = chars === '' ? 60000 : undefined) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(yieldTimeMs ? { yield_time_ms: yieldTimeMs } : {}) })}); text(JSON.stringify(r))\n` } };
 }
 

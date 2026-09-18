@@ -11,6 +11,8 @@ Keep this review always read-only. Do not edit, modify, apply, or fix workspace 
 
 Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke adversarial-review` over ordinary stdio. Do not add arguments, focus text, job IDs, credentials, or private descriptors.
 
+Start the constant command once with the longest initial `exec_command` yield, up to 30000 ms. If it returns a live process handle, observe only that same handle with empty-input `write_stdin` calls using `yield_time_ms: 60000`. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep.
+
 If the companion returns `needs-choice`, ask once between foreground and background, recommending foreground only for a clearly tiny change. For foreground run only `node "<plugin-root>/scripts/zcode-companion.mjs" invoke-choice adversarial-review wait`; for background run only the corresponding constant command ending in `invoke-choice adversarial-review background`. Stay in the current turn; production owns any background worker.
 
 Present the companion output verbatim without adding a second review. Preserve validation, setup, permission, timeout, and job errors, including every `$zcode:setup`, `$zcode:status`, or `$zcode:result` recovery command.
