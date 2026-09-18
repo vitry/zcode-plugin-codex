@@ -9,6 +9,8 @@ Invoke as `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]
 
 Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. With the available terminal tool, run exactly the constant command `node "<plugin-root>/scripts/zcode-companion.mjs" invoke status` over ordinary stdio. Do not add arguments, job IDs, credentials, or private descriptors.
 
+Start the constant command once with the longest initial `exec_command` yield, up to 30000 ms. If it returns a live process handle, observe only that same handle with empty-input `write_stdin` calls using `yield_time_ms: 60000`. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep.
+
 Run in the current turn; never launch a built-in subagent. Present the companion output verbatim, including ownership markers, terminal state, timeout, and exact `$zcode:result` or `$zcode:cancel` follow-ups.
 
 Status is the durable recovery surface after a parent turn, Rescue child, or Codex process is lost. Semantic progress is a bounded public preview, not raw child output, and owner-only result/cancel rules still apply; `--all` exposes only redacted other-owner metadata. Before uninstall, use status/result/cancel to settle owned jobs: uninstall does not automatically erase durable job records or stable plugin data.

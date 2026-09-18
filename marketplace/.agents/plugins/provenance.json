@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "0e6ba757e6cb31768ad337d57e9009a8c9d7551d",
-  "sourceSha": "0e6ba757e6cb31768ad337d57e9009a8c9d7551d",
+  "sourceRef": "7177a9b1c74215f8c323e7007b876bc0f9e9059b",
+  "sourceSha": "7177a9b1c74215f8c323e7007b876bc0f9e9059b",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "86bd847dcf3205a8fdda225d3f7ff1ced2d6ba0ef426e1378b219675699e3af4",
+    "sha256": "7d81c16f5bf3c1167a6ac8a905c77a3b6fd738e1f67dc6bc63f32d196b41eae1",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -23,8 +23,8 @@
       },
       {
         "path": "plugins/zcode/CHANGELOG.md",
-        "size": 29828,
-        "sha256": "09bb8319b1d7c3dfb5da4c47352a4f281f011d358c95c7c7a598af412f1c3bb7"
+        "size": 29837,
+        "sha256": "37af07cf0635c9c2bdde74d4544855f0ac30a3826633c770198b2a15b49d9502"
       },
       {
         "path": "plugins/zcode/LICENSE",
@@ -53,8 +53,8 @@
       },
       {
         "path": "plugins/zcode/agents/zcode-rescue.toml.template",
-        "size": 7150,
-        "sha256": "4e9dee97f7a0a8f68e67e9696e44dbbb3206435494f1c94996ac17c40cc84391"
+        "size": 7312,
+        "sha256": "4a9bbbcb8807714f04a94dd9516f1059f9b20b85e4075aa041c3b9a720075ea2"
       },
       {
         "path": "plugins/zcode/docs/adr/0013-bind-rescue-child-to-zcode-session.md",
@@ -773,8 +773,8 @@
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",
-        "size": 1561,
-        "sha256": "63bd18b47827202404c3621945a8f0c279000522db93905f609fdf5a65004967"
+        "size": 1911,
+        "sha256": "69ba6d16a5c6296e5155d4e18ac6a545567e5bdbf736f5bf8007480b1fe388d5"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/agents/openai.yaml",
@@ -793,8 +793,8 @@
       },
       {
         "path": "plugins/zcode/skills/rescue/SKILL.md",
-        "size": 38199,
-        "sha256": "01dcb5e81e2abf670e5f6448e086c73986379b78746742e99f196ea3c923ec5b"
+        "size": 38361,
+        "sha256": "354c25f010d85d98267356c16b99940f365c6e0522516c07164c8223c316a99f"
       },
       {
         "path": "plugins/zcode/skills/rescue/agents/openai.yaml",
@@ -818,8 +818,8 @@
       },
       {
         "path": "plugins/zcode/skills/review/SKILL.md",
-        "size": 1471,
-        "sha256": "07b1b6bc66129e32dd4e724fe6853f7fe1e64f28bd3c4ccd9f39da18daf3edeb"
+        "size": 1821,
+        "sha256": "fddb9f1de88e862daa721e27400afbcfc87ace18a18d515939021090ed3e3868"
       },
       {
         "path": "plugins/zcode/skills/review/agents/openai.yaml",
@@ -838,8 +838,8 @@
       },
       {
         "path": "plugins/zcode/skills/status/SKILL.md",
-        "size": 1720,
-        "sha256": "1c8eefa74962213b28b6fefb83655c62793736071bc7be50b9c0b1377838c7f9"
+        "size": 2070,
+        "sha256": "eae33b4c1cfcef8a469ef34edd25e6b42fb1fa40296d520c6342d5660785c9d3"
       },
       {
         "path": "plugins/zcode/skills/status/agents/openai.yaml",
