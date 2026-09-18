@@ -607,7 +607,7 @@ test('synthetic captured qualification fixtures cover named and generic Codex 0.
       requestedOuterContinuations: 0,
       mailboxNotifications: 0,
       observedElapsedPollMs: 2000,
-      appliedPollYieldMs: 300000,
+      appliedPollYieldMs: 60000,
       appliedInitialYieldMs: 30000,
       appliedRootWaitMs: 600000,
       appliedOuterContinuationYieldMs: 30000,
@@ -3380,7 +3380,7 @@ function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expe
 function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
 function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
 function installedExecInput(cmd, fields = {}) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace', ...fields })}); text(JSON.stringify(r))\n`; }
-function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 300000 } : {}) })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 60000 } : {}) })}); text(JSON.stringify(r))\n`; }
 function installedPreparationInput(sessionId, chars) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n`; }
 function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
 function parseInstalledToolInput(source) {

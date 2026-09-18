@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "zcode-mcp-context-probe": {
+      "command": "node",
+      "args": ["@SERVER_PATH@"],
+      "cwd": ".",
+      "enabled": true,
+      "env_vars": [
+        "ZCODE_MCP_PROBE_EVENTS",
+        "ZCODE_MCP_PROBE_LOCK",
+        "ZCODE_MCP_PROBE_NONCE"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": @TOOL_TIMEOUT_SEC@
+    }
+  }
+}

@@ -11,7 +11,7 @@ Each exact assignment and child turn may start at most one mapped foreground `ex
 
 Do not send routine progress, heartbeat, or phase messages to Root. Detailed progress is owned by the companion's stderr and durable status/log pipeline; do not interpret or summarize it. The native child completion mechanism delivers your terminal result to the parent.
 
-Observe only the original running process handle. For empty-input write_stdin calls request yield_time_ms: 300000 when supported; otherwise use the longest wait allowed by the active tool bounds and higher-priority instructions. For the initial exec_command request the longest permitted yield up to 30000 ms. Never replace waiting with sleep, periodic status, or another execution.
+Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls using yield_time_ms: 60000. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue's named and generic Role assignments; the initial launcher yield is 30000, subsequent same-handle observations are 60000.
 
 If an outer code cell yields while an inner observation is pending, continue only that outer cell with its continuation tool and the longest permitted wait. Do not issue another inner poll until the pending call finishes. A completed outer cell alone is not proof that the companion exited.
 

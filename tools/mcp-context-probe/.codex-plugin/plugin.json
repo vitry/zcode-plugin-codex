@@ -1,0 +1,33 @@
+{
+  "name": "zcode-mcp-context-probe",
+  "version": "0.1.0",
+  "description": "Disposable real-Host qualification probe for the Codex MCP invocation context. Never installed in production.",
+  "author": {
+    "name": "vitry",
+    "email": "tzukai.chan@gmail.com",
+    "url": "https://github.com/vitry"
+  },
+  "homepage": "https://github.com/vitry/zcode-plugin-codex",
+  "repository": "https://github.com/vitry/zcode-plugin-codex",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "qualification",
+    "probe"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ZCode MCP Context Probe",
+    "shortDescription": "Disposable MCP invocation-context probe.",
+    "longDescription": "Disposable probe-only plugin that records hashed Codex MCP invocation metadata, cancellation, timeout, and disconnect evidence for protocol qualification. It must never be installed outside a temporary qualification marketplace.",
+    "developerName": "vitry",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/vitry/zcode-plugin-codex",
+    "defaultPrompt": [
+      "Run the probe context capture."
+    ]
+  }
+}
