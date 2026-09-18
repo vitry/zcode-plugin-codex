@@ -62,17 +62,17 @@ With the server reachable (Blocker 1 bypassed for diagnosis only), every observe
 | `codex_version` | string |
 | `reasoning_effort` | string |
 
-There is no workspace/cwd field of any kind, in root turns or resumed turns. The MCP `roots/list` request returns `{"roots": []}` on this host. Per the design, workspace is accepted only from an authoritative per-call source; none exists, so `rootContextComplete` and `workspaceDistinct` are unprovable and the trusted invocation-context boundary cannot be built on this host.
+There is no workspace/cwd field of any kind, in root turns or resumed turns. The MCP `roots/list` request returns `{"roots": []}` on this host. This proves that workspace must not be required from `_meta`. It does not, by itself, prove that the existing Root preparation/Rescue Binding cannot supply the execution workspace after the exact Child `thread_id`/`turn_id` is joined to an authoritative Host/app-server Child record. That binding join was not exercised by this failed probe and remains an explicit qualification gate.
 
 ## Matrix assertions
 
 None were satisfied or refuted through the plan's argv; the probe could not reach its server:
 
-- `rootContextComplete`: unprovable (Blockers 1 and 2).
+- `rootIdentityComplete`: not reduced because the server was unreachable under the plan's argv; the observed metadata does contain thread/turn identity when the server is reachable.
 - `laterTurnDistinct`: evidence exists that it would be provable — `codex exec resume --all <thread-id> <prompt>` works on 0.154.0 and the next call on the same thread carried the same `thread_id` with a different `turn_id` — but it was not reduced through a full matrix run.
 - `concurrentChildrenDistinct`: not exercised (`collaboration.spawn_agent`/`followup_task` are present in exec mode, but the server was unreachable).
 - `metadataChangesAcrossTurns`: turn identity does change across `exec resume` turns (see above); full reduction not run.
-- `workspaceDistinct`: unprovable (Blocker 2).
+- `workspaceDistinct`: removed from the real-Host metadata result; workspace derivation is a local Root/Child binding-join assertion, not a claim about `_meta`.
 - `cancelDelivered`, `connectionLossDelivered`, `shortTimeoutSettled`: not exercised; the held-call phases require a reachable server.
 
 Harness design facts (not Host claims): the MCP SDK aborts an in-flight tool handler's `extra.signal` both on `notifications/cancelled` and on transport close, and a stdio server cannot distinguish the two from the signal alone; the probe records the settlement kind and relies on driver phase markers for attribution. A tool handler that settles and writes durable evidence before process exit is the only redaction-safe way to prove delivery after disconnect.
@@ -85,4 +85,4 @@ Every driver run removed the probe plugin and marketplace (`plugin remove`/`plug
 
 - Tasks 3–10 of the dual-foreground-wait-adapters plan are stopped; no production `.mcp.json`, MCP server, `skills/*-mcp`, or qualification record may be created.
 - The canonical shell Skills (Task 1, committed) are unaffected and remain the only foreground wait adapter.
-- A future attempt requires a design amendment covering at least: (a) a Host argv that loads plugin MCP servers while still excluding user config, and (b) an authoritative per-call workspace source (or an explicitly bounded connection-scoped equivalent accepted by an amended spec). Both must pass this same probe unchanged before any production MCP work resumes.
+- A future attempt requires a design amendment covering at least: (a) a Host argv that loads plugin MCP servers while still isolating configuration (the positive run must omit `--ignore-user-config`; the negative control may use it), and (b) an exact Child thread/turn to Host/app-server Child record to Root preparation/Rescue Binding join that derives and verifies the execution workspace. A workspace field in MCP `_meta` is not required, but the join and all cancellation/timeout assertions must pass before production MCP work resumes.

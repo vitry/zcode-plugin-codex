@@ -4,11 +4,15 @@
 
 **Goal:** Ship a 60-second same-handle shell wait baseline and explicit-only MCP-backed ZCode Skill variants that reuse the exact existing Companion, Rescue binding, placement, cancellation, and lifecycle implementation.
 
-**Architecture:** Canonical Skills continue to invoke the Companion CLI and observe one process with empty-input `write_stdin`. MCP siblings call narrow tools on a plugin-root stdio MCP server; each handler resolves a trusted per-call thread/turn/workspace capability, then enters `runDirectInvocation` with fixed argv. Rescue preparation version 5 carries a private `foregroundAdapter` selector through one-shot preparation and pending choice state without adding it to Rescue Binding or Tracked Job identity.
+**Architecture:** Canonical Skills continue to invoke the Companion CLI and observe one process with empty-input `write_stdin`. MCP siblings call narrow tools on a plugin-root stdio MCP server; each handler resolves trusted per-call thread/turn identity, then joins that identity to the Root-created preparation/Rescue Binding (or Root Caller Context) to derive and verify workspace before entering `runDirectInvocation` with fixed argv. Rescue preparation version 5 carries a private `foregroundAdapter` selector through one-shot preparation and pending choice state without adding it to Rescue Binding or Tracked Job identity.
 
 **Tech Stack:** Node.js 22 ESM, `node:test`, `@modelcontextprotocol/sdk` 1.30.0, Codex plugin `.mcp.json`, Codex Skills/Role templates, existing private preparation and lifecycle stores, npm packed-install and marketplace snapshot qualification.
 
 **Spec:** `docs/superpowers/specs/2026-09-18-zcode-dual-foreground-wait-adapters-design.md`
+
+**Qualification amendment:** Codex CLI 0.154.0 qualification showed that `--ignore-user-config` skips the `$CODEX_HOME/config.toml` that contains marketplace/plugin registration, so it also prevents the installed plugin MCP server from loading. Positive Host runs use an isolated `CODEX_HOME` with copied auth and plugin config, omit `--ignore-user-config`, and use `--ignore-rules` if rule isolation is needed. The negative control intentionally uses `--ignore-user-config` and must show no probe server. The official docs define the flag as skipping `$CODEX_HOME/config.toml` and document plugin marketplace configuration separately.
+
+**Current gate status:** The real-Host qualification is currently unqualified; Tasks 3–10 are paused. Any later “Expected: PASS” below describes the acceptance gate for a future rerun, not a claim that the gate has passed today. The shell adapter work remains independently shippable.
 
 ---
 
@@ -36,7 +40,7 @@
 | `scripts/lib/rescue-preparation.mjs` | Version-5 adapter-bearing preparation with v3/v4 shell compatibility |
 | `scripts/lib/rescue-route-planner.mjs` | Admit v5 without changing route or binding selection semantics |
 | `scripts/lib/invocation.mjs` | Persist and atomically consume the originating Rescue adapter on choice |
-| `scripts/lib/mcp-invocation-context.mjs` | Parse and brand trusted per-call thread/turn/workspace metadata |
+| `scripts/lib/mcp-invocation-context.mjs` | Parse and brand trusted per-call thread/turn metadata; derive workspace only through the Root/Child authority join |
 | `scripts/lib/direct-invocation-result.mjs` | One shell/MCP rendering and control-outcome mapping |
 | `scripts/lib/codex-app-server.mjs` | Bounded current-Child-turn Host correlation used by MCP Rescue preflight |
 | `scripts/zcode-companion.mjs` | Existing deep entry; adapter and trusted-turn revalidation before atomic consume |
@@ -182,13 +186,13 @@ The test must skip unless `ZCODE_CODEX_MCP_E2E=1`; when enabled it reads only a 
 ```js
 assert.deepEqual(Object.keys(result).sort(), [
   'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootContextComplete',
-  'shortTimeoutSettled', 'workspaceDistinct',
+  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
+  'serverLoadedWithConfig', 'shortTimeoutSettled',
 ]);
 for (const value of Object.values(result)) assert.equal(value, true);
 ```
 
-The result must contain booleans only—no raw thread, turn, workspace, task, binding, or job values.
+The result must contain booleans only—no raw thread, turn, workspace, task, binding, or job values. The real Host probe does not claim that `_meta` contains workspace, nor does it claim stale-context rejection; those are verified by the Task 4 authority-join tests using Root-created preparation/binding and Host/app-server Child records.
 
 - [ ] **Step 4: Run the opt-in test to verify RED**
 
@@ -208,7 +212,7 @@ const tools = [
 ];
 ```
 
-Read metadata from `request.params._meta`; never accept identity arguments. Hash raw values immediately with the per-run nonce and retain no raw value. Compare root, initial Child, later same-Child turn, two concurrent children, and two workspaces by hash equality/inequality. `metadataChangesAcrossTurns` proves that the Host supplies a different current-turn identity after the follow-up; it does not claim that the Host itself rejects a replayed stale request. Every handler writes its start and settlement event through the durable observer before returning. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. The short-timeout fixture uses `tool_timeout_sec: 2` and `shortTimeoutSettled` is true only when the final reducer sees an abort/settled event for that exact held-call nonce after its start. `connectionLossDelivered` is likewise reduced from durable server-side settlement written before process exit. Stale/wrong metadata rejection remains a local `mcp-invocation-context` and authority-join contract test in Task 4, not a fabricated real-Host result.
+Read metadata from `request.params._meta`; never accept identity arguments. Hash raw values immediately with the per-run nonce and retain no raw value. Compare Root thread/turn, initial Child, later same-Child turn, and two concurrent children by hash equality/inequality. `rootIdentityComplete` means the Root call contains the required trusted thread/turn fields; `serverLoadedWithConfig` is true only when the MCP server's first durable event proves the isolated plugin configuration was loaded. `metadataChangesAcrossTurns` proves that the Host supplies a different current-turn identity after the follow-up; it does not claim that the Host itself supplies workspace or rejects a replayed stale request. Every handler writes its start and settlement event through the durable observer before returning. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. The short-timeout fixture uses `tool_timeout_sec: 2` and `shortTimeoutSettled` is true only when the final reducer sees an abort/settled event for that exact held-call nonce after its start. `connectionLossDelivered` is likewise reduced from durable server-side settlement written before process exit. Workspace derivation and stale/wrong metadata rejection remain local `mcp-invocation-context` and authority-join contract tests in Task 4, using Root-created preparation/binding plus exact Host/app-server Child metadata.
 
 The source `.mcp.json` is only a template. `build-fixture.mjs` emits the plugin-root descriptor declaring only this probe server with `node <absolute-server>`, starts with `tool_timeout_sec: 30`, and can emit a separate 2-second marketplace. The fixture identity cannot collide with production `zcode`.
 
@@ -216,7 +220,7 @@ The source `.mcp.json` is only a template. `build-fixture.mjs` emits the plugin-
 
 `qualify.mjs` treats `--codex <entry-path>` as an externally supplied qualification target. It resolves one launcher symlink with `realpath`, requires the canonical target to be a regular executable file, records its device/inode and `<canonical-path> --version`, and rechecks all three before every spawn; it never calls PATH internally and does not call this binary repository-locked. It requires `--source-codex-home <dir>`, opens that real directory and its regular nonsymlink `auth.json`, copies only that file into fresh `<run>/codex-home/auth.json`, chmods it 0600, and requires `login status` to pass. Missing/unusable authentication reports `qualification-unavailable`, not protocol failure. No auth path or bytes enter logs, result artifacts, MCP arguments, or MCP `env_vars`.
 
-It creates fresh 30-second and 2-second marketplaces, workspaces A/B, isolated HOME/USERPROFILE, and the isolated Codex home inside one mode-0700 `mkdtemp` run directory. Every plugin command and Host process uses those homes. The 30-second phase executes exactly:
+It creates fresh 30-second and 2-second marketplaces, workspace A, isolated HOME/USERPROFILE, and the isolated Codex home inside one mode-0700 `mkdtemp` run directory. Every plugin command and Host process uses those homes. Workspace B and cross-workspace binding checks are created later by Task 4 integration fixtures, not claimed by this Host metadata probe. The 30-second phase executes exactly:
 
 ```bash
 CODEX_HOME=<run>/codex-home <codex> plugin marketplace add <absolute-marketplace-root> --json
@@ -227,26 +231,27 @@ The generated descriptor has exactly `env_vars: ["ZCODE_MCP_PROBE_EVENTS","ZCODE
 
 ```text
 exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
-  --ignore-user-config -C <workspace> <prompt>
+  --ignore-rules -C <workspace> <prompt>
 ```
 
 and this fixed argv for continuations, launched with process cwd equal to the target workspace:
 
 ```text
 exec resume --json --all --skip-git-repo-check
-  --dangerously-bypass-approvals-and-sandbox --ignore-user-config <root-thread-id> <prompt>
+  --dangerously-bypass-approvals-and-sandbox --ignore-rules <root-thread-id> <prompt>
 ```
 
 The state machine is exact:
 
 ```js
 const MATRIX_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context once in Root. Spawn one Child, have it call capture_context, wait for it, then follow up that exact Child and have it call capture_context again. Then spawn two new Children concurrently and have each call capture_context once. Wait for both. Do not call any other MCP tool.';
-const WORKSPACE_B_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
 const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_until_cancelled exactly once. Wait for that tool and do nothing else.';
 ```
 
+Before the positive matrix, run a negative-control Host with the same isolated marketplace and plugin but add `--ignore-user-config`; require no `server-started` event and a bounded JSONL tool-unavailable outcome. Remove that Host, then run the positive matrix without `--ignore-user-config`; require both a `server-started` event and a successful probe tool call before `serverLoadedWithConfig` can be true. The assertion is therefore the A/B combination, not startup alone: the same fixture is absent under the flag and callable without it. This proves the failure is configuration loading, not fixture packaging.
+
 1. Run one workspace-A `codex exec` prompt that requires Root `capture_context`, one Child capture, `followup_task` to that exact Child for a second capture, and two additional concurrently spawned Child captures. Parse stdout strictly as bounded JSONL; require exactly one `thread.started.thread_id`, zero malformed frames, exit 0, and the corresponding durable event count before continuing.
-2. Launch `codex exec resume ... --all <root-thread-id>` with cwd workspace B and require one Root `capture_context`; require exit 0 and its durable event.
+2. Launch `codex exec resume ... --all <root-thread-id>` with cwd workspace A and require one Root `capture_context`; require exit 0, the same `thread_id`, a different `turn_id`, and its durable event.
 3. Launch a separate workspace-A `codex exec` asking only for `hold_until_cancelled`; after the exact call nonce's durable `hold-started` event appears, send SIGINT to the recorded Codex PID. Require exit within 10 seconds and a matching abort/settled event; otherwise SIGKILL the exact PID and fail the cancel assertion.
 4. Launch another held call; after its durable start event, SIGKILL the exact Codex PID to close stdio. Require the server-side connection-close/abort settlement within 10 seconds and no surviving recorded Host PID.
 5. Stop remaining phase-30 Host/server processes, then remove its plugin and marketplace. Do not install the 2-second fixture before both removal commands succeed.
@@ -395,7 +400,6 @@ const authority = resolveMcpInvocationContext(request.params._meta);
 assert.deepEqual(readMcpInvocationContext(authority), {
   threadId: 'child-thread',
   turnId: 'current-child-turn',
-  workspace: '/canonical/workspace',
 });
 ```
 
@@ -403,10 +407,10 @@ assert.deepEqual(readMcpInvocationContext(authority), {
 
 ```js
 await readCodexThreadCurrentTurnIdentity(childThreadId, options);
-// => { threadId, turnId, workspace }
+// => { threadId, turnId, originWorkspace }
 ```
 
-The reader must require the current/latest active turn for the exact thread and canonical workspace and stay bounded/abortable.
+The reader must require the current/latest active turn for the exact thread and its Host Child origin workspace and stay bounded/abortable. The MCP metadata parser does not require a workspace field because the trusted Host Child record and Root-created binding derive it.
 
 - [ ] **Step 2: Run tests to verify RED**
 
@@ -416,7 +420,7 @@ Expected: FAIL because the module, branded authority, and current-turn reader do
 
 - [ ] **Step 3: Implement strict metadata parsing and branding**
 
-Use a module-private `WeakSet` and return a frozen object. Parse only the Task-2-qualified per-call fields. Canonicalize workspace with the same native realpath rule as direct invocation, then preserve its exact value for comparison. The fixed server mapping supplies `canonicalSkill` (`$zcode:rescue`, `$zcode:review`, `$zcode:adversarial-review`, or `$zcode:status`); it is never a tool argument. Errors use one fixed code and that exact fallback:
+Use a module-private `WeakSet` and return a frozen object. Parse only the Task-2-qualified thread/turn fields. The fixed server mapping supplies `canonicalSkill` (`$zcode:rescue`, `$zcode:review`, `$zcode:adversarial-review`, or `$zcode:status`); it is never a tool argument. Errors use one fixed code and that exact fallback:
 
 ```js
 throw new PluginError(
@@ -432,13 +436,13 @@ In `runDirectInvocation`:
 
 Use this command-specific join table; there is no “origin-or-effective” alternative:
 
-| MCP tool family | Authority thread | Authority turn | Authority workspace | Durable/Host join before consume |
+| MCP tool family | Authority thread | Authority turn | Workspace source | Durable/Host join before consume |
 |---|---|---|---|---|
-| Review, Adversarial Review, Status initial/wait | active Root `CallerContext.sessionId` | active Root `CallerContext.turnId` | Host invocation cwd = `realpath(CallerContext.originWorkspace)` | `resolveActiveTurn` by origin first; then independently select/verify `CallerContext.workspace` as job execution workspace |
-| prepared Rescue | routed `executor.agentId` / exact Host Child thread | current active turn returned for that exact Child | Host Child cwd = `realpath(executor.originWorkspace)` | resolve exact executor from Child thread+cwd; then independently require resolved `executionWorkspace === preparation.workspace`; preparation remains unconsumed |
-| Rescue resume/fresh choice | pending record's exact `executorAgentId` / exact Host Child thread | current active later turn returned for that exact Child | Host Child cwd = `realpath(executor.originWorkspace)` | resolve exact executor from Child thread+cwd; then independently require resolved `executionWorkspace === pending.workspace`; no preparation lookup |
+| Review, Adversarial Review, Status initial/wait | active Root `CallerContext.sessionId` | active Root `CallerContext.turnId` | persisted Root Caller Context | resolve exact active Root context by thread/turn; use its recorded execution workspace |
+| prepared Rescue | routed `executor.agentId` / exact Host Child thread | current active turn returned for that exact Child | Host Child origin cwd joined to Root preparation/Rescue Binding | resolve exact executor from Child thread + Host Child record; independently require selected execution workspace equals preparation.workspace; preparation remains unconsumed |
+| Rescue resume/fresh choice | pending receipt's exact `executorAgentId` / exact Host Child thread | current active later turn returned for that exact Child | Host Child origin cwd joined to pending receipt/Rescue Binding | resolve exact executor from Child thread + Host Child record; independently require selected execution workspace equals pending.workspace; no preparation lookup |
 
-For each row, validate the branded metadata shape, canonicalize the Host invocation workspace, query the exact current Host turn, resolve the exact Root/Child authority at that origin cwd, then separately validate the selected execution workspace and route joins before locked `consume()`/`consumePending()`. Never use invocation cwd as the selected execution workspace merely because they are equal in a simple checkout. Any failure returns `MCP_INVOCATION_CONTEXT_UNAVAILABLE` with zero preparation consumption, reservation, binding mutation, session creation, or provider call. Never compare a later Child turn to the executor's initial `childTurnId` or the receipt's parent `originatingTurnId`.
+For each row, validate the branded thread/turn metadata, query the exact current Host turn, resolve the exact Root/Child authority, derive origin cwd from the Host Child record, then separately validate the selected execution workspace and route joins before locked `consume()`/`consumePending()`. Never use MCP server cwd or a model-authored workspace; never use Child origin cwd as the execution workspace merely because they are equal in a simple checkout. Any failure returns `MCP_INVOCATION_CONTEXT_UNAVAILABLE` with zero preparation consumption, reservation, binding mutation, session creation, or provider call. Never compare a later Child turn to the executor's initial `childTurnId` or the receipt's parent `originatingTurnId`.
 
 The deep invocation API is explicit and cannot consult ambient MCP-shaped environment variables:
 
@@ -460,7 +464,6 @@ const raw = request.params?._meta;
 const identity = {
   threadId: raw.QUALIFIED_THREAD_FIELD,
   turnId: raw.QUALIFIED_TURN_FIELD,
-  workspace: raw.QUALIFIED_WORKSPACE_FIELD,
 };
 ```
 
