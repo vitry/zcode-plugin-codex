@@ -16,13 +16,31 @@ import { withFileLock } from '../../scripts/lib/fs.mjs';
 export const PROBE_EVENTS_MAX_BYTES = 4 * 1024 * 1024;
 
 /** The closed qualification phase vocabulary, in required order. */
-export const PROBE_PHASES = Object.freeze(['matrix', 'workspace-b', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+export const PROBE_PHASES = Object.freeze(['negative-control', 'matrix', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+
+/** The phases whose Host spawns must durably start the probe server. */
+const POSITIVE_SERVER_PHASES = Object.freeze(['matrix', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+
+/**
+ * The exact settlement kind(s) each held-call phase accepts as delivery: a
+ * settlement of the wrong kind is not delivery. SIGINT cancellation must be
+ * the server's explicit abort settlement (a Host that exits and merely
+ * closes stdin records a transport close, which is not cancellation); the
+ * tool timeout accepts the abort or a recorded host-timeout settlement;
+ * connection loss is exactly the transport-close settlement written by the
+ * stdin watcher.
+ */
+const PHASE_SETTLEMENT_KINDS = Object.freeze({
+  'sigint-cancel': Object.freeze(['signal-abort']),
+  'sigkill-disconnect': Object.freeze(['transport-close']),
+  'short-timeout': Object.freeze(['signal-abort', 'host-timeout']),
+});
 
 /** The closed eight-boolean result vocabulary. */
 export const PROBE_RESULT_KEYS = Object.freeze([
   'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootContextComplete',
-  'shortTimeoutSettled', 'workspaceDistinct',
+  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
+  'serverLoadedWithConfig', 'shortTimeoutSettled',
 ]);
 
 const EVENT_KINDS = Object.freeze([
@@ -311,15 +329,23 @@ export async function readProbeEvents(input) {
 /**
  * Reduces a validated event sequence to the closed eight-boolean result.
  * Missing evidence yields false; it never throws for incompleteness.
+ * `runDirectory` is optional; when supplied, positive server startups must
+ * carry the canonical observer paths for that directory (the final reducer
+ * always supplies it).
  * @param {{runNonce:string, timestamp:string, event:object}[]} records
- * @param {{runNonce:string}} input
+ * @param {{runNonce:string, runDirectory?:string|null}} input
  */
-export function reduceProbeEvents(records, { runNonce }) {
+export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
   if (!RUN_NONCE_PATTERN.test(runNonce)) throw probeError('PROBE_NONCE_INVALID', 'The probe run nonce must be 64 lowercase hexadecimal characters.');
+  if (runDirectory !== null && !isAbsolute(runDirectory)) {
+    throw probeError('PROBE_RUN_DIRECTORY_INVALID', 'The probe run directory must be an absolute path.');
+  }
   /** @type {{event:any, phase:string|null, settled:boolean}[]} */
   const captures = [];
   /** @type {{event:any, phase:string|null, settlement:string|null}[]} */
   const holds = [];
+  /** @type {{event:any, phase:string|null}[]} */
+  const serverStarts = [];
   /** @type {Map<string, boolean>} */
   const phaseObserved = new Map();
   /** @type {Map<string, number>} */
@@ -341,6 +367,10 @@ export function reduceProbeEvents(records, { runNonce }) {
       // optimistic marker so phase-dependent assertions fail honestly.
       phaseObserved.set(event.phase, event.observed);
       currentPhase = event.phase;
+      continue;
+    }
+    if (event.kind === 'server-started') {
+      serverStarts.push({ event, phase: currentPhase });
       continue;
     }
     if (START_KINDS.includes(event.kind)) {
@@ -370,13 +400,14 @@ export function reduceProbeEvents(records, { runNonce }) {
   const phaseOrderStrictlyIncreasing = PROBE_PHASES.filter((name) => phaseIndex.has(name))
     .every((name, position, list) => position === 0 || /** @type {number} */ (phaseIndex.get(list[position - 1])) < /** @type {number} */ (phaseIndex.get(name)));
   const matrixCaptures = captures.filter((entry) => entry.phase === 'matrix');
-  const workspaceBCaptures = captures.filter((entry) => entry.phase === 'workspace-b');
   const root = matrixCaptures[0];
   const child = matrixCaptures[1];
   const later = matrixCaptures[2];
   const concurrentOne = matrixCaptures[3];
   const concurrentTwo = matrixCaptures[4];
-  const rootContextComplete = Boolean(phase('matrix') && root && root.event.identityComplete === true && root.settled);
+  const rootResume = matrixCaptures[5];
+  const rootIdentityComplete = Boolean(phase('matrix') && root && root.settled
+    && root.event.identityComplete === true && root.event.threadHash && root.event.turnHash);
   // The later-turn proof is only meaningful for a Child whose thread is
   // distinct from the Root: a host that reports the Root thread for the
   // initial Child must fail this assertion, not pass it vacuously.
@@ -396,32 +427,36 @@ export function reduceProbeEvents(records, { runNonce }) {
     && concurrentOne.event.threadHash !== concurrentTwo.event.threadHash
     && identityThreads.every((threadHash) => threadHash
       && threadHash !== concurrentOne.event.threadHash && threadHash !== concurrentTwo.event.threadHash));
-  const metaHashes = captures.map((entry) => entry.event.metaHash);
-  const metadataChangesAcrossTurns = captures.length >= 2
-    && metaHashes.every((value) => typeof value === 'string')
-    && new Set(metaHashes).size === captures.length;
-  const matrixWorkspaceHashes = [root, child, later, concurrentOne, concurrentTwo].filter(Boolean).map((entry) => entry.event.workspaceHash);
-  // A workspace field is stable within one workspace: every matrix capture
-  // must hash to the single workspace-A value before workspace B may differ
-  // from it. A per-call-varying field can never satisfy the predicate.
-  const workspaceDistinct = phase('workspace-b') && phaseOrderStrictlyIncreasing
-    && workspaceBCaptures.length > 0
-    && workspaceBCaptures.every((entry) => entry.settled && typeof entry.event.workspaceHash === 'string')
-    && matrixWorkspaceHashes.length === 5
-    && matrixWorkspaceHashes.every((value) => typeof value === 'string')
-    && new Set(matrixWorkspaceHashes).size === 1
-    && workspaceBCaptures.every((entry) => entry.event.workspaceHash !== matrixWorkspaceHashes[0]);
+  // The Root-resume sink: the state-machine step-2 capture must sit on the
+  // Root conversation's thread and carry a new turn identity.
+  const metadataChangesAcrossTurns = Boolean(root && rootResume && rootResume.settled
+    && root.event.threadHash && root.event.turnHash && root.event.metaHash
+    && rootResume.event.threadHash && rootResume.event.turnHash && rootResume.event.metaHash
+    && rootResume.event.threadHash === root.event.threadHash
+    && rootResume.event.turnHash !== root.event.turnHash
+    && rootResume.event.metaHash !== root.event.metaHash);
+  // The A/B combination: positive-phase startup evidence with canonical
+  // observer paths, and a negative-control window provably free of any
+  // server-started or capture-started event before its driver-recorded marker.
+  const negativeControlMarker = records.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'negative-control');
+  const negativeControlWindowClean = negativeControlMarker >= 0
+    && phaseObserved.get('negative-control') === true
+    && records.slice(0, negativeControlMarker).every((record) => record.event.kind !== 'server-started' && record.event.kind !== 'capture-started');
+  const positiveServerStartPresent = serverStarts.some((entry) => POSITIVE_SERVER_PHASES.includes(entry.phase)
+    && (!runDirectory
+      || (entry.event.eventsPath === join(runDirectory, 'events.jsonl') && entry.event.lockPath === join(runDirectory, 'events.lock'))));
+  const serverLoadedWithConfig = Boolean(negativeControlWindowClean && positiveServerStartPresent);
   const phaseHoldSettled = (name) => {
     if (!phase(name) || !phaseOrderStrictlyIncreasing) return false;
     const hold = holds.find((entry) => entry.phase === name);
-    return Boolean(hold && hold.settlement !== null);
+    return Boolean(hold && hold.settlement !== null && PHASE_SETTLEMENT_KINDS[name].includes(hold.settlement));
   };
   return /** @type {Record<string, boolean>} */ ({
-    rootContextComplete,
+    rootIdentityComplete,
     laterTurnDistinct,
     concurrentChildrenDistinct,
     metadataChangesAcrossTurns,
-    workspaceDistinct,
+    serverLoadedWithConfig,
     cancelDelivered: phaseHoldSettled('sigint-cancel'),
     connectionLossDelivered: phaseHoldSettled('sigkill-disconnect'),
     shortTimeoutSettled: phaseHoldSettled('short-timeout'),
@@ -438,8 +473,6 @@ export function reduceProbeEvents(records, { runNonce }) {
 function assertCompleteQualificationLog(records, { runDirectory, result }) {
   const canonicalEventsPath = join(runDirectory, 'events.jsonl');
   const canonicalLockPath = join(runDirectory, 'events.lock');
-  /** @type {Set<string>} */
-  const observedPhases = new Set();
   let captures = 0;
   let settledCaptures = 0;
   let holds = 0;
@@ -447,7 +480,6 @@ function assertCompleteQualificationLog(records, { runDirectory, result }) {
   let serverStarts = 0;
   for (const record of records) {
     const event = record.event;
-    if (event.kind === 'phase-observed' && event.observed) observedPhases.add(event.phase);
     if (event.kind === 'capture-started') captures += 1;
     if (event.kind === 'capture-settled') settledCaptures += 1;
     if (event.kind === 'hold-started') holds += 1;
@@ -467,9 +499,27 @@ function assertCompleteQualificationLog(records, { runDirectory, result }) {
   if (serverStarts < 1) {
     throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain a server-started event with canonical observer paths.');
   }
-  for (const phaseName of PROBE_PHASES) {
-    if (!observedPhases.has(phaseName)) throw probeError('PROBE_LOG_INCOMPLETE', `The qualification log is missing observed phase ${phaseName}.`);
+  // Every observed phase must appear, and their first occurrences must follow
+  // the canonical phase order (negative control before the positive phases).
+  /** @type {Map<string, number>} */
+  const firstOccurrence = new Map();
+  let scanOrder = 0;
+  for (const record of records) {
+    const event = record.event;
+    if (event.kind === 'phase-observed' && event.observed && !firstOccurrence.has(event.phase)) {
+      firstOccurrence.set(event.phase, scanOrder);
+      scanOrder += 1;
+    }
   }
+  let previousOrder = -1;
+  for (const phaseName of PROBE_PHASES) {
+    if (!firstOccurrence.has(phaseName)) throw probeError('PROBE_LOG_INCOMPLETE', `The qualification log is missing observed phase ${phaseName}.`);
+    const order = /** @type {number} */ (firstOccurrence.get(phaseName));
+    if (order <= previousOrder) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log records phases out of canonical order.');
+    previousOrder = order;
+  }
+  // Five matrix captures (Root, initial Child, Child later turn, two
+  // concurrent Children) plus the state-machine step-2 Root-resume capture.
   if (captures !== 6 || settledCaptures !== 6) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain exactly six settled capture calls.');
   // The scripted matrix contains exactly one held call per cancellation
   // phase; extra invocations would let a phase's reduced settlement point at
@@ -494,7 +544,7 @@ export async function reduceProbeResult(input) {
   const resultPath = join(runDirectory, 'result.json');
   return withFileLock(lockPath, async () => {
     const { records } = await parseEventLog(eventsPath, runNonce);
-    const result = reduceProbeEvents(records, { runNonce });
+    const result = reduceProbeEvents(records, { runNonce, runDirectory });
     assertCompleteQualificationLog(records, { runDirectory, result });
     const existing = await lstat(resultPath).then(() => true, (error) => {
       if (errorCode(error) === 'ENOENT') return false;

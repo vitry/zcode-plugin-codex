@@ -263,7 +263,7 @@ Before the positive matrix, run a negative-control Host with the same isolated m
 6. Repeat the exact marketplace-add/plugin-add commands against the 2-second marketplace under the same names, then start a new workspace-A Host with `HOLD_PROMPT`. Require `hold-started`, Host timeout/exit within 30 seconds, and the matching durable abort/settled event.
 7. Stop phase-2 processes and remove its plugin/marketplace. Under the event lock, reduce the shared log and atomically write `<run>/result.json`; then run the opt-in assertion test.
 
-Every subprocess has a 180-second outer deadline and bounded 4 MiB stdout/stderr. The driver tracks PID plus start identity before signalling, never uses process-name matching, and runs ordered cleanup in `finally`. Failure to stop a process, remove the plugin/marketplace, delete isolated `auth.json`, or remove the temporary homes makes qualification fail with a redacted cleanup error.
+The instrument contract separates outer deadlines: CLI commands (`--version`, the flag pre-check, marketplace/plugin install and removal, `login status`) keep the 180-second outer deadline; real Host conversations get a 600-second outer deadline (the matrix's first durable capture alone landed ~140s into a conversation on 0.154.0, which the CLI bound cannot contain). Every subprocess has bounded 4 MiB stdout/stderr. The driver tracks PID plus start identity before signalling, never uses process-name matching, and runs ordered cleanup in `finally`. Failure to stop a process, remove the plugin/marketplace, delete isolated `auth.json`, or remove the temporary homes makes qualification fail with a redacted cleanup error.
 
 Cleanup commands are exact and run even after failure:
 

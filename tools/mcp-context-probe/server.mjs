@@ -66,10 +66,9 @@ function metadataFields(value) {
 
 /**
  * Extracts the trusted per-call identity from the observed host metadata.
- * Workspace is accepted only from an observed per-call turn-metadata field
- * (`workspace` string, or a single-entry `workspaces` array normalized to
- * its path so the value matches the driver's authoritative path); any other
- * shape is recorded as null and marks the capture incomplete.
+ * Only the host-supplied turn-metadata thread/turn fields are read; the
+ * qualified Host exposes no per-call workspace, so none is extracted, and
+ * any unrelated fields only feed the bounded schema fingerprint.
  * @param {any} meta
  */
 function extractObservedIdentity(meta) {
@@ -78,17 +77,15 @@ function extractObservedIdentity(meta) {
   const turn = turnMetadata && typeof turnMetadata === 'object' && !Array.isArray(turnMetadata) ? turnMetadata : null;
   const threadId = turn && typeof turn.thread_id === 'string' && turn.thread_id.length > 0 ? turn.thread_id : null;
   const turnId = turn && typeof turn.turn_id === 'string' && turn.turn_id.length > 0 ? turn.turn_id : null;
-  let workspace = null;
-  if (turn && typeof turn.workspace === 'string' && turn.workspace.length > 0) workspace = turn.workspace;
-  else if (turn && Array.isArray(turn.workspaces) && turn.workspaces.length === 1
-    && typeof turn.workspaces[0] === 'string' && turn.workspaces[0].length > 0) workspace = turn.workspaces[0];
-  return { envelope, turn, threadId, turnId, workspace };
+  return { envelope, turn, threadId, turnId };
 }
 
 /**
  * @param {{runDirectory:string, runNonce:string, eventsPath?:string, lockPath?:string}} observer
+ * @param {(options: {runDirectory:string, runNonce:string, event:object}) => Promise<void>} [appendImpl]
+ *   Injectable durable append for tests; defaults to the real module append.
  */
-export function createProbeServer({ observer }) {
+export function createProbeServer({ observer, appendImpl = appendProbeEvent }) {
   if (!observer || typeof observer.runDirectory !== 'string' || !isAbsolute(observer.runDirectory)) {
     throw probeError('PROBE_OBSERVER_INVALID', 'The probe observer requires an absolute run directory.');
   }
@@ -96,6 +93,26 @@ export function createProbeServer({ observer }) {
   if (!/^[0-9a-f]{64}$/.test(runNonce)) throw probeError('PROBE_NONCE_INVALID', 'The probe run nonce must be 64 lowercase hexadecimal characters.');
 
   const server = new Server({ name: 'zcode-mcp-context-probe', version: '0.1.0' }, { capabilities: { tools: {} } });
+
+  /**
+   * Pending held calls. Entries carry their own finish() so either the SDK
+   * abort signal or a detected transport disconnect can settle them exactly
+   * once, with the settlement written by the handler before returning.
+   * @type {Set<{callNonce:string, finish:(settlement:string)=>void}>}
+   */
+  const pendingHolds = new Set();
+
+  /**
+   * Settles every pending held call durably as a transport close. The MCP
+   * SDK's stdio server transport listens only for stdin 'data'/'error', so
+   * an abrupt client death never fires transport onclose and never aborts
+   * in-flight handlers; the executable wires its own stdin EOF watchers to
+   * this seam so settlements land before the process exits.
+   */
+  const settlePendingHoldsOnDisconnect = () => {
+    for (const entry of [...pendingHolds]) entry.finish('transport-close');
+  };
+  server.probeDisconnect = { settlePendingHoldsOnDisconnect };
 
   const noArguments = (request) => !request.params || typeof request.params !== 'object'
     || !request.params.arguments || typeof request.params.arguments !== 'object'
@@ -125,21 +142,23 @@ export function createProbeServer({ observer }) {
 
   async function captureContext(request) {
     const meta = request.params._meta;
-    const { envelope, turn, threadId, turnId, workspace } = extractObservedIdentity(meta);
+    const { envelope, turn, threadId, turnId } = extractObservedIdentity(meta);
     const callNonce = randomBytes(16).toString('hex');
     const event = {
       kind: 'capture-started',
       callNonce,
-      identityComplete: Boolean(threadId && turnId && workspace && turn),
+      identityComplete: Boolean(threadId && turnId),
       threadHash: threadId ? hashProbeValue(runNonce, threadId) : null,
       turnHash: turnId ? hashProbeValue(runNonce, turnId) : null,
-      workspaceHash: workspace ? hashProbeValue(runNonce, workspace) : null,
+      // The event schema keeps its exact key set; the qualified Host exposes
+      // no per-call workspace, so this hash is always null.
+      workspaceHash: null,
       metaHash: turn ? hashProbeValue(runNonce, canonicalJson(turn)) : null,
       metaFields: metadataFields(turn),
       envelopeFields: metadataFields(envelope),
     };
-    await appendProbeEvent({ runDirectory: observer.runDirectory, runNonce, event });
-    await appendProbeEvent({
+    await appendImpl({ runDirectory: observer.runDirectory, runNonce, event });
+    await appendImpl({
       runDirectory: observer.runDirectory,
       runNonce,
       event: { kind: 'capture-settled', callNonce },
@@ -149,19 +168,48 @@ export function createProbeServer({ observer }) {
 
   async function holdUntilCancelled(extra) {
     const callNonce = randomBytes(16).toString('hex');
-    await appendProbeEvent({
+    /** @type {(value:string) => void} */
+    let resolveSettlement = () => {};
+    /** @type {{callNonce:string, finish:(value:string)=>void}} */
+    const entry = {
+      callNonce,
+      finish: (value) => {
+        if (!pendingHolds.has(entry)) return;
+        pendingHolds.delete(entry);
+        resolveSettlement(value);
+      },
+    };
+    // Registration is atomic with the durable start: the entry joins the
+    // registry synchronously BEFORE the hold-started append is awaited. The
+    // SDK stdio transport never aborts in-flight handlers on disconnect, so
+    // the stdin watcher is the only settlement path — and it may observe the
+    // durable hold-started and fire while the start append is still in
+    // flight. Registering only after the append would leave the hold
+    // stranded here until the forced exit with no settlement.
+    const settlementPromise = new Promise((resolve) => { resolveSettlement = resolve; });
+    pendingHolds.add(entry);
+    if (extra.signal?.aborted) entry.finish('signal-abort');
+    else extra.signal?.addEventListener('abort', () => entry.finish('signal-abort'), { once: true });
+    try {
+      await appendImpl({
+        runDirectory: observer.runDirectory,
+        runNonce,
+        event: { kind: 'hold-started', callNonce },
+      });
+    } catch (error) {
+      // The hold-started event never became durable: drop the registration
+      // before propagating so the entry can never be settled or counted.
+      pendingHolds.delete(entry);
+      throw error;
+    }
+    // Resolves immediately when the disconnect watcher finished the hold
+    // while the start append was in flight; the settlement below is still
+    // appended after the start, keeping the log order start→settled.
+    const settlement = await settlementPromise;
+    await appendImpl({
       runDirectory: observer.runDirectory,
       runNonce,
-      event: { kind: 'hold-started', callNonce },
-    });
-    await new Promise((resolve) => {
-      if (extra.signal?.aborted) resolve(undefined);
-      else extra.signal?.addEventListener('abort', () => resolve(undefined), { once: true });
-    });
-    await appendProbeEvent({
-      runDirectory: observer.runDirectory,
-      runNonce,
-      event: { kind: 'hold-settled', callNonce, settlement: 'signal-abort' },
+      event: { kind: 'hold-settled', callNonce, settlement },
     });
     return { content: [{ type: 'text', text: 'held' }] };
   }
@@ -241,6 +289,39 @@ export function scheduleDisposalExit(server, options = {}) {
   return server;
 }
 
+/**
+ * Bounded grace between a detected stdin disconnect and the forced exit. It
+ * is sized exactly like SERVER_EXIT_GRACE_MS: a disconnect settlement whose
+ * durable append waits on a contended advisory lock needs the observer's
+ * full 5 s lock-acquisition budget plus an fsync margin, so the settlement
+ * is never lost to process.exit.
+ */
+export const DISCONNECT_EXIT_GRACE_MS = SERVER_EXIT_GRACE_MS;
+
+/**
+ * Watches the process's own stdin for end/close and invokes onDisconnect
+ * exactly once. The MCP SDK's stdio server transport listens only for
+ * 'data'/'error', so an abrupt client death (Host SIGKILL, crashed Host)
+ * never fires transport onclose and never aborts in-flight handlers; this
+ * watcher is the only way a stdio probe server can observe the disconnect.
+ * Returns a disposer.
+ * @param {{onDisconnect: () => void}} options
+ */
+export function installStdinDisconnectWatcher({ onDisconnect }) {
+  let fired = false;
+  const fire = () => {
+    if (fired) return;
+    fired = true;
+    onDisconnect();
+  };
+  process.stdin.on('end', fire);
+  process.stdin.on('close', fire);
+  return () => {
+    process.stdin.off('end', fire);
+    process.stdin.off('close', fire);
+  };
+}
+
 async function runAsExecutable() {
   const observer = probeObserverFromEnv();
   reportStartup(observer);
@@ -259,6 +340,17 @@ async function runAsExecutable() {
   // appends get the full lock budget plus fsync margin to land, then the
   // process must exit instead of lingering.
   scheduleDisposalExit(server);
+  // The SDK never fires transport onclose on an abrupt client death (stdio
+  // watches only 'data'/'error'), so the executable detects the disconnect
+  // itself, settles every pending held call durably, and force-exits within
+  // a bounded grace instead of lingering behind a dead stdin pipe.
+  installStdinDisconnectWatcher({
+    onDisconnect: () => {
+      server.probeDisconnect.settlePendingHoldsOnDisconnect();
+      const timer = setTimeout(() => process.exit(0), DISCONNECT_EXIT_GRACE_MS);
+      timer?.unref?.();
+    },
+  });
   await server.connect(new StdioServerTransport());
 }
 

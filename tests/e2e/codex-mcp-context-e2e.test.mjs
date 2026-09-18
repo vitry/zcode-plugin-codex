@@ -5,8 +5,8 @@ import test from 'node:test';
 
 const RESULT_KEYS = [
   'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootContextComplete',
-  'shortTimeoutSettled', 'workspaceDistinct',
+  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
+  'serverLoadedWithConfig', 'shortTimeoutSettled',
 ];
 
 const optInEnabled = process.env.ZCODE_CODEX_MCP_E2E === '1';

@@ -23,8 +23,8 @@ import {
   reduceProbeEvents,
   reduceProbeResult,
 } from '../tools/mcp-context-probe/observer.mjs';
-import { createProbeServer, probeObserverFromEnv, SERVER_EXIT_GRACE_MS, scheduleDisposalExit } from '../tools/mcp-context-probe/server.mjs';
-import { assertAuthoritativeIdentityCorrelation, assertProcessIdentity, captureProcessIdentity, cleanupTargetMatchesIdentity, qualifyMcpContext, resolveProcessInspectionExecutable } from '../tools/mcp-context-probe/qualify.mjs';
+import { createProbeServer, DISCONNECT_EXIT_GRACE_MS, probeObserverFromEnv, SERVER_EXIT_GRACE_MS, scheduleDisposalExit } from '../tools/mcp-context-probe/server.mjs';
+import { assertAuthoritativeIdentityCorrelation, assertProcessIdentity, assertResumeThreadIdentity, assertToolUnavailableTranscript, captureProcessIdentity, cleanupTargetMatchesIdentity, qualifyMcpContext, resolveProcessInspectionExecutable } from '../tools/mcp-context-probe/qualify.mjs';
 
 const serverModulePath = fileURLToPath(new URL('../tools/mcp-context-probe/server.mjs', import.meta.url));
 const posix = process.platform !== 'win32';
@@ -46,7 +46,11 @@ function fakeHash(label) {
   return createHash('sha256').update(label).digest('hex');
 }
 
-/** A capture-started body whose hashes are distinct on every call. */
+/**
+ * A capture-started body whose hashes are distinct on every call. The
+ * workspace hash stays null: the qualified Host exposes no per-call
+ * workspace, and the closed event schema keeps the exact key set.
+ */
 function captureStartedBody(overrides = {}) {
   fixtureCounter += 1;
   const seed = String(fixtureCounter);
@@ -56,7 +60,7 @@ function captureStartedBody(overrides = {}) {
     identityComplete: true,
     threadHash: fakeHash(`thread-${seed}`),
     turnHash: fakeHash(`turn-${seed}`),
-    workspaceHash: fakeHash(`workspace-${seed}`),
+    workspaceHash: null,
     metaHash: fakeHash(`meta-${seed}`),
     ...overrides,
   };
@@ -77,9 +81,12 @@ function captureSettledBody(callNonceValue) { return { kind: 'capture-settled', 
 function phaseBody(phase, observed = true) { return { kind: 'phase-observed', phase, observed }; }
 
 /**
- * The complete all-true synthetic qualification log: matrix (root, child,
- * child later turn, two concurrent children), workspace B, sigint cancel,
- * sigkill disconnect, and the 2-second host timeout phase.
+ * The complete all-true synthetic qualification log: the negative control
+ * (marker only — its window must stay free of server/capture events), the
+ * matrix conversation (root, child, child later turn, two concurrent
+ * children), the Root-resume capture, sigint cancel, sigkill disconnect, and
+ * the 2-second host timeout phase. Each positive phase carries its own
+ * durable server startup.
  */
 function qualifiedEventSequence(observerPaths = null) {
   const nonce = HEX_NONCE;
@@ -87,25 +94,30 @@ function qualifiedEventSequence(observerPaths = null) {
   const events = [];
   const push = (body) => events.push({ runNonce: nonce, timestamp: now, event: body });
   const settledCapture = (body) => { push(body); push(captureSettledBody(body.callNonce)); };
-  if (observerPaths) push(serverStartedBody(observerPaths));
+  const serverStarted = () => push(serverStartedBody(observerPaths ?? { eventsPath: '/run/events.jsonl', lockPath: '/run/events.lock' }));
+  // Negative control: recorded by the driver after its window provably
+  // contained zero server-started and zero capture-started events.
+  push(phaseBody('negative-control'));
   push(phaseBody('matrix'));
-  // A real workspace field is stable within workspace A: every matrix
-  // capture hashes the same invocation workspace, and workspace B differs.
-  const workspaceAHash = fakeHash('workspace-a');
-  const root = captureStartedBody({ workspaceHash: workspaceAHash });
-  const child = captureStartedBody({ workspaceHash: workspaceAHash });
-  const later = captureStartedBody({ threadHash: child.threadHash, workspaceHash: workspaceAHash });
-  const concurrentOne = captureStartedBody({ workspaceHash: workspaceAHash });
-  const concurrentTwo = captureStartedBody({ workspaceHash: workspaceAHash });
+  serverStarted();
+  const root = captureStartedBody();
+  const child = captureStartedBody();
+  const later = captureStartedBody({ threadHash: child.threadHash });
+  const concurrentOne = captureStartedBody();
+  const concurrentTwo = captureStartedBody();
   settledCapture(root); settledCapture(child); settledCapture(later);
   settledCapture(concurrentOne); settledCapture(concurrentTwo);
-  push(phaseBody('workspace-b'));
-  settledCapture(captureStartedBody({ workspaceHash: fakeHash('workspace-b') }));
+  // State-machine step 2: the Root-resume capture — same thread, new turn.
+  const rootResume = captureStartedBody({ threadHash: root.threadHash });
+  settledCapture(rootResume);
   push(phaseBody('sigint-cancel'));
+  serverStarted();
   const heldOne = holdStartedBody(); push(heldOne); push(holdSettledBody(heldOne.callNonce, 'signal-abort'));
   push(phaseBody('sigkill-disconnect'));
+  serverStarted();
   const heldTwo = holdStartedBody(); push(heldTwo); push(holdSettledBody(heldTwo.callNonce, 'transport-close'));
   push(phaseBody('short-timeout'));
+  serverStarted();
   const heldThree = holdStartedBody(); push(heldThree); push(holdSettledBody(heldThree.callNonce, 'signal-abort'));
   return events;
 }
@@ -269,6 +281,10 @@ test('appendProbeEvent rejects unknown, malformed, duplicate-terminal, and start
       () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: holdSettledBody(newCallNonce()) }),
       /start/i,
     );
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: phaseBody('workspace-b') }),
+      /phase/i,
+    );
   });
 });
 
@@ -303,17 +319,45 @@ test('reduceProbeEvents marks exactly the failed assertions false', () => {
   };
   const capturesOf = (events) => events.filter((record) => record.event.kind === 'capture-started').map((record) => record.event);
 
-  assert.equal(mutated((events) => { capturesOf(events)[0].identityComplete = false; }).rootContextComplete, false);
+  // rootIdentityComplete: the Root matrix capture must carry the trusted
+  // thread/turn fields and settle.
+  assert.equal(mutated((events) => { capturesOf(events)[0].identityComplete = false; }).rootIdentityComplete, false);
+  assert.equal(mutated((events) => {
+    const rootCapture = capturesOf(events)[0];
+    const settledIndex = events.findIndex((record) => record.event.kind === 'capture-settled' && record.event.callNonce === rootCapture.callNonce);
+    events.splice(settledIndex, 1);
+  }).rootIdentityComplete, false);
   assert.equal(mutated((events) => { capturesOf(events)[2].turnHash = capturesOf(events)[1].turnHash; }).laterTurnDistinct, false);
   assert.equal(mutated((events) => { capturesOf(events)[4].threadHash = capturesOf(events)[3].threadHash; }).concurrentChildrenDistinct, false);
-  assert.equal(mutated((events) => { capturesOf(events)[5].workspaceHash = capturesOf(events)[0].workspaceHash; }).workspaceDistinct, false);
-  assert.equal(mutated((events) => { capturesOf(events)[1].metaHash = capturesOf(events)[0].metaHash; }).metadataChangesAcrossTurns, false);
+  // metadataChangesAcrossTurns is the Root-resume sink: the resume capture
+  // must carry the Root capture's threadHash with a different turnHash.
+  assert.equal(mutated((events) => { capturesOf(events)[5].turnHash = capturesOf(events)[0].turnHash; }).metadataChangesAcrossTurns, false);
+  assert.equal(mutated((events) => { capturesOf(events)[5].threadHash = capturesOf(events)[1].threadHash; }).metadataChangesAcrossTurns, false);
+  assert.equal(mutated((events) => { capturesOf(events)[5].metaHash = capturesOf(events)[0].metaHash; }).metadataChangesAcrossTurns, false);
+  assert.equal(mutated((events) => {
+    const resumeCapture = capturesOf(events)[5];
+    const settledIndex = events.findIndex((record) => record.event.kind === 'capture-settled' && record.event.callNonce === resumeCapture.callNonce);
+    events.splice(settledIndex, 1);
+  }).metadataChangesAcrossTurns, false);
+  // serverLoadedWithConfig is the A/B sink: startup evidence must exist after
+  // the negative-control window, and the control marker must be observed.
+  assert.equal(mutated((events) => {
+    for (const record of events.filter((entry) => entry.event.kind === 'server-started')) events.splice(events.indexOf(record), 1);
+  }).serverLoadedWithConfig, false);
+  assert.equal(mutated((events) => {
+    events.unshift({ runNonce: nonce, timestamp: new Date().toISOString(), event: serverStartedBody() });
+  }).serverLoadedWithConfig, false);
+  assert.equal(mutated((events) => {
+    for (const record of events) {
+      if (record.event.kind === 'phase-observed' && record.event.phase === 'negative-control') record.event.observed = false;
+    }
+  }).serverLoadedWithConfig, false);
   const unsettled = mutated((events) => {
     const index = events.findIndex((record) => record.event.kind === 'hold-settled' && record.event.settlement === 'signal-abort');
     events.splice(index, 1);
   });
   assert.equal(unsettled.cancelDelivered, false);
-  assert.equal(unsettled.rootContextComplete, true);
+  assert.equal(unsettled.rootIdentityComplete, true);
   const failedPhase = mutated((events) => {
     for (const record of events) {
       if (record.event.kind === 'phase-observed' && record.event.phase === 'sigkill-disconnect') record.event.observed = false;
@@ -321,7 +365,41 @@ test('reduceProbeEvents marks exactly the failed assertions false', () => {
   });
   assert.equal(failedPhase.connectionLossDelivered, false);
   assert.equal(failedPhase.cancelDelivered, true);
-  assert.equal(mutated((events) => { events.splice(events.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'workspace-b'), 1); }).workspaceDistinct, false);
+});
+
+test('each held-call phase requires its exact settlement kind', () => {
+  const mutated = (mutator) => {
+    const events = qualifiedEventSequence();
+    mutator(events);
+    return reduceProbeEvents(events, { runNonce: HEX_NONCE });
+  };
+  const holdSettlements = (events) => events.filter((record) => record.event.kind === 'hold-settled').map((record) => record.event);
+  // The sigint hold settling as a transport close (a Host that exits and
+  // merely closes the server's stdin) is not cancellation delivery.
+  assert.equal(mutated((events) => { holdSettlements(events)[0].settlement = 'transport-close'; }).cancelDelivered, false);
+  // A short-timeout hold settling as a transport close is not a timeout settlement.
+  assert.equal(mutated((events) => { holdSettlements(events)[2].settlement = 'transport-close'; }).shortTimeoutSettled, false);
+  // A disconnect hold settled by an abort signal is not connection-loss delivery.
+  assert.equal(mutated((events) => { holdSettlements(events)[1].settlement = 'signal-abort'; }).connectionLossDelivered, false);
+  // The accepted kinds stay positive.
+  assert.equal(mutated((events) => { holdSettlements(events)[2].settlement = 'host-timeout'; }).shortTimeoutSettled, true);
+  assert.equal(mutated((events) => { holdSettlements(events)[0].settlement = 'signal-abort'; }).cancelDelivered, true);
+  assert.equal(mutated((events) => { holdSettlements(events)[1].settlement = 'transport-close'; }).connectionLossDelivered, true);
+});
+
+test('serverLoadedWithConfig requires canonical observer paths for positive startup events', () => {
+  const mutated = qualifiedEventSequence();
+  for (const record of mutated) {
+    if (record.event.kind === 'server-started') {
+      record.event.eventsPath = '/elsewhere/events.jsonl';
+      record.event.lockPath = '/elsewhere/events.lock';
+    }
+  }
+  const result = reduceProbeEvents(mutated, { runNonce: HEX_NONCE, runDirectory: '/run-dir' });
+  assert.equal(result.serverLoadedWithConfig, false);
+  const canonical = qualifiedEventSequence({ eventsPath: '/run-dir/events.jsonl', lockPath: '/run-dir/events.lock' });
+  const positive = reduceProbeEvents(canonical, { runNonce: HEX_NONCE, runDirectory: '/run-dir' });
+  assert.equal(positive.serverLoadedWithConfig, true);
 });
 
 test('reduceProbeResult writes result.json once with the closed boolean shape', async () => {
@@ -363,8 +441,10 @@ test('the probe server records hashed context through the MCP seam without retai
   await withProbeRun('zcode-probe-server-', async (run) => {
     const nonce = runNonce();
     const { client } = await connectProbeClient(run, nonce);
-    const workspaceValue = join(run, 'workspace-a');
-    const meta = { 'x-codex-turn-metadata': { thread_id: 'probe-thread-root', turn_id: 'probe-turn-1', workspace: workspaceValue } };
+    const meta = {
+      progressToken: 7,
+      'x-codex-turn-metadata': { thread_id: 'probe-thread-root', turn_id: 'probe-turn-1', session_id: 'probe-session', workspace: '/probe/legacy-workspace' },
+    };
     const capture = await client.request({ method: 'tools/call', params: { name: 'capture_context', arguments: {}, _meta: meta } }, CallToolResultSchema);
     assert.equal(capture.isError ?? false, false);
     const events = await readProbeEvents({ runDirectory: run, runNonce: nonce });
@@ -372,11 +452,31 @@ test('the probe server records hashed context through the MCP seam without retai
     assert.equal(captureBodies.length, 1);
     const captureBody = captureBodies[0];
     assert.equal(captureBody.identityComplete, true);
-    for (const key of ['threadHash', 'turnHash', 'workspaceHash', 'metaHash']) assert.match(captureBody[key], /^[0-9a-f]{64}$/);
+    assert.equal(await hashProbeValue(nonce, 'probe-thread-root'), captureBody.threadHash);
+    assert.equal(await hashProbeValue(nonce, 'probe-turn-1'), captureBody.turnHash);
+    // The probe never claims a workspace: no extraction, no hash, no leak.
+    assert.equal(captureBody.workspaceHash, null);
+    assert.match(captureBody.metaHash, /^[0-9a-f]{64}$/);
     assert.ok(events.some((record) => record.event.kind === 'capture-settled' && record.event.callNonce === captureBody.callNonce));
     const rawLog = await readFile(join(run, 'events.jsonl'), 'utf8');
-    for (const raw of ['probe-thread-root', 'probe-turn-1', workspaceValue]) assert.equal(rawLog.includes(raw), false, `raw identity leaked: ${raw}`);
-    assert.equal(await hashProbeValue(nonce, workspaceValue), captureBody.workspaceHash);
+    for (const raw of ['probe-thread-root', 'probe-turn-1', 'probe-session', '/probe/legacy-workspace']) {
+      assert.equal(rawLog.includes(raw), false, `raw identity leaked: ${raw}`);
+    }
+    await client.close();
+  });
+});
+
+test('capture_context fails closed when the trusted turn metadata is incomplete', async () => {
+  await withProbeRun('zcode-probe-server-', async (run) => {
+    const nonce = runNonce();
+    const { client } = await connectProbeClient(run, nonce);
+    const missingTurn = await client.request({
+      method: 'tools/call',
+      params: { name: 'capture_context', arguments: {}, _meta: { 'x-codex-turn-metadata': { thread_id: 'probe-thread-only' } } },
+    }, CallToolResultSchema);
+    assert.equal(missingTurn.isError, true);
+    const events = await readProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(events.filter((record) => record.event.kind === 'capture-started').length, 0, 'an incomplete identity must not persist as a capture');
     await client.close();
   });
 });
@@ -406,6 +506,146 @@ test('the probe server settles held calls when the transport closes', async () =
   });
 });
 
+test('pending holds settle durably as transport-close on forced disconnect', async () => {
+  await withProbeRun('zcode-probe-server-', async (run) => {
+    const nonce = runNonce();
+    const server = createProbeServer({ observer: { runDirectory: run, runNonce: nonce } });
+    const client = new Client({ name: 'probe-test', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const heldCall = client.request({ method: 'tools/call', params: { name: 'hold_until_cancelled', arguments: {} } }, CallToolResultSchema).then(
+      () => 'returned',
+      () => 'abandoned',
+    );
+    await waitUntilHoldStarted(run, nonce);
+    assert.equal(typeof server.probeDisconnect?.settlePendingHoldsOnDisconnect, 'function', 'the server must expose the forced-disconnect settlement seam');
+    server.probeDisconnect.settlePendingHoldsOnDisconnect();
+    const settled = await waitUntilHoldSettled(run, nonce);
+    assert.equal(settled.settlement, 'transport-close');
+    assert.equal(await heldCall, 'returned', 'the forced disconnect resolves the held handler');
+    await client.close();
+  });
+});
+
+/** Bounds a promise with a descriptive rejection instead of an indefinite hang. */
+async function withDeadline(promise, deadlineMs, failureMessage) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(failureMessage)), deadlineMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test('a disconnect during the hold-started append still settles the registered hold', async () => {
+  await withProbeRun('zcode-probe-server-', async (run) => {
+    const nonce = runNonce();
+    // The injected append blocks its first call (the hold-started event) so
+    // the disconnect watcher races the still-in-flight durable start — the
+    // exact window where a late registration would strand the hold.
+    let releaseStartAppend;
+    const startAppendGate = new Promise((resolve) => { releaseStartAppend = resolve; });
+    let enterStartAppend;
+    const startAppendEntered = new Promise((resolve) => { enterStartAppend = resolve; });
+    let appendCallCount = 0;
+    const appendImpl = async (appendOptions) => {
+      appendCallCount += 1;
+      if (appendCallCount === 1) {
+        enterStartAppend();
+        await startAppendGate;
+      }
+      return appendProbeEvent(appendOptions);
+    };
+    const server = createProbeServer({ observer: { runDirectory: run, runNonce: nonce }, appendImpl });
+    const client = new Client({ name: 'probe-test', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      // The outcome promise is handled from creation so an abandoned request
+      // during teardown can never surface as an unrelated unhandled rejection.
+      const heldOutcome = client.request({ method: 'tools/call', params: { name: 'hold_until_cancelled', arguments: {} } }, CallToolResultSchema)
+        .then(() => 'resolved', () => 'rejected');
+      await withDeadline(startAppendEntered, 5_000, 'the hold-started append never began');
+      // The disconnect fires while the durable start append is in flight.
+      server.probeDisconnect.settlePendingHoldsOnDisconnect();
+      releaseStartAppend();
+      const settled = await waitUntilHoldSettled(run, nonce, 10_000);
+      assert.equal(settled.settlement, 'transport-close', 'the in-flight hold must settle as a durable transport close');
+      const outcome = await Promise.race([
+        heldOutcome,
+        new Promise((resolve) => setTimeout(() => resolve('timed out'), 5_000)),
+      ]);
+      assert.equal(outcome, 'resolved', 'the held tool call must resolve after the delayed settlement');
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+});
+
+test('the probe server settles held calls when the client dies abruptly over real stdio', { skip: !posix }, async () => {
+  await withProbeRun('zcode-probe-stdio-', async (run) => {
+    const nonce = runNonce();
+    // The helper is the MCP client (the Host's role). It starts a held call
+    // and then SIGKILLs itself exactly like an abruptly dying Host, leaving
+    // the server orphaned behind a dead stdin pipe.
+    const helper = spawn(process.execPath, ['-e', STDIO_DISCONNECT_HELPER], {
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        ZCODE_MCP_PROBE_EVENTS: join(run, 'events.jsonl'),
+        ZCODE_MCP_PROBE_LOCK: join(run, 'events.lock'),
+        ZCODE_MCP_PROBE_NONCE: nonce,
+      },
+    });
+    await new Promise((resolve) => helper.on('close', resolve));
+    const settled = await waitUntilHoldSettled(run, nonce, 12_000);
+    assert.equal(settled.settlement, 'transport-close', 'an abruptly disconnected client must still produce a durable settlement');
+  });
+});
+
+const STDIO_DISCONNECT_HELPER = `
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+const transport = new StdioClientTransport({
+  command: ${JSON.stringify(process.execPath)},
+  args: [${JSON.stringify(serverModulePath)}],
+  env: { ...process.env },
+});
+const client = new Client({ name: 'probe-stdio-disconnect', version: '0.0.0' });
+await client.connect(transport);
+client.request({ method: 'tools/call', params: { name: 'hold_until_cancelled', arguments: {} } }, {}).catch(() => {});
+await new Promise((resolve) => setTimeout(resolve, 800));
+process.kill(process.pid, 'SIGKILL');
+`;
+
+async function waitUntilHoldStarted(runDirectory, nonce, deadlineMs = 10_000) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    const started = (await readProbeEvents({ runDirectory, runNonce: nonce }))
+      .map((record) => record.event)
+      .find((body) => body.kind === 'hold-started');
+    if (started) return started;
+    if (Date.now() > deadline) throw new Error('hold-started never became durable');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+async function waitUntilHoldSettled(runDirectory, nonce, deadlineMs = 10_000) {
+  const deadline = Date.now() + deadlineMs;
+  const started = await waitUntilHoldStarted(runDirectory, nonce, deadlineMs);
+  for (;;) {
+    const settled = (await readProbeEvents({ runDirectory, runNonce: nonce }))
+      .map((record) => record.event)
+      .find((body) => body.kind === 'hold-settled' && body.callNonce === started.callNonce);
+    if (settled) return settled;
+    if (Date.now() > deadline) throw new Error('hold settlement never became durable');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 test('the probe server rejects identity arguments and missing metadata and exposes only three tools', async () => {
   await withProbeRun('zcode-probe-server-', async (run) => {
     const nonce = runNonce();
@@ -417,7 +657,7 @@ test('the probe server rejects identity arguments and missing metadata and expos
       params: {
         name: 'capture_context',
         arguments: { threadId: 'smuggled' },
-        _meta: { 'x-codex-turn-metadata': { thread_id: 't', turn_id: 'u', workspace: '/w' } },
+        _meta: { 'x-codex-turn-metadata': { thread_id: 't', turn_id: 'u' } },
       },
     }, CallToolResultSchema);
     assert.equal(identityArgument.isError, true);
@@ -512,6 +752,17 @@ test('server disposal waits at least the event-lock budget before the forced exi
   assert.deepEqual(scheduled, [SERVER_EXIT_GRACE_MS, 'unref']);
 });
 
+test('disconnect settlement grace is at least the disposal exit grace', () => {
+  // A disconnect settlement whose durable append waits on a contended
+  // advisory lock needs the same 5s lock budget plus fsync margin that
+  // SERVER_EXIT_GRACE_MS was sized against; a shorter disconnect grace
+  // could force-exit before the settlement lands.
+  assert.ok(
+    DISCONNECT_EXIT_GRACE_MS >= SERVER_EXIT_GRACE_MS,
+    `disconnect grace ${DISCONNECT_EXIT_GRACE_MS} must be at least the disposal grace ${SERVER_EXIT_GRACE_MS}`,
+  );
+});
+
 test('the final reducer rejects a log with extra hold invocations', async () => {
   await withProbeRun('zcode-probe-result-', async (run) => {
     const nonce = runNonce();
@@ -526,12 +777,39 @@ test('the final reducer rejects a log with extra hold invocations', async () => 
   });
 });
 
-test('the final reducer requires durable canonical server startup evidence', async () => {
+test('the final reducer requires durable positive server startup evidence', async () => {
   await withProbeRun('zcode-probe-server-start-', async (run) => {
     const nonce = runNonce();
-    // The default synthetic sequence carries no server-started event.
-    await appendAll(run, nonce, qualifiedEventSequence().map((record) => record.event));
+    const withoutServerStarts = qualifiedEventSequence()
+      .filter((record) => record.event.kind !== 'server-started');
+    await appendAll(run, nonce, withoutServerStarts.map((record) => record.event));
     await assert.rejects(() => reduceProbeResult({ runDirectory: run, runNonce: nonce }), /server-started/);
+    const written = await readFile(join(run, 'result.json'), 'utf8').then(() => true, (error) => error.code === 'ENOENT' ? false : undefined);
+    assert.equal(written, false);
+  });
+});
+
+test('the final reducer rejects non-canonical observer startup paths', async () => {
+  await withProbeRun('zcode-probe-paths-', async (run) => {
+    const nonce = runNonce();
+    const foreignPaths = qualifiedEventSequence({ eventsPath: '/elsewhere/events.jsonl', lockPath: '/elsewhere/events.lock' });
+    await appendAll(run, nonce, foreignPaths.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: run, runNonce: nonce }), /canonical|server-started/);
+    const written = await readFile(join(run, 'result.json'), 'utf8').then(() => true, (error) => error.code === 'ENOENT' ? false : undefined);
+    assert.equal(written, false);
+  });
+});
+
+test('the final reducer rejects phases recorded out of canonical order', async () => {
+  await withProbeRun('zcode-probe-order-', async (run) => {
+    const nonce = runNonce();
+    const events = qualifiedEventSequence({ eventsPath: join(run, 'events.jsonl'), lockPath: join(run, 'events.lock') });
+    const markerIndex = events.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'negative-control');
+    const [marker] = events.splice(markerIndex, 1);
+    const matrixMarkerIndex = events.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'matrix');
+    events.splice(matrixMarkerIndex + 1, 0, marker);
+    await appendAll(run, nonce, events.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: run, runNonce: nonce }), /qualification log/);
     const written = await readFile(join(run, 'result.json'), 'utf8').then(() => true, (error) => error.code === 'ENOENT' ? false : undefined);
     assert.equal(written, false);
   });
@@ -559,14 +837,14 @@ test('the initial Child must be a thread distinct from the Root', () => {
   assert.equal(result.laterTurnDistinct, false);
 });
 
-test('workspaceDistinct requires one stable workspace-A value across all matrix captures', () => {
+test('the Root resume must be the same thread carrying a different turn', () => {
   const events = qualifiedEventSequence();
-  const matrixCaptures = events.filter((record) => record.event.kind === 'capture-started').slice(0, 5);
-  for (const [index, record] of matrixCaptures.entries()) {
-    record.event.workspaceHash = fakeHash(`drifting-workspace-${index}`);
-  }
+  const captures = events.filter((record) => record.event.kind === 'capture-started');
+  // A host that reports a fresh thread for the resume is not a turn change
+  // on the Root conversation; the assertion must fail, not pass vacuously.
+  captures[5].event.threadHash = captures[1].event.threadHash;
   const result = reduceProbeEvents(events, { runNonce: HEX_NONCE });
-  assert.equal(result.workspaceDistinct, false);
+  assert.equal(result.metadataChangesAcrossTurns, false);
 });
 
 test('the final reducer rejects a log with extra capture invocations', async () => {
@@ -591,45 +869,120 @@ test('process identity resolution is PATH-independent and validated', () => {
   assert.ok(stats.isFile() && (stats.mode & 0o111) !== 0, `${executable} must be a regular executable file`);
 });
 
-test('the driver correlates durable captures with the authoritative Host facts', async () => {
-  const nonce = runNonce();
-  const rootThreadId = 'authoritative-root-thread';
-  const workspaceA = '/authoritative/workspace-a';
-  const workspaceB = '/authoritative/workspace-b';
+test('the driver correlates durable captures with the authoritative Root thread', () => {
   const records = qualifiedEventSequence();
-  // Stamp the synthetic captures with the authoritative hashes.
-  let matrixSeen = 0;
-  for (const record of records) {
-    const event = record.event;
-    if (event.kind !== 'capture-started') continue;
-    if (event.workspaceHash === fakeHash('workspace-a')) {
-      event.threadHash = matrixSeen === 0 ? await hashProbeValue(nonce, rootThreadId) : event.threadHash;
-      event.workspaceHash = await hashProbeValue(nonce, workspaceA);
-      matrixSeen += 1;
-    } else if (event.workspaceHash === fakeHash('workspace-b')) {
-      event.workspaceHash = await hashProbeValue(nonce, workspaceB);
-    }
-  }
-  await assertAuthoritativeIdentityCorrelation(records, { runNonce: nonce, rootThreadId, workspaceA, workspaceB });
-  // The Root thread hash must be the parsed Root thread's hash.
-  await assert.rejects(() => assertAuthoritativeIdentityCorrelation(records, {
-    runNonce: nonce, rootThreadId: 'a-different-thread', workspaceA, workspaceB,
-  }), /Root thread identity/);
-  // Workspace A must be the exact workspace-A directory.
-  await assert.rejects(() => assertAuthoritativeIdentityCorrelation(records, {
-    runNonce: nonce, rootThreadId, workspaceA: '/authoritative/other', workspaceB,
-  }), /workspace A/);
-  // Workspace B must be the exact workspace-B directory.
-  await assert.rejects(() => assertAuthoritativeIdentityCorrelation(records, {
-    runNonce: nonce, rootThreadId, workspaceA, workspaceB: '/authoritative/other-b',
-  }), /workspace B/);
-  // A drifting per-call workspace value cannot pass correlation.
-  const drifting = records.map((record) => record.event.kind === 'capture-started' && record.event.workspaceHash !== fakeHash('workspace-b')
-    ? { ...record, event: { ...record.event, workspaceHash: fakeHash(`drift-${record.event.callNonce}`) } }
-    : record);
-  await assert.rejects(() => assertAuthoritativeIdentityCorrelation(drifting, {
-    runNonce: nonce, rootThreadId, workspaceA, workspaceB,
-  }), /workspace A/);
+  assert.doesNotThrow(() => assertAuthoritativeIdentityCorrelation(records));
+  const captures = records.filter((record) => record.event.kind === 'capture-started').map((record) => record.event);
+  // A resume capture sitting on a different trusted thread does not correlate.
+  const diverged = qualifiedEventSequence();
+  const divergedCaptures = diverged.filter((record) => record.event.kind === 'capture-started').map((record) => record.event);
+  divergedCaptures[5].threadHash = divergedCaptures[1].threadHash;
+  assert.throws(() => assertAuthoritativeIdentityCorrelation(diverged), /Root thread identity/);
+  // A matrix phase missing the Root-resume capture does not correlate.
+  const withoutResume = records.filter((record) => record.event.callNonce !== captures[5].callNonce);
+  assert.throws(() => assertAuthoritativeIdentityCorrelation(withoutResume), /Root thread identity/);
+});
+
+test('the negative-control transcript must show the tool-unavailable shape', () => {
+  const frameAccount = (entries, excerpts = [], nestedEntries = []) => ({
+    malformed: 0,
+    frameTypes: new Map(entries),
+    nestedItemTypes: new Map(nestedEntries),
+    excerpts,
+  });
+  // The recorded Blocker-1 shape: the model attempted the probe tool and the
+  // Host reported it as an error frame naming the tool.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1], ['error', 2]],
+      [{ frameType: 'error', nestedItemType: null, itemStatus: null, excerpt: '{"type":"error","message":"unknown tool: capture_context"}' }],
+    ),
+    'phase-negative-control',
+  ));
+  // A failed non-MCP item naming the probe tool is a genuine failure surface.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1]],
+      [{ frameType: 'item.completed', nestedItemType: 'exec_command', itemStatus: 'failed', excerpt: '{"type":"item.completed","item":{"type":"exec_command","status":"failed","text":"capture_context unavailable"}}' }],
+    ),
+    'phase-negative-control',
+  ));
+  // Without any error frame the model never attempted the tool, so the
+  // transcript proves nothing about the configuration being skipped.
+  assert.throws(
+    () => assertToolUnavailableTranscript(frameAccount([['thread.started', 1]]), 'phase-negative-control'),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+  // A transient model/network error that never references the probe tool or
+  // server proves nothing about --ignore-user-config hiding the plugin.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1], ['error', 1]],
+        [{ frameType: 'error', nestedItemType: null, itemStatus: null, excerpt: '{"type":"error","message":"model overloaded, retry later"}' }],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+  // A successful/neutral item mentioning the probe tool must not satisfy the
+  // gate on its own — only a genuine failure surface counts.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1]],
+        [{ frameType: 'item.completed', nestedItemType: 'reasoning', itemStatus: 'completed', excerpt: '{"type":"item.completed","item":{"type":"reasoning","status":"completed","text":"capture_context should exist"}}' }],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+});
+
+test('a nested mcp_tool_call item is never tool-unavailable proof', () => {
+  const frameAccount = (entries, excerpts = [], nestedEntries = []) => ({
+    malformed: 0,
+    frameTypes: new Map(entries),
+    nestedItemTypes: new Map(nestedEntries),
+    excerpts,
+  });
+  // Codex JSONL reports MCP calls as item.* frames whose nested item.type is
+  // mcp_tool_call: an account with such an item — even a failed one naming
+  // the probe tool — means the MCP call existed, so the configuration was
+  // NOT skipped and the negative control must fail closed.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1]],
+        [{ frameType: 'item.completed', nestedItemType: 'mcp_tool_call', itemStatus: 'failed', excerpt: '{"type":"item.completed","item":{"type":"mcp_tool_call","status":"failed","tool":"capture_context"}}' }],
+        [['mcp_tool_call', 1]],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+  // A nested mcp_tool_call count fails the gate even when no excerpt is
+  // retained for it.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount([['thread.started', 1]], [], [['mcp_tool_call', 1]]),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+});
+
+test('the resume Host must re-emit exactly one thread.started matching the Root id', () => {
+  const account = (threadIds) => ({ malformed: 0, frameTypes: new Map(), threadIds, excerpts: [] });
+  assert.doesNotThrow(() => assertResumeThreadIdentity(account(['root-thread-id']), 'root-thread-id'));
+  // Zero thread.started frames: nothing proves which thread continued.
+  assert.throws(() => assertResumeThreadIdentity(account([]), 'root-thread-id'), /thread\.started/);
+  // Duplicated frames: exactly one is required, even when both match.
+  assert.throws(() => assertResumeThreadIdentity(account(['root-thread-id', 'root-thread-id']), 'root-thread-id'), /thread\.started/);
+  // A changed id: the continuation is not the parsed Root conversation.
+  assert.throws(() => assertResumeThreadIdentity(account(['other-thread-id']), 'root-thread-id'), /Root thread id/);
+  // One matching plus one different is still duplication.
+  assert.throws(() => assertResumeThreadIdentity(account(['root-thread-id', 'other-thread-id']), 'root-thread-id'), /thread\.started/);
 });
 
 test('durable probe events reject unknown fields', async () => {
@@ -664,10 +1017,10 @@ test('in-phase signalling fails closed without a verifiable identity', { skip: !
 });
 
 test('probe phases and result keys are the closed qualification vocabulary', () => {
-  assert.deepEqual(PROBE_PHASES, ['matrix', 'workspace-b', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+  assert.deepEqual(PROBE_PHASES, ['negative-control', 'matrix', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
   assert.deepEqual([...PROBE_RESULT_KEYS].sort(), [
     'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-    'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootContextComplete',
-    'shortTimeoutSettled', 'workspaceDistinct',
+    'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
+    'serverLoadedWithConfig', 'shortTimeoutSettled',
   ]);
 });

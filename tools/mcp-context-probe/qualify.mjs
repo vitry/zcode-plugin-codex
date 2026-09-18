@@ -19,7 +19,6 @@ import { fileURLToPath } from 'node:url';
 import { buildProbeMarketplace } from './build-fixture.mjs';
 import {
   appendProbeEvent,
-  hashProbeValue,
   probeEventPaths,
   readProbeEvents,
   reduceProbeResult,
@@ -28,6 +27,13 @@ import {
 const CODEX_PLUGIN_SELECTOR = 'zcode-mcp-context-probe@zcode-mcp-probe';
 const CODEX_MARKETPLACE_NAME = 'zcode-mcp-probe';
 const SUBPROCESS_DEADLINE_MS = 180_000;
+// Host conversations are long, multi-turn scripted model sessions: on the
+// real 0.154.0 host the scripted matrix's first durable capture alone landed
+// ~140s into the conversation, so the CLI-command outer deadline cannot bound
+// a Host spawn without killing a healthy conversation. Host spawns get their
+// own explicit outer deadline; the signal/timeout ceilings (10s/30s) and the
+// output bound remain the protocol assertions.
+const HOST_CONVERSATION_DEADLINE_MS = 600_000;
 const MAXIMUM_OUTPUT_BYTES = 4 * 1024 * 1024;
 const SIGNAL_GRACE_MS = 10_000;
 const HOST_TIMEOUT_GRACE_MS = 30_000;
@@ -41,10 +47,19 @@ const TOOL_TIMEOUT_SCHEDULING_TOLERANCE_MS = 250;
 // At or above the probe server's disposal grace, so lingering servers get a
 // natural exit window before cleanup signals anything.
 const SERVER_DISPOSAL_WAIT_MS = 8_000;
+// The scripted matrix conversation produces five captures; the state-machine
+// step-2 Root resume adds the sixth (same thread, new turn).
 const MATRIX_CAPTURES_EXPECTED = 5;
+// Bounded, in-memory excerpts of error/item frames used solely to verify that
+// a negative-control transcript references the probe tool or server; they are
+// never printed, persisted, or included in error messages.
+const FRAME_EXCERPT_MAX_CHARS = 200;
+const FRAME_EXCERPTS_MAX = 32;
+const PROBE_TOOL_REFERENCE = /capture_context|zcode-mcp-context-probe/i;
 
 const MATRIX_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context once in Root. Spawn one Child, have it call capture_context, wait for it, then follow up that exact Child and have it call capture_context again. Then spawn two new Children concurrently and have each call capture_context once. Wait for both. Do not call any other MCP tool.';
-const WORKSPACE_B_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
+const NEGATIVE_CONTROL_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
+const ROOT_RESUME_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
 const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_until_cancelled exactly once. Wait for that tool and do nothing else.';
 
 /** @param {string} code @param {string} message */
@@ -201,39 +216,85 @@ export function assertProcessIdentity(pid, identity) {
 
 /**
  * Correlates the durable captures with the authoritative Host facts the
- * driver observed itself: the parsed Root thread id and the exact workspace
- * directories it created. Complete, stable, or distinct metadata is not
- * enough — the recorded hashes must be the hashes of these known values.
+ * driver observed itself: the matrix phase must carry the full capture set
+ * (the five conversation captures plus the state-machine step-2 Root-resume
+ * capture), the Root-resume capture must sit on the Root capture's trusted
+ * thread, and its turn must be new. The driver resumed the exact Root
+ * conversation it parsed from stdout and observed exit 0. Recorded 0.154.0
+ * fact: the stdout `thread.started` id (the id `exec resume` consumes) and
+ * the trusted `_meta` turn-metadata thread id are distinct namespaces, so
+ * the same-thread proof is hash-based between durable captures and no
+ * cross-namespace value equality is ever assumed.
  * @param {{event:object}[]} records
- * @param {{runNonce:string, rootThreadId:string, workspaceA:string, workspaceB:string}} input
  */
-export async function assertAuthoritativeIdentityCorrelation(records, { runNonce, rootThreadId, workspaceA, workspaceB }) {
+export function assertAuthoritativeIdentityCorrelation(records) {
   let phase = null;
   /** @type {object[]} */
   const matrix = [];
-  /** @type {object[]} */
-  const workspaceBCaptures = [];
   for (const record of records) {
     const event = record.event;
     if (event.kind === 'phase-observed' && event.observed) phase = event.phase;
-    else if (event.kind === 'capture-started') {
-      if (phase === 'matrix') matrix.push(event);
-      else if (phase === 'workspace-b') workspaceBCaptures.push(event);
-    }
+    else if (event.kind === 'capture-started' && phase === 'matrix') matrix.push(event);
   }
-  const [rootThreadHash, workspaceAHash, workspaceBHash] = await Promise.all([
-    hashProbeValue(runNonce, rootThreadId),
-    hashProbeValue(runNonce, workspaceA),
-    hashProbeValue(runNonce, workspaceB),
-  ]);
-  if (matrix.length !== 5 || matrix[0].threadHash !== rootThreadHash) {
+  if (matrix.length !== MATRIX_CAPTURES_EXPECTED + 1
+    || matrix[0].threadHash !== matrix[MATRIX_CAPTURES_EXPECTED].threadHash
+    || matrix[0].turnHash === matrix[MATRIX_CAPTURES_EXPECTED].turnHash) {
     throw probeError('PROBE_CONTEXT_MISMATCH', 'The durable captures do not correlate with the authoritative Root thread identity.');
   }
-  if (!matrix.every((event) => event.workspaceHash === workspaceAHash)) {
-    throw probeError('PROBE_CONTEXT_MISMATCH', 'The durable captures do not correlate with the authoritative workspace A.');
+}
+
+/**
+ * Requires the negative-control transcript to show the recorded tool-
+ * unavailable shape: zero nested `mcp_tool_call` items and at least one
+ * bounded excerpt that references the probe tool or server AND comes from a
+ * genuine failure surface. The failure surfaces are exactly: a top-level
+ * `error` frame; an `item.*` frame whose nested `item.type` is `error`; or
+ * an `item.*` frame whose nested `item.status` is `failed` or `error`. A
+ * successful or neutral `item.*` frame never satisfies the gate on its own,
+ * and a transient model or network error never mentions the probe tool, so
+ * the control must prove the model actually attempted the unavailable tool
+ * rather than failing for an unrelated reason — or that an MCP call was
+ * misclassified. Excerpts and their source tags live in memory only — never
+ * printed, persisted, or included in error messages — so nothing identifying
+ * is retained.
+ * @param {{frameTypes: Map<string, number>, nestedItemTypes?: Map<string, number>, excerpts?: {frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[]}} account @param {string} label
+ */
+export function assertToolUnavailableTranscript(account, label) {
+  const mcpToolCallItems = account.nestedItemTypes?.get('mcp_tool_call') ?? 0;
+  const errorFrames = account.frameTypes.get('error') ?? 0;
+  const matchedFailureExcerpts = (account.excerpts ?? []).filter((entry) => {
+    const failureSource = entry.frameType === 'error'
+      || entry.nestedItemType === 'error'
+      || entry.itemStatus === 'failed'
+      || entry.itemStatus === 'error';
+    return failureSource && PROBE_TOOL_REFERENCE.test(entry.excerpt);
+  }).length;
+  if (mcpToolCallItems !== 0 || matchedFailureExcerpts < 1) {
+    throw probeError(
+      'PROBE_NEGATIVE_CONTROL_SHAPE',
+      `${label}: the transcript does not show the tool-unavailable shape (zero mcp_tool_call items and a failing error/item excerpt referencing the probe tool or server); observed mcp_tool_call items=${mcpToolCallItems}, error=${errorFrames}, matching failure excerpts=${matchedFailureExcerpts}.`,
+    );
   }
-  if (workspaceBCaptures.length !== 1 || workspaceBCaptures[0].workspaceHash !== workspaceBHash) {
-    throw probeError('PROBE_CONTEXT_MISMATCH', 'The durable captures do not correlate with the authoritative workspace B.');
+}
+
+/**
+ * Requires the resume Host's stdout to re-emit exactly one `thread.started`
+ * frame whose thread id equals the id the driver parsed from the original
+ * conversation and resumed with — the CLI-level same-thread evidence, taken
+ * entirely within the stdout namespace. (The recorded namespace fact only
+ * separates stdout ids from the trusted `_meta` ids; it never says the
+ * resume's stdout id differs from the original stdout id.) Without this
+ * check a continuation with a missing, duplicated, or changed stdout id
+ * could pass solely on `_meta` hash equality. Messages carry counts and
+ * equality only — never the id values.
+ * @param {{threadIds: string[]}} account @param {string} rootThreadId
+ */
+export function assertResumeThreadIdentity(account, rootThreadId) {
+  if (account.threadIds.length !== 1) {
+    throw probeError('PROBE_HOST_FRAMES', `phase-matrix-resume: expected exactly one thread.started, observed ${account.threadIds.length}.`);
+  }
+  if (account.threadIds[0] !== rootThreadId) {
+    throw probeError('PROBE_HOST_FRAMES', 'phase-matrix-resume: the resume thread.started does not match the parsed Root thread id.');
   }
 }
 
@@ -378,14 +439,22 @@ export async function qualifyMcpContext(input) {
   const codexVersion = /** @type {RegExpMatchArray} */ (version.stdout.match(/codex-cli \S+/))?.[0] ?? 'codex-cli unknown';
   transcript(`qualify: canonical codex target pinned (${basename(canonicalCodexPath)}), ${codexVersion}`);
 
+  // Fail-closed acceptance pre-check for --ignore-rules: the Host argv below
+  // depends on the flag, so the parser must accept it before any phase runs.
+  // A rejection here fails the gate instead of misattributing the failure.
+  const flagCheck = runBounded(canonicalCodexPath, ['exec', '--ignore-rules', '--help'], { cwd: runDirectory, env: minimalEnv() });
+  const flagResult = await flagCheck.promise;
+  if (flagResult.code !== 0) {
+    throw probeError('PROBE_CODEX_FLAGS', `codex exec rejected --ignore-rules (exit ${flagResult.code}); the qualification fails closed.`);
+  }
+
   const isolatedCodexHome = join(runDirectory, 'codex-home');
   const isolatedHome = join(runDirectory, 'home');
   const isolatedTmp = join(runDirectory, 'tmp');
   const workspaceA = join(runDirectory, 'workspace-a');
-  const workspaceB = join(runDirectory, 'workspace-b');
   const marketplaceSlow = join(runDirectory, 'marketplace-tool-timeout-30');
   const marketplaceFast = join(runDirectory, 'marketplace-tool-timeout-2');
-  for (const directory of [isolatedCodexHome, isolatedHome, isolatedTmp, workspaceA, workspaceB]) {
+  for (const directory of [isolatedCodexHome, isolatedHome, isolatedTmp, workspaceA]) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (process.platform !== 'win32') await chmod(directory, 0o700);
   }
@@ -448,17 +517,35 @@ export async function qualifyMcpContext(input) {
    */
   const startHost = async (args, options) => {
     const target = await recheckCodex();
-    /** @type {{malformed:number, frameTypes:Map<string, number>, threadIds:string[]}} */
-    const account = { malformed: 0, frameTypes: new Map(), threadIds: [] };
+    /** @type {{malformed:number, frameTypes:Map<string, number>, nestedItemTypes:Map<string, number>, threadIds:string[], excerpts:{frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[]}} */
+    const account = { malformed: 0, frameTypes: new Map(), nestedItemTypes: new Map(), threadIds: [], excerpts: [] };
     const run = runBounded(target, args, {
       cwd: options.cwd,
       env: hostEnv,
+      deadlineMs: HOST_CONVERSATION_DEADLINE_MS,
       onStdoutLine: (line) => {
         try {
           const frame = JSON.parse(line);
           const kind = typeof frame?.type === 'string' ? frame.type : 'unknown';
           account.frameTypes.set(kind, (account.frameTypes.get(kind) ?? 0) + 1);
           if (kind === 'thread.started' && typeof frame.thread_id === 'string') account.threadIds.push(frame.thread_id);
+          // Codex JSONL reports MCP calls as item.* frames whose nested
+          // item.type is mcp_tool_call, so the nested vocabulary — not the
+          // top-level frame type — is what proves whether an MCP tool call
+          // existed. Nested types and statuses are bounded like excerpts and
+          // live in memory only.
+          const nestedItem = kind.startsWith('item.') && frame?.item && typeof frame.item === 'object' ? frame.item : null;
+          const nestedItemType = nestedItem && typeof nestedItem.type === 'string' ? nestedItem.type.slice(0, FRAME_EXCERPT_MAX_CHARS) : null;
+          const itemStatus = nestedItem && typeof nestedItem.status === 'string' ? nestedItem.status.slice(0, FRAME_EXCERPT_MAX_CHARS) : null;
+          if (nestedItemType !== null) {
+            account.nestedItemTypes.set(nestedItemType, (account.nestedItemTypes.get(nestedItemType) ?? 0) + 1);
+          }
+          // Excerpts stay bounded and in memory only; each carries its source
+          // (top-level frame type plus nested item type/status) so the
+          // negative-control gate can demand a genuine failure surface.
+          if ((kind === 'error' || kind.startsWith('item.')) && account.excerpts.length < FRAME_EXCERPTS_MAX) {
+            account.excerpts.push({ frameType: kind, nestedItemType, itemStatus, excerpt: line.slice(0, FRAME_EXCERPT_MAX_CHARS) });
+          }
         } catch { account.malformed += 1; }
       },
     });
@@ -489,12 +576,25 @@ export async function qualifyMcpContext(input) {
   };
 
   /**
-   * Fixed base argv for new conversations (plan-mandated shape).
+   * Fixed base argv for new conversations (amended positive shape: no
+   * --ignore-user-config, which skips the plugin configuration; --ignore-rules
+   * keeps rule isolation).
    * @param {string} workspace @param {string} prompt
    */
   const newConversationArgs = (workspace, prompt) => [
     'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
-    '--ignore-user-config', '-C', workspace, prompt,
+    '--ignore-rules', '-C', workspace, prompt,
+  ];
+
+  /**
+   * Negative-control argv: the same isolated marketplace and plugin, with
+   * --ignore-user-config added so the plugin configuration is provably
+   * skipped and the probe server cannot load.
+   * @param {string} workspace @param {string} prompt
+   */
+  const negativeControlArgs = (workspace, prompt) => [
+    'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+    '--ignore-rules', '--ignore-user-config', '-C', workspace, prompt,
   ];
 
   /** @type {{failed:true, error:unknown}|{failed:false, value:Record<string, boolean>}} */
@@ -519,9 +619,42 @@ export async function qualifyMcpContext(input) {
       throw probeError('PROBE_QUALIFICATION_UNAVAILABLE', 'qualification-unavailable: the isolated Codex home failed `codex login status`.');
     }
     await installMarketplace(runCodexCommand, marketplaceSlow, 'slow');
-    await observePhase('matrix');
+
+    // Phase 0: negative control — the same isolated marketplace and plugin,
+    // but --ignore-user-config skips the plugin configuration. Durable
+    // absence is exact: the driver snapshots the durable event log before
+    // and after this Host completes and requires zero `server-started` and
+    // zero `capture-started` events across that window before recording the
+    // `negative-control` phase marker (recorded by the driver alone).
+    const durableServerAndCaptureCounts = async () => {
+      const records = await durableEvents();
+      return {
+        serverStarted: records.filter((record) => record.event.kind === 'server-started').length,
+        captureStarted: records.filter((record) => record.event.kind === 'capture-started').length,
+      };
+    };
+    const windowBefore = await durableServerAndCaptureCounts();
+    const negativeHost = await startHost(negativeControlArgs(workspaceA, NEGATIVE_CONTROL_PROMPT), { cwd: workspaceA, label: 'phase-negative-control' });
+    const negativeResult = await negativeHost.promise;
+    assertConversationRan(negativeResult, negativeHost.account, 'phase-negative-control');
+    // The clean durable window alone cannot distinguish "config skipped" from
+    // "model never attempted the tool"; the transcript must show the recorded
+    // tool-unavailable shape (attempted, errored, never executed).
+    assertToolUnavailableTranscript(negativeHost.account, 'phase-negative-control');
+    if (negativeHost.account.threadIds.length !== 1) {
+      throw probeError('PROBE_HOST_FRAMES', `phase-negative-control: expected exactly one thread.started, observed ${negativeHost.account.threadIds.length}.`);
+    }
+    transcript(`phase-negative-control: completed frames=${frameSummary(negativeHost.account)}`);
+    const windowAfter = await durableServerAndCaptureCounts();
+    if (windowAfter.serverStarted !== windowBefore.serverStarted || windowAfter.captureStarted !== windowBefore.captureStarted) {
+      await markPhaseFailed('negative-control');
+      throw probeError('PROBE_NEGATIVE_CONTROL_FAILED', 'The negative-control Host durably loaded or called the probe server under --ignore-user-config.');
+    }
+    await observePhase('negative-control');
+    transcript('phase-negative-control: window free of server/capture events; marker recorded');
 
     // Phase 1: the scripted matrix conversation in workspace A.
+    await observePhase('matrix');
     const matrixHost = await startHost(newConversationArgs(workspaceA, MATRIX_PROMPT), { cwd: workspaceA, label: 'phase-matrix' });
     const matrixResult = await matrixHost.promise;
     assertConversationRan(matrixResult, matrixHost.account, 'phase-matrix');
@@ -533,24 +666,39 @@ export async function qualifyMcpContext(input) {
     await requireExactCaptureCount(MATRIX_CAPTURES_EXPECTED, 'phase-matrix');
     await trackServerProcesses(true);
 
-    // Phase 2: noninteractive continuation in workspace B via exec resume --all.
-    await observePhase('workspace-b');
+    // Phase 2: state-machine step 2 — the Root resume in workspace A via
+    // exec resume --all. Requires exit 0, the same trusted thread_id, a
+    // different turn_id, and its durable event, proven hash-based between
+    // the durable captures below. Recorded 0.154.0 fact: the stdout
+    // `thread.started` id (the id this driver resumes with) and the trusted
+    // `_meta` turn-metadata thread id are distinct namespaces, so the
+    // same-thread proof is never taken against the stdout id.
     const resumeArgs = [
       'exec', 'resume', '--json', '--all', '--skip-git-repo-check',
-      '--dangerously-bypass-approvals-and-sandbox', '--ignore-user-config', rootThreadId, WORKSPACE_B_PROMPT,
+      '--dangerously-bypass-approvals-and-sandbox', '--ignore-rules', rootThreadId, ROOT_RESUME_PROMPT,
     ];
-    const resumeHost = await startHost(resumeArgs, { cwd: workspaceB, label: 'phase-workspace-b' });
+    const resumeHost = await startHost(resumeArgs, { cwd: workspaceA, label: 'phase-matrix-resume' });
     const resumeResult = await resumeHost.promise;
-    assertConversationRan(resumeResult, resumeHost.account, 'phase-workspace-b');
-    await requireExactCaptureCount(MATRIX_CAPTURES_EXPECTED + 1, 'phase-workspace-b');
-    // The captured metadata must be the metadata of the Host facts this run
+    assertConversationRan(resumeResult, resumeHost.account, 'phase-matrix-resume');
+    // CLI-level same-thread evidence before the hash-based correlation: the
+    // resume stdout must re-emit exactly the id this driver resumed with.
+    assertResumeThreadIdentity(resumeHost.account, rootThreadId);
+    await requireExactCaptureCount(MATRIX_CAPTURES_EXPECTED + 1, 'phase-matrix-resume');
+    // durableEvents() returns full records; the hash checks below compare
+    // the capture event bodies themselves.
+    const captureEvents = (await durableEvents())
+      .filter((record) => record.event.kind === 'capture-started')
+      .map((record) => record.event);
+    if (captureEvents[MATRIX_CAPTURES_EXPECTED].threadHash !== captureEvents[0].threadHash) {
+      throw probeError('PROBE_CONTEXT_MISMATCH', 'phase-matrix-resume: the resume capture does not sit on the trusted Root thread.');
+    }
+    if (captureEvents[MATRIX_CAPTURES_EXPECTED].turnHash === captureEvents[0].turnHash) {
+      throw probeError('PROBE_CONTEXT_MISMATCH', 'phase-matrix-resume: the resume turn identity did not change from the Root capture.');
+    }
+    transcript('phase-matrix-resume: same-thread/different-turn verified by durable hash');
+    // The captured metadata must be the metadata of the Host fact this run
     // actually produced, not merely complete, stable, and distinct values.
-    await assertAuthoritativeIdentityCorrelation(await durableEvents(), {
-      runNonce,
-      rootThreadId,
-      workspaceA: await realpath(workspaceA),
-      workspaceB: await realpath(workspaceB),
-    });
+    await assertAuthoritativeIdentityCorrelation(await durableEvents());
     await trackServerProcesses(true);
 
     // Phase 3: SIGINT delivery to a held call.
@@ -564,9 +712,14 @@ export async function qualifyMcpContext(input) {
     try { process.kill(sigintHost.pid, 'SIGINT'); } catch (error) {
       throw probeError('PROBE_SIGNAL_FAILED', `phase-sigint: SIGINT could not be delivered (${errorCode(error)}).`);
     }
+    // One 10-second window covers BOTH the exit and the settlement (plan
+    // phases 3-4): the deadline is captured at signal delivery, and the
+    // settlement wait receives only the budget the exit wait did not
+    // consume, so cancellation can never be accepted far outside the window.
+    const sigintDeadline = Date.now() + SIGNAL_GRACE_MS;
     let cancelDelivered = await waitForExit(sigintHost.pid, SIGNAL_GRACE_MS);
     if (cancelDelivered) {
-      cancelDelivered = await settlementArrived(sigintCallNonce, SIGNAL_GRACE_MS, durableEvents);
+      cancelDelivered = await settlementArrived(sigintCallNonce, Math.max(0, sigintDeadline - Date.now()), durableEvents);
     } else {
       await stopProcess(sigintHost.pid, 'SIGKILL', 5_000, sigintHost.identity);
       transcript('phase-sigint: host ignored SIGINT; exact pid SIGKILLed and cancel assertion failed');
@@ -586,8 +739,13 @@ export async function qualifyMcpContext(input) {
     try { process.kill(sigkillHost.pid, 'SIGKILL'); } catch (error) {
       throw probeError('PROBE_SIGNAL_FAILED', `phase-sigkill: SIGKILL could not be delivered (${errorCode(error)}).`);
     }
+    // One 10-second window covers BOTH the exit and the settlement (plan
+    // phase 4): the settlement wait receives only the budget the exit wait
+    // did not consume, so connection loss can never be accepted far outside
+    // the window.
+    const sigkillDeadline = Date.now() + SIGNAL_GRACE_MS;
     let connectionLossDelivered = await waitForExit(sigkillHost.pid, SIGNAL_GRACE_MS)
-      && await settlementArrived(sigkillCallNonce, SIGNAL_GRACE_MS, durableEvents);
+      && await settlementArrived(sigkillCallNonce, Math.max(0, sigkillDeadline - Date.now()), durableEvents);
     if (isProcessAlive(sigkillHost.pid)) {
       await stopProcess(sigkillHost.pid, 'SIGKILL', 5_000, sigkillHost.identity);
       connectionLossDelivered = false;
@@ -630,7 +788,14 @@ export async function qualifyMcpContext(input) {
       await stopProcess(timeoutHost.pid, 'SIGKILL', 5_000, timeoutHost.identity);
       shortTimeoutSettled = false;
     } else {
-      shortTimeoutSettled = await timeoutSettlementArrived(timeoutCallNonce, durableEvents);
+      // The 30-second gate covers exit AND settlement (plan phase 6): the
+      // settlement check receives only the ceiling budget the exit race did
+      // not consume, so a late settlement can never be accepted outside it.
+      shortTimeoutSettled = await timeoutSettlementArrived(
+        timeoutCallNonce,
+        Math.max(0, heldCallStartedAt + HOST_TIMEOUT_GRACE_MS - Date.now()),
+        durableEvents,
+      );
     }
     transcript(`phase-short-timeout: shortTimeoutSettled=${shortTimeoutSettled}`);
     if (!shortTimeoutSettled) await markPhaseFailed('short-timeout');
@@ -816,11 +981,14 @@ async function settlementArrived(callNonce, graceMs, durableEvents) {
  * Like settlementArrived, but additionally requires the settlement to be
  * attributable to the configured tool timeout: the durable gap between the
  * held call's start and its settlement must reach the timeout floor, so an
- * abort delivered near-instantly for any other reason never qualifies.
+ * abort delivered near-instantly for any other reason never qualifies. The
+ * caller supplies the remaining ceiling budget so exit and settlement share
+ * one 30-second window instead of stacked fresh waits.
  * @param {string} callNonce
+ * @param {number} graceMs
  * @param {() => Promise<{event:{kind:string, callNonce?:string, settlement?:string}, timestamp:string}[]>} durableEvents
  */
-async function timeoutSettlementArrived(callNonce, durableEvents) {
+async function timeoutSettlementArrived(callNonce, graceMs, durableEvents) {
   try {
     await waitUntil(async () => {
       const records = await durableEvents();
@@ -829,7 +997,7 @@ async function timeoutSettlementArrived(callNonce, durableEvents) {
       if (!started || !settled) return false;
       const gapMs = Date.parse(settled.timestamp) - Date.parse(started.timestamp);
       return gapMs >= FAST_TOOL_TIMEOUT_MS - TOOL_TIMEOUT_SCHEDULING_TOLERANCE_MS;
-    }, SIGNAL_GRACE_MS, '');
+    }, graceMs, '');
     return true;
   } catch {
     return false;
