@@ -142,6 +142,8 @@ git commit -m "fix: lengthen canonical foreground observations"
 - Modify: `package.json`
 - Modify: `npm-shrinkwrap.json`
 
+> **Resumption note:** This task's rerun is a delta amendment of the already-committed harness (commits 56aff12 and b5af4c5 created the probe files, tests, SDK dependency, and the failure report). Step 2's RED expectation applied only at that original build; on the rerun, RED/GREEN evidence comes from the changed tests for the amended schema, argv, and phases (TDD on the delta).
+
 - [ ] **Step 1: Install the probe/runtime SDK dependency**
 
 Run: `npm install --save-exact @modelcontextprotocol/sdk@1.30.0`
@@ -159,7 +161,7 @@ Expected: `package.json` contains production dependency `"@modelcontextprotocol/
 <output>/plugins/zcode-mcp-context-probe/skills/context/{SKILL.md,agents/openai.yaml}
 ```
 
-The marketplace name is `zcode-mcp-probe`, its sole local plugin is `zcode-mcp-context-probe`, and the only Skill is explicitly invoked as `$zcode-mcp-context-probe:context`. The generated descriptor uses the validated absolute server path, so its SDK resolves from this worktree; the temporary marketplace never adds an MCP descriptor to the production plugin before the gate. Tests parse the generated marketplace, resolve its local source path, validate both manifests, and reject output outside the supplied empty mode-0700 directory.
+The marketplace name is `zcode-mcp-probe`, its sole local plugin is `zcode-mcp-context-probe`, and the only Skill is explicitly invoked as `$zcode-mcp-context-probe:context`. The generated descriptor uses the validated absolute server path, so its SDK resolves from this worktree; the temporary marketplace never adds an MCP descriptor to the production plugin before the gate. Tests parse the generated marketplace, resolve its local source path, validate both manifests, and reject output outside the supplied empty mode-0700 directory. The A/B negative/positive outcome itself proves the tested Host loads the MCP server declared by the plugin-root `.mcp.json` manifest (spec:147); the tests assert this via the A/B combination rather than by filename inference.
 
 The probe modules expose these exact testable interfaces:
 
@@ -177,7 +179,7 @@ These are interface declarations, not implementation snippets. Each function's c
 
 Run: `node --test tests/mcp-context-probe.test.mjs`
 
-Expected: FAIL because the installable fixture, durable observer, and collector do not exist.
+Expected: FAIL because the installable fixture, durable observer, and collector do not exist. (Original build only; on the rerun see the resumption note above.)
 
 - [ ] **Step 3: Write the opt-in qualification assertion test**
 
@@ -212,7 +214,7 @@ const tools = [
 ];
 ```
 
-Read metadata from `request.params._meta`; never accept identity arguments. Hash raw values immediately with the per-run nonce and retain no raw value. Compare Root thread/turn, initial Child, later same-Child turn, and two concurrent children by hash equality/inequality. `rootIdentityComplete` means the Root call contains the required trusted thread/turn fields; `serverLoadedWithConfig` is true only when the MCP server's first durable event proves the isolated plugin configuration was loaded. `metadataChangesAcrossTurns` proves that the Host supplies a different current-turn identity after the follow-up; it does not claim that the Host itself supplies workspace or rejects a replayed stale request. Every handler writes its start and settlement event through the durable observer before returning. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. The short-timeout fixture uses `tool_timeout_sec: 2` and `shortTimeoutSettled` is true only when the final reducer sees an abort/settled event for that exact held-call nonce after its start. `connectionLossDelivered` is likewise reduced from durable server-side settlement written before process exit. Workspace derivation and stale/wrong metadata rejection remain local `mcp-invocation-context` and authority-join contract tests in Task 4, using Root-created preparation/binding plus exact Host/app-server Child metadata.
+Read metadata from `request.params._meta`; never accept identity arguments. Hash raw values immediately with the per-run nonce and retain no raw value. Compare Root thread/turn, initial Child, later same-Child turn, and two concurrent children by hash equality/inequality. `rootIdentityComplete` means the Root call contains the required trusted thread/turn fields; `serverLoadedWithConfig` is true only when the MCP server's first durable event proves the isolated plugin configuration was loaded. The two turn-change booleans have exact sinks: `laterTurnDistinct` is the same-Child followup turn within the matrix conversation — its capture carries the initial Child capture's threadHash with a different turnHash — and `metadataChangesAcrossTurns` is the Step 6 state-machine step-2 Root resume capture — it carries the Root capture's threadHash with a different turnHash. Neither claims that the Host itself supplies workspace or rejects a replayed stale request. Every handler writes its start and settlement event through the durable observer before returning. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. The short-timeout fixture uses `tool_timeout_sec: 2` and `shortTimeoutSettled` is true only when the final reducer sees an abort/settled event for that exact held-call nonce after its start. `connectionLossDelivered` is likewise reduced from durable server-side settlement written before process exit. Workspace derivation and stale/wrong metadata rejection remain local `mcp-invocation-context` and authority-join contract tests in Task 4, using Root-created preparation/binding plus exact Host/app-server Child metadata.
 
 The source `.mcp.json` is only a template. `build-fixture.mjs` emits the plugin-root descriptor declaring only this probe server with `node <absolute-server>`, starts with `tool_timeout_sec: 30`, and can emit a separate 2-second marketplace. The fixture identity cannot collide with production `zcode`.
 
@@ -241,14 +243,17 @@ exec resume --json --all --skip-git-repo-check
   --dangerously-bypass-approvals-and-sandbox --ignore-rules <root-thread-id> <prompt>
 ```
 
+`--ignore-rules` acceptance on 0.154.0 is fail-closed: if a Host spawn rejects the flag, that spawn failure fails the gate. It may be cheaply pre-checked by including the flag in the version/preflight spawn.
+
 The state machine is exact:
 
 ```js
 const MATRIX_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context once in Root. Spawn one Child, have it call capture_context, wait for it, then follow up that exact Child and have it call capture_context again. Then spawn two new Children concurrently and have each call capture_context once. Wait for both. Do not call any other MCP tool.';
+const NEGATIVE_CONTROL_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
 const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_until_cancelled exactly once. Wait for that tool and do nothing else.';
 ```
 
-Before the positive matrix, run a negative-control Host with the same isolated marketplace and plugin but add `--ignore-user-config`; require no `server-started` event and a bounded JSONL tool-unavailable outcome. Remove that Host, then run the positive matrix without `--ignore-user-config`; require both a `server-started` event and a successful probe tool call before `serverLoadedWithConfig` can be true. The assertion is therefore the A/B combination, not startup alone: the same fixture is absent under the flag and callable without it. This proves the failure is configuration loading, not fixture packaging.
+Before the positive matrix, run a negative-control Host with the same isolated marketplace and plugin but add `--ignore-user-config`, driven with `NEGATIVE_CONTROL_PROMPT`. The durable absence proof is exact: the driver snapshots the durable event log before and after the negative-control Host completes and requires zero `server-started` and zero `capture-started` events across that window; only then does it record the durable phase marker `negative-control` (recorded by the driver like every other phase, and by nothing else). The bounded JSONL tool-unavailable outcome of that Host is still required. Remove that Host, then run the positive matrix without `--ignore-user-config`; require both a `server-started` event and a successful probe tool call before `serverLoadedWithConfig` can be true. The assertion is therefore the A/B combination, not startup alone: the same fixture is absent under the flag and callable without it. This proves the failure is configuration loading, not fixture packaging.
 
 1. Run one workspace-A `codex exec` prompt that requires Root `capture_context`, one Child capture, `followup_task` to that exact Child for a second capture, and two additional concurrently spawned Child captures. Parse stdout strictly as bounded JSONL; require exactly one `thread.started.thread_id`, zero malformed frames, exit 0, and the corresponding durable event count before continuing.
 2. Launch `codex exec resume ... --all <root-thread-id>` with cwd workspace A and require one Root `capture_context`; require exit 0, the same `thread_id`, a different `turn_id`, and its durable event.
@@ -293,7 +298,7 @@ git commit -m "test: record unsupported codex mcp context"
 
 The failure branch must prove `git status --short` contains no production root `.mcp.json`, no `skills/*-mcp`, no `scripts/zcode-mcp-server.mjs`, and no `qualification/mcp-context.json`. Amend the design with the observed bounded fact before any MCP production work. The success branch alone creates and commits `qualification/mcp-context.json`.
 
-If all assertions pass, record the supported Codex version, exact install/launch commands, exact trusted metadata field names and JSON types, workspace normalization observed, abort delivery ordering, timeout result, and disconnect result in the qualification document without recording identity values. Generate and commit `qualification/mcp-context.json` with exact keys `{version:1,status:'qualified',codexVersion,contextSchemaVersion,metadataFields,observedAt}` and no identity values. Replace every `QUALIFIED_*` token in Tasks 3–10 with those exact facts, add exact expected error/result shapes, and obtain an independent plan re-review before continuing.
+If all assertions pass, record the supported Codex version, exact install/launch commands, exact trusted metadata field names and JSON types, abort delivery ordering, timeout result, and disconnect result in the qualification document without recording identity values. Generate and commit `qualification/mcp-context.json` with exact keys `{version:1,status:'qualified',codexVersion,contextSchemaVersion,metadataFields,observedAt}` and no identity values. Replace every `QUALIFIED_*` token in Tasks 3–10 with those exact facts, add exact expected error/result shapes, and obtain an independent plan re-review before continuing.
 
 - [ ] **Step 8: Commit the passing probe harness and evidence contract**
 
@@ -461,9 +466,10 @@ The exact metadata extractor remains intentionally named with placeholders until
 
 ```js
 const raw = request.params?._meta;
+const turn = raw?.['x-codex-turn-metadata'];
 const identity = {
-  threadId: raw.QUALIFIED_THREAD_FIELD,
-  turnId: raw.QUALIFIED_TURN_FIELD,
+  threadId: turn.QUALIFIED_THREAD_FIELD,   // recorded: thread_id (string)
+  turnId: turn.QUALIFIED_TURN_FIELD,       // recorded: turn_id (string)
 };
 ```
 
@@ -870,7 +876,7 @@ ZCODE_CODEX_MCP_E2E=1 ZCODE_INSTALLED_MCP_RESULT=/nonexistent \
 
 Expected: FAIL with `Installed MCP qualification result is unavailable`.
 
-Then implement `tools/qualify-installed-mcp.mjs`. It packs and installs the exact clean HEAD as a temporary marketplace/plugin into a fresh mode-0700 Codex home, canonicalizes and pins the externally supplied `--codex` target exactly as Task 2, and securely copies/removes only `auth.json` from required `--source-codex-home` using the same qualification-unavailable and cleanup rules. Credentials are never included in production MCP `env_vars`. It lists exactly eight production tools and invokes all eight against fake/preflight-only state so no provider request is possible. It then runs the exact Task-7 `$zcode:rescue-mcp` scenario and deliberate same-Child shell-misroute scenario.
+Then implement `tools/qualify-installed-mcp.mjs`. It packs and installs the exact clean HEAD as a temporary marketplace/plugin into a fresh mode-0700 Codex home, canonicalizes and pins the externally supplied `--codex` target exactly as Task 2, and securely copies/removes only `auth.json` from required `--source-codex-home` using the same qualification-unavailable and cleanup rules. Every Task 10 real-Host spawn uses the amended positive argv exactly like revised Task 2: no `--ignore-user-config`, with `--ignore-rules`. Credentials are never included in production MCP `env_vars`. It lists exactly eight production tools and invokes all eight against fake/preflight-only state so no provider request is possible. It then runs the exact Task-7 `$zcode:rescue-mcp` scenario and deliberate same-Child shell-misroute scenario.
 
 For the real Rescue chain, the qualification server writes a mode-0600 event for every call containing `{runNonce, callNonce, toolName, metadataHash, settlement}` and returns that `callNonce` in `structuredContent` for this opt-in qualification host. The driver collects the Child's `codex exec --json` transcript and requires one matching `custom_tool_call` with `toolName:'invoke_prepared_rescue'`, the same Child thread/turn as the server event's metadata hash, and a returned `callNonce` equal to the server event. It separately requires the v5 preparation record to name `foregroundAdapter:'mcp'` and the exact existing Child agent path; preparation contains no metadata hash and no new durable identity field. The correlation is solely the qualified Host transcript's Child thread/turn plus the server call nonce and metadata hash, all retained in the temporary qualification evidence and omitted from the final boolean result. The negative shell case requires a `custom_tool_call` for the shell launcher, a server/companion `RESCUE_FOREGROUND_ADAPTER_MISMATCH`, and no reservation/provider event. `mcpToolObserved` is true only when all these joins hold; a generated Role string or handler unit test alone cannot set it. After all Host/server processes exit it writes only booleans and tool-name/schema digests to `<run>/result.json` mode 0600.
 
