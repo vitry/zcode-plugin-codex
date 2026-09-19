@@ -12,7 +12,7 @@
 
 **Qualification amendment:** Codex CLI 0.154.0 qualification showed that `--ignore-user-config` skips the `$CODEX_HOME/config.toml` that contains marketplace/plugin registration, so it also prevents the installed plugin MCP server from loading. Positive Host runs use an isolated `CODEX_HOME` with copied auth and plugin config, omit `--ignore-user-config`, and use `--ignore-rules` if rule isolation is needed. The negative control intentionally uses `--ignore-user-config` and must show no probe server. The official docs define the flag as skipping `$CODEX_HOME/config.toml` and document plugin marketplace configuration separately.
 
-**Current gate status:** The real-Host qualification is currently unqualified; Tasks 3–10 are paused. Any later “Expected: PASS” below describes the acceptance gate for a future rerun, not a claim that the gate has passed today. The shell adapter work remains independently shippable.
+**Current evidence status:** Plugin loading and per-call identity visibility are proven on Codex CLI 0.154.0, but the metadata-to-app-server/Hook authority namespace join is not yet qualified. Lifecycle behavior is characterized for CLI SIGINT, CLI SIGKILL, and plugin `tool_timeout_sec`; app-server `turn/interrupt` and direct-config timeout remain open. Task 3 and Task 5 may proceed immediately. Task 4 waits for the identity namespace record. Task 6 begins with a bounded lifecycle-feasibility spike and may create the production server only after selecting strategies. Packaging, MCP Skill enablement, marketplace publication, and final release remain gated by Tasks 8–10.
 
 ---
 
@@ -20,8 +20,10 @@
 
 - Work only in the dedicated `feat/dual-foreground-wait-adapters` worktree.
 - Preserve the existing binding, placement, permission, Tracked Job, cancellation, and lifecycle modules as the sole authorities. MCP is transport and waiting only.
-- Task 2 is a hard real-Host gate. Do not execute Tasks 3–10 unless every required probe assertion passes. If it fails, keep the shell repair, leave MCP Skills unshipped, and amend the design before further implementation.
-- Tasks 3–10 are a conditional implementation blueprint, not an executable continuation of Task 2 as currently written. After the real-Host probe passes, replace every `QUALIFIED_*` symbol below with the recorded field name/shape and timeout/cancellation behavior, add the redacted qualification record, and obtain a fresh independent review of this plan before Task 3. No worker may infer those values while implementing.
+- Task 2 separates qualification from characterization. Trustworthy identity/configuration assertions are pass/fail authority gates. Cancellation, process loss, transport close, and timeout cases record one closed observed outcome each; they are not forced to reduce to `true` or to a presumed `AbortSignal` mechanism.
+- Task 3 and Task 5 are transport/authority independent and may continue now. Task 4 requires the completed identity namespace record. Task 6 consumes characterization observations, runs a bounded feasibility spike, and freezes selected lifecycle strategies before production server work. Tasks 9–10 remain the hard packaging/release gate.
+- Characterization may change mechanisms but may not delete or weaken any spec release outcome. If no branch proves an outcome, record `release-blocked`; do not redefine the outcome as optional or best effort.
+- No worker may preselect inner `thread_id`, envelope `threadId`, `session_id`, or another metadata field before the namespace characterization proves its exact relation to app-server/Hook authority. Workspace never comes from `_meta`.
 - Never derive MCP authority from tool arguments, server cwd, startup environment, latest-record lookup, or uniqueness assumptions.
 - The MCP server name is `zcode_companion`; raw tool names remain the eight names in the spec. Skill prose may refer to their host-exposed `mcp__zcode_companion__...` names only in generated adapter regions.
 - Use RED → GREEN for every behavior task. Commit after each task.
@@ -40,17 +42,20 @@
 | `scripts/lib/rescue-preparation.mjs` | Version-5 adapter-bearing preparation with v3/v4 shell compatibility |
 | `scripts/lib/rescue-route-planner.mjs` | Admit v5 without changing route or binding selection semantics |
 | `scripts/lib/invocation.mjs` | Persist and atomically consume the originating Rescue adapter on choice |
-| `scripts/lib/mcp-invocation-context.mjs` | Parse and brand trusted per-call thread/turn metadata; derive workspace only through the Root/Child authority join |
+| `scripts/lib/mcp-invocation-context.mjs` | Parse only namespace-qualified per-call identity fields and resolve branded Root/Child authority plus workspaces |
+| `scripts/lib/mcp-lifecycle-controller.mjs` | Adapt characterized explicit-interrupt, Host-loss, and timeout observations to existing lifecycle seams |
 | `scripts/lib/direct-invocation-result.mjs` | One shell/MCP rendering and control-outcome mapping |
 | `scripts/lib/codex-app-server.mjs` | Bounded current-Child-turn Host correlation used by MCP Rescue preflight |
 | `scripts/zcode-companion.mjs` | Existing deep entry; adapter and trusted-turn revalidation before atomic consume |
 | `scripts/zcode-mcp-server.mjs` | Long-lived stdio MCP server with fixed empty-input tool schemas |
 | `.mcp.json` | `zcode_companion` server declaration and 100-hour production tool ceiling |
-| `tools/mcp-context-probe/server.mjs` | Disposable real-Host metadata/cancellation/timeout qualification server |
+| `tools/mcp-context-probe/server.mjs` | Disposable real-Host identity and lifecycle-characterization server |
 | `tools/mcp-context-probe/build-fixture.mjs` | Build an installable temporary probe-only plugin, never the production root |
 | `tools/mcp-context-probe/qualify.mjs` | Drive and collect the repeatable real-Host qualification matrix |
 | `tools/mcp-context-probe/observer.mjs` | Mode-0600 append-only evidence surviving server disconnect/exit |
-| `tests/e2e/codex-mcp-context-e2e.test.mjs` | Opt-in real-Host gate; no provider/ZCode task execution |
+| `tests/e2e/codex-mcp-context-e2e.test.mjs` | Opt-in real-Host identity gate and closed lifecycle-observation validation; no provider/ZCode task execution |
+| `qualification/mcp-context.json` | Redacted qualified identity/configuration facts |
+| `qualification/mcp-lifecycle.json` | Redacted Host lifecycle observations and selected implementation strategy |
 | `tests/mcp-*.test.mjs` | Unit/contract tests for metadata, result mapping, schemas, and cancellation |
 | `tests/rescue-preparation.test.mjs`, `tests/invocation.test.mjs` | Version-5 and pending-choice adapter contracts |
 | `tests/skills-contracts.test.mjs`, `tests/codex-rescue-qualification.test.mjs` | Generated Skill/Role parity and exact Child assignment behavior |
@@ -123,7 +128,7 @@ git add skills/rescue/SKILL.md skills/review/SKILL.md skills/adversarial-review/
 git commit -m "fix: lengthen canonical foreground observations"
 ```
 
-## Task 2: Prove the real Codex MCP invocation contract
+## Task 2: Qualify invocation identity and characterize Host lifecycle behavior
 
 **Files:**
 - Create: `tools/mcp-context-probe/.codex-plugin/plugin.json`
@@ -132,6 +137,8 @@ git commit -m "fix: lengthen canonical foreground observations"
 - Create: `tools/mcp-context-probe/.mcp.json`
 - Create: `tools/mcp-context-probe/skills/context/SKILL.md`
 - Create: `tools/mcp-context-probe/skills/context/agents/openai.yaml`
+- Create: `tools/mcp-context-probe/hooks/hooks.json`
+- Create: `tools/mcp-context-probe/hook-observer.mjs`
 - Create: `tools/mcp-context-probe/build-fixture.mjs`
 - Create: `tools/mcp-context-probe/qualify.mjs`
 - Create: `tools/mcp-context-probe/observer.mjs`
@@ -139,10 +146,13 @@ git commit -m "fix: lengthen canonical foreground observations"
 - Create: `tests/mcp-context-probe.test.mjs`
 - Create: `docs/qualification/zcode-mcp-context.md`
 - Create: `qualification/mcp-context.json`
+- Create: `qualification/mcp-lifecycle.json`
 - Modify: `package.json`
 - Modify: `npm-shrinkwrap.json`
 
-> **Resumption note:** This task's rerun is a delta amendment of the already-committed harness (commits 56aff12 and b5af4c5 created the probe files, tests, SDK dependency, and the failure report). Step 2's RED expectation applied only at that original build; on the rerun, RED/GREEN evidence comes from the changed tests for the amended schema, argv, and phases (TDD on the delta).
+> **Resumption note:** This task's rerun is a delta amendment of the already-committed harness (commits 56aff12, b5af4c5, b9244a0, and 7a10934 created and hardened the probe). The rerun must preserve the already-proven loading/distinctness facts, add authority namespace characterization, and replace the erroneous all-true lifecycle gate with observations plus later feasibility-based strategy selection. RED/GREEN evidence comes from tests for those deltas.
+
+> **Current checkpoint:** Do not recreate the SDK dependency or original harness files from scratch. Begin with RED delta tests for the result schema, fixture hook/equality matrix, app-server `turn/interrupt`, and skill-only direct-config timeout case. Because prior run directories were securely removed and no machine artifact remains, run the amended driver through its full matrix once after those changes; the rerun regenerates A/B, distinctness, SIGINT, SIGKILL, and plugin-timeout evidence under one nonce so the equality matrix and two records have a single provenance. Task 3 and Task 5 may run independently in parallel. Do not start Task 4 until `qualification/mcp-context.json` records a proven authority namespace.
 
 - [ ] **Step 1: Install the probe/runtime SDK dependency**
 
@@ -157,16 +167,19 @@ Expected: `package.json` contains production dependency `"@modelcontextprotocol/
 ```text
 <output>/.agents/plugins/marketplace.json
 <output>/plugins/zcode-mcp-context-probe/.codex-plugin/plugin.json
-<output>/plugins/zcode-mcp-context-probe/.mcp.json
 <output>/plugins/zcode-mcp-context-probe/skills/context/{SKILL.md,agents/openai.yaml}
+<output>/plugins/zcode-mcp-context-probe/hooks/hooks.json
+<output>/plugins/zcode-mcp-context-probe/hook-observer.mjs
 ```
 
-The marketplace name is `zcode-mcp-probe`, its sole local plugin is `zcode-mcp-context-probe`, and the only Skill is explicitly invoked as `$zcode-mcp-context-probe:context`. The generated descriptor uses the validated absolute server path, so its SDK resolves from this worktree; the temporary marketplace never adds an MCP descriptor to the production plugin before the gate. Tests parse the generated marketplace, resolve its local source path, validate both manifests, and reject output outside the supplied empty mode-0700 directory. The A/B negative/positive outcome itself proves the tested Host loads the MCP server declared by the plugin-root `.mcp.json` manifest (spec:147); the tests assert this via the A/B combination rather than by filename inference.
+`mode:'plugin-server'` additionally emits `<plugin>/.mcp.json`. `mode:'skill-only'` must not emit that file. Fixture tests assert presence in plugin-server mode and `ENOENT` in skill-only mode; this absence is required for the direct-config timeout differential.
+
+The marketplace name is `zcode-mcp-probe`, its sole local plugin is `zcode-mcp-context-probe`, and the only Skill is explicitly invoked as `$zcode-mcp-context-probe:context`. The fixture hook records salted equality evidence for `SessionStart`, `UserPromptSubmit`, and `SubagentStart` fields through the same locked observer; it never records raw IDs, cwd, prompt, or task. In plugin-server mode, the descriptor uses the validated absolute server path so its SDK resolves from this worktree; the temporary marketplace never adds an MCP descriptor to the production plugin before the gate. Tests parse the generated marketplace, resolve its local source path, validate manifests/hooks and mode-specific descriptor presence, and reject output outside the supplied empty mode-0700 directory. The A/B negative/positive outcome itself proves the tested Host loads the MCP server declared by the plugin-root `.mcp.json` manifest (spec:147); the tests assert this via the A/B combination rather than by filename inference.
 
 The probe modules expose these exact testable interfaces:
 
 ```js
-export declare function buildProbeMarketplace(input: { output:string, server:string, toolTimeoutSec:2|30 }): Promise<void>;
+export declare function buildProbeMarketplace(input: { output:string, server:string, toolTimeoutSec:2|30, mode:'plugin-server'|'skill-only' }): Promise<void>;
 export declare function appendProbeEvent(input: { runDirectory:string, runNonce:string, event:ProbeEvent }): Promise<void>;
 export declare function readProbeEvents(input: { runDirectory:string, runNonce:string }): Promise<ProbeEvent[]>;
 export declare function reduceProbeResult(input: { runDirectory:string, runNonce:string }): Promise<ProbeResult>;
@@ -181,26 +194,58 @@ Run: `node --test tests/mcp-context-probe.test.mjs`
 
 Expected: FAIL because the installable fixture, durable observer, and collector do not exist. (Original build only; on the rerun see the resumption note above.)
 
-- [ ] **Step 3: Write the opt-in qualification assertion test**
+- [ ] **Step 3: Replace the all-true gate with qualified facts and closed observations**
 
 The test must skip unless `ZCODE_CODEX_MCP_E2E=1`; when enabled it reads only a private probe artifact path supplied in `ZCODE_MCP_PROBE_RESULT` and validates this closed, redacted shape:
 
 ```js
-assert.deepEqual(Object.keys(result).sort(), [
-  'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
-  'serverLoadedWithConfig', 'shortTimeoutSettled',
+assert.deepEqual(Object.keys(result), ['context', 'lifecycle']);
+assert.deepEqual(result.context.assertions, {
+  identityFieldsVisible: true,
+  identityNamespaceQualified: true,
+  laterTurnDistinct: true,
+  concurrentChildrenDistinct: true,
+  metadataChangesAcrossTurns: true,
+  serverLoadedWithConfig: true,
+});
+assert.match(result.context.authorityFields.rootThread, /^_meta\./);
+assert.match(result.context.authorityFields.childThread, /^_meta\./);
+assert.match(result.context.authorityFields.turn, /^_meta\./);
+const threadCandidates = ['envelopeThreadId', 'innerSessionId', 'innerThreadId'];
+const rootAuthorities = ['appServerThreadId', 'hookSessionId'];
+const childAuthorities = ['appServerThreadId', 'hookSessionId', 'hookAgentId', 'returnedChildHandle'];
+const turnAuthorities = ['appServerTurnId', 'hookTurnId'];
+const equalityKey = (scope, candidate, authority) => `${scope}:${candidate}==${authority}`;
+const expectedEqualityKeys = [
+  ...threadCandidates.flatMap((candidate) => rootAuthorities.map((authority) => equalityKey('root', candidate, authority))),
+  ...threadCandidates.flatMap((candidate) => childAuthorities.map((authority) => equalityKey('child', candidate, authority))),
+  ...turnAuthorities.map((authority) => equalityKey('root', 'innerTurnId', authority)),
+  ...turnAuthorities.map((authority) => equalityKey('child', 'innerTurnId', authority)),
+].sort();
+assert.deepEqual(Object.keys(result.context.equalityMatrix).sort(), expectedEqualityKeys);
+for (const value of Object.values(result.context.equalityMatrix)) assert.equal(typeof value, 'boolean');
+assert.deepEqual(Object.keys(result.lifecycle).sort(), [
+  'appServerTurnInterrupt', 'cliSigint', 'cliSigkill',
+  'directConfigToolTimeout', 'pluginToolTimeout',
 ]);
-for (const value of Object.values(result)) assert.equal(value, true);
+for (const observation of Object.values(result.lifecycle)) {
+  assert.match(observation.hostProcess, /^(running|exited-clean|exited-signal|not-observed|unknown)$/);
+  assert.match(observation.turnTerminalStatus, /^(completed|interrupted|failed|pending|not-observed|unknown)$/);
+  assert.match(observation.toolCallOutcome, /^(completed|failed|timed-out|pending|not-observed|unknown)$/);
+  assert.match(observation.handlerSettlement, /^(signal-abort|transport-close|completed|pending|server-exited|not-observed|unknown)$/);
+  assert.match(observation.transportState, /^(open|stdin-eof|closed|server-exited|not-observed|unknown)$/);
+  assert.match(observation.hookEvent, /^(stop|session-end|none|not-observed|unknown)$/);
+  assert.match(observation.unknownReason, /^(none|ceiling-reached|host-omitted-event|process-exited-first|unsupported)$/);
+}
 ```
 
-The result must contain booleans only—no raw thread, turn, workspace, task, binding, or job values. The real Host probe does not claim that `_meta` contains workspace, nor does it claim stale-context rejection; those are verified by the Task 4 authority-join tests using Root-created preparation/binding and Host/app-server Child records.
+The result contains only the six context booleans, a salted equality matrix naming field paths but no values, and lifecycle observations—no raw thread, turn, workspace, task, binding, job, PID, timing, or path values. `identityNamespaceQualified` is true only when recorded Root/Child/turn field paths equal the exact app-server/Hook authority pairs needed by Task 4; stable but unrelated inner IDs do not satisfy it. A lifecycle outcome is evidence, not a failure merely because it is not `signal-abort`. The real Host probe does not claim that `_meta` contains workspace or that Host lifecycle mechanics satisfy production invariants by themselves; Task 4 verifies the authority join and Tasks 6/8 verify the selected lifecycle strategies.
 
 - [ ] **Step 4: Run the opt-in test to verify RED**
 
 Run: `ZCODE_CODEX_MCP_E2E=1 ZCODE_MCP_PROBE_RESULT=/nonexistent node --test tests/e2e/codex-mcp-context-e2e.test.mjs`
 
-Expected: FAIL with `MCP probe result is unavailable`.
+Expected: FAIL with `MCP probe result is unavailable`; after supplying the old flat eight-boolean artifact it must instead fail with `MCP probe result uses the obsolete all-true schema`.
 
 - [ ] **Step 5: Implement the installable disposable stdio probe**
 
@@ -209,14 +254,16 @@ Use `@modelcontextprotocol/sdk`'s low-level `Server`, `ListToolsRequestSchema`, 
 ```js
 const tools = [
   'capture_context',       // validates and hashes per-call metadata into durable evidence
-  'hold_until_cancelled',  // resolves only after extra.signal aborts
+  'hold_for_lifecycle',    // records whichever characterized lifecycle event actually occurs
   'read_assertions',       // reduces durable evidence to the closed boolean result
 ];
 ```
 
-Read metadata from `request.params._meta`; never accept identity arguments. Hash raw values immediately with the per-run nonce and retain no raw value. Compare Root thread/turn, initial Child, later same-Child turn, and two concurrent children by hash equality/inequality. `rootIdentityComplete` means the Root call contains the required trusted thread/turn fields; `serverLoadedWithConfig` is true only when the MCP server's first durable event proves the isolated plugin configuration was loaded. The two turn-change booleans have exact sinks: `laterTurnDistinct` is the same-Child followup turn within the matrix conversation — its capture carries the initial Child capture's threadHash with a different turnHash — and `metadataChangesAcrossTurns` is the Step 6 state-machine step-2 Root resume capture — it carries the Root capture's threadHash with a different turnHash. Neither claims that the Host itself supplies workspace or rejects a replayed stale request. Every handler writes its start and settlement event through the durable observer before returning. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. The short-timeout fixture uses `tool_timeout_sec: 2` and `shortTimeoutSettled` is true only when the final reducer sees an abort/settled event for that exact held-call nonce after its start. `connectionLossDelivered` is likewise reduced from durable server-side settlement written before process exit. Workspace derivation and stale/wrong metadata rejection remain local `mcp-invocation-context` and authority-join contract tests in Task 4, using Root-created preparation/binding plus exact Host/app-server Child metadata.
+Read metadata from `request.params._meta`; never accept identity arguments. Hash each candidate field immediately with the per-run nonce and retain no raw value. Candidate fields are envelope `threadId` plus inner `session_id`, `thread_id`, and `turn_id`. The driver and fixture hook independently hash stdout `thread.started.thread_id`, app-server `thread.id`/`turn.id`, Hook `session_id`/`turn_id`/`agent_id`, and the exact Child handle returned by `spawn_agent`. The reducer emits only named equality booleans between those hashes. `identityFieldsVisible` means the candidate metadata is complete; `identityNamespaceQualified` requires one exact thread/turn field pair to match the Host/Hook authority namespace used by Caller Context and executor records. Distinctness alone is insufficient. `serverLoadedWithConfig` requires the negative/positive A/B window, a positive server start, and a successful positive tool call. `laterTurnDistinct` and `metadataChangesAcrossTurns` remain observations, not proof of authority namespace equivalence.
 
-The source `.mcp.json` is only a template. `build-fixture.mjs` emits the plugin-root descriptor declaring only this probe server with `node <absolute-server>`, starts with `tool_timeout_sec: 30`, and can emit a separate 2-second marketplace. The fixture identity cannot collide with production `zcode`.
+Every lifecycle call writes a durable start and records the generic observation fields from Step 3. The driver independently records Host process, turn, tool-call, handler-settlement, transport, and Hook states; missing evidence is `not-observed` or `unknown` with a bounded reason, never a guessed event. The reducer must not relabel pending or process exit as delivered cancellation. `read_assertions` returns an in-memory preview reduced under the event lock but does not write `result.json`. Workspace derivation and stale/wrong metadata rejection remain Task 4 authority-join contract tests.
+
+The source `.mcp.json` is only a template. In `plugin-server` mode, `build-fixture.mjs` emits the plugin-root descriptor declaring only this probe server with `node <absolute-server>` and the requested 30- or 2-second timeout. In `skill-only` mode it emits no descriptor. The fixture identity cannot collide with production `zcode`.
 
 - [ ] **Step 6: Implement one exact qualification driver and execute it**
 
@@ -250,18 +297,19 @@ The state machine is exact:
 ```js
 const MATRIX_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context once in Root. Spawn one Child, have it call capture_context, wait for it, then follow up that exact Child and have it call capture_context again. Then spawn two new Children concurrently and have each call capture_context once. Wait for both. Do not call any other MCP tool.';
 const NEGATIVE_CONTROL_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
-const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_until_cancelled exactly once. Wait for that tool and do nothing else.';
+const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_for_lifecycle exactly once. Wait for that tool and do nothing else.';
 ```
 
 Before the positive matrix, run a negative-control Host with the same isolated marketplace and plugin but add `--ignore-user-config`, driven with `NEGATIVE_CONTROL_PROMPT`. The durable absence proof is exact: the driver snapshots the durable event log before and after the negative-control Host completes and requires zero `server-started` and zero `capture-started` events across that window; only then does it record the durable phase marker `negative-control` (recorded by the driver like every other phase, and by nothing else). The bounded JSONL tool-unavailable outcome of that Host is still required. Remove that Host, then run the positive matrix without `--ignore-user-config`; require both a `server-started` event and a successful probe tool call before `serverLoadedWithConfig` can be true. The assertion is therefore the A/B combination, not startup alone: the same fixture is absent under the flag and callable without it. This proves the failure is configuration loading, not fixture packaging.
 
-1. Run one workspace-A `codex exec` prompt that requires Root `capture_context`, one Child capture, `followup_task` to that exact Child for a second capture, and two additional concurrently spawned Child captures. Parse stdout strictly as bounded JSONL; require exactly one `thread.started.thread_id`, zero malformed frames, exit 0, and the corresponding durable event count before continuing.
-2. Launch `codex exec resume ... --all <root-thread-id>` with cwd workspace A and require one Root `capture_context`; require exit 0, the same `thread_id`, a different `turn_id`, and its durable event.
-3. Launch a separate workspace-A `codex exec` asking only for `hold_until_cancelled`; after the exact call nonce's durable `hold-started` event appears, send SIGINT to the recorded Codex PID. Require exit within 10 seconds and a matching abort/settled event; otherwise SIGKILL the exact PID and fail the cancel assertion.
-4. Launch another held call; after its durable start event, SIGKILL the exact Codex PID to close stdio. Require the server-side connection-close/abort settlement within 10 seconds and no surviving recorded Host PID.
-5. Stop remaining phase-30 Host/server processes, then remove its plugin and marketplace. Do not install the 2-second fixture before both removal commands succeed.
-6. Repeat the exact marketplace-add/plugin-add commands against the 2-second marketplace under the same names, then start a new workspace-A Host with `HOLD_PROMPT`. Require `hold-started`, Host timeout/exit within 30 seconds, and the matching durable abort/settled event.
-7. Stop phase-2 processes and remove its plugin/marketplace. Under the event lock, reduce the shared log and atomically write `<run>/result.json`; then run the opt-in assertion test.
+1. Run one workspace-A `codex exec` prompt that requires Root `capture_context`, one Child capture, `followup_task` to that exact Child for a second capture, and two additional concurrently spawned Child captures. Parse stdout strictly as bounded JSONL; require exactly one `thread.started.thread_id`, zero malformed frames, exit 0, corresponding hook observations, and the durable MCP event count. Reduce salted equalities among envelope/inner metadata, stdout thread ID, Hook session/turn/agent IDs, and the returned Child handle; do not yet select an authority field.
+2. Launch `codex exec resume ... --all <root-thread-id>` with cwd workspace A and require one Root `capture_context`; require exit 0, the same stdout `thread.started.thread_id`, a different observed turn, and durable MCP/hook events. Preserve the proven fact that inner `thread_id` is not stdout `thread.started.thread_id`.
+3. Launch a separate workspace-A `codex exec` with `HOLD_PROMPT`; after its durable start, send SIGINT to the pinned Host PID. Observe for 10 seconds, then record `cliSigint` from the actual Host exit state and handler event. If the Host or server remains alive, stop it during cleanup, but do not convert cleanup into a cancellation observation.
+4. Launch another held CLI call; after its durable start, SIGKILL the pinned Host PID. Observe stdin EOF/close and server exit for 10 seconds and record `cliSigkill`. Require cleanup to leave no surviving recorded PID, but accept the closed observed enum rather than requiring SDK abort.
+5. Start `codex app-server` in the same isolated home and initialize it. First run a bounded capture turn that captures Root and one spawned Child, then add salted equality facts for app-server Root/Child thread/turn records against the MCP, Hook, and returned-Child-handle candidates; `identityNamespaceQualified` becomes true only if this completes both exact Root and Child authority chains. Then start a turn that explicitly invokes `hold_for_lifecycle`, wait for the durable start, and send `turn/interrupt` for that exact thread/turn. Read through `turn/completed` or the 30-second observation ceiling and record `appServerTurnInterrupt`. This is the explicit-user-cancellation characterization; CLI SIGINT is not its substitute.
+6. Stop phase-30 processes and remove its plugin/marketplace. Install the 2-second plugin fixture, run `HOLD_PROMPT`, and observe for 30 seconds after durable start. Record `pluginToolTimeout` whether the Host returns a tool-timeout result, exits, remains waiting, or advances while the handler remains pending. Stop tracked processes only after recording the observation.
+7. Remove the plugin/marketplace. In a fresh isolated Codex home with the same copied authentication, install a separately generated `mode:'skill-only'` fixture whose plugin contains the probe Skill and hooks but no `.mcp.json`. Configure the identical server directly under `[mcp_servers.zcode-mcp-context-probe]` with `tool_timeout_sec = 2`. Run the same Skill-driven held call, require its durable start before beginning the 30-second ceiling, and record `directConfigToolTimeout`. This differential isolates Host timeout semantics from plugin descriptor propagation without relying on the model to invent a raw tool name.
+8. Stop all tracked processes. Under the event lock, reduce the shared log and atomically write `<run>/result.json`; run the opt-in assertion test. The context section must pass all six booleans. Every lifecycle case must contain a schema-valid observation, but no particular observation is required merely to make characterization “pass.”
 
 The instrument contract separates outer deadlines: CLI commands (`--version`, the flag pre-check, marketplace/plugin install and removal, `login status`) keep the 180-second outer deadline; real Host conversations get a 600-second outer deadline (the matrix's first durable capture alone landed ~140s into a conversation on 0.154.0, which the CLI bound cannot contain). Every subprocess has bounded 4 MiB stdout/stderr. The driver tracks PID plus start identity before signalling, never uses process-name matching, and runs ordered cleanup in `finally`. Failure to stop a process, remove the plugin/marketplace, delete isolated `auth.json`, or remove the temporary homes makes qualification fail with a redacted cleanup error.
 
@@ -285,27 +333,77 @@ ZCODE_CODEX_MCP_E2E=1 ZCODE_MCP_PROBE_RESULT="$probe_run/result.json" \
   node --test tests/e2e/codex-mcp-context-e2e.test.mjs
 ```
 
-Expected: the driver prints its exact marketplace-add/plugin-add/start/interrupt/disconnect/plugin-remove/marketplace-remove transcript with identifiers redacted, then the test PASSes with all eight booleans true. Record the exact noninteractive continuation mechanism exposed by the supplied Codex version; if it exposes no reproducible same-Child later turn or explicit interrupt, mark the gate failed rather than converting the check to a unit test.
+Expected: the driver prints its exact marketplace-add/plugin-add/start/turn-interrupt/signal/disconnect/timeout/plugin-remove/marketplace-remove transcript with identifiers redacted, then the test PASSes when the six context facts are true and all five lifecycle cases are honestly classified. Pending or unknown observations remain successful characterization results and may select a blocked or supervisor-based candidate later; they are never rewritten as `signal-abort`.
 
-- [ ] **Step 7: Apply the hard gate and freeze the observed protocol**
+- [ ] **Step 7: Freeze qualified identity facts and lifecycle candidates**
 
-If authentication is unavailable, do not commit Task 2's dependency or probe changes; report `qualification-unavailable` and preserve only the already committed Task 1. If authentication succeeds but any protocol assertion is false, write a redacted `docs/qualification/zcode-mcp-context.md` failure report (no machine-readable qualified record), then stop this plan after committing only Task 1 and the probe harness:
+If authentication is unavailable, report `qualification-unavailable`; do not fabricate either record. If any of the six context assertions is false, Task 4 and later authority-dependent MCP work remain blocked because safe caller/binding resolution is unavailable. Task 3 and Task 5 remain independent. A lifecycle observation never fails merely for being pending, unobserved, or unknown with a bounded reason.
 
-```bash
-git add tools/mcp-context-probe tests/mcp-context-probe.test.mjs tests/e2e/codex-mcp-context-e2e.test.mjs docs/qualification/zcode-mcp-context.md package.json npm-shrinkwrap.json
-git commit -m "test: record unsupported codex mcp context"
+Write `qualification/mcp-context.json` once all six context assertions pass. Its exact schema is:
+
+```ts
+type ThreadFieldPath =
+  | '_meta.threadId'
+  | '_meta.x-codex-turn-metadata.session_id'
+  | '_meta.x-codex-turn-metadata.thread_id';
+type TurnFieldPath = '_meta.x-codex-turn-metadata.turn_id';
+type ContextQualificationRecord = {
+  version: 1; status: 'qualified'; codexVersion: 'codex-cli 0.154.0';
+  contextSchemaVersion: 1;
+  metadataFields: { rootThreadId: ThreadFieldPath; childThreadId: ThreadFieldPath; turnId: TurnFieldPath };
+  workspaceSource: 'authority-join'; observedAt: string;
+};
 ```
 
-The failure branch must prove `git status --short` contains no production root `.mcp.json`, no `skills/*-mcp`, no `scripts/zcode-mcp-server.mjs`, and no `qualification/mcp-context.json`. Amend the design with the observed bounded fact before any MCP production work. The success branch alone creates and commits `qualification/mcp-context.json`.
+The three stored paths are the actual Root/Child/turn equality-matrix winners; Root and Child paths may be equal but are recorded independently. The file contains no unexpanded marker. Write `qualification/mcp-lifecycle.json` with this schema and measured enum values:
 
-If all assertions pass, record the supported Codex version, exact install/launch commands, exact trusted metadata field names and JSON types, abort delivery ordering, timeout result, and disconnect result in the qualification document without recording identity values. Generate and commit `qualification/mcp-context.json` with exact keys `{version:1,status:'qualified',codexVersion,contextSchemaVersion,metadataFields,observedAt}` and no identity values. Replace every `QUALIFIED_*` token in Tasks 3–10 with those exact facts, add exact expected error/result shapes, and obtain an independent plan re-review before continuing.
+```ts
+type LifecycleCase = 'appServerTurnInterrupt' | 'cliSigint' | 'cliSigkill'
+  | 'pluginToolTimeout' | 'directConfigToolTimeout';
+type LifecycleObservation = {
+  hostProcess: 'running'|'exited-clean'|'exited-signal'|'not-observed'|'unknown';
+  turnTerminalStatus: 'completed'|'interrupted'|'failed'|'pending'|'not-observed'|'unknown';
+  toolCallOutcome: 'completed'|'failed'|'timed-out'|'pending'|'not-observed'|'unknown';
+  handlerSettlement: 'signal-abort'|'transport-close'|'completed'|'pending'|'server-exited'|'not-observed'|'unknown';
+  transportState: 'open'|'stdin-eof'|'closed'|'server-exited'|'not-observed'|'unknown';
+  hookEvent: 'stop'|'session-end'|'none'|'not-observed'|'unknown';
+  unknownReason: 'none'|'ceiling-reached'|'host-omitted-event'|'process-exited-first'|'unsupported';
+};
+type LifecycleRecord = {
+  version: 1; status: 'characterized'; codexVersion: 'codex-cli 0.154.0';
+  cases: Record<LifecycleCase, LifecycleObservation>;
+  candidateStrategies: {
+    explicitInterrupt: Array<'direct-abort'|'durable-stop-intent'|'release-blocked'>;
+    hostLoss: Array<'durable-supervision'|'release-blocked'>;
+    hostTimeout: Array<'host-abort'|'server-deadline'|'durable-supervision'|'release-blocked'>;
+  };
+  selectedStrategies: null;
+};
+```
 
-- [ ] **Step 8: Commit the passing probe harness and evidence contract**
+Task 2 does not claim a strategy is feasible. It derives candidates by this closed table; multiple matching candidates are retained for Task 6:
+
+| Dimension | Observation predicate | Candidate |
+|---|---|---|
+| explicit interruption | `handlerSettlement === 'signal-abort'` | `direct-abort` |
+| explicit interruption | interrupted turn plus `hookEvent === 'stop'` | `durable-stop-intent`, `release-blocked` |
+| explicit interruption | neither abort nor Stop Hook observed | `release-blocked` |
+| Host loss | any tested Host/process loss after durable call start | `durable-supervision`, `release-blocked` |
+| Host timeout | `handlerSettlement === 'signal-abort'` and `toolCallOutcome === 'timed-out'` | `host-abort` |
+| Host timeout | Host abort predicate is absent | `server-deadline`, `durable-supervision`, `release-blocked` |
+
+Task 6 proves or rejects these candidates and replaces `selectedStrategies:null` with three independently selected strategies or `release-blocked` values. Explicit interruption, Host loss, and Host timeout are never forced into one mutually exclusive strategy.
+
+Commit the qualified authority evidence, lifecycle observations, and candidates:
 
 ```bash
-git add tools/mcp-context-probe tests/mcp-context-probe.test.mjs tests/e2e/codex-mcp-context-e2e.test.mjs docs/qualification/zcode-mcp-context.md qualification/mcp-context.json package.json npm-shrinkwrap.json
-git commit -m "test: qualify codex mcp invocation context"
+git add tools/mcp-context-probe tests/mcp-context-probe.test.mjs tests/e2e/codex-mcp-context-e2e.test.mjs docs/qualification/zcode-mcp-context.md qualification/mcp-context.json qualification/mcp-lifecycle.json package.json npm-shrinkwrap.json
+git commit -m "test: qualify context and characterize mcp lifecycle"
 ```
+
+- [ ] **Step 8: Continue only the dependencies selected by the records**
+
+Task 3 and Task 5 may proceed immediately. Task 4 requires the qualified context record. Task 6 requires the lifecycle observation record and owns feasibility/selection. Tasks 9–10 require installed-plugin tests to prove every selected strategy against the unchanged product outcomes; they never require an undocumented Host callback merely because an earlier plan guessed one.
 
 ## Task 3: Add adapter-bearing Rescue preparation and choice state
 
@@ -398,17 +496,20 @@ git commit -m "feat: bind rescue preparation to wait adapter"
 
 - [ ] **Step 1: Write failing parser and authority-join tests**
 
-After Task 2 has replaced the `QUALIFIED_*` symbols, cover those exact accepted metadata fields and reject missing, extra, control-bearing, oversized, stale, wrong-workspace, wrong-turn, wrong-child, and concurrent-child substitutions. The public API is:
+This task starts only after `qualification/mcp-context.json` records the exact authority field paths. Load those paths rather than hard-coding an observed-but-unjoined namespace. Reject missing, extra, control-bearing, oversized, stale, wrong-workspace, wrong-turn, wrong-child, and concurrent-child substitutions. The public API is:
 
 ```js
-const authority = resolveMcpInvocationContext(request.params._meta);
-assert.deepEqual(readMcpInvocationContext(authority), {
+const identity = parseMcpCallIdentity(request.params._meta, qualificationRecord, 'child');
+const authority = await resolveMcpInvocationAuthority({ identity, command: 'rescue', hostReader, stores });
+assert.deepEqual(readMcpInvocationAuthority(authority), {
   threadId: 'child-thread',
   turnId: 'current-child-turn',
+  originWorkspace: '/canonical/origin',
+  executionWorkspace: '/canonical/execution',
 });
 ```
 
-`readMcpInvocationContext` must accept only a factory-branded in-process object. Add app-server tests for:
+`readMcpInvocationAuthority` must accept only a resolver-branded in-process object. Add app-server tests for:
 
 ```js
 await readCodexThreadCurrentTurnIdentity(childThreadId, options);
@@ -423,9 +524,9 @@ Run: `node --test tests/mcp-invocation-context.test.mjs tests/codex-app-server.t
 
 Expected: FAIL because the module, branded authority, and current-turn reader do not exist.
 
-- [ ] **Step 3: Implement strict metadata parsing and branding**
+- [ ] **Step 3: Implement strict metadata parsing, authority resolution, and branding**
 
-Use a module-private `WeakSet` and return a frozen object. Parse only the Task-2-qualified thread/turn fields. The fixed server mapping supplies `canonicalSkill` (`$zcode:rescue`, `$zcode:review`, `$zcode:adversarial-review`, or `$zcode:status`); it is never a tool argument. Errors use one fixed code and that exact fallback:
+Use separate module-private brands for parsed identity and resolved authority; return frozen objects. Parse only the two field paths in `qualification/mcp-context.json`. The resolver performs the non-consuming command-specific join and is the only function that produces canonical origin/execution workspaces. The fixed server mapping supplies `canonicalSkill` (`$zcode:rescue`, `$zcode:review`, `$zcode:adversarial-review`, or `$zcode:status`); it is never a tool argument. Errors use one fixed code and that exact fallback:
 
 ```js
 throw new PluginError(
@@ -435,9 +536,7 @@ throw new PluginError(
 );
 ```
 
-- [ ] **Step 4: Join context before atomic business consumption**
-
-In `runDirectInvocation`:
+- [ ] **Step 4: Resolve authority before deep invocation and revalidate it during consumption**
 
 Use this command-specific join table; there is no “origin-or-effective” alternative:
 
@@ -447,31 +546,22 @@ Use this command-specific join table; there is no “origin-or-effective” alte
 | prepared Rescue | routed `executor.agentId` / exact Host Child thread | current active turn returned for that exact Child | Host Child origin cwd joined to Root preparation/Rescue Binding | resolve exact executor from Child thread + Host Child record; independently require selected execution workspace equals preparation.workspace; preparation remains unconsumed |
 | Rescue resume/fresh choice | pending receipt's exact `executorAgentId` / exact Host Child thread | current active later turn returned for that exact Child | Host Child origin cwd joined to pending receipt/Rescue Binding | resolve exact executor from Child thread + Host Child record; independently require selected execution workspace equals pending.workspace; no preparation lookup |
 
-For each row, validate the branded thread/turn metadata, query the exact current Host turn, resolve the exact Root/Child authority, derive origin cwd from the Host Child record, then separately validate the selected execution workspace and route joins before locked `consume()`/`consumePending()`. Never use MCP server cwd or a model-authored workspace; never use Child origin cwd as the execution workspace merely because they are equal in a simple checkout. Any failure returns `MCP_INVOCATION_CONTEXT_UNAVAILABLE` with zero preparation consumption, reservation, binding mutation, session creation, or provider call. Never compare a later Child turn to the executor's initial `childTurnId` or the receipt's parent `originatingTurnId`.
+For each row, `resolveMcpInvocationAuthority` validates the branded identity, queries the exact current Host turn, resolves the exact Root/Child authority, derives origin cwd from the Host/Hook join, then separately validates the selected execution workspace and route joins. The handler invokes `runDirectInvocation` only after this succeeds. Never use MCP server cwd or a model-authored workspace; never use Child origin cwd as execution workspace merely because they are equal in a simple checkout. Any failure returns `MCP_INVOCATION_CONTEXT_UNAVAILABLE` with zero preparation consumption, reservation, binding mutation, session creation, or provider call. Never compare a later Child turn to the executor's initial `childTurnId` or the receipt's parent `originatingTurnId`.
 
 The deep invocation API is explicit and cannot consult ambient MCP-shaped environment variables:
 
 ```js
 await runDirectInvocation(argv, {
-  cwd, env, signal,
+  cwd: authority.executionWorkspace,
+  env: withVerifiedCompatibilityThreadId(env, authority.threadId),
+  lifecycleController,
   invocationTransport: 'mcp',
   mcpAuthority: authority,
   expectedForegroundAdapter: argv[0].startsWith('invoke') && argv.includes('rescue') ? 'mcp' : undefined,
 });
 ```
 
-When `invocationTransport === 'mcp'`, a branded `mcpAuthority` is mandatory and `CODEX_THREAD_ID`, cwd, process environment, and argv are never accepted as authority. When transport is `shell`, `mcpAuthority` is forbidden. This discriminated boundary is checked before command dispatch.
-
-The exact metadata extractor remains intentionally named with placeholders until the gate amendment:
-
-```js
-const raw = request.params?._meta;
-const turn = raw?.['x-codex-turn-metadata'];
-const identity = {
-  threadId: turn.QUALIFIED_THREAD_FIELD,   // recorded: thread_id (string)
-  turnId: turn.QUALIFIED_TURN_FIELD,       // recorded: turn_id (string)
-};
-```
+When `invocationTransport === 'mcp'`, a branded resolved `mcpAuthority` is mandatory. `runDirectInvocation` requires runtime cwd and constructed `CODEX_THREAD_ID` to equal the branded authority and atomically revalidates the applicable preparation/pending state before consuming it. Ambient `CODEX_THREAD_ID`, cwd, process environment, and argv are never accepted as authority; the verified compatibility variable is output from the resolver. When transport is `shell`, `mcpAuthority` is forbidden. This discriminated boundary is checked before command dispatch.
 
 - [ ] **Step 5: Run tests to verify GREEN**
 
@@ -510,7 +600,7 @@ assert.equal(formatDirectInvocationError(interrupted).text, '');
 
 For every fixture, assert MCP text equals CLI stdout byte-for-byte.
 
-Lock the interruption contract to the Task-2 observation before starting Task 3: if the Host delivers `extra.signal`, the handler awaits existing cleanup and then returns the observed MCP result shape; if the Host discards a cancelled/timed-out response, assert the formatter result at the handler boundary plus the durable settlement marker. Connection loss uses the same abort path and may have no deliverable MCP response. The Task-2 gate amendment must write the exact observed response/discard behavior here and the independent re-review must approve it; no worker may implement Task 5 while this sentence remains unresolved.
+Task 5 owns only transport-neutral result formatting and may proceed independently of Task 2/4. Lifecycle response/discard behavior belongs to Tasks 6 and 8 after the three strategies are selected; do not bake a guessed SDK callback into this formatter.
 
 - [ ] **Step 2: Run tests to verify RED**
 
@@ -520,7 +610,7 @@ Expected: FAIL because mapping is embedded in `runCompanionCli`.
 
 - [ ] **Step 3: Extract the pure shared formatter**
 
-Return only `{text, stderr, exitCode, outcome, isError}`. Use `renderOutput(output)` for success and `renderOutput(errorEnvelope(error), {json:true})` for ordinary errors. Preserve shell's interruption behavior: empty stdout, bounded interruption stderr, signal exit code. MCP maps that same interruption to the exact response shape recorded by Task 2 before Host delivery/discard. Map only `needs-choice`, `parent-replan`, and error specially; all other completed tool invocations are `terminal`.
+Return only `{text, stderr, exitCode, outcome, isError}`. Use `renderOutput(output)` for success and `renderOutput(errorEnvelope(error), {json:true})` for ordinary errors. Preserve shell's interruption behavior: empty stdout, bounded interruption stderr, signal exit code. MCP formats the same domain interruption when its selected lifecycle controller produces one; whether the Host delivers or discards that response is outside this transport-neutral formatter. Map only `needs-choice`, `parent-replan`, and error specially; all other completed tool invocations are `terminal`.
 
 Refactor `runCompanionCli` to apply the formatter without changing completion-notice delivery, background failure handling, or process-signal cleanup.
 
@@ -537,18 +627,57 @@ git add scripts/lib/direct-invocation-result.mjs scripts/zcode-companion.mjs tes
 git commit -m "refactor: share direct invocation result mapping"
 ```
 
-## Task 6: Add the narrow production MCP server
+## Task 6: Prove lifecycle feasibility, freeze strategies, and add the narrow MCP server
 
 **Files:**
+- Create: `scripts/lib/mcp-lifecycle-controller.mjs`
 - Create: `.mcp.json`
 - Create: `scripts/zcode-mcp-server.mjs`
 - Modify: `package.json`
 - Modify: `npm-shrinkwrap.json`
+- Modify: `qualification/mcp-lifecycle.json`
+- Create: `tests/mcp-lifecycle-controller.test.mjs`
 - Create: `tests/mcp-server.test.mjs`
 - Modify: `tests/plugin-contracts.test.mjs`
 - Modify: `tests/integration/plugin-layout.test.mjs`
 
-- [ ] **Step 1: Write failing server and descriptor tests**
+- [ ] **Step 1: Write the bounded lifecycle-feasibility tests**
+
+Load Task 2's observations and candidate strategies. Test the three outcome dimensions independently:
+
+- explicit interruption must reach existing interruption settlement through a characterized signal/event or an existing Durable Stop Intent input;
+- Host/process loss must be safe even when the MCP server dies before it can append a settlement, so accepted execution must already be owned by an existing durable supervisor/reconciler;
+- the 100-hour ceiling must use a characterized Host abort or a server-side deadline that enters existing interruption settlement before the Host ceiling; it cannot rely on an unobserved timeout callback.
+
+The feasibility fixture must prove registration occurs before provider/work admission, simulate MCP server death immediately after admission, and then run the existing reconciler to a durable non-success outcome without a second launch. It must not add binding identity, a second job type, or a second lifecycle state machine.
+
+- [ ] **Step 2: Run lifecycle feasibility tests to verify RED**
+
+Run: `node --test tests/mcp-lifecycle-controller.test.mjs tests/rescue-lifecycle.test.mjs tests/job-control.test.mjs`
+
+Expected: FAIL because no MCP lifecycle controller or selected strategies exist.
+
+- [ ] **Step 3: Implement the minimal feasible controller and freeze three selected strategies**
+
+Implement only adapters over existing interruption, Durable Stop Intent, Host Coordination Loss, Detached Runner/lease, and reconciliation seams. Update `qualification/mcp-lifecycle.json.selectedStrategies` to this closed object only after the corresponding tests pass:
+
+```js
+{
+  explicitInterrupt: 'direct-abort' | 'durable-stop-intent' | 'release-blocked',
+  hostLoss: 'durable-supervision' | 'release-blocked',
+  hostTimeout: 'host-abort' | 'server-deadline' | 'durable-supervision' | 'release-blocked',
+}
+```
+
+`direct-abort` never removes the separate Host-loss requirement. If any dimension is `release-blocked`, commit the characterization/feasibility evidence but do not create `.mcp.json`, the production server, or MCP Skills. Tasks 3 and 5 remain valid completed work; release outcomes are unchanged.
+
+- [ ] **Step 4: Run lifecycle feasibility tests to verify GREEN**
+
+Run the Step 2 command again.
+
+Expected: PASS for all three selected strategies, or PASS for a truthful `release-blocked` decision that proves no existing lifecycle seam can meet the dimension without a forbidden second authority.
+
+- [ ] **Step 5: Write failing server and descriptor tests when no dimension is blocked**
 
 Require `.mcp.json` to contain exactly one enabled server:
 
@@ -586,13 +715,13 @@ Require the server's `tools/list` result to contain exactly:
 
 Every input schema is `{type:'object',properties:{},additionalProperties:false}`. Task 6 runs from the worktree dependency installed by Task 2; distributable bundling is owned solely by Task 9.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [ ] **Step 6: Run server tests to verify RED**
 
-Run: `node --test tests/mcp-server.test.mjs tests/plugin-contracts.test.mjs tests/integration/plugin-layout.test.mjs`
+Run: `node --test tests/mcp-lifecycle-controller.test.mjs tests/mcp-server.test.mjs tests/plugin-contracts.test.mjs tests/integration/plugin-layout.test.mjs`
 
 Expected: FAIL because the production descriptor/server do not exist.
 
-- [ ] **Step 3: Implement fixed handlers**
+- [ ] **Step 7: Implement fixed handlers**
 
 Use this immutable mapping:
 
@@ -609,7 +738,7 @@ const TOOL_INVOCATIONS = Object.freeze({
 });
 ```
 
-For each call: reject nonempty arguments; resolve the branded context from `_meta`; call `runDirectInvocation` once with fixed argv, canonical cwd, `invocationTransport:'mcp'`, `mcpAuthority`, `expectedForegroundAdapter`, and `extra.signal`; do not inject `CODEX_THREAD_ID` for MCP. Map through Task 5 and return:
+For each call: reject nonempty arguments; parse the Task-2-qualified metadata fields, resolve the full branded authority through Task 4, construct compatibility `CODEX_THREAD_ID` from that verified authority, and call `runDirectInvocation` once with fixed argv, `cwd:authority.executionWorkspace`, `invocationTransport:'mcp'`, `mcpAuthority`, `expectedForegroundAdapter`, and the Task-6 lifecycle controller. Ambient `CODEX_THREAD_ID` and server cwd are ignored. The controller applies the independently selected explicit-interrupt, Host-loss, and timeout strategies; direct abort never substitutes for durable Host-loss ownership. Map through Task 5 and return:
 
 ```js
 {
@@ -634,19 +763,28 @@ export function createZcodeMcpServer({ runDirectInvocationImpl = runDirectInvoca
 if (isMain(import.meta.url)) await createZcodeMcpServer().connect(new StdioServerTransport());
 ```
 
-Handler cancellation is `extra.signal` only after Task 2 confirms it; otherwise the gate fails and this task is not executed.
+Production server steps are not executed when any selected dimension is `release-blocked`. The server must not infer a strategy from Host version or silently substitute one strategy for another; the checked-in lifecycle record and contract tests select each dimension.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [ ] **Step 8: Run server tests to verify GREEN**
 
-Run: `node --test tests/mcp-server.test.mjs tests/plugin-contracts.test.mjs tests/integration/plugin-layout.test.mjs`
+Run the Step 6 command again.
 
-Expected: PASS, including cancellation forwarded through the qualified signal and an alive server after error results.
+Expected: PASS, including all selected lifecycle-controller contracts and an alive server after ordinary error results. Tests assert durable registration before work, explicit interruption through its selected path, Host-loss reconciliation after simulated server death, timeout settlement through its selected path, and no untracked accepted invocation.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Commit**
+
+When all three dimensions are feasible:
 
 ```bash
-git add .mcp.json scripts/zcode-mcp-server.mjs package.json npm-shrinkwrap.json tests/mcp-server.test.mjs tests/plugin-contracts.test.mjs tests/integration/plugin-layout.test.mjs
+git add .mcp.json scripts/lib/mcp-lifecycle-controller.mjs scripts/zcode-mcp-server.mjs qualification/mcp-lifecycle.json package.json npm-shrinkwrap.json tests/mcp-lifecycle-controller.test.mjs tests/mcp-server.test.mjs tests/plugin-contracts.test.mjs tests/integration/plugin-layout.test.mjs
 git commit -m "feat: expose narrow zcode mcp wait tools"
+```
+
+When any dimension is `release-blocked`, commit only the feasibility evidence and stop the dependent production-server/Skill/package tasks:
+
+```bash
+git add qualification/mcp-lifecycle.json tests/mcp-lifecycle-controller.test.mjs
+git commit -m "test: record mcp lifecycle release blocker"
 ```
 
 ## Task 7: Generate explicit-only MCP Skill siblings and dual Rescue assignments
@@ -709,7 +847,7 @@ mcp: {
 }
 ```
 
-The record exposes only `{status:'qualified'|'unqualified', codexVersion, contextSchemaVersion}` from the checked-in redacted Task-2 evidence. Missing descriptor/server/SDK or a running Codex version not exactly equal to the single recorded `codexVersion` reports `unqualified` and tells users to use canonical Skills; a range requires a future record-schema/spec change. Setup never claims that one live invocation is authorized. Update `skills/setup/SKILL.md` to display this field without auto-selecting MCP.
+The diagnostic exposes only `{status:'qualified'|'unqualified', codexVersion, contextSchemaVersion, lifecycleStrategies}` from the two checked-in redacted records. `lifecycleStrategies` contains the three Task-6-selected dimensions. Missing descriptor/server/SDK/record, any `release-blocked` dimension, or a running Codex version not exactly equal to the recorded version reports `unqualified` and tells users to use canonical Skills; a range requires a future record-schema/spec change. Setup never claims that one live invocation is authorized. Update `skills/setup/SKILL.md` to display this field without auto-selecting MCP.
 
 - [ ] **Step 4: Generate files and run tests to verify GREEN**
 
@@ -750,19 +888,19 @@ Cover:
 - Review and Adversarial Review foreground/background/choice;
 - Status snapshot, wait terminal, explicit timeout, and cancellation;
 - missing metadata, wrong workspace/turn/Child, concurrent children, and adapter mismatch;
-- cancellation before start, during accepted foreground execution, after terminal election, connection loss, and injected host-timeout abort.
+- cancellation before start, during accepted foreground execution, after terminal election, connection loss, and injected host-timeout observation.
 
-Assert execution calls settle through existing interruption paths; Status abort only removes its observer. Assert no duplicate launch, silent shell fallback, second binding state, or additional durable fields.
+Load `qualification/mcp-lifecycle.json` in the tests. Assert the selected explicit-interrupt strategy settles through the existing interruption/stop path; independently assert the selected Host-loss strategy owns accepted work before server death and lets reconciliation finish it; independently assert the selected timeout strategy settles before the 100-hour Host ceiling without relying on an unobserved callback. Status interruption only removes its observer. Assert no accepted invocation becomes untracked, and no duplicate launch, silent shell fallback, second binding state, weakened feature outcome, or additional binding identity field appears.
 
 - [ ] **Step 2: Run the matrix to verify RED**
 
 Run: `node --test tests/mcp-server.test.mjs tests/integration/skills.test.mjs tests/integration/companion.test.mjs tests/integration/true-background-rescue.test.mjs tests/rescue-lifecycle.test.mjs tests/job-control.test.mjs`
 
-Expected: FAIL at any missing abort bridge, choice adapter check, or parity mapping.
+Expected: FAIL at any missing selected lifecycle controller, choice adapter check, or parity mapping.
 
 - [ ] **Step 3: Implement the already-specified parity bridges**
 
-Make only these changes if the RED matrix requires them: pass the qualified abort signal into the existing `runDirectInvocation` signal slot; translate Task-5 formatted results into MCP content without changing text; carry v5 `foregroundAdapter` through preparation/pending tombstones; apply the Task-4 authority table before atomic consumption. Any failure requiring a change to `runCompanion`, Rescue Binding, StateStore, JobController, Rescue Lifecycle Reconciler, or a newly invented progress protocol stops the plan and requires a spec amendment. MCP progress notifications are absent by design.
+Make only the changes selected for each lifecycle dimension. A direct abort feeds the existing interruption slot; durable stop/supervision adapts existing Durable Stop Intent, Host Coordination Loss, lease, and reconciliation seams without creating a second lifecycle state machine; a server deadline must enter that same path before the Host ceiling. In all branches, translate Task-5 formatted results without changing text, carry v5 `foregroundAdapter` through preparation/pending tombstones, and apply the Task-4 authority table before atomic consumption. A need for new binding identity or a second job/lifecycle authority requires a spec amendment; use of an existing lifecycle seam does not. MCP progress notifications remain absent by design.
 
 - [ ] **Step 4: Run the matrix to verify GREEN**
 
@@ -777,7 +915,9 @@ git add scripts/lib/mcp-invocation-context.mjs scripts/lib/direct-invocation-res
 git commit -m "test: prove dual wait adapter lifecycle parity"
 ```
 
-## Task 9: Ship package, security, and user documentation
+## Task 9: Prepare package, security, and user documentation
+
+Task 9 prepares artifacts only. Nothing produced here is publishable until Task 10's installed-plugin and selected-lifecycle gates pass and the marketplace snapshot is generated from that passing clean commit.
 
 **Files:**
 - Modify: `package.json`
@@ -795,7 +935,7 @@ git commit -m "test: prove dual wait adapter lifecycle parity"
 
 - [ ] **Step 1: Write failing package and release-contract tests**
 
-Require npm pack and marketplace installs to contain `.mcp.json`, the server, the two new libraries, all four generated Skill directories, `qualification/mcp-context.json`, and the SDK runtime. Require `bundleDependencies` to list both `fs-native-extensions` and `@modelcontextprotocol/sdk`; require `verifyLockedRuntimePayload` to traverse both locked dependency trees. Copy the installed plugin to an isolated directory whose ancestors contain no `node_modules`, then run MCP stdio initialize/tools-list there. Tampering with or omitting the qualification record must make installed setup report `unqualified`, never crash or claim qualification. Require installed `check:mcp-skills` parity and docs to state:
+Require npm pack and marketplace installs to contain `.mcp.json`, the server, the invocation-context/result/lifecycle-controller libraries, all four generated Skill directories, both `qualification/mcp-context.json` and `qualification/mcp-lifecycle.json`, and the SDK runtime. Require `bundleDependencies` to list both `fs-native-extensions` and `@modelcontextprotocol/sdk`; require `verifyLockedRuntimePayload` to traverse both locked dependency trees. Copy the installed plugin to an isolated directory whose ancestors contain no `node_modules`, then run MCP stdio initialize/tools-list there. Tampering with or omitting either qualification record must make installed setup report `unqualified`, never crash or claim qualification. Require installed `check:mcp-skills` parity and docs to state:
 
 - canonical names are shell baseline;
 - `*-mcp` names are explicit-only evaluation variants;
@@ -813,7 +953,7 @@ Expected: FAIL on missing packaged MCP assets and documentation.
 
 - [ ] **Step 3: Add assets and documentation**
 
-Add `.mcp.json` and `qualification/mcp-context.json` explicitly to `package.json.files`, add `@modelcontextprotocol/sdk` to `bundleDependencies`, and generalize `verifyLockedRuntimePayload(pluginRoot, lock)` to seed its queue from the two exact runtime roots. Add the qualification record, MCP files, and generated siblings to `REQUIRED_RESCUE_PAYLOAD`; validate the record's closed schema while building the snapshot. Document that `foregroundAdapter` is private transport state, never binding/job authority. Amend ADR 0013 for the two exact task-free Child assignments and ADR 0018 for adapter-independent Host/Companion placement.
+Add `.mcp.json`, `qualification/mcp-context.json`, and `qualification/mcp-lifecycle.json` explicitly to `package.json.files`, add `@modelcontextprotocol/sdk` to `bundleDependencies`, and generalize `verifyLockedRuntimePayload(pluginRoot, lock)` to seed its queue from the two exact runtime roots. Add both qualification records, MCP files, and generated siblings to `REQUIRED_RESCUE_PAYLOAD`; validate both closed schemas while building the snapshot. Document that `foregroundAdapter` is private transport state, never binding/job authority. Amend ADR 0013 for the two exact task-free Child assignments and ADR 0018 for adapter-independent Host/Companion placement.
 
 - [ ] **Step 4: Run tests to verify GREEN**
 
@@ -825,7 +965,7 @@ Expected: PASS.
 
 ```bash
 git add .mcp.json package.json npm-shrinkwrap.json scripts skills agents tests README.md README.zh-CN.md SECURITY.md CHANGELOG.md docs/adr
-git commit -m "docs: publish dual wait adapter experiment"
+git commit -m "docs: prepare dual wait adapter experiment"
 ```
 
 ## Task 10: Run final qualification and refresh the marketplace snapshot
@@ -848,7 +988,7 @@ Run: `npm run check:line-endings && npm run lint && npm run typecheck && npm run
 
 Expected: all tests pass; only credential-gated real ZCode/provider tests may skip under their existing opt-in rules.
 
-- [ ] **Step 3: Re-run the protocol probe gate unchanged**
+- [ ] **Step 3: Re-run context qualification and lifecycle characterization unchanged**
 
 Run:
 
@@ -863,11 +1003,11 @@ ZCODE_CODEX_MCP_E2E=1 ZCODE_MCP_PROBE_RESULT="$probe_run/result.json" \
   node --test tests/e2e/codex-mcp-context-e2e.test.mjs
 ```
 
-Expected: PASS for context, concurrency, cancellation, connection loss, current-turn metadata changes, and short-timeout settlement. Stale/wrong metadata rejection is verified by Task 4 authority tests and is not claimed by this Host gate. This gate qualifies Host protocol only and does not count as production plugin qualification.
+Expected: the six context booleans remain true; authority field paths still win the same equality matrix; all five lifecycle cases remain valid observations and exactly match the checked-in `qualification/mcp-lifecycle.json` for the supported Codex version. An observation is not required to be `signal-abort`. A changed observation is a compatibility change that requires selecting and retesting the corresponding dimension, not an instruction to force an old callback. Stale/wrong metadata rejection remains Task 4's authority test and is not claimed by this Host characterization.
 
 - [ ] **Step 4: Qualify the installed production plugin and full Rescue-MCP chain**
 
-First write `tests/e2e/codex-installed-mcp-e2e.test.mjs` with the six required booleans below and verify RED:
+First write `tests/e2e/codex-installed-mcp-e2e.test.mjs` with the seven required booleans below and verify RED:
 
 ```bash
 ZCODE_CODEX_MCP_E2E=1 ZCODE_INSTALLED_MCP_RESULT=/nonexistent \
@@ -894,7 +1034,7 @@ ZCODE_CODEX_MCP_E2E=1 ZCODE_INSTALLED_MCP_RESULT="$production_run/result.json" \
   node --test tests/e2e/codex-installed-mcp-e2e.test.mjs
 ```
 
-Expected: PASS, including `fullRescueMcpChain`, `sameChild`, `mcpToolObserved`, `shellMismatchRejectedBeforeReservation`, `allEightSchemas`, and `noProviderCalls`.
+Expected: PASS, including `fullRescueMcpChain`, `sameChild`, `mcpToolObserved`, `shellMismatchRejectedBeforeReservation`, `allEightSchemas`, `noProviderCalls`, and `selectedLifecycleSafe`. `selectedLifecycleSafe` is true only when the installed production plugin demonstrates all three checked-in lifecycle strategies under explicit turn interruption, Host/process loss, and the configured ceiling without an untracked accepted invocation or any reduction of the spec outcomes.
 
 - [ ] **Step 5: Commit the production qualification harness, then restore cleanliness**
 
@@ -925,7 +1065,7 @@ rsync -a --delete "$snapshot_dir/" marketplace/
 
 Do not copy individual payload files or edit generated provenance manually.
 
-Expected: generated `marketplace/plugins/zcode/` includes byte-identical `.mcp.json`, `qualification/mcp-context.json`, server/libraries, generated Skills, SDK runtime lock, and provenance for exact HEAD.
+Expected: generated `marketplace/plugins/zcode/` includes byte-identical `.mcp.json`, both qualification records, server/libraries, generated Skills, SDK runtime lock, and provenance for exact HEAD.
 
 - [ ] **Step 7: Run installed and snapshot verification**
 

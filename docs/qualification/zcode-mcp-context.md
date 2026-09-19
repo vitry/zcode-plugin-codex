@@ -1,6 +1,6 @@
 # Codex MCP Invocation Context Qualification
 
-Status: **unqualified — the real-Host gate failed on cancellation and timeout delivery.** The MCP wait-adapter Skills remain unshipped and unpackaged. This report contains no identity values; only field names, JSON types, exit codes, timing facts, and the closed eight-boolean outcome.
+Status: **plugin loading and identity visibility proven; authority namespace join and lifecycle partially characterized; production release not yet qualified.** The original all-true gate incorrectly treated undocumented cancellation/timeout mechanisms as requirements, while also failing to prove which metadata namespace joins existing app-server/Hook authority. The MCP wait-adapter Skills remain unshipped and unpackaged while those bounded characterization tasks and lifecycle feasibility checks complete. This report contains no identity values; only field names, JSON types, exit codes, timing facts, and observations.
 
 - Date: 2026-09-18 (amended rerun; original failing run recorded the same day)
 - Host under test: `codex-cli 0.154.0` (arm64 macOS, canonical target resolved from the externally supplied launcher path and pinned by device/inode)
@@ -9,7 +9,7 @@ Status: **unqualified — the real-Host gate failed on cancellation and timeout 
 
 ## Outcome
 
-The amended plan was applied (positive runs omit `--ignore-user-config` and use `--ignore-rules`; the negative control keeps `--ignore-user-config`; `_meta` is required to expose only trusted thread/turn). With that amendment the probe server loads and the full trusted-identity matrix is provable. Six of the eight required booleans reduced true. Two reduced false — both about abort/timeout delivery to the pending handler — so the gate fails and production MCP work remains stopped.
+The amended loading/context plan was applied (positive runs omit `--ignore-user-config` and use `--ignore-rules`; the negative control keeps `--ignore-user-config`). The probe server loads and per-call metadata distinguishes Root, Child, later turns, and concurrent Children. It did not prove which metadata field equals the app-server/Hook identity used by Caller Context and Rescue executor records. The historical reducer produced six true and two false booleans; the last two are lifecycle observations rather than failed context assertions.
 
 | Boolean | Outcome |
 |---|---|
@@ -22,7 +22,7 @@ The amended plan was applied (positive runs omit `--ignore-user-config` and use 
 | `connectionLossDelivered` | true |
 | `shortTimeoutSettled` | **false** |
 
-The final reducer correctly refused to write `result.json` (the census requires three settled hold calls; only the disconnect call settled), and the driver exited nonzero.
+The historical reducer correctly refused to write its obsolete all-true `result.json` and exited nonzero. The revised plan replaces that schema with a qualified context record plus a lifecycle characterization record; it does not rewrite the observed false values.
 
 ## Proven facts (amendment verification)
 
@@ -44,7 +44,7 @@ exec resume --json --all --skip-git-repo-check
 
 the installed probe plugin's MCP server starts (durable `server-started` with canonical observer paths) and successful probe tool calls follow. The A/B negative control — same isolated marketplace and plugin, argv adding `--ignore-user-config` — completed its conversation with the tool unavailable and left the durable event log window provably free of any `server-started` and `capture-started` event. The failure is therefore configuration loading under that flag, not fixture packaging, exactly as the amendment hypothesized.
 
-### Trusted per-call metadata (names and JSON types only; no values)
+### Observed per-call metadata (names and JSON types only; no values)
 
 `_meta` envelope:
 
@@ -80,15 +80,15 @@ There is no workspace/cwd field of any kind, in root turns, child turns, or resu
 ### Identity semantics proven by per-run-salted hashes
 
 - The Root, the initial Child, and the two concurrent Children carry four distinct thread hashes; the Child's followup turn carries the Child's thread hash with a different turn hash (`laterTurnDistinct`).
-- The scripted Root resume (`exec resume --all <root-thread-id>` with cwd equal to the Root workspace) exits 0, produces exactly one durable capture on the Root's trusted thread hash with a new turn hash and a new metadata hash (`metadataChangesAcrossTurns`).
-- Recorded namespace fact: the stdout `thread.started` id — the identifier `exec resume` consumes — is **not** the same value as `_meta["x-codex-turn-metadata"].thread_id`. They are distinct namespaces; production code must never join them. The resume's same-thread proof is only available through the trusted `_meta` hashes.
+- The scripted Root resume (`exec resume --all <root-thread-id>` with cwd equal to the Root workspace) exits 0 and produces one durable capture with the same inner `thread_id` hash, a new inner `turn_id` hash, and a new metadata hash (`metadataChangesAcrossTurns`). This proves stability within that namespace, not its equality to Hook/app-server authority.
+- Recorded namespace fact: the stdout `thread.started` id — the identifier `exec resume` consumes — is **not** the same value as `_meta["x-codex-turn-metadata"].thread_id`. Production code must not equate those two fields. The resume observation is available within the inner metadata namespace, whose authority relation remains to be characterized.
 
-## Blocker: no abort or timeout delivery reaches a pending tool handler
+## Lifecycle observations: no CLI SIGINT or plugin-timeout abort reached a pending handler
 
 The repaired probe server settles a held call durably as soon as it can observe the abort, and the driver enforces the plan's ceilings exactly. Two of the three delivery shapes fail on this host:
 
-1. **SIGINT (`cancelDelivered` = false).** After the held call's durable start, SIGINT to the recorded Host PID made the Host exit within the 10-second grace. No durable abort/settled event was ever written for that call. The Host's shutdown tears down its MCP server subprocess without delivering cancellation; the disconnect-settlement path proven in the disconnect phase (below) did not fire, which is only consistent with the server process being killed before it could observe anything.
-2. **Tool timeout (`shortTimeoutSettled` = false).** With the 2-second `tool_timeout_sec` fixture, the held call produced no durable settlement within the 30-second ceiling. The Host neither exited nor notified the server: no `notifications/cancelled` reached the SDK (which aborts handler signals on that notification), and the handler was never terminated. The invocation becomes unsupervised while the conversation continues — exactly the hazard this assertion exists to catch.
+1. **SIGINT (`cancelDelivered` = false).** After the held call's durable start, SIGINT to the recorded Host PID made the Host exit within the 10-second grace. No durable abort/settled event was written for that call. The run does not distinguish whether the server was killed, failed to observe EOF in time, or ended through another Host process-tree action.
+2. **Tool timeout (`shortTimeoutSettled` = false).** With the 2-second `tool_timeout_sec` fixture, the held call produced no durable settlement within the 30-second ceiling. The Host did not exit and the probe observed neither SDK cancellation nor handler termination during that window. This may leave work without the supervision assumed by the original design; direct-config comparison and production lifecycle tests must determine the actual risk.
 3. **Disconnect (`connectionLossDelivered` = true).** SIGKILL to the Host orphans the stdio server; the server detects its own stdin end/close, settles the held call durably as a transport close (observed ~250 ms after the kill), and exits. Delivery after a Host crash is therefore possible — but only because the probe server watches stdin itself.
 
 ### Instrument fact the production design must absorb
@@ -109,6 +109,8 @@ Every driver run removed the probe plugin and marketplace (`plugin remove`/`plug
 
 ## Consequences
 
-- Tasks 3–10 of the dual-foreground-wait-adapters plan remain stopped; no production `.mcp.json`, MCP server, `skills/*-mcp`, or qualification record may be created.
-- The canonical shell Skills (Task 1, committed) are unaffected and remain the only foreground wait adapter.
-- A future attempt requires a design amendment covering at least: (a) a Host mechanism (or version) that delivers tool cancellation/timeout to the server handler — or an explicit product decision that MCP waits are only acceptable with host-side supervision guarantees that currently do not exist; and (b) retention of the stdin-EOF disconnect settlement pattern for any long-lived stdio server. A third previously-required amendment item — tightening the cancellation basis by settlement kind — is now absorbed into the harness: `cancelDelivered` requires exactly a durable `signal-abort` settlement, `shortTimeoutSettled` requires `signal-abort` or a recorded `host-timeout` settlement, and `connectionLossDelivered` requires exactly the `transport-close` settlement, so an orphaned-server disconnect can never count as delivered cancellation. The recorded run's verdict is unchanged under the tightened predicates: the recorded sigint hold had no durable settlement at all and the short-timeout hold had none either (both stay false), while the disconnect hold settled as `transport-close` (stays true). The trusted thread/turn identity, the amended argv, and the A/B configuration-loading proof are settled facts and need no further qualification work.
+- Metadata visibility/distinctness, amended argv, and A/B configuration loading are settled facts. Task 3 and Task 5 may proceed without rerunning them; Task 4 waits for the authority namespace mapping.
+- CLI SIGINT, CLI SIGKILL, and plugin timeout results are settled observations, not requirements that must all become signal aborts. The harness must preserve them in the new generic lifecycle schema.
+- Task 2 still needs three bounded characterization results: metadata-to-app-server/Hook identity namespace equality, real app-server `turn/interrupt`, and direct `config.toml` versus plugin `.mcp.json` timeout behavior. Those observations produce candidate strategies; Task 6 freezes independent explicit-interrupt, Host-loss, and timeout strategies only after local feasibility tests.
+- Production MCP server/Skill packaging remains blocked until authority mapping and all selected lifecycle strategies prove the unchanged feature outcomes. Independent adapter-state and result-formatting work is not blocked.
+- The canonical shell Skills remain the only shipped foreground wait adapter until the final installed-plugin gate passes.

@@ -1,6 +1,6 @@
 # ZCode Dual Foreground Wait Adapters Design
 
-Status: amended after the 2026-09-18 real-Host qualification failure. MCP production work is paused; the shell adapter remains the only shippable foreground adapter. This amendment must receive a fresh independent plan review before implementation resumes.
+Status: amended after real-Host characterization on 2026-09-18/19. Plugin loading and per-call identity visibility are proven; the exact identity namespace join and remaining lifecycle behavior are plan-owned characterization work. MCP remains unshipped until the final release gates pass, while independent implementation and research tasks may continue.
 
 ## Executive decision
 
@@ -26,6 +26,18 @@ The immediate repair is to make shell observation much less frequent. The compar
 - Preserve all four Rescue placement branches from the approved placement design.
 - Fail closed when Codex cannot supply trustworthy per-call MCP identity and a trustworthy workspace resolved from the Root/Child binding or an authoritative Host context.
 - Make a later canonical-name switch a policy and packaging change, not another workflow migration.
+
+### Non-negotiable release outcomes
+
+Characterization may change the implementation mechanism, but it may not reduce the original feature:
+
+- one MCP foreground call remains pending without periodic model decisions until the existing Companion path reaches its authoritative outcome;
+- shell and MCP adapters preserve the same command, preparation, binding, placement, permission, job, resumable-session, cancellation, reconciliation, terminal-election, and public-output semantics;
+- explicit interruption, Host/process/transport loss, and the 100-hour safety ceiling cannot leave an accepted invocation untracked, unreconcilable, duplicated, or falsely reported as successful;
+- MCP authority remains exact under later turns, concurrent Children, multiple workspaces, worktrees, and resumed Rescue bindings;
+- the shell baseline and explicit-only MCP variants remain separately testable, and MCP is not packaged, enabled, or promoted until the installed-plugin gate proves these outcomes.
+
+If the supported Host cannot satisfy an outcome through a directly delivered event or an existing durable lifecycle seam, the affected MCP release branch is blocked. The requirement is never deleted, weakened to best effort, or reclassified as optional merely to continue implementation.
 
 ## Non-goals
 
@@ -104,7 +116,7 @@ Skill workflow
 The adapter owns only:
 
 - host transport and waiting;
-- translation of host cancellation into the existing `AbortSignal` path;
+- translation of observed Host lifecycle events into the existing interruption, coordination-loss, and reconciliation paths;
 - transport-specific presentation of the existing invocation result.
 
 It does not own command parsing, caller authority, preparation, route selection, binding, workspace admission, permissions, job transitions, cancellation settlement, terminal election, or result storage.
@@ -140,7 +152,7 @@ The npm `files` allowlist, marketplace snapshot builder, content manifest, packe
 
 One MCP tool call invokes one existing Companion path and awaits it until it returns, throws an existing PluginError, or is cancelled. The MCP server is long-lived and must never exit merely to encode one invocation's outcome.
 
-The MCP variants must not be packaged or enabled until the trusted invocation-context qualification described below passes on the supported Codex host. The shell changes may be developed and qualified independently, but the advertised dual-adapter release requires both.
+The MCP variants must not be packaged or enabled until the trusted invocation-context and lifecycle release gates described below pass on the supported Codex host. Code and tests that do not expose the MCP Skills may be developed before those final gates. A failed characterization records a Host fact and selects a different implementation branch; it does not by itself freeze unrelated work. The shell changes may be developed and qualified independently, but the advertised dual-adapter release requires both.
 
 The real-Host qualification established two operational facts for Codex CLI 0.154.0. First, `codex exec --ignore-user-config` deliberately skips `$CODEX_HOME/config.toml`; because plugin marketplace/plugin installation state is stored in that isolated Codex configuration, this flag prevents the installed plugin MCP server from loading. Qualification must therefore use a fresh isolated `CODEX_HOME` containing only the copied authentication file and plugin configuration, omit `--ignore-user-config`, and use `--ignore-rules` when rule isolation is needed. A negative control may run with `--ignore-user-config` and must show that the MCP server is absent; it is not a valid positive qualification run. Official Codex documentation defines this flag as “do not load `$CODEX_HOME/config.toml`” and documents plugin marketplace registration/configuration separately. [Official non-interactive Codex documentation](https://developers.openai.com/zh-Hans/docs/non-interactive-mode)
 
@@ -173,7 +185,7 @@ No generic `invoke(command, args)` tool is permitted.
 
 `runDirectInvocation` requires the exact current caller and execution workspace. A long-lived MCP process cannot use its startup environment or process cwd as per-call authority. The workspace does not have to be repeated in `_meta` if the Root preparation and existing binding already establish it and the Host supplies a trustworthy Child thread/turn that can be joined to that binding.
 
-The MCP adapter introduces one small internal boundary, `resolveMcpInvocationContext`, whose parser result is only the branded caller identity:
+The MCP adapter introduces two explicit internal boundaries. `parseMcpCallIdentity` reads only the field paths selected by the checked-in namespace-characterization record and returns a branded Host identity:
 
 ```ts
 {
@@ -182,12 +194,14 @@ The MCP adapter introduces one small internal boundary, `resolveMcpInvocationCon
 }
 ```
 
-Thread and turn come from trusted host-supplied per-call metadata, currently `_meta["x-codex-turn-metadata"].thread_id` and `.turn_id`, or an equivalently authoritative host call context. Workspace resolution has two accepted paths, in order:
+The observed `_meta` contains envelope `threadId` plus inner `session_id`, `thread_id`, and `turn_id`, but the current evidence also proves that inner `thread_id` is not the stdout `thread.started` ID. This specification therefore does not preselect a metadata namespace. The plan must compare these fields by salted equality against app-server thread/turn IDs, hook Caller Context session/turn IDs, and Rescue executor identity, then record the exact field paths that support the authority join. A field that merely distinguishes concurrent calls is insufficient.
+
+`resolveMcpInvocationAuthority(identity, command)` then performs the non-consuming authority join and returns the exact Caller/Child authority plus origin and execution workspaces. Workspace resolution has two accepted paths, in order:
 
 1. For a Root invocation, resolve the active Root Caller Context from the trusted Root thread/turn and use its recorded origin/execution workspace.
 2. For a Rescue Child invocation, use the trusted Child thread/turn to resolve the exact Host Child metadata/app-server record, obtain its origin cwd, then join that exact Child to the Root-created preparation and Rescue Binding. The existing preparation/binding record supplies and independently validates the execution workspace.
 
-The workspace is a later internal authority-join result, not parser output and not a required `_meta` field. If a future Host supplies a verified per-call workspace, it may be used as an additional equality check, never as the sole authority. The resolved workspace is always cross-checked through the same persisted Caller Context, preparation, binding, and active-turn rules used by shell invocation.
+The workspace is an authority-resolver result, not parser output and not a required `_meta` field. The MCP handler calls this resolver before `runDirectInvocation`, passes its canonical execution workspace as the legacy runtime `cwd`, and passes the branded authority for atomic revalidation inside the deep module. If a future Host supplies a verified per-call workspace, it may be used as an additional equality check, never as the sole authority.
 
 The adapter must not parse `turnId` and then discard it. Before entering the existing deep module it performs a command-specific authority join:
 
@@ -195,7 +209,7 @@ The adapter must not parse `turnId` and then discard it. Before entering the exi
 - `invoke_prepared_rescue` requires metadata Child thread and current Child turn to match trustworthy Host/app-server turn evidence, the exact executor, and the unconsumed preparation—including its adapter—bound to that parent/Child join. The parent Caller Context remains the executor's proven `parentSessionId` and parent turn, never the Child thread substituted as parent authority.
 - `choose_rescue_resume` and `choose_rescue_fresh` require metadata for the same Child thread and its current later turn to match trustworthy Host/app-server turn evidence, the exact executor, and the pending choice receipt—including the originating adapter—captured by the preceding invocation. They do not require an unconsumed preparation because the initial invocation has already consumed it.
 
-These preflights are non-consuming. The current later Child turn is correlated through the existing locally-tested Host/app-server reader (`scripts/lib/codex-app-server.mjs`), proven on the real Host by the Task 10 chain gate; it is never assumed to equal the executor's persisted initial `childTurnId` or the preceding receipt's originating parent turn. Only after the applicable join succeeds does the bridge construct the legacy runtime expected by the existing deep module: canonical `cwd` from the binding/Host-child join, `CODEX_THREAD_ID` from the proven current MCP caller thread, the existing authorization source, and the handler's `AbortSignal`. Existing `resolveActiveTurn`, routed-executor, binding checks, and the locked `consume()` or `consumePending()` operation remain authoritative and must atomically revalidate the adapter and exact identity before consuming. The bridge does not weaken or replace them; a preflight race fails at atomic consumption without starting work.
+These preflights are non-consuming. The current later Child turn is correlated through the existing locally-tested Host/app-server reader (`scripts/lib/codex-app-server.mjs`), proven on the real Host by the Task 10 chain gate; it is never assumed to equal the executor's persisted initial `childTurnId` or the preceding receipt's originating parent turn. Only after the applicable join succeeds does the bridge construct the legacy runtime expected by the existing deep module: canonical execution `cwd`, a compatibility `CODEX_THREAD_ID` constructed from the verified authority (never trusted from ambient environment), the existing authorization source, and the characterized lifecycle controller. That controller may contain an `AbortSignal` when the Host actually supplies one, but the specification does not require one as its only form. Existing `resolveActiveTurn`, routed-executor, binding checks, and the locked `consume()` or `consumePending()` operation remain authoritative and must atomically revalidate the adapter and exact identity before consuming. The bridge does not weaken or replace them; a preflight race fails at atomic consumption without starting work.
 
 Persisted Root preparation and Rescue Binding are not a substitute for caller identity; they are the binding target that a trusted Child thread/turn must join. They may not be searched to guess the latest thread, choose the only apparent workspace, infer a child from a parent, or manufacture missing call context.
 
@@ -209,14 +223,17 @@ The following are forbidden authority sources:
 
 Missing, malformed, ambiguous, or inconsistent context fails before Companion execution starts. The error names the corresponding canonical shell Skill as a manual alternative. The same call never silently falls back to shell because execution may already be ambiguous and fallback would invalidate the comparison.
 
-### Mandatory protocol probe
+### Host characterization and release gates
 
-Implementation begins with two complementary gates. The disposable real-Host probe captures only facts the Host can directly expose, without model-supplied identifiers:
+The disposable real-Host probe records facts the Host directly exposes, without model-supplied identifiers. It is a characterization matrix, not an all-booleans-must-be-true specification of undocumented Host internals. Confirmed Codex CLI 0.154.0 facts are:
 
-1. Root and Child thread/turn identity, including a later turn for the same Child and two concurrent Children;
-2. plugin configuration loading through the required A/B negative/positive check;
-3. explicit cancellation and connection-loss delivery to the pending handler;
-4. a temporary short `tool_timeout_sec` that proves host timeout reaches the handler as cancellation or otherwise terminates it, and that existing durable interruption settlement runs before the invocation becomes unsupervised.
+1. Root and Child `_meta["x-codex-turn-metadata"]` expose stable per-call `thread_id` and `turn_id` values that distinguish a later turn and concurrent Children, but their join to app-server/Hook authority namespaces is not yet qualified;
+2. positive plugin runs load under isolated configuration without `--ignore-user-config`, while the A/B negative control with that flag does not load the server;
+3. there is no authoritative workspace in MCP `_meta` or `roots/list`;
+4. abrupt Host loss can be observed by a stdio server watching its own stdin EOF/close;
+5. on the tested `codex exec` path, SIGINT and `tool_timeout_sec` did not deliver an SDK handler abort. This is an observed transport behavior, not a requirement that implementations must somehow make the Host emit that abort.
+
+Open Host behaviors are plan-owned research tasks. In particular, the plan must characterize the identity namespaces, app-server `turn/interrupt`, direct Codex MCP configuration versus plugin `.mcp.json` timeout loading, and Host/tool/server process outcomes. Each observed outcome selects an explicit implementation and test branch. The specification does not require a particular metadata field, notification, signal, SDK callback, or process-exit sequence unless the supported Host has first demonstrated it.
 
 The local authority-join/integration gate then proves, using fabricated but schema-faithful Host/app-server Child records and the real Root preparation/Binding stores:
 
@@ -225,7 +242,7 @@ The local authority-join/integration gate then proves, using fabricated but sche
 3. a later Child turn, stale metadata, wrong Child, concurrent Child, and cross-workspace records are rejected or isolated without consuming preparation or pending choice state;
 4. no lookup uses server cwd, "latest" records, uniqueness assumptions, or model-authored identifiers.
 
-The probe records only bounded diagnostic assertions, not private task or binding content. If Codex does not provide trustworthy thread/turn identity or an authoritative Host/app-server Child record that can be joined to the Root-created binding, implementation stops: MCP Skills remain disabled/unpackaged and this design must be amended. The absence of a workspace field in `_meta` alone is no longer a blocker; the exact binding join is the required proof. Adding heuristic discovery or weakening exact binding is not an acceptable workaround.
+The probe records only bounded diagnostic assertions, not private task or binding content. Missing trustworthy thread/turn identity or inability to join an exact authoritative Host/app-server Child record to the Root-created binding blocks the authority-dependent implementation because no safe alternative exists. Other characterization outcomes do not globally stop implementation: they choose a documented lifecycle strategy and remain release-gated until that strategy proves the product invariants below. The absence of a workspace field in `_meta` alone is not a blocker; the exact binding join is the required proof. Adding heuristic discovery or weakening exact binding is not an acceptable workaround.
 
 ## Existing Companion invariants
 
@@ -268,11 +285,15 @@ The MCP discriminator replaces per-CLI-process exit-code signaling for the Skill
 
 There is no inactivity watchdog and no periodic model-driven Status call. Long silent intervals remain valid while the transport and underlying invocation are healthy.
 
-For `rescue-mcp`, `review-mcp`, and `adversarial-review-mcp`, explicit tool interruption, transport loss, or the 100-hour host ceiling aborts the exact foreground invocation through the existing interruption and lifecycle-settlement path. Rescue retains its existing resumable-session semantics. Such loss is Host Coordination Loss where the existing lifecycle rules classify it that way; it is not reported as successful completion.
+For `rescue-mcp`, `review-mcp`, and `adversarial-review-mcp`, an explicit user interruption must cause the exact foreground invocation to enter an existing safe interruption or Durable Stop Intent path. Transport/process loss must enter existing Host Coordination Loss and reconciliation behavior. Rescue retains its existing resumable-session semantics. No loss path is reported as successful completion, and no accepted invocation may remain as untracked or unreconcilable work.
+
+These are outcome requirements, not assumptions about transport mechanics. App-server `turn/interrupt`, CLI SIGINT, MCP cancellation notifications, SDK `AbortSignal`, stdio EOF/close, and `tool_timeout_sec` are distinct observations. The implementation may use a directly delivered abort, durable stop/reconciliation, a supervisor, or another existing lifecycle seam according to the characterized Host behavior, provided tests prove the same durable outcome. A CLI process signal is not treated as proof of an explicit user-turn cancellation unless the Host contract demonstrates that equivalence.
+
+The 100-hour MCP tool timeout is a Host safety ceiling, not the cancellation authority and not a ZCode business deadline. Production correctness must not depend on the Host propagating that timeout to the handler. If the selected timeout strategy needs a corresponding server-side deadline, it must settle through the existing lifecycle before the Host ceiling and be tested as part of the release gate.
 
 For `status-mcp`, interruption or connection loss ends observation only. It never cancels the observed Tracked Job. The explicit `status --wait --timeout-ms` value remains its separate business wait bound.
 
-Authoritative terminal state, explicit cancellation, transport/process/protocol failure, and the outer host ceiling are the only reasons for the adapter to stop waiting. MCP notifications, logs, and progress messages are optional presentation enrichment and never participate in correctness or terminal detection.
+Authoritative terminal state, an accepted explicit cancellation outcome, transport/process/protocol loss handled by the lifecycle core, and the outer safety ceiling are the only reasons for the adapter to stop waiting. MCP notifications, logs, and progress messages are optional presentation enrichment and never participate in correctness or terminal detection.
 
 ## Foreground interaction model
 
@@ -300,17 +321,17 @@ Adapter failures remain bounded and actionable:
 - missing or untrusted MCP call context: refuse before execution and point to the canonical shell Skill;
 - context mismatch: use the existing exact-identity/binding error, without searching for an alternative;
 - Companion error: render the same public error as shell and mark the MCP result as error;
-- MCP cancellation after start: invoke existing interruption settlement, never launch a duplicate or silently retry;
+- explicit cancellation after start: invoke the characterized safe interruption/stop strategy, never launch a duplicate or silently retry;
 - server startup/configuration failure: leave canonical Skills usable and report MCP variant unavailable;
-- host timeout: treat as transport cancellation/coordination loss, never as a successful ZCode terminal result.
+- host timeout: never treat it as a successful ZCode terminal result and never assume it cancelled the handler without observed proof.
 
 Errors must not expose private preparation, task, binding, capability, thread, turn, workspace, or permission values.
 
 ## Verification and release gates
 
-Automated qualification must cover:
+Automated qualification and characterization must cover:
 
-1. the mandatory real-Host thread/turn visibility, plugin-loading, cancellation, and short-timeout protocol probe, plus local authority-join tests that derive workspace from Root preparation/Binding and Host Child records;
+1. the real-Host thread/turn and plugin-loading qualification, a lifecycle characterization record whose fields may truthfully be supported or unsupported, and local authority-join tests that derive workspace from Root preparation/Binding and Host Child records;
 2. `.mcp.json`, absence of manifest `mcpServers`, npm/package/marketplace inclusion, server startup, tool schemas, explicit-only routing, and 100-hour production configuration;
 3. shell initial yield and repeated empty-input 60-second observation of one exact process;
 4. Rescue preparation's single intentional JSON+LF write and absence of routine foreground stdin;
@@ -320,7 +341,7 @@ Automated qualification must cover:
 8. Status snapshot/wait completion, explicit timeout, and observation-only cancellation;
 9. byte-for-byte rendered-text parity and complete invocation-outcome/exit-control mapping, including queued and nonterminal Status output;
 10. missing, stale, malformed, cross-workspace, wrong-turn, wrong-child, and concurrent-child identity failures;
-11. interruption before start, during execution, after terminal election, connection loss, and short configured host timeout;
+11. interruption before start, during execution, after terminal election, app-server `turn/interrupt`, CLI/process loss, stdio connection loss, and configured host timeout, with expectations selected from the recorded lifecycle strategy rather than presumed SDK callbacks;
 12. no duplicate launch, silent fallback, heuristic lookup, discarded turn identity, or private structured content;
 13. generated `SKILL.md`, `agents/openai.yaml`, Rescue Role/assignment regeneration, and non-allowlisted prose parity;
 14. source, generated plugin, packaged artifact, installed plugin, and supported Codex-version qualification.
