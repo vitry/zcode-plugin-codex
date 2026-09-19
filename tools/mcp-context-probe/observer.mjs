@@ -1,9 +1,11 @@
 // @ts-nocheck
 /**
  * Durable append-only evidence store for the disposable Codex MCP context
- * probe. The observer owns `<run>/events.jsonl`; only the final reducer owns
- * `<run>/result.json`. Every record carries the probe-run nonce, a closed
- * event enum, a call nonce, and hashes/equality booleans — never raw identity.
+ * probe. The observer owns `<run>/events.jsonl`; the final reducer alone owns
+ * `<run>/result.json`. Every record carries only a random probe-run nonce, a
+ * closed event enum, call nonces, salted hashes/equality booleans, and closed
+ * observation enums — never raw thread, turn, session, workspace, task,
+ * binding, job, PID, timing, or path values.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -16,48 +18,73 @@ import { withFileLock } from '../../scripts/lib/fs.mjs';
 export const PROBE_EVENTS_MAX_BYTES = 4 * 1024 * 1024;
 
 /** The closed qualification phase vocabulary, in required order. */
-export const PROBE_PHASES = Object.freeze(['negative-control', 'matrix', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+export const PROBE_PHASES = Object.freeze(['negative-control', 'matrix', 'cli-sigint', 'cli-sigkill', 'app-server-interrupt', 'plugin-tool-timeout', 'direct-config-timeout']);
 
 /** The phases whose Host spawns must durably start the probe server. */
-const POSITIVE_SERVER_PHASES = Object.freeze(['matrix', 'sigint-cancel', 'sigkill-disconnect', 'short-timeout']);
+const POSITIVE_SERVER_PHASES = Object.freeze(['matrix', 'cli-sigint', 'cli-sigkill', 'app-server-interrupt', 'plugin-tool-timeout', 'direct-config-timeout']);
 
-/**
- * The exact settlement kind(s) each held-call phase accepts as delivery: a
- * settlement of the wrong kind is not delivery. SIGINT cancellation must be
- * the server's explicit abort settlement (a Host that exits and merely
- * closes stdin records a transport close, which is not cancellation); the
- * tool timeout accepts the abort or a recorded host-timeout settlement;
- * connection loss is exactly the transport-close settlement written by the
- * stdin watcher.
- */
-const PHASE_SETTLEMENT_KINDS = Object.freeze({
-  'sigint-cancel': Object.freeze(['signal-abort']),
-  'sigkill-disconnect': Object.freeze(['transport-close']),
-  'short-timeout': Object.freeze(['signal-abort', 'host-timeout']),
-});
-
-/** The closed eight-boolean result vocabulary. */
-export const PROBE_RESULT_KEYS = Object.freeze([
-  'cancelDelivered', 'concurrentChildrenDistinct', 'connectionLossDelivered',
-  'laterTurnDistinct', 'metadataChangesAcrossTurns', 'rootIdentityComplete',
-  'serverLoadedWithConfig', 'shortTimeoutSettled',
+/** The closed context-assertion vocabulary (pass/fail authority gates). */
+export const PROBE_CONTEXT_ASSERTIONS = Object.freeze([
+  'identityFieldsVisible', 'identityNamespaceQualified', 'laterTurnDistinct',
+  'concurrentChildrenDistinct', 'metadataChangesAcrossTurns', 'serverLoadedWithConfig',
 ]);
+
+/** The closed lifecycle characterization cases (honest observations). */
+export const PROBE_LIFECYCLE_CASES = Object.freeze([
+  'appServerTurnInterrupt', 'cliSigint', 'cliSigkill', 'directConfigToolTimeout', 'pluginToolTimeout',
+]);
+
+/** The candidate field paths hashed from per-call `_meta` captures. */
+export const PROBE_EQUALITY_CANDIDATES = Object.freeze(['envelopeThreadId', 'innerSessionId', 'innerThreadId', 'innerTurnId']);
+
+/** The authority field paths hashed independently by the driver and hook. */
+export const PROBE_EQUALITY_AUTHORITIES = Object.freeze([
+  'appServerThreadId', 'appServerTurnId', 'hookSessionId', 'hookTurnId', 'hookAgentId', 'returnedChildHandle',
+]);
+
+/** The scopes of the salted equality matrix. */
+export const PROBE_EQUALITY_SCOPES = Object.freeze(['root', 'child']);
+
+/** The thread authorities recorded for the Root scope. */
+export const PROBE_ROOT_THREAD_AUTHORITIES = Object.freeze(['appServerThreadId', 'hookSessionId']);
+
+/** The thread authorities recorded for the Child scope. */
+export const PROBE_CHILD_THREAD_AUTHORITIES = Object.freeze(['appServerThreadId', 'hookSessionId', 'hookAgentId', 'returnedChildHandle']);
+
+/** The turn authorities recorded for both scopes. */
+export const PROBE_TURN_AUTHORITIES = Object.freeze(['appServerTurnId', 'hookTurnId']);
 
 const EVENT_KINDS = Object.freeze([
   'server-started', 'capture-started', 'capture-settled',
   'hold-started', 'hold-settled', 'phase-observed',
+  'hook-observed', 'authority-hash', 'equality-fact', 'lifecycle-observed',
 ]);
 const TERMINAL_KINDS = Object.freeze(['capture-settled', 'hold-settled']);
 const START_KINDS = Object.freeze(['capture-started', 'hold-started']);
 const SETTLEMENTS = Object.freeze(['signal-abort', 'transport-close', 'host-timeout']);
-const HASH_KEYS = Object.freeze(['threadHash', 'turnHash', 'workspaceHash', 'metaHash']);
+const HOOK_NAMES = Object.freeze(['session-start', 'user-prompt-submit', 'subagent-start', 'subagent-stop', 'stop', 'session-end']);
+const AUTHORITY_HASH_KINDS = Object.freeze(['stdoutThreadId', 'appServerThreadId', 'appServerTurnId', 'returnedChildHandle']);
+const OBSERVATION_ENUMS = Object.freeze({
+  hostProcess: Object.freeze(['running', 'exited-clean', 'exited-signal', 'not-observed', 'unknown']),
+  turnTerminalStatus: Object.freeze(['completed', 'interrupted', 'failed', 'pending', 'not-observed', 'unknown']),
+  toolCallOutcome: Object.freeze(['completed', 'failed', 'timed-out', 'pending', 'not-observed', 'unknown']),
+  handlerSettlement: Object.freeze(['signal-abort', 'transport-close', 'completed', 'pending', 'server-exited', 'not-observed', 'unknown']),
+  transportState: Object.freeze(['open', 'stdin-eof', 'closed', 'server-exited', 'not-observed', 'unknown']),
+  hookEvent: Object.freeze(['stop', 'session-end', 'none', 'not-observed', 'unknown']),
+  unknownReason: Object.freeze(['none', 'ceiling-reached', 'host-omitted-event', 'process-exited-first', 'unsupported']),
+});
+const HASH_KEYS = Object.freeze(['threadHash', 'turnHash', 'workspaceHash', 'metaHash', 'envelopeThreadIdHash', 'innerSessionIdHash']);
 const EVENT_ALLOWED_KEYS = Object.freeze({
   'server-started': Object.freeze(['kind', 'serverPid', 'eventsPath', 'lockPath']),
   'phase-observed': Object.freeze(['kind', 'phase', 'observed']),
-  'capture-started': Object.freeze(['kind', 'callNonce', 'identityComplete', 'threadHash', 'turnHash', 'workspaceHash', 'metaHash', 'metaFields', 'envelopeFields']),
+  'capture-started': Object.freeze(['kind', 'callNonce', 'identityComplete', 'threadHash', 'turnHash', 'workspaceHash', 'metaHash', 'envelopeThreadIdHash', 'innerSessionIdHash', 'metaFields', 'envelopeFields']),
   'capture-settled': Object.freeze(['kind', 'callNonce']),
   'hold-started': Object.freeze(['kind', 'callNonce']),
   'hold-settled': Object.freeze(['kind', 'callNonce', 'settlement']),
+  'hook-observed': Object.freeze(['kind', 'hook', 'sessionHash', 'turnHash', 'agentHash']),
+  'authority-hash': Object.freeze(['kind', 'authority', 'scope', 'hash']),
+  'equality-fact': Object.freeze(['kind', 'scope', 'candidate', 'authority', 'equal']),
+  'lifecycle-observed': Object.freeze(['kind', 'lifecycleCase', ...Object.keys(OBSERVATION_ENUMS)]),
 });
 const RUN_NONCE_PATTERN = /^[0-9a-f]{64}$/;
 const CALL_NONCE_PATTERN = /^[0-9a-f]{32}$/;
@@ -109,6 +136,15 @@ export function hashProbeValue(runNonce, value) {
   return createHash('sha256').update(`${runNonce}\u0000${value}`).digest('hex');
 }
 
+/** Validates one salted 64-hex hash or an explicit null. */
+function validateNullableHash(event, kind, key) {
+  const value = event[key];
+  if (value === null || value === undefined) return;
+  if (!HASH_PATTERN.test(/** @type {string} */ (value))) {
+    throw probeError('PROBE_EVENT_INVALID', `${kind} requires ${key} to be null or a 64 hexadecimal salted hash.`);
+  }
+}
+
 /**
  * Validates one closed event body. Throws when the body is not part of the
  * probe evidence vocabulary.
@@ -140,7 +176,7 @@ export function validateProbeEventBody(body) {
       for (const key of HASH_KEYS) {
         if (!(key in event)) throw probeError('PROBE_EVENT_FIELD_MISSING', `capture-started event requires identity hash fields (${key} missing).`);
         const value = event[key];
-        const nullable = key === 'workspaceHash' || key === 'metaHash';
+        const nullable = key === 'workspaceHash' || key === 'metaHash' || key === 'envelopeThreadIdHash' || key === 'innerSessionIdHash';
         if (value === null) {
           if (!nullable) throw probeError('PROBE_EVENT_INVALID', `capture-started requires ${key} to be a 64 hexadecimal hash.`);
         } else if (!HASH_PATTERN.test(/** @type {string} */ (value))) {
@@ -178,6 +214,39 @@ export function validateProbeEventBody(body) {
     case 'phase-observed': {
       if (typeof event.phase !== 'string' || !PROBE_PHASES.includes(event.phase)) throw probeError('PROBE_EVENT_INVALID', 'phase-observed requires a closed probe phase.');
       if (typeof event.observed !== 'boolean') throw probeError('PROBE_EVENT_INVALID', 'phase-observed requires an observed boolean.');
+      break;
+    }
+    case 'hook-observed': {
+      if (typeof event.hook !== 'string' || !HOOK_NAMES.includes(event.hook)) throw probeError('PROBE_EVENT_INVALID', 'hook-observed requires a closed hook name.');
+      for (const key of ['sessionHash', 'turnHash', 'agentHash']) {
+        if (key === 'sessionHash') {
+          if (!HASH_PATTERN.test(/** @type {string} */ (event.sessionHash))) throw probeError('PROBE_EVENT_INVALID', 'hook-observed requires sessionHash to be a 64 hexadecimal salted hash.');
+        } else {
+          validateNullableHash(event, 'hook-observed', key);
+        }
+      }
+      break;
+    }
+    case 'authority-hash': {
+      if (typeof event.authority !== 'string' || !AUTHORITY_HASH_KINDS.includes(event.authority)) throw probeError('PROBE_EVENT_INVALID', 'authority-hash requires a closed authority kind.');
+      if (typeof event.scope !== 'string' || !PROBE_EQUALITY_SCOPES.includes(event.scope)) throw probeError('PROBE_EVENT_INVALID', 'authority-hash requires a closed scope.');
+      if (!HASH_PATTERN.test(/** @type {string} */ (event.hash))) throw probeError('PROBE_EVENT_INVALID', 'authority-hash requires hash to be a 64 hexadecimal salted hash.');
+      break;
+    }
+    case 'equality-fact': {
+      if (typeof event.scope !== 'string' || !PROBE_EQUALITY_SCOPES.includes(event.scope)) throw probeError('PROBE_EVENT_INVALID', 'equality-fact requires a closed scope.');
+      if (typeof event.candidate !== 'string' || !PROBE_EQUALITY_CANDIDATES.includes(event.candidate)) throw probeError('PROBE_EVENT_INVALID', 'equality-fact requires a closed candidate field.');
+      if (typeof event.authority !== 'string' || !PROBE_EQUALITY_AUTHORITIES.includes(event.authority)) throw probeError('PROBE_EVENT_INVALID', 'equality-fact requires a closed authority field.');
+      if (typeof event.equal !== 'boolean') throw probeError('PROBE_EVENT_INVALID', 'equality-fact requires an equal boolean.');
+      break;
+    }
+    case 'lifecycle-observed': {
+      if (typeof event.lifecycleCase !== 'string' || !PROBE_LIFECYCLE_CASES.includes(event.lifecycleCase)) throw probeError('PROBE_EVENT_INVALID', 'lifecycle-observed requires a closed lifecycle case.');
+      for (const [field, allowed] of Object.entries(OBSERVATION_ENUMS)) {
+        if (typeof event[field] !== 'string' || !allowed.includes(event[field])) {
+          throw probeError('PROBE_EVENT_INVALID', `lifecycle-observed requires ${field} from its closed vocabulary.`);
+        }
+      }
       break;
     }
     default:
@@ -326,12 +395,44 @@ export async function readProbeEvents(input) {
   });
 }
 
+/** The exact `_meta` field path stored for a winning candidate. */
+const CANDIDATE_FIELD_PATHS = Object.freeze({
+  envelopeThreadId: '_meta.threadId',
+  innerSessionId: '_meta.x-codex-turn-metadata.session_id',
+  innerThreadId: '_meta.x-codex-turn-metadata.thread_id',
+  innerTurnId: '_meta.x-codex-turn-metadata.turn_id',
+});
+
+/** Computes the closed equality-matrix key list. */
+function equalityMatrixKeys() {
+  const keys = [];
+  for (const candidate of ['envelopeThreadId', 'innerSessionId', 'innerThreadId']) {
+    for (const authority of PROBE_ROOT_THREAD_AUTHORITIES) keys.push(`root:${candidate}==${authority}`);
+    for (const authority of PROBE_CHILD_THREAD_AUTHORITIES) keys.push(`child:${candidate}==${authority}`);
+  }
+  for (const authority of PROBE_TURN_AUTHORITIES) {
+    keys.push(`root:innerTurnId==${authority}`);
+    keys.push(`child:innerTurnId==${authority}`);
+  }
+  return keys.sort();
+}
+
 /**
- * Reduces a validated event sequence to the closed eight-boolean result.
- * Missing evidence yields false; it never throws for incompleteness.
- * `runDirectory` is optional; when supplied, positive server startups must
- * carry the canonical observer paths for that directory (the final reducer
- * always supplies it).
+ * Reduces a validated event sequence to the closed context-plus-lifecycle
+ * result. Missing evidence yields false or `not-observed`; it never throws
+ * for incompleteness and never relabels an observation.
+ *
+ * Context semantics: `identityFieldsVisible` means every matrix-phase capture
+ * carries all four candidate hashes. `identityNamespaceQualified` requires at
+ * least one exact Root and one exact Child thread/turn pair to match the
+ * app-server/Hook authority namespace (an equality-fact cell is true only
+ * when every recorded fact for that cell is equal, so a contradicted pair
+ * can never qualify); distinctness alone is insufficient.
+ * `serverLoadedWithConfig` requires the negative/positive A/B window, a
+ * positive server start with canonical paths, and a successful positive tool
+ * call. Lifecycle cases reduce exactly what the driver recorded, one
+ * `lifecycle-observed` event per case, never relabeled.
+ *
  * @param {{runNonce:string, timestamp:string, event:object}[]} records
  * @param {{runNonce:string, runDirectory?:string|null}} input
  */
@@ -346,6 +447,10 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
   const holds = [];
   /** @type {{event:any, phase:string|null}[]} */
   const serverStarts = [];
+  /** @type {Map<string, boolean[]>} */
+  const equalityFacts = new Map();
+  /** @type {Map<string, {event:any, phase:string|null}>} */
+  const lifecycleObservations = new Map();
   /** @type {Map<string, boolean>} */
   const phaseObserved = new Map();
   /** @type {Map<string, number>} */
@@ -373,6 +478,17 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
       serverStarts.push({ event, phase: currentPhase });
       continue;
     }
+    if (event.kind === 'equality-fact') {
+      const key = `${event.scope}:${event.candidate}==${event.authority}`;
+      if (!equalityFacts.has(key)) equalityFacts.set(key, []);
+      equalityFacts.get(key).push(event.equal);
+      continue;
+    }
+    if (event.kind === 'lifecycle-observed') {
+      // First observation per case wins; the final census rejects duplicates.
+      if (!lifecycleObservations.has(event.lifecycleCase)) lifecycleObservations.set(event.lifecycleCase, { event, phase: currentPhase });
+      continue;
+    }
     if (START_KINDS.includes(event.kind)) {
       const state = callState.get(event.callNonce) ?? { start: false, terminal: false };
       if (state.start) throw probeError('PROBE_START_DUPLICATE', 'The event sequence contains a duplicate start event.');
@@ -396,9 +512,6 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
       }
     }
   }
-  const phase = (name) => phaseIndex.has(name) && phaseObserved.get(name) === true;
-  const phaseOrderStrictlyIncreasing = PROBE_PHASES.filter((name) => phaseIndex.has(name))
-    .every((name, position, list) => position === 0 || /** @type {number} */ (phaseIndex.get(list[position - 1])) < /** @type {number} */ (phaseIndex.get(name)));
   const matrixCaptures = captures.filter((entry) => entry.phase === 'matrix');
   const root = matrixCaptures[0];
   const child = matrixCaptures[1];
@@ -406,8 +519,9 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
   const concurrentOne = matrixCaptures[3];
   const concurrentTwo = matrixCaptures[4];
   const rootResume = matrixCaptures[5];
-  const rootIdentityComplete = Boolean(phase('matrix') && root && root.settled
-    && root.event.identityComplete === true && root.event.threadHash && root.event.turnHash);
+  const candidateFieldsComplete = (entry) => Boolean(entry && entry.event.envelopeThreadIdHash && entry.event.innerSessionIdHash
+    && entry.event.threadHash && entry.event.turnHash);
+  const identityFieldsVisible = matrixCaptures.length > 0 && matrixCaptures.every(candidateFieldsComplete);
   // The later-turn proof is only meaningful for a Child whose thread is
   // distinct from the Root: a host that reports the Root thread for the
   // initial Child must fail this assertion, not pass it vacuously.
@@ -436,8 +550,9 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
     && rootResume.event.turnHash !== root.event.turnHash
     && rootResume.event.metaHash !== root.event.metaHash);
   // The A/B combination: positive-phase startup evidence with canonical
-  // observer paths, and a negative-control window provably free of any
-  // server-started or capture-started event before its driver-recorded marker.
+  // observer paths, and a successful positive tool call, over a
+  // negative-control window provably free of any server-started or
+  // capture-started event before its driver-recorded marker.
   const negativeControlMarker = records.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'negative-control');
   const negativeControlWindowClean = negativeControlMarker >= 0
     && phaseObserved.get('negative-control') === true
@@ -445,45 +560,129 @@ export function reduceProbeEvents(records, { runNonce, runDirectory = null }) {
   const positiveServerStartPresent = serverStarts.some((entry) => POSITIVE_SERVER_PHASES.includes(entry.phase)
     && (!runDirectory
       || (entry.event.eventsPath === join(runDirectory, 'events.jsonl') && entry.event.lockPath === join(runDirectory, 'events.lock'))));
-  const serverLoadedWithConfig = Boolean(negativeControlWindowClean && positiveServerStartPresent);
-  const phaseHoldSettled = (name) => {
-    if (!phase(name) || !phaseOrderStrictlyIncreasing) return false;
-    const hold = holds.find((entry) => entry.phase === name);
-    return Boolean(hold && hold.settlement !== null && PHASE_SETTLEMENT_KINDS[name].includes(hold.settlement));
+  const positiveToolCallPresent = captures.some((entry) => POSITIVE_SERVER_PHASES.includes(entry.phase) && entry.settled);
+  const serverLoadedWithConfig = Boolean(negativeControlWindowClean && positiveServerStartPresent && positiveToolCallPresent);
+  // Salted equality matrix: a cell is true only when every recorded fact for
+  // that exact pair is equal; missing evidence is false.
+  const equalityMatrix = {};
+  for (const key of equalityMatrixKeys()) {
+    const facts = equalityFacts.get(key);
+    equalityMatrix[key] = Boolean(facts && facts.length > 0 && facts.every((equal) => equal === true));
+  }
+  const cellTrue = (scope, candidate, authority) => equalityMatrix[`${scope}:${candidate}==${authority}`] === true;
+  // The authority chains: one exact Root and one exact Child thread/turn pair
+  // must match the app-server/Hook authority namespace. Distinctness alone is
+  // insufficient, and hook-column contradictions are recorded but the
+  // qualifying pair is the app-server thread/turn join the plan's Task 4
+  // resolver consumes.
+  const threadWinner = (scope) => ['envelopeThreadId', 'innerSessionId', 'innerThreadId']
+    .find((candidate) => cellTrue(scope, candidate, 'appServerThreadId')) ?? null;
+  const rootThreadWinner = threadWinner('root');
+  const childThreadWinner = threadWinner('child');
+  const turnQualified = cellTrue('root', 'innerTurnId', 'appServerTurnId') && cellTrue('child', 'innerTurnId', 'appServerTurnId');
+  // The Host/Hook join is part of the required chain, with the authority
+  // mapping the Task 4 join table specifies: the Root thread authority is
+  // the Hook session id, while the Child thread/executor authority is the
+  // Hook agent id (the SubagentStart hook reports the spawn's agent id —
+  // the recorded matrix confirms the child's thread candidates join
+  // hookAgentId, not hookSessionId); both scopes' turns join the Hook turn
+  // id. The winning candidates — resolved independently per scope — must
+  // SATISFY their hook cells (at least one fact and every fact true): a
+  // candidate that matches the app-server authority but contradicts the
+  // corresponding Hook identity must not qualify, and hook facts merely
+  // existing is not enough. The hook cells' values stay honest in the
+  // matrix.
+  const hookJoinQualified = rootThreadWinner !== null && childThreadWinner !== null
+    && cellTrue('root', rootThreadWinner, 'hookSessionId')
+    && cellTrue('child', childThreadWinner, 'hookAgentId')
+    && cellTrue('root', 'innerTurnId', 'hookTurnId')
+    && cellTrue('child', 'innerTurnId', 'hookTurnId');
+  const identityNamespaceQualified = Boolean(rootThreadWinner && childThreadWinner && turnQualified && hookJoinQualified);
+  const authorityFields = {
+    rootThread: rootThreadWinner ? CANDIDATE_FIELD_PATHS[rootThreadWinner] : null,
+    childThread: childThreadWinner ? CANDIDATE_FIELD_PATHS[childThreadWinner] : null,
+    turn: turnQualified ? CANDIDATE_FIELD_PATHS.innerTurnId : null,
   };
-  return /** @type {Record<string, boolean>} */ ({
-    rootIdentityComplete,
+  const assertions = {
+    identityFieldsVisible,
+    identityNamespaceQualified,
     laterTurnDistinct,
     concurrentChildrenDistinct,
     metadataChangesAcrossTurns,
     serverLoadedWithConfig,
-    cancelDelivered: phaseHoldSettled('sigint-cancel'),
-    connectionLossDelivered: phaseHoldSettled('sigkill-disconnect'),
-    shortTimeoutSettled: phaseHoldSettled('short-timeout'),
-  });
+  };
+  const lifecycle = {};
+  for (const lifecycleCase of PROBE_LIFECYCLE_CASES) {
+    const observation = lifecycleObservations.get(lifecycleCase);
+    lifecycle[lifecycleCase] = observation
+      ? {
+          hostProcess: observation.event.hostProcess,
+          turnTerminalStatus: observation.event.turnTerminalStatus,
+          toolCallOutcome: observation.event.toolCallOutcome,
+          handlerSettlement: observation.event.handlerSettlement,
+          transportState: observation.event.transportState,
+          hookEvent: observation.event.hookEvent,
+          unknownReason: observation.event.unknownReason,
+        }
+      // A case the run never recorded previews as fully unobserved; the
+      // final census refuses to write a result with any missing case.
+      : {
+          hostProcess: 'not-observed',
+          turnTerminalStatus: 'not-observed',
+          toolCallOutcome: 'not-observed',
+          handlerSettlement: 'not-observed',
+          transportState: 'not-observed',
+          hookEvent: 'not-observed',
+          unknownReason: 'unsupported',
+        };
+  }
+  return {
+    context: { assertions, authorityFields, equalityMatrix },
+    lifecycle,
+  };
 }
 
 /**
- * Validates that a finished run's log supports a qualified record: every
- * phase observed in canonical order, every call settled, canonical observer
- * paths, and the expected capture/hold census.
+ * Validates that a finished run's log supports the closed record: every
+ * phase observed in canonical order, the exact matrix capture census, the
+ * exact held-call census, one lifecycle observation per case, and canonical
+ * observer paths.
  * @param {{runNonce:string, timestamp:string, event:object}[]} records
  * @param {{runDirectory:string, result:Record<string,boolean>}} input
  */
-function assertCompleteQualificationLog(records, { runDirectory, result }) {
+function assertCompleteQualificationLog(records, { runDirectory }) {
   const canonicalEventsPath = join(runDirectory, 'events.jsonl');
   const canonicalLockPath = join(runDirectory, 'events.lock');
   let captures = 0;
   let settledCaptures = 0;
+  let matrixCaptures = 0;
+  let matrixSettledCaptures = 0;
   let holds = 0;
-  let settledHolds = 0;
   let serverStarts = 0;
+  let currentPhase = null;
+  const callNonceTerminal = new Set();
+  const callNonceMatrix = new Map();
+  /** @type {Map<string, number>} */
+  const holdsByPhase = new Map();
+  /** @type {Map<string, number>} */
+  const lifecycleCounts = new Map();
   for (const record of records) {
     const event = record.event;
-    if (event.kind === 'capture-started') captures += 1;
-    if (event.kind === 'capture-settled') settledCaptures += 1;
-    if (event.kind === 'hold-started') holds += 1;
-    if (event.kind === 'hold-settled') settledHolds += 1;
+    if (event.kind === 'phase-observed') currentPhase = event.phase;
+    if (event.kind === 'capture-started') {
+      captures += 1;
+      callNonceMatrix.set(event.callNonce, currentPhase);
+      if (currentPhase === 'matrix') matrixCaptures += 1;
+    }
+    if (event.kind === 'capture-settled') {
+      settledCaptures += 1;
+      callNonceTerminal.add(event.callNonce);
+      if (callNonceMatrix.get(event.callNonce) === 'matrix') matrixSettledCaptures += 1;
+    }
+    if (event.kind === 'hold-started') {
+      holds += 1;
+      holdsByPhase.set(currentPhase ?? 'unknown', (holdsByPhase.get(currentPhase ?? 'unknown') ?? 0) + 1);
+    }
     if (event.kind === 'server-started') {
       serverStarts += 1;
       // Every Host process starts its own stdio server, so each startup —
@@ -491,6 +690,9 @@ function assertCompleteQualificationLog(records, { runDirectory, result }) {
       if (event.eventsPath !== canonicalEventsPath || event.lockPath !== canonicalLockPath) {
         throw probeError('PROBE_LOG_INCOMPLETE', 'The observer recorded non-canonical event paths.');
       }
+    }
+    if (event.kind === 'lifecycle-observed') {
+      lifecycleCounts.set(event.lifecycleCase, (lifecycleCounts.get(event.lifecycleCase) ?? 0) + 1);
     }
   }
   // At least one durable startup proves the probe server itself ran with
@@ -518,15 +720,31 @@ function assertCompleteQualificationLog(records, { runDirectory, result }) {
     if (order <= previousOrder) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log records phases out of canonical order.');
     previousOrder = order;
   }
-  // Five matrix captures (Root, initial Child, Child later turn, two
-  // concurrent Children) plus the state-machine step-2 Root-resume capture.
-  if (captures !== 6 || settledCaptures !== 6) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain exactly six settled capture calls.');
-  // The scripted matrix contains exactly one held call per cancellation
-  // phase; extra invocations would let a phase's reduced settlement point at
-  // a different call than the driver validated.
-  if (holds !== 3 || settledHolds !== holds) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain exactly three settled hold calls.');
-  for (const value of Object.values(result)) {
-    if (value !== true) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains false assertions.');
+  // The scripted matrix is exactly five captures (Root, initial Child, Child
+  // later turn, two concurrent Children) plus the state-machine step-2
+  // Root-resume capture, all settled. Best-effort captures outside the
+  // matrix phase (the app-server capture turn) are tolerated observations
+  // but must also have settled.
+  if (captures !== settledCaptures) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains unsettled capture calls.');
+  if (matrixCaptures !== 6 || matrixSettledCaptures !== 6) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain exactly six settled matrix capture calls.');
+  // Exactly one driver-driven held call per CLI/timeout lifecycle phase; the
+  // app-server held call is model-dependent (0 or 1). Settlements are
+  // observations, not requirements: a pending hold is honest evidence.
+  for (const phaseName of ['cli-sigint', 'cli-sigkill', 'plugin-tool-timeout', 'direct-config-timeout']) {
+    if ((holdsByPhase.get(phaseName) ?? 0) !== 1) {
+      throw probeError('PROBE_LOG_INCOMPLETE', `The qualification log must contain exactly one hold-started call in ${phaseName}.`);
+    }
+  }
+  const appServerHolds = holdsByPhase.get('app-server-interrupt') ?? 0;
+  if (appServerHolds > 1) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains extra app-server held calls.');
+  if (holds < 4 || holds > 5) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain four or five hold-started lifecycle calls.');
+  // One lifecycle observation per closed case, and nothing else.
+  for (const lifecycleCase of PROBE_LIFECYCLE_CASES) {
+    const count = lifecycleCounts.get(lifecycleCase) ?? 0;
+    if (count !== 1) throw probeError('PROBE_LOG_INCOMPLETE', `The qualification log must contain exactly one lifecycle observation for ${lifecycleCase}.`);
+  }
+  if (lifecycleCounts.size !== PROBE_LIFECYCLE_CASES.length) {
+    throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains lifecycle observations outside the closed vocabulary.');
   }
 }
 
@@ -545,7 +763,7 @@ export async function reduceProbeResult(input) {
   return withFileLock(lockPath, async () => {
     const { records } = await parseEventLog(eventsPath, runNonce);
     const result = reduceProbeEvents(records, { runNonce, runDirectory });
-    assertCompleteQualificationLog(records, { runDirectory, result });
+    assertCompleteQualificationLog(records, { runDirectory });
     const existing = await lstat(resultPath).then(() => true, (error) => {
       if (errorCode(error) === 'ENOENT') return false;
       throw error;

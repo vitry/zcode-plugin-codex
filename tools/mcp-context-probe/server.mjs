@@ -33,8 +33,8 @@ const TOOL_DEFINITIONS = Object.freeze([
     inputSchema: Object.freeze({ type: 'object', properties: Object.freeze({}), additionalProperties: false }),
   }),
   Object.freeze({
-    name: 'hold_until_cancelled',
-    description: 'Holds the call open until the host aborts it; records the durable settlement.',
+    name: 'hold_for_lifecycle',
+    description: 'Holds the call open so the driver can characterize whichever lifecycle event actually occurs; records the durable settlement.',
     inputSchema: Object.freeze({ type: 'object', properties: Object.freeze({}), additionalProperties: false }),
   }),
   Object.freeze({
@@ -133,7 +133,7 @@ export function createProbeServer({ observer, appendImpl = appendProbeEvent }) {
     if (!noArguments(request)) return errorResult('Probe tools accept no arguments.');
     try {
       if (request.params.name === 'capture_context') return await captureContext(request);
-      if (request.params.name === 'hold_until_cancelled') return await holdUntilCancelled(extra);
+      if (request.params.name === 'hold_for_lifecycle') return await holdForLifecycle(extra);
       return await readAssertions();
     } catch (error) {
       return errorResult(`Probe tool failed: ${error && typeof error === 'object' && 'code' in error ? /** @type {any} */ (error).code : 'error'}`);
@@ -144,6 +144,8 @@ export function createProbeServer({ observer, appendImpl = appendProbeEvent }) {
     const meta = request.params._meta;
     const { envelope, turn, threadId, turnId } = extractObservedIdentity(meta);
     const callNonce = randomBytes(16).toString('hex');
+    const envelopeThreadId = typeof envelope?.threadId === 'string' && envelope.threadId.length > 0 ? envelope.threadId : null;
+    const innerSessionId = typeof turn?.session_id === 'string' && turn.session_id.length > 0 ? turn.session_id : null;
     const event = {
       kind: 'capture-started',
       callNonce,
@@ -154,6 +156,10 @@ export function createProbeServer({ observer, appendImpl = appendProbeEvent }) {
       // no per-call workspace, so this hash is always null.
       workspaceHash: null,
       metaHash: turn ? hashProbeValue(runNonce, canonicalJson(turn)) : null,
+      // The equality-matrix candidate hashes: envelope threadId and inner
+      // session_id join inner thread_id/turn_id as characterization input.
+      envelopeThreadIdHash: envelopeThreadId ? hashProbeValue(runNonce, envelopeThreadId) : null,
+      innerSessionIdHash: innerSessionId ? hashProbeValue(runNonce, innerSessionId) : null,
       metaFields: metadataFields(turn),
       envelopeFields: metadataFields(envelope),
     };
@@ -166,7 +172,7 @@ export function createProbeServer({ observer, appendImpl = appendProbeEvent }) {
     return { content: [{ type: 'text', text: 'captured' }], structuredContent: { identityComplete: event.identityComplete } };
   }
 
-  async function holdUntilCancelled(extra) {
+  async function holdForLifecycle(extra) {
     const callNonce = randomBytes(16).toString('hex');
     /** @type {(value:string) => void} */
     let resolveSettlement = () => {};

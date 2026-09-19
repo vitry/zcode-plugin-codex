@@ -1,116 +1,88 @@
 # Codex MCP Invocation Context Qualification
 
-Status: **plugin loading and identity visibility proven; authority namespace join and lifecycle partially characterized; production release not yet qualified.** The original all-true gate incorrectly treated undocumented cancellation/timeout mechanisms as requirements, while also failing to prove which metadata namespace joins existing app-server/Hook authority. The MCP wait-adapter Skills remain unshipped and unpackaged while those bounded characterization tasks and lifecycle feasibility checks complete. This report contains no identity values; only field names, JSON types, exit codes, timing facts, and observations.
+Status: **authority namespace NOT qualified on this run; lifecycle characterized; Task 4 stays blocked.** The amended Task 2 separates pass/fail authority assertions from closed lifecycle observations. On this rerun five of the six context assertions reduced true, but `identityNamespaceQualified` reduced **false**: the hardened attribution gate requires MCP captures attributable to the app-server-created threads, and the app-server model never called the probe tool, so every app-server authority cell stayed fact-less and no authority field path could be recorded. `qualification/mcp-context.json` was therefore deleted (no proven authority namespace), and `qualification/mcp-lifecycle.json` records five honest lifecycle observations with candidate strategies (`selectedStrategies` stays null; Task 6 owns selection). This report contains no identity values; only field names, JSON types, exit codes, field-path equalities, and observations.
 
-- Date: 2026-09-18 (amended rerun; original failing run recorded the same day)
-- Host under test: `codex-cli 0.154.0` (arm64 macOS, canonical target resolved from the externally supplied launcher path and pinned by device/inode)
-- Probe harness: `tools/mcp-context-probe/` (disposable plugin marketplace + stdio MCP server + durable mode-0600 observer + driver), unit-covered by `tests/mcp-context-probe.test.mjs` and gated by the opt-in `tests/e2e/codex-mcp-context-e2e.test.mjs`
-- Result record: none. `qualification/mcp-context.json` is deliberately absent; a machine-readable record may only be created by a passing gate.
+- Date: 2026-09-19 (three completed amended-characterization runs with the hardened harness, plus two additional attempts that aborted in the negative-control phase — a transcript-shape flake since fixed in the harness, which now accepts the failed-attempts engagement shape; see the provenance note. The earlier same-week run established the loading/distinctness facts re-proven below)
+- Host under test: `codex-cli 0.154.0` (arm64 macOS). Newly observed host fact: the machine's default launcher (`~/.local/bin/codex`) had auto-updated to 0.155.1, so the run pinned the still-installed 0.154.0 standalone release binary — a regular executable the driver re-pinned by device/inode and re-version-checked before every spawn. The records stay truthful to the binary actually tested.
+- Probe harness: `tools/mcp-context-probe/` (disposable plugin marketplaces in `plugin-server` and `skill-only` modes + stdio MCP server + durable mode-0600 observer + fixture hooks + driver), unit-covered by `tests/mcp-context-probe.test.mjs` and gated by the opt-in `tests/e2e/codex-mcp-context-e2e.test.mjs`
+- Result records: `qualification/mcp-context.json` (deleted — context not qualified) and `qualification/mcp-lifecycle.json` (status `characterized`), reduced from one durable event log (98 events) under a single per-run nonce.
 
 ## Outcome
 
-The amended loading/context plan was applied (positive runs omit `--ignore-user-config` and use `--ignore-rules`; the negative control keeps `--ignore-user-config`). The probe server loads and per-call metadata distinguishes Root, Child, later turns, and concurrent Children. It did not prove which metadata field equals the app-server/Hook identity used by Caller Context and Rescue executor records. The historical reducer produced six true and two false booleans; the last two are lifecycle observations rather than failed context assertions.
+Five of six context assertions reduced true; `identityNamespaceQualified` reduced false:
 
-| Boolean | Outcome |
+| Assertion | Outcome |
 |---|---|
-| `rootIdentityComplete` | true |
+| `identityFieldsVisible` | true |
+| `identityNamespaceQualified` | **false** |
 | `laterTurnDistinct` | true |
 | `concurrentChildrenDistinct` | true |
 | `metadataChangesAcrossTurns` | true |
 | `serverLoadedWithConfig` | true |
-| `cancelDelivered` | **false** |
-| `connectionLossDelivered` | true |
-| `shortTimeoutSettled` | **false** |
 
-The historical reducer correctly refused to write its obsolete all-true `result.json` and exited nonzero. The revised plan replaces that schema with a qualified context record plus a lifecycle characterization record; it does not rewrite the observed false values.
+No authority field path is recorded: the reducer's `authorityFields` are null for Root thread, Child thread, and turn. Because the record's schema requires the actual equality-matrix winners and zero candidates won the app-server authority, `qualification/mcp-context.json` was deleted; Task 4 remains blocked until a run proves the app-server/Hook authority join.
 
-## Proven facts (amendment verification)
+## Proven facts
 
-### Blocker 1 from the original run is resolved by the amended argv
+### Loading and distinctness (settled, re-proven under the hardened harness)
 
-With the fixed base argv for new conversations
+- The amended argv (positive runs omit `--ignore-user-config` and use `--ignore-rules`; the negative control adds `--ignore-user-config`) still holds: the negative-control window is provably free of any `server-started` and `capture-started` event, and its transcript shows the recorded tool-unavailable shape — the model's agent message names `mcp__zcode-mcp-context-probe__capture_context` as unavailable, and no nested `mcp_tool_call` item ever appears. The failure under the flag is configuration loading, not fixture packaging.
+- The Root, the initial Child, and the two concurrent Children carry distinct thread hashes; the Child's followup turn carries the Child's thread hash with a different turn hash; the scripted Root resume re-emits exactly the same stdout `thread.started` id with a new inner turn hash (verified by durable hashes this run).
+- `_meta` candidates are exactly the four identity fields (envelope `threadId`, inner `session_id`, `thread_id`, `turn_id`); the probe reads no workspace from `_meta` and claims none — workspace derivation remains the Task 4 authority join.
 
-```text
-exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
-  --ignore-rules -C <workspace> <prompt>
-```
+### Authority namespace (the equality matrix; no winner this run)
 
-and continuations
+The driver hashed the `_meta` candidates, the stdout `thread.started` id, the fixture-hook `session_id`/`turn_id`/`agent_id` values, and the returned Child handle, then recorded salted equality facts. The app-server columns additionally require the app-server-path capture evidence gate: the bounded capture turn must complete with Root/Child captures whose thread hashes match the app-server-created threads learned independently from JSON-RPC. This run the app-server capture turn completed but the model issued no probe MCP calls there (zero captures in that phase), so the gate stayed closed and **no app-server-path or returned-Child-handle equality fact was recorded** — those cells are fact-less false, not contradicted. The reduced matrix:
 
-```text
-exec resume --json --all --skip-git-repo-check
-  --dangerously-bypass-approvals-and-sandbox --ignore-rules <root-thread-id> <prompt>
-```
+- **Hook-authority columns (recorded from exec-window pairings):** Root — envelope `threadId`, inner `session_id`, and inner `thread_id` all equal the hook session id (true); inner `turn_id` equals the hook turn id (true). Child — envelope `threadId` and inner `thread_id` equal the hook `agent_id` (true — the spawn handle is the child thread id); inner `session_id` equals the hook session id (true — `SubagentStart` reports the child's own session); the cross contrasts (envelope `threadId` vs hook session id, inner `session_id` vs hook `agent_id`, inner `thread_id` vs hook session id) are false; inner `turn_id` equals the hook turn id (true).
+- **App-server-authority columns (fact-less on all three completed runs):** every `root:candidate==appServerThreadId`, `child:candidate==appServerThreadId`, and `innerTurnId==appServerTurnId` cell is false because the gate stayed closed — the app-server model omitted the tool call, even after the capture prompt was strengthened to the exec-compliance voice (explicit tool naming, exact call counts, explicit wait, every other MCP tool forbidden).
+- **Returned-Child-handle column (fact-less this run):** one spawn handle was parsed and hashed as durable authority evidence, but per-pair handle facts are recorded only inside the capture-evidence branch, so no handle fact was fabricated.
+- The recorded namespace fact that inner `thread_id` differs from the stdout `thread.started` id on `exec` remains true and is preserved: no equality above is asserted against stdout ids.
+- Consequence: unlike the prior run's exec-read-back correlation, the hardened harness only qualifies the namespace from MCP metadata observed on the app-server Root/Child path itself. On 0.154.0 the app-server model never calls the probe tool, so the join is bounded by that model behavior, not by a transport fact.
 
-the installed probe plugin's MCP server starts (durable `server-started` with canonical observer paths) and successful probe tool calls follow. The A/B negative control — same isolated marketplace and plugin, argv adding `--ignore-user-config` — completed its conversation with the tool unavailable and left the durable event log window provably free of any `server-started` and `capture-started` event. The failure is therefore configuration loading under that flag, not fixture packaging, exactly as the amendment hypothesized.
+### Lifecycle characterization (all five cases; honest observations)
 
-### Observed per-call metadata (names and JSON types only; no values)
+| Case | hostProcess | turnTerminalStatus | toolCallOutcome | handlerSettlement | transportState | hookEvent | unknownReason |
+|---|---|---|---|---|---|---|---|
+| `cliSigint` | exited-clean | not-observed | pending | not-observed | server-exited | session-end | process-exited-first |
+| `cliSigkill` | exited-signal | not-observed | pending | transport-close | stdin-eof | not-observed | none |
+| `appServerTurnInterrupt` | running | completed | not-observed | not-observed | open | stop | host-omitted-event |
+| `pluginToolTimeout` | exited-clean | not-observed | failed | not-observed | server-exited | stop | process-exited-first |
+| `directConfigToolTimeout` | exited-clean | not-observed | failed | not-observed | server-exited | stop | process-exited-first |
 
-`_meta` envelope:
+Reading of each case:
 
-| Field | Type |
-|---|---|
-| `progressToken` | number |
-| `callId` | string |
-| `plugin_id` | string |
-| `threadId` | string |
-| `itemId` | string |
-| `x-codex-turn-metadata` | object |
+1. **`cliSigint`.** SIGINT to the pinned Host PID made the Host exit cleanly within the 10-second window, no durable settlement was written for the held call, and the `SessionEnd` hook fired. The server never observed anything. Cancellation is not delivered to a pending stdio handler on this path.
+2. **`cliSigkill`.** SIGKILL orphans the stdio server; the server's own stdin-EOF watcher settles the held call durably as `transport-close` and exits. Host loss after a durable start is observable only through that self-watching pattern.
+3. **`appServerTurnInterrupt`.** The held turn completed before the interrupt: the model never invoked `hold_for_lifecycle`, so no held call ever became durable and `turn/interrupt` for that exact thread/turn was rejected because the turn had already reached a terminal state. A `Stop` hook fired in the window. The explicit-interrupt dimension stays unproven on this host: no abort settlement, no interrupted-with-Stop-hook shape, and not even a held call to interrupt.
+4. **`pluginToolTimeout` (2-second plugin fixture).** The Host exited cleanly inside the 30-second ceiling with no durable settlement. The new richer observation: the Host transcript itself recorded the nested `mcp_tool_call` item as failed (the configured timeout rendered as a call failure), yet the handler was never notified — no abort, no transport close; the handler simply outlived its call while the Host moved on and exited.
+5. **`directConfigToolTimeout` (2-second direct `[mcp_servers.*]` config, `skill-only` fixture without `.mcp.json`).** The direct-configured server started (durable start observed through the identical env allowlist) and the differential produced the same shape as the plugin fixture: clean Host exit inside the ceiling, a failed nested call item in the transcript, no settlement. Direct configuration versus plugin descriptor loading makes **no behavioral difference** for tool-timeout cancellation on this host.
 
-`_meta["x-codex-turn-metadata"]`:
+### Instrument facts the production design must absorb
 
-| Field | Type |
-|---|---|
-| `session_id` | string |
-| `thread_id` | string |
-| `turn_started_at_unix_ms` | number |
-| `turn_id` | string |
-| `node_repl_disabled` | boolean |
-| `thread_source` | string |
-| `sandbox` | string |
-| `sandbox_mode` | string |
-| `auto_review_enabled` | boolean |
-| `node_repl_auto_review_required` | boolean |
-| `model` | string |
-| `codex_version` | string |
-| `reasoning_effort` | string |
+- `@modelcontextprotocol/sdk` 1.30.0's `StdioServerTransport` listens only for stdin `'data'`/`'error'`; abrupt client death never fires `onclose` and never aborts in-flight handlers. A production stdio server that must record durable interruption settlements has to watch its own stdin `end`/`close` and settle pending work itself. The probe harness does exactly this (the SIGKILL phase proves the mechanism works when the disconnect is observable).
+- `tool_timeout_sec` semantics (per the official config documentation) bound the MCP tool call; nothing in the documented behavior or in either measured shape propagates that timeout to the handler as cancellation — the timeout surfaces only as a failed call item in the Host transcript.
+- `turn/interrupt` is the real cancellation entry (app-server JSON-RPC over stdio, `{threadId, turnId}`), but it requires an active turn: an already-terminal turn rejects the interrupt, so explicit cancellation can only be characterized when the interrupted turn is still in flight. On this host the app-server model omitted both the capture and the held tool calls, so the explicit-interrupt observation and the app-server authority join are both bounded by that model behavior, not by a transport fact.
+- The app-server capture-evidence gate is the qualification path for the authority namespace: the app-server-path equality facts may be recorded only when a completed app-server turn durably produces Root/Child captures attributable to the app-server-created threads (attribution by ANY salted candidate hash — envelope, inner session, or inner thread — against the JSON-RPC-learned thread ids and the persisted spawn-children list, so the discovery does not preselect which `_meta` field carries the identity). Exec-read-back correlation alone no longer qualifies. On 0.154.0 the app-server model ignored even the strengthened exec-compliance prompt on all three completed runs, so the gate has never opened in the hardened harness and the any-candidate attribution path remains unexercised against the live host.
+- The exec phases' `transportState` column is a server-side observation, never an inference from the Host's exit: a durable hold settlement reads as `stdin-eof`, and otherwise the driver checks the liveness of the server process whose durable `server-started` event is the phase's own (alive → `open`, exited → `server-exited`; no durable startup → `not-observed`). The run that exercised this corrected semantics observed the same enum values the earlier inference had produced — `stdin-eof` for `cliSigkill` (its settlement fired) and `server-exited` for `cliSigint` and both timeout phases (each phase's server had exited by observation time) — so the Host-exit inference is now replaced by, and agrees with, direct server-side evidence.
+- Plugin hooks fire in `codex exec` and app-server conversations once two host gates are satisfied: `features.hooks = true` in `$CODEX_HOME/config.toml` and per-hook `trusted_hash` entries under `[hooks.state."…"]` (read from the app-server `hooks/list` `currentHash`); untrusted hooks are silently skipped. The fixture harness enables and trusts its own disposable hooks; `Stop`, `SessionEnd`, and `SubagentStart` observations are what make the `hookEvent` column measurable.
+- Deadlines and bounds: CLI commands keep a 180-second outer deadline; real Host conversations get a 600-second outer deadline. The 10-second signal window covers exit and settlement together, and the 30-second timeout ceiling starts at the durable held-call start. The app-server JSON-RPC client is bounded like every other subprocess read: 4 MiB per stream and a capped notification buffer, with a sticky overflow terminating the bounded session instead of growing the driver.
 
-There is no workspace/cwd field of any kind, in root turns, child turns, or resumed turns, and the MCP `roots/list` request returns `{"roots": []}` on this host. Workspace derivation must come from the Task 4 authority join, not `_meta`.
+### Run provenance note
 
-### Identity semantics proven by per-run-salted hashes
+Three full-matrix runs of the hardened harness produced the same outcome, on a driver whose app-server capture prompt was strengthened to the exec-compliance voice between the first and second runs, whose capture-evidence gate later moved to any-candidate-hash attribution (discovery, not preselection), and whose exec-phase `transportState` observation moved from Host-exit inference to the phase server's own durably recorded pid liveness. Each completed run executed all seven phases under one nonce (98 durable events, exact capture and held-call census) and each driver wrote and reduced its own `result.json` before exiting. On every completed run the app-server capture turn completed with the model issuing no probe MCP calls, so the capture-evidence gate stayed closed, the held call never became durable, and `turn/interrupt` was rejected against an already-terminal turn — neither the strengthened prompt nor the widened attribution changed app-server-path model behavior.
 
-- The Root, the initial Child, and the two concurrent Children carry four distinct thread hashes; the Child's followup turn carries the Child's thread hash with a different turn hash (`laterTurnDistinct`).
-- The scripted Root resume (`exec resume --all <root-thread-id>` with cwd equal to the Root workspace) exits 0 and produces one durable capture with the same inner `thread_id` hash, a new inner `turn_id` hash, and a new metadata hash (`metadataChangesAcrossTurns`). This proves stability within that namespace, not its equality to Hook/app-server authority.
-- Recorded namespace fact: the stdout `thread.started` id — the identifier `exec resume` consumes — is **not** the same value as `_meta["x-codex-turn-metadata"].thread_id`. Production code must not equate those two fields. The resume observation is available within the inner metadata namespace, whose authority relation remains to be characterized.
+Two further attempts aborted fail-closed in the negative-control phase before any durable evidence existed: the negative-control model issued four failed `mcp_tool_call` attempts (all errored, one matching failure excerpt) instead of the recorded zero-item "names the tool unavailable" shape, and the transcript-shape assertion — which then accepted only the zero-item shape — rejected the transcript. Those two aborts were an instrument flake this fix removes, not a host fact: the shape is bimodal model behavior on this host, and the assertion was stricter than the control's purpose, rejecting the strongest engagement evidence (attempted, errored, never executed) because the engagement rendered as items rather than an agent message. The assertion now accepts either engagement shape — the zero-item agent-message shape, or failed-attempt engagement (at least one failed/errored `mcp_tool_call` item plus a matching failure excerpt, with zero successful call evidence) — and always fails closed on successful call items, which remain real-server-interaction proof, never unavailability. The division of labor is unchanged: this assert proves genuine model engagement only, while the durable window (zero `server-started`/`capture-started` events, which held in every attempt) remains the hard proof that the server never loaded. The gate's security claim is unaffected: no server ever loaded under `--ignore-user-config` in any attempt.
 
-## Lifecycle observations: no CLI SIGINT or plugin-timeout abort reached a pending handler
-
-The repaired probe server settles a held call durably as soon as it can observe the abort, and the driver enforces the plan's ceilings exactly. Two of the three delivery shapes fail on this host:
-
-1. **SIGINT (`cancelDelivered` = false).** After the held call's durable start, SIGINT to the recorded Host PID made the Host exit within the 10-second grace. No durable abort/settled event was written for that call. The run does not distinguish whether the server was killed, failed to observe EOF in time, or ended through another Host process-tree action.
-2. **Tool timeout (`shortTimeoutSettled` = false).** With the 2-second `tool_timeout_sec` fixture, the held call produced no durable settlement within the 30-second ceiling. The Host did not exit and the probe observed neither SDK cancellation nor handler termination during that window. This may leave work without the supervision assumed by the original design; direct-config comparison and production lifecycle tests must determine the actual risk.
-3. **Disconnect (`connectionLossDelivered` = true).** SIGKILL to the Host orphans the stdio server; the server detects its own stdin end/close, settles the held call durably as a transport close (observed ~250 ms after the kill), and exits. Delivery after a Host crash is therefore possible — but only because the probe server watches stdin itself.
-
-### Instrument fact the production design must absorb
-
-`@modelcontextprotocol/sdk` 1.30.0's `StdioServerTransport` listens only for stdin `'data'`/`'error'`. An abrupt client death therefore never fires the transport's `onclose`, and the SDK's in-flight handler aborts (verified present in `Protocol._onclose` and via InMemory transport tests) never run over real stdio. A production stdio MCP server that must record durable interruption settlements before becoming unsupervised has to watch its own stdin `end`/`close` and settle pending work itself. The probe harness now does exactly this; the timeout and SIGINT findings above are not artifacts of that gap (the disconnect phase proves the mechanism works when the disconnect is observable).
-
-A second recorded harness instrument fact concerns outer deadlines: `codex` CLI commands (version, flag pre-check, marketplace/plugin install and removal, `login status`) keep a 180-second outer deadline, while real Host conversations get a 600-second outer deadline. On 0.154.0 the matrix's first durable capture alone landed ~140s into the conversation, so the CLI command bound cannot contain a healthy multi-turn Host session. The 10-second signal grace and the 30-second tool-timeout ceiling remain unchanged protocol assertions.
-
-## Matrix assertion notes
-
-- `rootIdentityComplete`, `laterTurnDistinct`, `concurrentChildrenDistinct`, `metadataChangesAcrossTurns`, `serverLoadedWithConfig`: reduced true from the durable log; the driver additionally verified the resume capture against the authoritative parsed facts by hash before correlation.
-- `cancelDelivered`, `shortTimeoutSettled`: reduced false; the census refused the qualification as designed.
-- Stale/wrong-metadata rejection and workspace derivation remain Task 4 authority-join obligations and are not claimed here.
+The driver exits 1 by design when the six-boolean context gate fails; cleanup still ran to completion each time (probe plugin and marketplaces removed from each isolated home, tracked PIDs stopped, isolated auth copies deleted). No evidence was rewritten: `result.json` is the closed reduction of exactly the durable log each run produced, and the committed record changes follow mechanically from it.
 
 ## Cleanup and blast radius
 
-Every driver run removed the probe plugin and marketplace (`plugin remove`/`plugin marketplace remove` exit 0, in `finally`), killed all tracked Host and server PIDs by verified start identity, deleted the isolated `auth.json` copy, and removed the temporary isolated homes. The real `~/.codex` home was only read for `auth.json` bytes (mode-0600 copy into the run directory); it was never written. Run directories live outside the repository and are not committed.
+The driver run removed the probe plugin and marketplaces from each isolated home, killed all tracked Host/server PIDs by verified start identity, deleted both isolated `auth.json` copies, and removed the temporary isolated homes. The real `~/.codex` home was only read for `auth.json` bytes (mode-0600 copies); it was never written. Run directories live outside the repository and are not committed.
 
 ## Consequences
 
-- Metadata visibility/distinctness, amended argv, and A/B configuration loading are settled facts. Task 3 and Task 5 may proceed without rerunning them; Task 4 waits for the authority namespace mapping.
-- CLI SIGINT, CLI SIGKILL, and plugin timeout results are settled observations, not requirements that must all become signal aborts. The harness must preserve them in the new generic lifecycle schema.
-- Task 2 still needs three bounded characterization results: metadata-to-app-server/Hook identity namespace equality, real app-server `turn/interrupt`, and direct `config.toml` versus plugin `.mcp.json` timeout behavior. Those observations produce candidate strategies; Task 6 freezes independent explicit-interrupt, Host-loss, and timeout strategies only after local feasibility tests.
-- Production MCP server/Skill packaging remains blocked until authority mapping and all selected lifecycle strategies prove the unchanged feature outcomes. Independent adapter-state and result-formatting work is not blocked.
-- The canonical shell Skills remain the only shipped foreground wait adapter until the final installed-plugin gate passes.
+- **Task 4 is blocked:** `qualification/mcp-context.json` no longer exists because no authority field path is proven. Safe caller/binding resolution from MCP metadata is unavailable until a run proves the app-server/Hook authority join.
+- Task 3 and Task 5 remain independent and unaffected.
+- Task 6 receives `qualification/mcp-lifecycle.json` with `explicitInterrupt: ['release-blocked']`, `hostLoss: ['durable-supervision', 'release-blocked']`, and `hostTimeout: ['server-deadline', 'durable-supervision', 'release-blocked']`, with `selectedStrategies: null`. Explicit interruption is release-blocked unless a future host/version proves a direct abort or an interrupted-turn-plus-Stop-hook shape; Host loss and timeouts require durable supervision or a server-side deadline, never the Host's configured timeout.
+- Production MCP server/Skill packaging remains blocked until Task 6 freezes feasible strategies and Tasks 8–10 prove the unchanged feature outcomes. The canonical shell Skills remain the only shipped foreground wait adapter.
