@@ -37,6 +37,11 @@ import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { claimNotifications, finalizeNotifications, markForwarding, peekUnreadJobs, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
+// Session proofs are validated against the wall clock (identity rejects proofs
+// older than 31 days), so derive the fixture proof from the wall clock instead
+// of a hard-coded stamp that ages out of the window.
+const SESSION_STARTED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const rescueLauncher = join(root, 'skills', 'rescue', 'launcher.mjs');
@@ -1086,7 +1091,7 @@ for (const scenario of ['explicit-resume']) test(`host-only ${scenario} fails cl
   await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-a', workspace, permissionMode: 'workspace-write',
-    prompt: '$zcode:rescue recover candidate', sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    prompt: '$zcode:rescue recover candidate', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
   const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
     cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
   const jobsBefore = await store.listJobs(workspace);
@@ -7333,7 +7338,7 @@ const incident = Object.freeze({
   childPath: '/root/zcode_rescue_task',
   childTurn: 'prepare-reconcile-child-turn',
   zcodeSessionId: 'zs-prepare-reconcile',
-  sessionStartedAt: '2026-09-12T00:00:00.000Z',
+  sessionStartedAt: SESSION_STARTED_AT,
 });
 
 /** Build the terminated-child incident behind the REAL prepare entry: one

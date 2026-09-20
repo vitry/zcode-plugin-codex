@@ -26,6 +26,11 @@ import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from 
 import { runChild } from '../helpers/run-child.mjs';
 import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
+// Session proofs are validated against the wall clock (identity rejects proofs
+// older than 31 days), so derive the fixture proof from the wall clock instead
+// of a hard-coded stamp that ages out of the window.
+const SESSION_STARTED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -374,7 +379,7 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
   const record = join(ctx.directory, 'linked-execution.jsonl'); await writeFile(record, '');
   await identity.beginCallerTurn({
     sessionId: 'linked-parent', turnId: 'linked-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
-    prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+    prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true,
   });
   // The real SessionStart hook runs in the ORIGIN workspace and records the
   // epoch start there; the child later executes in the linked worktree.
@@ -405,7 +410,7 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   const target = join(ctx.directory, 'status-linked-execution');
   await run('git', ['worktree', 'add', '-q', '-b', 'status-linked-execution', target], ctx.workspace);
   const canonicalTarget = await realpath(target);
-  await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
   await prepareRescue({ ...ctx, workspace: canonicalTarget }, 'route-status-parent', { version: 4, source: 'explicit', task: 'repair route status', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   await startRescueChild(ctx, 'route-status-parent', 'route-status-child', 'route-status-child-turn');
   const targetReservation = { workspace: canonicalTarget, ownerSessionId: 'route-status-parent', ownerTurnId: 'route-status-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
@@ -436,14 +441,14 @@ test('origin cwd choice resume consumes and executes only in the linked worktree
     await run('git', ['worktree', 'add', '-q', '-b', `choice-${choice}-linked-execution`, target], ctx.workspace);
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `choice-${choice}.jsonl`); await writeFile(record, '');
     const parentId = `route-choice-${choice}-parent`; const childId = `route-choice-${choice}-child`; const childTurnId = `route-choice-${choice}-child-turn`;
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} seed`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId);
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} later`, options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null }, childId);
     const pending = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(pending.code, 3, pending.stderr || pending.stdout); assert.match(pending.stdout, /needs-choice/);
@@ -469,14 +474,14 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     await run('git', ['worktree', 'add', '-q', '-b', `${routeName}-stopped-linked-execution`, target], ctx.workspace);
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `${routeName}-stopped.jsonl`); await writeFile(record, '');
     const parentId = `${routeName}-stopped-parent`; const childId = `${routeName}-stopped-child`; const childTurnId = `${routeName}-stopped-child-turn`;
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} first`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId, agentType);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId, agentType);
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} continue`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null }, childId);
 
     const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
