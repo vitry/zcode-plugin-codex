@@ -1,7 +1,7 @@
 {
   "version": 1,
   "status": "characterized",
-  "codexVersion": "codex-cli 0.154.0",
+  "codexVersion": "codex-cli 0.155.1",
   "cases": {
     "appServerTurnInterrupt": {
       "hostProcess": "running",

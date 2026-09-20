@@ -12,7 +12,9 @@
 
 **Qualification amendment:** Codex CLI 0.154.0 qualification showed that `--ignore-user-config` skips the `$CODEX_HOME/config.toml` that contains marketplace/plugin registration, so it also prevents the installed plugin MCP server from loading. Positive Host runs use an isolated `CODEX_HOME` with copied auth and plugin config, omit `--ignore-user-config`, and use `--ignore-rules` if rule isolation is needed. The negative control intentionally uses `--ignore-user-config` and must show no probe server. The official docs define the flag as skipping `$CODEX_HOME/config.toml` and document plugin marketplace configuration separately.
 
-**Current evidence status:** Plugin loading and per-call identity visibility are proven on Codex CLI 0.154.0, but the metadata-to-app-server/Hook authority namespace join is not yet qualified. Lifecycle behavior is characterized for CLI SIGINT, CLI SIGKILL, and plugin `tool_timeout_sec`; app-server `turn/interrupt` and direct-config timeout remain open. Task 3 and Task 5 may proceed immediately. Task 4 waits for the identity namespace record. Task 6 begins with a bounded lifecycle-feasibility spike and may create the production server only after selecting strategies. Packaging, MCP Skill enablement, marketplace publication, and final release remain gated by Tasks 8–10.
+**App-server amendment (0.155.1):** the 0.154.0 runs left Skill resolution and model MCP-tool selection confounded: the app-server capture turn sent only a text item naming the `$zcode-mcp-context-probe:context` marker. The 0.155.1 app-server schema adds `skills/list`, `turn/start` Skill input items (`{type:'skill', name, path}`), `turn/interrupt`, and `mcpServer/tool/call`, so the amended driver resolves the installed probe Skill via bounded `skills/list` (probe workspace, `forceReload: true`), runs a structured-Skill treatment capture turn alongside the historical text-only control turn (whose captures never feed the authority gate), and adds a diagnostic-only `mcpServer/tool/call` transport control that can never substitute for the model-driven Skill entry point. `turn/interrupt` is sent only after `hold_for_lifecycle` durably enters the handler.
+
+**Current evidence status:** Plugin loading and per-call identity visibility are proven on Codex CLI 0.154.0, and the metadata-to-app-server/Hook authority namespace join was re-run against the pinned `codex-cli 0.155.1` with the revised controls and remains unproven (the structured-Skill path resolved the probe Skill and still produced no attributable app-server captures). Lifecycle behavior was characterized for CLI SIGINT, CLI SIGKILL, and plugin `tool_timeout_sec` on 0.154.0; app-server `turn/interrupt`, direct-config timeout, and the explicit-interrupt dimension are re-characterized on 0.155.1 under the amended discipline. Task 3 and Task 5 may proceed immediately. Task 4 waits for the identity namespace record. Task 6's frozen strategies (`explicitInterrupt: release-blocked`, `hostLoss: durable-supervision`, `hostTimeout: server-deadline`) are re-frozen only per the new interruption evidence. Packaging, MCP Skill enablement, marketplace publication, and final release remain gated by Tasks 8–10.
 
 ---
 
@@ -152,7 +154,7 @@ git commit -m "fix: lengthen canonical foreground observations"
 
 > **Resumption note:** This task's rerun is a delta amendment of the already-committed harness (commits 56aff12, b5af4c5, b9244a0, and 7a10934 created and hardened the probe). The rerun must preserve the already-proven loading/distinctness facts, add authority namespace characterization, and replace the erroneous all-true lifecycle gate with observations plus later feasibility-based strategy selection. RED/GREEN evidence comes from tests for those deltas.
 
-> **Current checkpoint:** Do not recreate the SDK dependency or original harness files from scratch. Begin with RED delta tests for the result schema, fixture hook/equality matrix, app-server `turn/interrupt`, and skill-only direct-config timeout case. Because prior run directories were securely removed and no machine artifact remains, run the amended driver through its full matrix once after those changes; the rerun regenerates A/B, distinctness, SIGINT, SIGKILL, and plugin-timeout evidence under one nonce so the equality matrix and two records have a single provenance. Task 3 and Task 5 may run independently in parallel. Do not start Task 4 until `qualification/mcp-context.json` records a proven authority namespace.
+> **Current checkpoint (0.155.1 requalification amendment):** Do not recreate the SDK dependency or original harness files from scratch. Begin with RED delta tests for the revised controls: the bounded `skills/list` Skill resolution (exact request shape and pure resolver), the structured `{type:'skill', name, path}` turn input for the treatment capture turn and the held turn, the text-only control capture turn whose captures never feed the authority gate, the diagnostic-only `mcpServer/tool/call` transport control (never a model turn; never gate or lifecycle evidence), the durable-hold-gated `turn/interrupt` discipline (interrupt only after `hold_for_lifecycle` durably enters the handler; never infer handler settlement from `turn/completed.status === 'interrupted'`), and the updated turn census. Then run the amended driver through its full matrix once pinned to `codex-cli 0.155.1`; the rerun regenerates A/B, distinctness, SIGINT, SIGKILL, and plugin-timeout evidence under one nonce so the equality matrix and two records have a single provenance, and its results must distinguish marker-only Skill resolution, explicit structured Skill injection, and subsequent model MCP-tool selection. Task 3 and Task 5 may run independently in parallel. Do not start Task 4 until `qualification/mcp-context.json` records a proven authority namespace.
 
 - [ ] **Step 1: Install the probe/runtime SDK dependency**
 
@@ -290,7 +292,7 @@ exec resume --json --all --skip-git-repo-check
   --dangerously-bypass-approvals-and-sandbox --ignore-rules <root-thread-id> <prompt>
 ```
 
-`--ignore-rules` acceptance on 0.154.0 is fail-closed: if a Host spawn rejects the flag, that spawn failure fails the gate. It may be cheaply pre-checked by including the flag in the version/preflight spawn.
+`--ignore-rules` acceptance is fail-closed: if a Host spawn rejects the flag, that spawn failure fails the gate. It may be cheaply pre-checked by including the flag in the version/preflight spawn.
 
 The state machine is exact:
 
@@ -311,7 +313,7 @@ Before the positive matrix, run a negative-control Host with the same isolated m
 7. Remove the plugin/marketplace. In a fresh isolated Codex home with the same copied authentication, install a separately generated `mode:'skill-only'` fixture whose plugin contains the probe Skill and hooks but no `.mcp.json`. Configure the identical server directly under `[mcp_servers.zcode-mcp-context-probe]` with `tool_timeout_sec = 2`. Run the same Skill-driven held call, require its durable start before beginning the 30-second ceiling, and record `directConfigToolTimeout`. This differential isolates Host timeout semantics from plugin descriptor propagation without relying on the model to invent a raw tool name.
 8. Stop all tracked processes. Under the event lock, reduce the shared log and atomically write `<run>/result.json`; run the opt-in assertion test. The context section must pass all six booleans. Every lifecycle case must contain a schema-valid observation, but no particular observation is required merely to make characterization “pass.”
 
-The instrument contract separates outer deadlines: CLI commands (`--version`, the flag pre-check, marketplace/plugin install and removal, `login status`) keep the 180-second outer deadline; real Host conversations get a 600-second outer deadline (the matrix's first durable capture alone landed ~140s into a conversation on 0.154.0, which the CLI bound cannot contain). Every subprocess has bounded 4 MiB stdout/stderr. The driver tracks PID plus start identity before signalling, never uses process-name matching, and runs ordered cleanup in `finally`. Failure to stop a process, remove the plugin/marketplace, delete isolated `auth.json`, or remove the temporary homes makes qualification fail with a redacted cleanup error.
+The instrument contract separates outer deadlines: CLI commands (`--version`, the flag pre-check, marketplace/plugin install and removal, `login status`) keep the 180-second outer deadline; real Host conversations get a 900-second outer deadline (the matrix's first durable capture alone landed ~140s into a conversation on 0.154.0, which the CLI bound cannot contain, and the 0.155.1 matrix conversation was still progressing with two durable captures when a 600-second bound killed a healthy conversation). Every subprocess has bounded 4 MiB stdout/stderr. The driver tracks PID plus start identity before signalling, never uses process-name matching, and runs ordered cleanup in `finally`. Failure to stop a process, remove the plugin/marketplace, delete isolated `auth.json`, or remove the temporary homes makes qualification fail with a redacted cleanup error.
 
 Cleanup commands are exact and run even after failure:
 
@@ -348,7 +350,7 @@ type ThreadFieldPath =
   | '_meta.x-codex-turn-metadata.thread_id';
 type TurnFieldPath = '_meta.x-codex-turn-metadata.turn_id';
 type ContextQualificationRecord = {
-  version: 1; status: 'qualified'; codexVersion: 'codex-cli 0.154.0';
+  version: 1; status: 'qualified'; codexVersion: 'codex-cli 0.155.1';
   contextSchemaVersion: 1;
   metadataFields: { rootThreadId: ThreadFieldPath; childThreadId: ThreadFieldPath; turnId: TurnFieldPath };
   workspaceSource: 'authority-join'; observedAt: string;
@@ -370,7 +372,7 @@ type LifecycleObservation = {
   unknownReason: 'none'|'ceiling-reached'|'host-omitted-event'|'process-exited-first'|'unsupported';
 };
 type LifecycleRecord = {
-  version: 1; status: 'characterized'; codexVersion: 'codex-cli 0.154.0';
+  version: 1; status: 'characterized'; codexVersion: 'codex-cli 0.155.1';
   cases: Record<LifecycleCase, LifecycleObservation>;
   candidateStrategies: {
     explicitInterrupt: Array<'direct-abort'|'durable-stop-intent'|'release-blocked'>;
@@ -988,7 +990,7 @@ Run: `npm run check:line-endings && npm run lint && npm run typecheck && npm run
 
 Expected: all tests pass; only credential-gated real ZCode/provider tests may skip under their existing opt-in rules.
 
-- [ ] **Step 3: Re-run context qualification and lifecycle characterization unchanged**
+- [ ] **Step 3: Re-run context qualification and lifecycle characterization against the pinned `codex-cli 0.155.1` with the revised controls**
 
 Run:
 
@@ -1003,7 +1005,9 @@ ZCODE_CODEX_MCP_E2E=1 ZCODE_MCP_PROBE_RESULT="$probe_run/result.json" \
   node --test tests/e2e/codex-mcp-context-e2e.test.mjs
 ```
 
-Expected: the six context booleans remain true; authority field paths still win the same equality matrix; all five lifecycle cases remain valid observations and exactly match the checked-in `qualification/mcp-lifecycle.json` for the supported Codex version. An observation is not required to be `signal-abort`. A changed observation is a compatibility change that requires selecting and retesting the corresponding dimension, not an instruction to force an old callback. Stale/wrong metadata rejection remains Task 4's authority test and is not claimed by this Host characterization.
+The rerun is not a verbatim replay: the app-server phase now resolves the installed probe Skill through bounded `skills/list` (probe workspace, `forceReload: true`), drives the structured-Skill treatment capture turn (the `{type:'skill', name, path}` item alongside the compliance-voice text), drives the historical text-only control capture turn for the marker-only contrast (its captures are recorded but never feed the authority gate), adds the diagnostic-only `mcpServer/tool/call` transport control (never a model turn; it cannot satisfy the authority gate or any lifecycle case), and sends `turn/interrupt` only after `hold_for_lifecycle` has durably entered the handler.
+
+Expected: the six context booleans remain true; authority field paths still win the same equality matrix through the structured-Skill model path; the run distinguishes marker-only Skill resolution, explicit structured Skill injection, and subsequent model MCP-tool selection; all five lifecycle cases remain valid observations and exactly match the checked-in `qualification/mcp-lifecycle.json` for the supported Codex version. An observation is not required to be `signal-abort`. A changed observation is a compatibility change that requires selecting and retesting the corresponding dimension, not an instruction to force an old callback. Stale/wrong metadata rejection remains Task 4's authority test and is not claimed by this Host characterization.
 
 - [ ] **Step 4: Qualify the installed production plugin and full Rescue-MCP chain**
 

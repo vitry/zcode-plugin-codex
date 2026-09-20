@@ -34,6 +34,29 @@ export const PROBE_LIFECYCLE_CASES = Object.freeze([
   'appServerTurnInterrupt', 'cliSigint', 'cliSigkill', 'directConfigToolTimeout', 'pluginToolTimeout',
 ]);
 
+/**
+ * The closed app-server control outcomes (the amended 0.155.1 controls) in
+ * required canonical order: the Skill resolution result, the structured
+ * treatment capture turn, the text-only control capture turn, the
+ * `mcpServer/tool/call` transport control, and the held turn's
+ * interrupt-delivery result. Each control durably records exactly one
+ * event, so a reduced result can only come from a log that substantiates
+ * the three-way Skill-resolution / structured-injection / model-tool-
+ * selection distinction AND durably proves the interruption was exercised.
+ */
+export const PROBE_APP_SERVER_CONTROLS = Object.freeze([
+  'skill-resolution', 'structured-treatment-turn', 'text-only-control-turn', 'transport-control', 'held-turn-interrupt',
+]);
+
+/** The closed outcome vocabulary per app-server control. */
+export const PROBE_APP_SERVER_CONTROL_OUTCOMES = Object.freeze({
+  'skill-resolution': Object.freeze(['resolved', 'unresolved', 'failed']),
+  'structured-treatment-turn': Object.freeze(['completed', 'failed', 'interrupted', 'ceiling', 'skipped']),
+  'text-only-control-turn': Object.freeze(['completed', 'failed', 'interrupted', 'ceiling', 'skipped']),
+  'transport-control': Object.freeze(['capture-recorded', 'error-result-undetermined-origin', 'call-failed', 'unobserved']),
+  'held-turn-interrupt': Object.freeze(['delivered', 'rejected', 'failed', 'not-sent']),
+});
+
 /** The candidate field paths hashed from per-call `_meta` captures. */
 export const PROBE_EQUALITY_CANDIDATES = Object.freeze(['envelopeThreadId', 'innerSessionId', 'innerThreadId', 'innerTurnId']);
 
@@ -58,6 +81,7 @@ const EVENT_KINDS = Object.freeze([
   'server-started', 'capture-started', 'capture-settled',
   'hold-started', 'hold-settled', 'phase-observed',
   'hook-observed', 'authority-hash', 'equality-fact', 'lifecycle-observed',
+  'app-server-control',
 ]);
 const TERMINAL_KINDS = Object.freeze(['capture-settled', 'hold-settled']);
 const START_KINDS = Object.freeze(['capture-started', 'hold-started']);
@@ -85,6 +109,7 @@ const EVENT_ALLOWED_KEYS = Object.freeze({
   'authority-hash': Object.freeze(['kind', 'authority', 'scope', 'hash']),
   'equality-fact': Object.freeze(['kind', 'scope', 'candidate', 'authority', 'equal']),
   'lifecycle-observed': Object.freeze(['kind', 'lifecycleCase', ...Object.keys(OBSERVATION_ENUMS)]),
+  'app-server-control': Object.freeze(['kind', 'control', 'outcome', 'captures']),
 });
 const RUN_NONCE_PATTERN = /^[0-9a-f]{64}$/;
 const CALL_NONCE_PATTERN = /^[0-9a-f]{32}$/;
@@ -246,6 +271,22 @@ export function validateProbeEventBody(body) {
         if (typeof event[field] !== 'string' || !allowed.includes(event[field])) {
           throw probeError('PROBE_EVENT_INVALID', `lifecycle-observed requires ${field} from its closed vocabulary.`);
         }
+      }
+      break;
+    }
+    case 'app-server-control': {
+      // The amended 0.155.1 controls' durable record: a closed control, an
+      // outcome from that control's own closed subset, and a bounded
+      // non-negative integer capture count — never ids, paths, or values.
+      if (typeof event.control !== 'string' || !PROBE_APP_SERVER_CONTROLS.includes(event.control)) {
+        throw probeError('PROBE_EVENT_INVALID', 'app-server-control requires a closed control kind.');
+      }
+      const allowedOutcomes = PROBE_APP_SERVER_CONTROL_OUTCOMES[event.control] ?? [];
+      if (typeof event.outcome !== 'string' || !allowedOutcomes.includes(event.outcome)) {
+        throw probeError('PROBE_EVENT_INVALID', `app-server-control requires an outcome from the closed ${event.control} vocabulary.`);
+      }
+      if (!Number.isSafeInteger(event.captures) || /** @type {number} */ (event.captures) < 0) {
+        throw probeError('PROBE_EVENT_INVALID', 'app-server-control requires a non-negative integer capture count.');
       }
       break;
     }
@@ -666,6 +707,9 @@ function assertCompleteQualificationLog(records, { runDirectory }) {
   const holdsByPhase = new Map();
   /** @type {Map<string, number>} */
   const lifecycleCounts = new Map();
+  const controlCounts = new Map();
+  /** @type {string[]} */
+  const controlOrder = [];
   for (const record of records) {
     const event = record.event;
     if (event.kind === 'phase-observed') currentPhase = event.phase;
@@ -693,6 +737,10 @@ function assertCompleteQualificationLog(records, { runDirectory }) {
     }
     if (event.kind === 'lifecycle-observed') {
       lifecycleCounts.set(event.lifecycleCase, (lifecycleCounts.get(event.lifecycleCase) ?? 0) + 1);
+    }
+    if (event.kind === 'app-server-control') {
+      controlCounts.set(event.control, (controlCounts.get(event.control) ?? 0) + 1);
+      if (!controlOrder.includes(event.control)) controlOrder.push(event.control);
     }
   }
   // At least one durable startup proves the probe server itself ran with
@@ -723,7 +771,8 @@ function assertCompleteQualificationLog(records, { runDirectory }) {
   // The scripted matrix is exactly five captures (Root, initial Child, Child
   // later turn, two concurrent Children) plus the state-machine step-2
   // Root-resume capture, all settled. Best-effort captures outside the
-  // matrix phase (the app-server capture turn) are tolerated observations
+  // matrix phase (the app-server treatment/control turns and the
+  // transport-control diagnostic) are tolerated observations
   // but must also have settled.
   if (captures !== settledCaptures) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains unsettled capture calls.');
   if (matrixCaptures !== 6 || matrixSettledCaptures !== 6) throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log must contain exactly six settled matrix capture calls.');
@@ -745,6 +794,28 @@ function assertCompleteQualificationLog(records, { runDirectory }) {
   }
   if (lifecycleCounts.size !== PROBE_LIFECYCLE_CASES.length) {
     throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains lifecycle observations outside the closed vocabulary.');
+  }
+  // The amended 0.155.1 controls must be durable: exactly one
+  // app-server-control event per closed control, in the driver's canonical
+  // order, each already schema-validated on append. Without them the log
+  // cannot substantiate the three-way Skill-resolution / structured-
+  // injection / model-tool-selection distinction, and no result may be
+  // reduced from it.
+  for (const control of PROBE_APP_SERVER_CONTROLS) {
+    if ((controlCounts.get(control) ?? 0) !== 1) {
+      throw probeError('PROBE_LOG_INCOMPLETE', `The qualification log must contain exactly one app-server-control event for ${control}.`);
+    }
+  }
+  if (controlCounts.size !== PROBE_APP_SERVER_CONTROLS.length) {
+    throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log contains app-server-control events outside the closed vocabulary.');
+  }
+  let previousControlIndex = -1;
+  for (const control of PROBE_APP_SERVER_CONTROLS) {
+    const index = controlOrder.indexOf(control);
+    if (index <= previousControlIndex) {
+      throw probeError('PROBE_LOG_INCOMPLETE', 'The qualification log records app-server-control events out of canonical order.');
+    }
+    previousControlIndex = index;
   }
 }
 

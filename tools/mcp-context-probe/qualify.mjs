@@ -5,12 +5,15 @@
  * supplied Codex binary, copies only auth.json into isolated homes, installs
  * probe-only marketplaces, drives the amended state machine — negative
  * control, the scripted identity matrix, CLI SIGINT/SIGKILL observation, the
- * app-server `turn/interrupt` characterization, and the plugin/direct-config
- * timeout differential — and finally reduces the durable event log into
- * `<run>/result.json` with the six context assertions and five honest
- * lifecycle observations. It never touches the real Codex home beyond reading
- * auth.json, never logs credentials or identity values, and never resolves
- * the binary through PATH.
+ * app-server characterization (bounded `skills/list` Skill resolution, a
+ * structured-Skill treatment capture turn, a text-only control capture
+ * turn, a diagnostic-only `mcpServer/tool/call` transport control, and the
+ * durable-hold-gated `turn/interrupt` characterization), and the
+ * plugin/direct-config timeout differential — and finally reduces the
+ * durable event log into `<run>/result.json` with the six context assertions
+ * and five honest lifecycle observations. It never touches the real Codex
+ * home beyond reading auth.json, never logs credentials or identity values,
+ * and never resolves the binary through PATH.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -37,15 +40,26 @@ const SUBPROCESS_DEADLINE_MS = 180_000;
 // Host conversations are long, multi-turn scripted model sessions: on the
 // real 0.154.0 host the scripted matrix's first durable capture alone landed
 // ~140s into the conversation, so the CLI-command outer deadline cannot bound
-// a Host spawn without killing a healthy conversation. Host spawns get their
-// own explicit outer deadline; the signal/timeout ceilings (10s/30s) and the
+// a Host spawn without killing a healthy conversation. On the 0.155.1 host
+// the same matrix conversation is slower still — the first two captures
+// landed by ~390s and the conversation was still progressing (hooks firing,
+// zero malformed frames) when a 600-second bound killed it — so the outer
+// deadline gives the conversation 900 seconds while remaining an explicit,
+// bounded instrument contract. The signal/timeout ceilings (10s/30s) and the
 // output bound remain the protocol assertions.
-const HOST_CONVERSATION_DEADLINE_MS = 600_000;
+const HOST_CONVERSATION_DEADLINE_MS = 900_000;
 const MAXIMUM_OUTPUT_BYTES = 4 * 1024 * 1024;
 // Bounded notifications for the app-server JSON-RPC client: the
 // characterization reads a handful of frames, so past this cap frames are
 // counted (redacted) and discarded instead of growing the driver's memory.
 const MAXIMUM_APP_SERVER_NOTIFICATIONS = 512;
+// 0.155.1 model turns stream high-volume delta notifications
+// (`item/agentMessage/delta`, `item/*/outputDelta`, and friends). They are
+// counted redacted and never retained — no reducer consumes them (the
+// terminal wait reads only `turn/completed`) — so a streaming turn cannot
+// terminate the bounded session before the characterization observes the
+// held call. Retained (non-delta) notifications still obey the bounded cap.
+const APP_SERVER_DELTA_NOTIFICATION = /delta/i;
 const SIGNAL_GRACE_MS = 10_000;
 const HOST_TIMEOUT_GRACE_MS = 30_000;
 const APP_SERVER_OBSERVATION_CEILING_MS = 30_000;
@@ -75,10 +89,51 @@ const PROBE_TOOL_REFERENCE = /capture_context|zcode-mcp-context-probe/i;
 // The recorded tool-unavailable statement shape: on 0.154.0 the negative-
 // control model reports the unavailable probe tool in its agent message
 // (the top-level error frames are transient transport noise), so a genuine
-// unavailability statement in the message is a failure surface too.
-const PROBE_UNAVAILABLE_STATEMENT = /unavailable|not available|cannot be|unable to|does not exist/i;
+// unavailability statement in the message is a failure surface too. On
+// 0.155.1 the same negative-control conversation is healthy but phrases the
+// unavailability with negative-copula forms the original vocabulary missed
+// ("isn't exposed", "isn't available", "not exposed" — the host's apostrophe
+// is the Unicode right single quote), so the vocabulary covers both the
+// plain and negated forms. The DURABLE WINDOW remains the hard proof that
+// the server never loaded; this statement match only recognizes genuine
+// engagement.
+const PROBE_UNAVAILABLE_STATEMENT = /unavailable|not\s+available|isn[’']t\s+(?:available|exposed|callable|accessible|present)|are\s+(?:unavailable|not\s+(?:available|exposed|callable|accessible|present))|not\s+(?:exposed|callable|accessible|present)|cannot\s+be|unable\s+to|does\s+not\s+exist|no\s+such\s+(?:tool|skill|command)/i;
 // The spawn_agent child handle is a Codex thread identifier (UUID format).
 const THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Pure classification key for one nested `mcp_tool_call` item: whether the
+ * item references the probe tool or server, and its bounded status class
+ * (`successful` for completed/ok, `failed` for failed/error, else
+ * `unclassified`). PRECEDENCE: when the item carries a `tool` name, that
+ * name decides the probe reference EXCLUSIVELY — a foreign introspection
+ * call whose arguments or output merely mention the probe (e.g. the host
+ * enumerating the probe's resources) must stay foreign; the whole-frame
+ * fallback exists only for payloads that omit the tool name (an empty
+ * string counts as omitted). The key feeds the driver's uncapped identity
+ * tally (`mcpCallIdentityCounts`), so every call is counted regardless of
+ * the 32-entry diagnostic excerpt cap; the key set is bounded by the tiny
+ * host status vocabulary. Returns null for a malformed payload.
+ * @param {{tool?:unknown, status?:unknown}|null} nestedItem @param {string} line
+ * @returns {(string|null)} 'probe:successful' | 'probe:failed' | 'probe:unclassified' | 'foreign:successful' | 'foreign:failed' | 'foreign:unclassified' | null
+ */
+export function mcpToolCallIdentityKey(nestedItem, line) {
+  if (!nestedItem || typeof nestedItem !== 'object') return null;
+  const toolName = typeof nestedItem.tool === 'string' ? nestedItem.tool : '';
+  const referencing = toolName.length > 0 ? PROBE_TOOL_REFERENCE.test(toolName) : PROBE_TOOL_REFERENCE.test(line);
+  const status = typeof nestedItem.status === 'string' ? nestedItem.status : '';
+  const statusClass = status === 'completed' || status === 'ok' ? 'successful'
+    : status === 'failed' || status === 'error' ? 'failed' : 'unclassified';
+  return `${referencing ? 'probe' : 'foreign'}:${statusClass}`;
+}
+// The one host version this amended characterization is schema-pinned to:
+// `skills/list`, the structured `{type:'skill'}` turn input item, and
+// `mcpServer/tool/call` are 0.155.1 app-server schema (the locally generated
+// schema and the official docs confirm them there). The driver fails closed
+// on any other version BEFORE any app-server request is issued, so an older
+// or newer binary can never degrade those requests into ordinary resolution
+// failures and emit mislabeled observations.
+const REQUALIFIED_CODEX_VERSION = 'codex-cli 0.155.1';
 
 const MATRIX_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context once in Root. Spawn one Child, have it call capture_context, wait for it, then follow up that exact Child and have it call capture_context again. Then spawn two new Children concurrently and have each call capture_context once. Wait for both. Do not call any other MCP tool.';
 const NEGATIVE_CONTROL_PROMPT = 'Use $zcode-mcp-context-probe:context and call capture_context exactly once in Root. Do not spawn a Child.';
@@ -86,12 +141,16 @@ const ROOT_RESUME_PROMPT = 'Use $zcode-mcp-context-probe:context and call captur
 /** The exec hold voice: names the tool, exact count, nothing else. Shared by the exec hold phases and the app-server held turn. */
 export const HOLD_PROMPT = 'Use $zcode-mcp-context-probe:context and call hold_for_lifecycle exactly once. Wait for that tool and do nothing else.';
 /**
- * The app-server capture turn input, mirroring the exec prompts' compliance
+ * The app-server capture turn text, mirroring the exec prompts' compliance
  * profile: it names the Skill and the probe tool, demands the exact call
  * counts (exactly one Root capture, exactly one spawned Child with one
  * capture), requires the wait, and forbids every other MCP tool — the voice
- * that achieved full exec-path compliance. Identity-free: the driver
- * injects thread ids only into the JSON-RPC params, never into this text.
+ * that achieved full exec-path compliance. The structured treatment turn
+ * pairs this text with the resolved Skill input item
+ * (`{type:'skill', name, path}`) appended by `appServerTurnStartParams`; the
+ * text-only control turn sends this text alone (marker-only resolution).
+ * Identity-free: the driver injects thread ids only into the JSON-RPC
+ * params, never into this text.
  */
 export const APP_SERVER_CAPTURE_PROMPT = 'Use $zcode-mcp-context-probe:context. Call capture_context exactly once in Root. Spawn exactly one Child, have it call capture_context once, and wait for it. Do not call any other MCP tool.';
 
@@ -278,8 +337,8 @@ export function assertAuthoritativeIdentityCorrelation(records) {
 
 /**
  * Requires the negative-control transcript to show genuine model engagement
- * with the unavailable probe tool, in either of the two shapes this host
- * exhibits (the shape is bimodal model behavior):
+ * with the unavailable probe tool, in any of the three shapes this host
+ * exhibits (the shape is bimodal model behavior, version-dependent):
  *
  * (a) the recorded "names the tool unavailable" shape: zero nested
  *     `mcp_tool_call` items and at least one bounded excerpt that references
@@ -293,36 +352,69 @@ export function assertAuthoritativeIdentityCorrelation(records) {
  *
  * (b) the failed-attempt engagement shape: at least one nested
  *     `mcp_tool_call` item whose status is `failed` or `error` AND at least
- *     one matching failure excerpt referencing the probe tool or server —
- *     attempted, errored, never executed. The failed call items' own
- *     excerpts satisfy the matching-excerpt requirement when they reference
- *     the tool.
+ *     one matching failure excerpt — attempted, errored, never executed.
+ *     The failed call items' own excerpts satisfy the matching-excerpt
+ *     requirement when they reference the tool.
+ *
+ * (c) the 0.155.1 introspective-engagement shape: successful nested
+ *     `mcp_tool_call` items whose tool names are FOREIGN to the probe (the
+ *     host's built-in `list_mcp_resources` / `list_mcp_resource_templates`
+ *     introspection completes regardless of the plugin) AND at least one
+ *     matching failure excerpt naming the probe tool's unavailability — the
+ *     model consulted the MCP catalog, found the probe absent, and said so.
  *
  * The gate always fails closed (PROBE_NEGATIVE_CONTROL_SHAPE) on successful
- * `mcp_tool_call` evidence (any completed/ok call item) — a real server
- * interaction is never unavailability proof — and on transcripts with no
- * engagement evidence of either shape (a transient model or network error
- * never references the probe tool, so the control must prove the model
- * actually engaged the unavailable tool rather than failing for an
- * unrelated reason, or that an MCP call was misclassified).
+ * `mcp_tool_call` evidence that REFERENCES the probe tool or server (a
+ * completed `capture_context` or `mcp__zcode-mcp-context-probe__*` call) —
+ * a real probe-server interaction is never unavailability proof — and on
+ * transcripts with no engagement evidence of any shape (a transient model
+ * or network error never references the probe tool, so the control must
+ * prove the model actually engaged the unavailable tool rather than failing
+ * for an unrelated reason, or that an MCP call was misclassified).
  *
  * Division of labor: this assert proves engagement only. The DURABLE WINDOW
  * — zero `server-started` and zero `capture-started` events across the
  * negative-control phase window, checked separately by the caller — remains
  * the hard proof that the server never loaded; engagement evidence can
- * never qualify the control without that clean window. Call-item statuses
- * are read from the bounded excerpt set; a successful/neutral non-call item
- * never satisfies the gate on its own. Excerpts and their source tags live
- * in memory only — never printed, persisted, or included in error messages
- * — so nothing identifying is retained.
- * @param {{frameTypes: Map<string, number>, nestedItemTypes?: Map<string, number>, excerpts?: {frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[]}} account @param {string} label
+ * never qualify the control without that clean window. The zero-tolerance
+ * rule for successful probe calls derives from the UNCAPPED identity tally
+ * (`mcpCallIdentityCounts`, fed by `mcpToolCallIdentityKey` for every
+ * nested `mcp_tool_call` item), never from the 32-entry diagnostic excerpt
+ * cap — a call beyond the cap has no excerpt but must still reject. When
+ * the tally is present it is AUTHORITATIVE and EXCLUSIVE for every
+ * call-class decision (a foreign call whose frame merely mentions the probe
+ * must never read as a probe call); the excerpt derivation runs only for
+ * hand-built fixtures without a tally, and a successful/neutral non-call
+ * item never satisfies the gate on its own. Excerpts and their source tags
+ * live in memory only — never printed, persisted, or included in error
+ * messages — so nothing identifying is retained.
+ * @param {{frameTypes: Map<string, number>, nestedItemTypes?: Map<string, number>, excerpts?: {frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[], mcpCallIdentityCounts?: Map<string, number>}} account @param {string} label
  */
 export function assertToolUnavailableTranscript(account, label) {
   const mcpToolCallItems = account.nestedItemTypes?.get('mcp_tool_call') ?? 0;
   const errorFrames = account.frameTypes.get('error') ?? 0;
   const callExcerptEntries = (account.excerpts ?? []).filter((entry) => entry.nestedItemType === 'mcp_tool_call');
-  const successfulCallEvidence = callExcerptEntries.some((entry) => entry.itemStatus === 'completed' || entry.itemStatus === 'ok');
-  const failedCallAttempts = callExcerptEntries.filter((entry) => entry.itemStatus === 'failed' || entry.itemStatus === 'error').length;
+  // The uncapped identity tally counts EVERY nested mcp_tool_call item
+  // (mirroring mcpCallStatusCounts), independent of the 32-entry diagnostic
+  // excerpt cap: a successful probe call that arrives after the cap filled
+  // has no excerpt but must still reject the control. When the tally is
+  // present (the real frame parser always supplies it) it is AUTHORITATIVE
+  // and EXCLUSIVE for every call-class decision — the whole-frame excerpt
+  // scan cannot distinguish a foreign call whose arguments/output merely
+  // mention the probe from a real probe call, so OR-ing it in would falsely
+  // reject a valid negative control. The excerpt derivation runs ONLY when
+  // the tally is absent (hand-built fixtures without a tally).
+  const identityCounts = account.mcpCallIdentityCounts ?? null;
+  const identityCount = (key) => (identityCounts ? identityCounts.get(key) ?? 0 : 0);
+  const successfulProbeCallEvidence = identityCounts
+    ? identityCount('probe:successful') > 0
+    : callExcerptEntries.some((entry) => (entry.itemStatus === 'completed' || entry.itemStatus === 'ok') && PROBE_TOOL_REFERENCE.test(entry.excerpt));
+  const foreignSuccessfulIntrospection = identityCounts
+    ? identityCount('foreign:successful') > 0
+    : callExcerptEntries.some((entry) => (entry.itemStatus === 'completed' || entry.itemStatus === 'ok') && !PROBE_TOOL_REFERENCE.test(entry.excerpt));
+  const failedCallAttempts = identityCounts
+    ? identityCount('probe:failed') + identityCount('foreign:failed')
+    : callExcerptEntries.filter((entry) => entry.itemStatus === 'failed' || entry.itemStatus === 'error').length;
   const matchedFailureExcerpts = (account.excerpts ?? []).filter((entry) => {
     const unavailableStatement = entry.nestedItemType === 'agent_message'
       && PROBE_TOOL_REFERENCE.test(entry.excerpt)
@@ -336,10 +428,11 @@ export function assertToolUnavailableTranscript(account, label) {
   }).length;
   const namesTheToolUnavailable = mcpToolCallItems === 0 && matchedFailureExcerpts >= 1;
   const failedAttemptEngagement = failedCallAttempts >= 1 && matchedFailureExcerpts >= 1;
-  if (successfulCallEvidence || (!namesTheToolUnavailable && !failedAttemptEngagement)) {
+  const introspectiveEngagement = foreignSuccessfulIntrospection && matchedFailureExcerpts >= 1;
+  if (successfulProbeCallEvidence || (!namesTheToolUnavailable && !failedAttemptEngagement && !introspectiveEngagement)) {
     throw probeError(
       'PROBE_NEGATIVE_CONTROL_SHAPE',
-      `${label}: the transcript does not show the tool-unavailable shape (zero mcp_tool_call items with a matching failure excerpt, or failed-attempt engagement with a matching failure excerpt and zero successful calls); observed mcp_tool_call items=${mcpToolCallItems}, failed call attempts=${failedCallAttempts}, successful call evidence=${successfulCallEvidence ? 'yes' : 'no'}, error=${errorFrames}, matching failure excerpts=${matchedFailureExcerpts}.`,
+      `${label}: the transcript does not show the tool-unavailable shape (zero mcp_tool_call items with a matching failure excerpt, or failed-attempt engagement with a matching failure excerpt, or foreign successful MCP introspection beside a matching failure excerpt naming the tool — always with zero successful probe-referencing calls); observed mcp_tool_call items=${mcpToolCallItems}, failed call attempts=${failedCallAttempts}, successful probe call evidence=${successfulProbeCallEvidence ? 'yes' : 'no'}, foreign successful introspection=${foreignSuccessfulIntrospection ? 'yes' : 'no'}, error=${errorFrames}, matching failure excerpts=${matchedFailureExcerpts}.`,
     );
   }
 }
@@ -426,6 +519,25 @@ export function deriveCandidateStrategies(cases) {
     }
   }
   return { explicitInterrupt: [...explicitInterrupt], hostLoss, hostTimeout };
+}
+
+/**
+ * Pure fail-closed gate for the qualification target: the amended
+ * characterization issues 0.155.1-specific app-server requests
+ * (`skills/list`, the structured `{type:'skill'}` turn input item,
+ * `mcpServer/tool/call`), so ONLY the requalified `codex-cli 0.155.1` may
+ * run it. Any other parsed version string — older, newer, truncated, or
+ * malformed — throws `PROBE_CODEX_UNSUPPORTED` before any app-server
+ * request is issued. The message names the required version and nothing
+ * else; the observed version stays in the redacted transcript only.
+ * @param {string} versionString the `codex-cli <version>` token the driver parsed from `--version`
+ * @returns {string} the validated version string
+ */
+export function requireRequalifiedCodexVersion(versionString) {
+  if (versionString !== REQUALIFIED_CODEX_VERSION) {
+    throw probeError('PROBE_CODEX_UNSUPPORTED', 'The supplied codex host is not the requalified codex-cli 0.155.1; the 0.155.1-specific app-server characterization cannot run on it.');
+  }
+  return versionString;
 }
 
 /**
@@ -541,6 +653,9 @@ export function startAppServerSession({ command, args, env, cwd }) {
   const notifications = [];
   // Redacted overflow counter: frames past the cap are counted, never retained.
   let notificationsOverflow = 0;
+  // Redacted delta counter: 0.155.1 streaming-turn deltas are counted and
+  // discarded without ever being retained.
+  let notificationsDeltaCount = 0;
   // Bounded stdout/stderr accounting (the runBounded discipline — 4 MiB per
   // stream, then the bounded session is terminated). stderr is drained
   // continuously and discarded after counting so a chatty server can neither
@@ -575,6 +690,13 @@ export function startAppServerSession({ command, args, env, cwd }) {
         const result = /elicitation/i.test(frame.method) ? { action: 'cancel' } : {};
         try { child.stdin?.write(`${JSON.stringify({ id: frame.id, result })}\n`); } catch { /* session is ending */ }
       } else if (frame && typeof frame === 'object' && typeof frame.method === 'string') {
+        if (APP_SERVER_DELTA_NOTIFICATION.test(frame.method)) {
+          // Counted redacted, never retained, never terminating: a delta
+          // stream is normal 0.155.1 turn volume, and `continue` keeps the
+          // remaining lines of this chunk flowing.
+          notificationsDeltaCount += 1;
+          continue;
+        }
         if (notifications.length < MAXIMUM_APP_SERVER_NOTIFICATIONS) notifications.push({ method: frame.method, params: frame.params });
         else {
           // A discarded frame could be the turn/completed the settled wait
@@ -615,6 +737,8 @@ export function startAppServerSession({ command, args, env, cwd }) {
     notifications,
     /** Redacted count of notifications discarded past the bounded cap. */
     get notificationsOverflow() { return notificationsOverflow; },
+    /** Redacted count of streamed delta notifications (never retained). */
+    get notificationsDeltaCount() { return notificationsDeltaCount; },
     /** @param {string} method @param {Record<string, unknown>} params @param {number} [timeoutMs] */
     request(method, params, timeoutMs = 60_000) {
       if (fatalError) return Promise.reject(fatalError);
@@ -700,6 +824,15 @@ export async function qualifyMcpContext(input) {
   }
   const codexVersion = /** @type {RegExpMatchArray} */ (version.stdout.match(/codex-cli \S+/))?.[0] ?? 'codex-cli unknown';
   transcript(`qualify: canonical codex target pinned (${basename(canonicalCodexPath)}), ${codexVersion}`);
+  // Fail closed on any host other than the requalified codex-cli 0.155.1,
+  // BEFORE fixtures are built or any app-server request is issued: the
+  // skills/list, structured-Skill-input, and mcpServer/tool/call requests
+  // are 0.155.1 schema, and on another version they would degrade into
+  // ordinary resolution failures (the structured treatment would silently
+  // disappear) while the run kept emitting mislabeled observations. The
+  // existing pinning (realpath + device/inode + the --version recheck
+  // before every spawn) is untouched.
+  requireRequalifiedCodexVersion(codexVersion);
 
   // Fail-closed acceptance pre-check for --ignore-rules: the Host argv below
   // depends on the flag, so the parser must accept it before any phase runs.
@@ -785,8 +918,8 @@ export async function qualifyMcpContext(input) {
    */
   const startHost = async (args, options) => {
     const target = await recheckCodex();
-    /** @type {{malformed:number, frameTypes:Map<string, number>, nestedItemTypes:Map<string, number>, mcpCallStatusCounts:Map<string, number>, threadIds:string[], excerpts:{frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[], spawnHandles:string[]}} */
-    const account = { malformed: 0, frameTypes: new Map(), nestedItemTypes: new Map(), mcpCallStatusCounts: new Map(), threadIds: [], excerpts: [], spawnHandles: [] };
+    /** @type {{malformed:number, frameTypes:Map<string, number>, nestedItemTypes:Map<string, number>, mcpCallStatusCounts:Map<string, number>, mcpCallIdentityCounts:Map<string, number>, threadIds:string[], excerpts:{frameType:string, nestedItemType:string|null, itemStatus:string|null, excerpt:string}[], spawnHandles:string[]}} */
+    const account = { malformed: 0, frameTypes: new Map(), nestedItemTypes: new Map(), mcpCallStatusCounts: new Map(), mcpCallIdentityCounts: new Map(), threadIds: [], excerpts: [], spawnHandles: [] };
     const run = runBounded(target, args, {
       cwd: options.cwd,
       env: options.env ?? hostEnv,
@@ -814,6 +947,17 @@ export async function qualifyMcpContext(input) {
           // the excerpts have overflowed.
           if (nestedItemType === 'mcp_tool_call' && itemStatus !== null) {
             account.mcpCallStatusCounts.set(itemStatus, (account.mcpCallStatusCounts.get(itemStatus) ?? 0) + 1);
+          }
+          // Uncapped probe/foreign identity tally for every mcp_tool_call
+          // item (the negative-control gate's zero-tolerance rule for
+          // successful probe calls derives from this, never from the
+          // excerpt cap: a call beyond the 32-entry cap has no excerpt but
+          // must still reject the control).
+          if (nestedItemType === 'mcp_tool_call') {
+            const identityKey = mcpToolCallIdentityKey(nestedItem, line);
+            if (identityKey !== null) {
+              account.mcpCallIdentityCounts.set(identityKey, (account.mcpCallIdentityCounts.get(identityKey) ?? 0) + 1);
+            }
           }
           // Excerpts stay bounded and in memory only; each carries its source
           // (top-level frame type plus nested item type/status) so the
@@ -853,6 +997,33 @@ export async function qualifyMcpContext(input) {
     return last && Number.isSafeInteger(last.event.serverPid) && last.event.serverPid > 0 ? last.event.serverPid : null;
   };
   const countKind = async (kind) => (await durableEvents()).filter((record) => record.event.kind === kind).length;
+  /** Snapshot of the durable capture-started event bodies, for window attribution. */
+  const durableCaptureEvents = async () => (await durableEvents())
+    .filter((record) => record.event.kind === 'capture-started')
+    .map((record) => record.event);
+  /**
+   * Bounded wait (see captureCensusSettled) for the durable capture census
+   * to stop growing: gives a late Child capture a chance to enter the
+   * refreshed post-turn window. The stability clock resets on every census
+   * growth (lastChangeMs tracks the elapsed time of the most recent
+   * change), so a capture arriving near the wait's start cannot let the
+   * next unchanged poll settle the window prematurely. Returns the settled
+   * census count.
+   * @param {number} baselineCount
+   */
+  const waitForCaptureCensusSettled = async (baselineCount) => {
+    const startedAt = Date.now();
+    let previousCount = baselineCount;
+    let lastChangeMs = 0;
+    for (;;) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, CAPTURE_SETTLE_POLL_MS));
+      const currentCount = await countKind('capture-started');
+      const elapsedMs = Date.now() - startedAt;
+      if (currentCount > previousCount) lastChangeMs = elapsedMs;
+      if (captureCensusSettled({ previousCount, currentCount, elapsedMs, lastChangeMs })) return currentCount;
+      if (currentCount > previousCount) previousCount = currentCount;
+    }
+  };
   const observePhase = async (phaseName) => {
     await appendProbeEvent({ runDirectory, runNonce, event: { kind: 'phase-observed', phase: phaseName, observed: true } });
   };
@@ -1215,49 +1386,21 @@ export async function qualifyMcpContext(input) {
     transcript(`phase-sigkill: disconnect observation recorded (handlerSettlement=${sigkillSettlement ?? 'not-observed'})`);
     await trackServerProcesses(true);
 
-    // Phase 5: app-server `turn/interrupt` characterization. The app-server
-    // runs in the same isolated home so the probe plugin, its MCP server,
-    // and the fixture hooks all participate; plugin hooks fire on the exec
-    // path too once enabled and trusted (the recorded run observed SessionEnd
-    // and Stop there).
+    // Phase 5: app-server characterization — bounded `skills/list` Skill
+    // resolution, a structured-Skill treatment capture turn, a text-only
+    // control capture turn (marker-only resolution), a diagnostic-only
+    // `mcpServer/tool/call` transport control, and the durable-hold-gated
+    // `turn/interrupt` characterization. The app-server runs in the same
+    // isolated home so the probe plugin, its MCP server, and the fixture
+    // hooks all participate; plugin hooks fire on the exec path too once
+    // enabled and trusted (the recorded run observed SessionEnd and Stop
+    // there).
     await observePhase('app-server-interrupt');
     const appServerHooksBefore = await hookCensus();
     const appServerTarget = await recheckCodex();
     const appServerSession = startAppServerSession({ command: appServerTarget, args: ['app-server'], env: hostEnv, cwd: runDirectory });
     trackedProcesses.set(appServerSession.pid, appServerSession.identity);
     transcript('phase-app-server: session started and tracked');
-    const appServerThreadId = await (async () => {
-      const initialize = await appServerSession.request('initialize', appServerInitializeParams());
-      if (!initialize || typeof initialize !== 'object') {
-        throw probeError('PROBE_APP_SERVER_INITIALIZE_FAILED', 'The app-server initialize handshake returned no result.');
-      }
-      appServerSession.notify({ method: 'initialized', params: {} });
-      const started = await appServerSession.request('thread/start', appServerThreadStartParams(workspaceA), HOST_CONVERSATION_DEADLINE_MS);
-      const threadId = started?.thread?.id;
-      if (typeof threadId !== 'string' || !threadId) {
-        throw probeError('PROBE_APP_SERVER_THREAD_START_FAILED', 'The app-server thread/start response omitted its thread id.');
-      }
-      return threadId;
-    })();
-    // Bounded capture turn: Root and one spawned Child capture inside the
-    // app-server conversation.
-    const captureTurn = await appServerSession.request('turn/start', appServerTurnStartParams(appServerThreadId, APP_SERVER_CAPTURE_PROMPT), HOST_CONVERSATION_DEADLINE_MS);
-    const captureTurnId = captureTurn?.turn?.id;
-    if (typeof captureTurnId !== 'string') {
-      throw probeError('PROBE_APP_SERVER_TURN_START_FAILED', 'The app-server turn/start response omitted its turn id.');
-    }
-    const captureCompleted = await appServerTurnSettled(appServerSession, appServerThreadId, captureTurnId, HOST_CONVERSATION_DEADLINE_MS);
-    transcript(`phase-app-server: capture turn ${captureCompleted ? 'completed' : 'hit its outer ceiling'}`);
-    // Salted equality facts: the app-server reads the exact exec Root/Child
-    // thread records (thread/read + thread/list) and the driver compares
-    // their salted hashes against the durable MCP capture candidates. The
-    // facts are structurally gated on the app-server path's own MCP
-    // observation (appServerCaptureEvidenceGate): without a completed turn
-    // producing Root/Child captures attributable to the app-server-created
-    // threads, NO app-server-path equality facts are recorded, so the
-    // reducer's appServerThreadId cells stay fact-less and
-    // identityNamespaceQualified cannot qualify from them. Hook columns are
-    // recorded only when hook evidence exists.
     const appServerReadOptions = {
       executable: appServerTarget,
       args: ['app-server'],
@@ -1265,26 +1408,201 @@ export async function qualifyMcpContext(input) {
       cwd: runDirectory,
       timeoutMs: 60_000,
     };
-    const appServerPhaseCaptureEvents = (await durableEvents())
-      .filter((record) => record.event.kind === 'capture-started')
-      .map((record) => record.event)
-      .slice(MATRIX_CAPTURES_EXPECTED + 1);
-    const appServerSpawnChildren = await listCodexThreadSpawnChildren(appServerThreadId, appServerReadOptions).catch(() => {
-      transcript('phase-app-server: the app-server Root spawn-children read failed; capture attribution stays closed');
-      return [];
+    /**
+     * Reads a thread's persisted spawn children; a failed read returns an
+     * empty list (capture attribution stays closed) and is transcribed.
+     * @param {string|null} threadId
+     */
+    const readThreadChildren = async (threadId) => {
+      if (threadId === null) return [];
+      return listCodexThreadSpawnChildren(threadId, appServerReadOptions).catch(() => {
+        transcript('phase-app-server: the app-server Root spawn-children read failed; capture attribution stays closed');
+        return [];
+      });
+    };
+    const startAppServerThread = async (label) => {
+      const started = await appServerSession.request('thread/start', appServerThreadStartParams(workspaceA), HOST_CONVERSATION_DEADLINE_MS);
+      const threadId = started?.thread?.id;
+      if (typeof threadId !== 'string' || !threadId) {
+        throw probeError('PROBE_APP_SERVER_THREAD_START_FAILED', `${label}: the app-server thread/start response omitted its thread id.`);
+      }
+      return threadId;
+    };
+    /**
+     * Runs one bounded turn on a thread and waits for its terminal status.
+     * @param {string} threadId @param {string} text @param {{name:string, path:string}|null} skill @param {string} label
+     * @returns {Promise<{turnId:string, status:'completed'|'failed'|'interrupted'|null}>}
+     */
+    const runBoundedTurn = async (threadId, text, skill, label) => {
+      const turn = await appServerSession.request('turn/start', appServerTurnStartParams(threadId, text, skill), HOST_CONVERSATION_DEADLINE_MS);
+      const turnId = turn?.turn?.id;
+      if (typeof turnId !== 'string') {
+        throw probeError('PROBE_APP_SERVER_TURN_START_FAILED', `${label}: the app-server turn/start response omitted its turn id.`);
+      }
+      const status = await appServerTurnSettled(appServerSession, threadId, turnId, HOST_CONVERSATION_DEADLINE_MS);
+      transcript(`phase-app-server: ${label} turn ${status === 'completed' ? 'completed' : status === null ? 'hit its outer ceiling' : `ended (${status})`}`);
+      return { turnId, status };
+    };
+    await (async () => {
+      const initialize = await appServerSession.request('initialize', appServerInitializeParams());
+      if (!initialize || typeof initialize !== 'object') {
+        throw probeError('PROBE_APP_SERVER_INITIALIZE_FAILED', 'The app-server initialize handshake returned no result.');
+      }
+    })();
+    appServerSession.notify({ method: 'initialized', params: {} });
+    // Skill resolution — the first of the two previously confounded
+    // variables. The installed probe Skill is resolved by the app-server
+    // itself via a bounded `skills/list` request over the probe workspace
+    // with a forced reload; the exact host-reported name/path feed the
+    // structured Skill input item. A failed resolution is recorded honestly:
+    // the structured treatment turn cannot run and the authority gate stays
+    // closed on the structured path.
+    let probeSkillEntry = null;
+    let skillsListFailed = false;
+    try {
+      const skillsList = await appServerSession.request('skills/list', appServerSkillsListParams([workspaceA]), 60_000);
+      probeSkillEntry = resolveProbeSkillEntry(skillsList?.data ?? null, { pluginName: PROBE_PLUGIN_NAME, skillName: PROBE_SKILL_NAME });
+    } catch (resolveError) {
+      skillsListFailed = true;
+      transcript(`phase-app-server: skills/list failed (${resolveError && typeof resolveError === 'object' && 'code' in resolveError ? /** @type {any} */ (resolveError).code : 'error'})`);
+    }
+    transcript(probeSkillEntry
+      ? 'phase-app-server: probe skill resolved via skills/list ([redacted-path])'
+      : 'phase-app-server: probe skill NOT resolved; the structured Skill input cannot be sent');
+    // The control outcomes are durable evidence, not transcript chatter: the
+    // reduction (and therefore any committed artifact) requires exactly one
+    // validated app-server-control event per control, so a run where the
+    // structured injection or the transport control never ran can never be
+    // confused with one where it did.
+    await appendProbeEvent({
+      runDirectory,
+      runNonce,
+      event: { kind: 'app-server-control', control: 'skill-resolution', outcome: probeSkillEntry !== null ? 'resolved' : skillsListFailed ? 'failed' : 'unresolved', captures: 0 },
     });
+
+    // (a) Treatment turn: the structured Skill input (text item first, then
+    // `{type:'skill', name, path}`) so app-server injects the full Skill
+    // instructions instead of relying on model-side marker resolution. The
+    // prompt keeps the exec-compliance voice (one Root capture, one spawned
+    // Child capture). The authority gate may open ONLY on captures
+    // attributable to this turn's threads.
+    const capturesBeforeTreatmentEvents = await durableCaptureEvents();
+    let treatmentThreadId = null;
+    let treatmentTurnId = null;
+    let treatmentStatus = null;
+    if (probeSkillEntry !== null) {
+      treatmentThreadId = await startAppServerThread('structured treatment');
+      const treatment = await runBoundedTurn(treatmentThreadId, APP_SERVER_CAPTURE_PROMPT, probeSkillEntry, 'structured-Skill capture');
+      treatmentTurnId = treatment.turnId;
+      treatmentStatus = treatment.status;
+    } else {
+      transcript('phase-app-server: structured-Skill capture turn skipped (no resolved skill entry)');
+    }
+    const capturesAfterTurnEvents = await durableCaptureEvents();
+    // Children are read from persisted state AFTER the turn: the list covers
+    // every Child spawned within the turn's window, including one whose own
+    // capture lands after the turn went terminal. Turn windows are therefore
+    // attributed by identity set — the turn's own thread plus its spawned
+    // children's salted ids — never by a global census: a late
+    // child-of-treatment capture landing inside the control window belongs
+    // to the treatment turn, not to the text-only control.
+    const treatmentChildren = await readThreadChildren(treatmentThreadId);
+    // Bounded settle, strictly after child discovery: a late child capture
+    // gets a bounded chance to land, and the post-turn window snapshot is
+    // REFRESHED from the durable log afterwards — so the late capture is
+    // inside the refreshed window for BOTH the attributed delta and the
+    // authority gate's Root/Child pairing slice. The control turn's BEFORE
+    // baseline is this same refreshed snapshot, so the late capture remains
+    // excluded there.
+    await waitForCaptureCensusSettled(capturesAfterTurnEvents.length);
+    const capturesAfterTreatmentEvents = await durableCaptureEvents();
+    const treatmentThreadHashes = [
+      ...(treatmentThreadId === null ? [] : [salt(treatmentThreadId)]),
+      ...treatmentChildren.map((child) => typeof child.id === 'string' ? salt(child.id) : null),
+    ];
+    const treatmentCaptureDelta = attributableCaptureCount(capturesBeforeTreatmentEvents, capturesAfterTreatmentEvents, treatmentThreadHashes);
+    transcript(`phase-app-server: structured-Skill turn produced ${treatmentCaptureDelta} attributable durable capture(s)`);
+    if (capturesAfterTreatmentEvents.length > capturesAfterTurnEvents.length) {
+      transcript(`phase-app-server: ${capturesAfterTreatmentEvents.length - capturesAfterTurnEvents.length} late capture(s) entered the treatment window during settle`);
+    }
+    await appendProbeEvent({
+      runDirectory,
+      runNonce,
+      event: {
+        kind: 'app-server-control',
+        control: 'structured-treatment-turn',
+        outcome: probeSkillEntry === null ? 'skipped'
+          : treatmentStatus === 'completed' ? 'completed'
+            : treatmentStatus === 'failed' ? 'failed'
+              : treatmentStatus === 'interrupted' ? 'interrupted' : 'ceiling',
+        captures: treatmentCaptureDelta,
+      },
+    });
+
+    // (b) Control turn: the historical text-only shape (the Skill marker in
+    // the prompt text only — marker-only resolution). Its captures are
+    // recorded as observations but NEVER feed the authority gate; its window
+    // is attributed to its own thread and children exactly like the
+    // treatment turn's.
+    const controlThreadId = await startAppServerThread('text-only control');
+    const controlTurn = await runBoundedTurn(controlThreadId, APP_SERVER_CAPTURE_PROMPT, null, 'text-only control capture');
+    // Mirror of the treatment path: children first, then the bounded
+    // settle, then the REFRESHED window snapshot — a control Child whose
+    // capture lands after turn/completed is admitted to the control's
+    // durable count instead of being omitted (which would invalidate the
+    // treatment/control comparison). The BEFORE baseline stays the
+    // refreshed post-treatment snapshot, so late child-of-treatment
+    // captures remain excluded here.
+    const controlChildren = await readThreadChildren(controlThreadId);
+    await waitForCaptureCensusSettled(capturesAfterTreatmentEvents.length);
+    const capturesAfterControlEvents = await durableCaptureEvents();
+    const controlThreadHashes = [
+      salt(controlThreadId),
+      ...controlChildren.map((child) => typeof child.id === 'string' ? salt(child.id) : null),
+    ];
+    const controlCaptureDelta = attributableCaptureCount(capturesAfterTreatmentEvents, capturesAfterControlEvents, controlThreadHashes);
+    transcript(`phase-app-server: text-only control turn produced ${controlCaptureDelta} attributable durable capture(s)`);
+    await appendProbeEvent({
+      runDirectory,
+      runNonce,
+      event: {
+        kind: 'app-server-control',
+        control: 'text-only-control-turn',
+        outcome: controlTurn.status === 'completed' ? 'completed'
+          : controlTurn.status === 'failed' ? 'failed'
+            : controlTurn.status === 'interrupted' ? 'interrupted' : 'ceiling',
+        captures: controlCaptureDelta,
+      },
+    });
+    // Salted equality facts: the app-server reads the exact exec Root/Child
+    // thread records (thread/read + thread/list) and the driver compares
+    // their salted hashes against the durable MCP capture candidates. The
+    // facts are structurally gated on the structured-Skill treatment path's
+    // own MCP observation (appServerCaptureEvidenceGate): without a completed
+    // structured treatment turn producing Root/Child captures attributable to
+    // that turn's threads, NO app-server-path equality facts are recorded
+    // (the text-only control turn's captures never feed the gate), so the
+    // reducer's appServerThreadId cells stay fact-less and
+    // identityNamespaceQualified cannot qualify from them. Hook columns are
+    // recorded only when hook evidence exists.
+    // The gate consumes the structured turn's window captures (the snapshot
+    // delta) and the children already read for that turn's attribution: a
+    // capture outside the treatment window (the text-only control turn's
+    // window, the transport-control diagnostic) is never authority evidence.
+    const treatmentCaptureEvents = capturesAfterTreatmentEvents.slice(capturesBeforeTreatmentEvents.length);
+    const appServerSpawnChildren = treatmentChildren;
     // Capture attribution is by ANY candidate hash (discovery, not
-    // preselection): the gate identifies which fresh captures belong to the
-    // app-server Root and to one of its persisted children without assuming
-    // which _meta field carries the identity.
+    // preselection): the gate identifies which treatment-window captures
+    // belong to the structured turn's Root and to one of its persisted
+    // children without assuming which _meta field carries the identity.
     const captureGate = appServerCaptureEvidenceGate({
-      turnStatus: captureCompleted,
-      freshCaptures: appServerPhaseCaptureEvents.map((capture) => ({
+      turnStatus: treatmentStatus,
+      freshCaptures: treatmentCaptureEvents.map((capture) => ({
         envelopeThreadIdHash: capture.envelopeThreadIdHash ?? null,
         innerSessionIdHash: capture.innerSessionIdHash ?? null,
         threadHash: capture.threadHash ?? null,
       })),
-      rootThreadCandidateHashes: [salt(appServerThreadId)],
+      rootThreadCandidateHashes: treatmentThreadId === null ? [] : [salt(treatmentThreadId)],
       childThreadCandidateHashes: appServerSpawnChildren.map((child) => typeof child.id === 'string' ? [salt(child.id)] : []),
     });
     if (!captureGate.collected) {
@@ -1304,17 +1622,17 @@ export async function qualifyMcpContext(input) {
       // themselves: the qualification rests on MCP metadata actually
       // observed on the app-server Root/Child path, not only on the exec
       // captures read back through the app-server.
-      const freshRootCapture = captureGate.rootCaptureIndex === null ? null : appServerPhaseCaptureEvents[captureGate.rootCaptureIndex] ?? null;
-      const freshChildCapture = captureGate.childCaptureIndex === null ? null : appServerPhaseCaptureEvents[captureGate.childCaptureIndex] ?? null;
+      const freshRootCapture = captureGate.rootCaptureIndex === null ? null : treatmentCaptureEvents[captureGate.rootCaptureIndex] ?? null;
+      const freshChildCapture = captureGate.childCaptureIndex === null ? null : treatmentCaptureEvents[captureGate.childCaptureIndex] ?? null;
       const freshChildRecord = captureGate.childRecordIndex === null ? null : appServerSpawnChildren[captureGate.childRecordIndex] ?? null;
       if (freshRootCapture) {
-        await recordAuthorityHash('appServerThreadId', 'root', salt(appServerThreadId));
-        // The capture turn's id is driver-known (the turn/start response):
-        // recorded as the appServerTurnId authority and joined to the fresh
-        // Root capture's turn, so the root turn cell carries the
+        await recordAuthorityHash('appServerThreadId', 'root', salt(treatmentThreadId));
+        // The structured capture turn's id is driver-known (the turn/start
+        // response): recorded as the appServerTurnId authority and joined to
+        // the fresh Root capture's turn, so the root turn cell carries the
         // app-server-path turn evidence and not just the exec path's.
-        await recordAuthorityHash('appServerTurnId', 'root', salt(captureTurnId));
-        for (const fact of freshCaptureJoinFacts(freshRootCapture, { scope: 'root', threadHash: salt(appServerThreadId), turnHash: salt(captureTurnId) })) await recordEqualityFact(fact);
+        await recordAuthorityHash('appServerTurnId', 'root', salt(treatmentTurnId));
+        for (const fact of freshCaptureJoinFacts(freshRootCapture, { scope: 'root', threadHash: salt(treatmentThreadId), turnHash: salt(treatmentTurnId) })) await recordEqualityFact(fact);
       }
       if (freshChildCapture && freshChildRecord) {
         // The spawn is model-driven, so no driver-known turn/start id exists
@@ -1452,8 +1770,8 @@ export async function qualifyMcpContext(input) {
     const appsrvPromptSubmit = (await hookEventsFrom(appServerHooksBefore, 'user-prompt-submit'))[0] ?? null;
     const appsrvSubagentStart = (await hookEventsFrom(appServerHooksBefore, 'subagent-start'))[0] ?? null;
     if (captureGate.collected) {
-      const appsrvRootCapture = captureGate.rootCaptureIndex === null ? null : appServerPhaseCaptureEvents[captureGate.rootCaptureIndex] ?? null;
-      const appsrvChildCapture = captureGate.childCaptureIndex === null ? null : appServerPhaseCaptureEvents[captureGate.childCaptureIndex] ?? null;
+      const appsrvRootCapture = captureGate.rootCaptureIndex === null ? null : treatmentCaptureEvents[captureGate.rootCaptureIndex] ?? null;
+      const appsrvChildCapture = captureGate.childCaptureIndex === null ? null : treatmentCaptureEvents[captureGate.childCaptureIndex] ?? null;
       for (const [capture, hook, authority] of [
         [appsrvRootCapture, appsrvSessionStart, 'hookSessionId'],
         [appsrvRootCapture, appsrvPromptSubmit, 'hookSessionId'],
@@ -1517,31 +1835,112 @@ export async function qualifyMcpContext(input) {
       transcript('phase-app-server: required matrix hook evidence absent or malformed; the reducer cannot qualify the namespace without the hook-column facts for the winning candidates');
     }
     transcript('phase-app-server: salted equality facts recorded');
+    // Transport control (DIAGNOSTIC ONLY): one bounded direct tool call
+    // through app-server for the configured probe server, on a dedicated
+    // thread. What is recorded is exactly the JSON-RPC outcome plus the
+    // durable capture delta: an error result with zero captures is an
+    // error result of UNDETERMINED ORIGIN (the response content is not
+    // retained, so a handler-generated error is indistinguishable from a
+    // host-generated refusal wrapped in a success frame), and handler
+    // reachability is never claimed from it. This is NOT a model turn, its
+    // metadata is never treated as an active model turn, it cannot feed the
+    // authority gate (the gate above consumed only the treatment window),
+    // and it satisfies no lifecycle case. Whatever per-call metadata the
+    // Host attaches to the direct call is the Host's own fact; the driver
+    // injects no `_meta`.
+    const capturesBeforeDiagnostic = await durableCaptureEvents();
+    let transportControlOutcome = 'unobserved';
+    let transportControlCaptures = 0;
+    try {
+      const diagnosticThreadId = await startAppServerThread('transport-control');
+      let requestFailed = false;
+      let responseIsError = null;
+      try {
+        const response = await appServerSession.request('mcpServer/tool/call', appServerToolCallParams(PROBE_MCP_SERVER_NAME, diagnosticThreadId, 'capture_context'), 60_000);
+        responseIsError = response?.isError === true;
+      } catch (callError) {
+        requestFailed = true;
+        transcript(`phase-app-server: transport control call rejected (${callError && typeof callError === 'object' && 'code' in callError ? /** @type {any} */ (callError).code : 'error'})`);
+      }
+      // The capture delta is per-thread, never global: a late capture-started
+      // from a Child spawned by either preceding capture turn can land inside
+      // this window, so only NEW captures whose candidate thread hashes match
+      // the diagnostic thread's salted id (any candidate) may classify the
+      // direct call as capture-recorded. The window is QUIET for null-hash
+      // captures: the driver starts no other conversation inside it, and a
+      // capture with all-null candidate hashes cannot be a late Child capture
+      // (children always carry their own thread ids), so such a capture —
+      // when one exists at all — is the direct call's own handler-side
+      // record and preserves the handler-reachability fact.
+      const captureDelta = diagnosticCaptureAttribution(
+        capturesBeforeDiagnostic,
+        await durableCaptureEvents(),
+        salt(diagnosticThreadId),
+        { quietWindow: true },
+      );
+      transportControlCaptures = captureDelta;
+      transportControlOutcome = classifyTransportControlOutcome({ requestFailed, responseIsError, captureDelta });
+    } catch (diagnosticError) {
+      transcript(`phase-app-server: transport control thread unavailable (${diagnosticError && typeof diagnosticError === 'object' && 'code' in diagnosticError ? /** @type {any} */ (diagnosticError).code : 'error'})`);
+    }
+    transcript(`phase-app-server: transport control outcome=${transportControlOutcome} (diagnostic only)`);
+    await appendProbeEvent({
+      runDirectory,
+      runNonce,
+      event: { kind: 'app-server-control', control: 'transport-control', outcome: transportControlOutcome, captures: transportControlCaptures },
+    });
+
+    // The held turn receives the same structured Skill treatment alongside
+    // its text (text-only fallback when no skill entry resolved), and runs
+    // on the structured conversation when one exists so the explicit
+    // interruption shares the treatment path.
+    const heldThreadId = treatmentThreadId ?? controlThreadId;
     const holdStartedCount = await countKind('hold-started');
     const heldHooksBefore = await hookCensus();
-    const heldTurn = await appServerSession.request('turn/start', appServerTurnStartParams(appServerThreadId, HOLD_PROMPT), HOST_CONVERSATION_DEADLINE_MS);
+    const heldTurn = await appServerSession.request('turn/start', appServerTurnStartParams(heldThreadId, HOLD_PROMPT, probeSkillEntry), HOST_CONVERSATION_DEADLINE_MS);
     const heldTurnId = heldTurn?.turn?.id;
     if (typeof heldTurnId !== 'string') {
       throw probeError('PROBE_APP_SERVER_TURN_START_FAILED', 'The app-server held turn/start response omitted its turn id.');
     }
     const heldCallNonce = await waitForFreshHoldStartedOrNull(holdStartedCount, APP_SERVER_HOLD_START_WAIT_MS);
-    // The explicit user-cancellation entry point: interrupt that exact turn
-    // whether or not the held call ever started, so the observation is about
-    // the Host's real behavior instead of the model's cooperation. An
-    // already-terminal turn rejects the interrupt; that rejection is itself
-    // the observed outcome, not a driver failure.
-    let interruptDelivered = true;
-    try {
-      await appServerSession.request('turn/interrupt', appServerTurnInterruptParams(appServerThreadId, heldTurnId), 60_000);
-    } catch {
-      interruptDelivered = false;
-      transcript('phase-app-server: turn/interrupt rejected (the turn had already reached a terminal state)');
+    // The explicit user-cancellation entry point, disciplined:
+    // `turn/interrupt` is sent ONLY after the held call durably entered the
+    // handler (the durable hold-started wait above). If the hold never
+    // became durable the interrupt is NOT sent and the honest reason is
+    // recorded — the turn itself is still observed to its own terminal
+    // state, and an already-terminal turn's rejection is never converted
+    // into a cancellation observation.
+    const interruptPlan = planTurnInterrupt({ heldCallObserved: heldCallNonce !== null });
+    let interruptDelivered = false;
+    // The delivery outcome is durable evidence, not transcript chatter: a
+    // lifecycle record without it would be indistinguishable from a
+    // delivered interrupt with no handler notification.
+    let interruptDelivery = 'not-sent';
+    if (interruptPlan.send && heldCallNonce !== null) {
+      try {
+        await appServerSession.request('turn/interrupt', appServerTurnInterruptParams(heldThreadId, heldTurnId), 60_000);
+        interruptDelivered = true;
+        interruptDelivery = 'delivered';
+        transcript('phase-app-server: turn/interrupt delivered for the exact held thread/turn with its durable held call');
+      } catch (interruptError) {
+        interruptDelivered = false;
+        const interruptCode = errorCode(interruptError);
+        // An answered rejection (e.g. an already-terminal turn) is
+        // 'rejected'; a request that never received an answer (timeout,
+        // disconnect) is 'failed'.
+        interruptDelivery = interruptCode === 'PROBE_APP_SERVER_TIMEOUT' || interruptCode === 'PROBE_APP_SERVER_DISCONNECTED' ? 'failed' : 'rejected';
+        transcript('phase-app-server: turn/interrupt rejected (the turn had already reached a terminal state)');
+      }
+    } else {
+      transcript('phase-app-server: held call never became durable; turn/interrupt NOT sent (no-durable-hold)');
     }
-    if (interruptDelivered) {
-      transcript(`phase-app-server: turn/interrupt delivered for the exact held thread/turn${heldCallNonce ? ' with its durable held call' : ' (no held call ever became durable)'}`);
-    }
+    await appendProbeEvent({
+      runDirectory,
+      runNonce,
+      event: { kind: 'app-server-control', control: 'held-turn-interrupt', outcome: interruptDelivery, captures: 0 },
+    });
     const interruptDeadline = Date.now() + APP_SERVER_OBSERVATION_CEILING_MS;
-    const interruptStatus = await appServerTurnSettled(appServerSession, appServerThreadId, heldTurnId, APP_SERVER_OBSERVATION_CEILING_MS);
+    const interruptStatus = await appServerTurnSettled(appServerSession, heldThreadId, heldTurnId, APP_SERVER_OBSERVATION_CEILING_MS);
     const interruptSettlement = heldCallNonce
       ? await settlementArrived(heldCallNonce, Math.max(0, interruptDeadline - Date.now()), durableEvents)
       : null;
@@ -1864,9 +2263,244 @@ export function appServerThreadStartParams(cwd) {
   return { cwd };
 }
 
-/** @param {string} threadId @param {string} text */
-export function appServerTurnStartParams(threadId, text) {
-  return { threadId, input: [{ type: 'text', text }] };
+/** The probe plugin identity the fixture installs in the isolated home. */
+export const PROBE_PLUGIN_NAME = 'zcode-mcp-context-probe';
+/** The probe Skill's frontmatter name inside the fixture plugin. */
+export const PROBE_SKILL_NAME = 'context';
+/** The MCP server name the fixture's descriptor declares. */
+export const PROBE_MCP_SERVER_NAME = 'zcode-mcp-context-probe';
+
+/**
+ * The exact `skills/list` request shape used for Skill resolution: the probe
+ * workspace (so the freshly installed plugin skill is scanned there) and a
+ * forced reload (so the scan bypasses the host's skills cache). Verified
+ * against the pinned 0.155.1 binary's generated schema (SkillsListParams:
+ * optional `cwds`, optional `forceReload`).
+ * @param {string[]} cwds
+ */
+export function appServerSkillsListParams(cwds) {
+  if (!Array.isArray(cwds)) throw probeError('PROBE_SKILL_LIST_INVALID', 'The skills/list cwds must be an array of workspace paths.');
+  return { cwds: [...cwds], forceReload: true };
+}
+
+/**
+ * Pure resolver over a `skills/list` response (`{data:[{cwd, errors,
+ * skills:[SkillMetadata]}]}`): finds the installed probe Skill entry and
+ * returns its EXACT host-reported name and path for the structured Skill
+ * input item. Matching is by the qualified `plugin:skill` name, or by the
+ * bare skill name owned by the probe plugin (pluginId `plugin` or
+ * `plugin@marketplace`); the entry must be enabled and carry a nonempty
+ * string path. Multiple cwd entries carrying the same agreeing entry resolve
+ * once; disagreeing duplicates are ambiguous and resolve to null, as does
+ * every absent/malformed/disabled shape — the driver records the honest
+ * absence instead of guessing name or path.
+ * @param {unknown} listData @param {{pluginName:string, skillName:string}} probe
+ * @returns {{name:string, path:string}|null}
+ */
+export function resolveProbeSkillEntry(listData, { pluginName, skillName }) {
+  if (!Array.isArray(listData) || typeof pluginName !== 'string' || !pluginName || typeof skillName !== 'string' || !skillName) return null;
+  const qualifiedName = `${pluginName}:${skillName}`;
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {{name:string, path:string}|null} */
+  let resolved = null;
+  for (const entry of listData) {
+    const skills = entry && typeof entry === 'object' && !Array.isArray(entry) && Array.isArray(/** @type {any} */ (entry).skills)
+      ? /** @type {any} */ (entry).skills
+      : [];
+    for (const skill of skills) {
+      if (!skill || typeof skill !== 'object' || Array.isArray(skill)) continue;
+      const { name, path, enabled, pluginId } = /** @type {any} */ (skill);
+      if (typeof name !== 'string' || typeof path !== 'string' || path.length === 0 || enabled !== true) continue;
+      const nameMatches = name === qualifiedName;
+      const ownedBareNameMatches = name === skillName
+        && typeof pluginId === 'string'
+        && (pluginId === pluginName || pluginId.startsWith(`${pluginName}@`));
+      if (!nameMatches && !ownedBareNameMatches) continue;
+      const key = `${name}\u0000${path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (resolved !== null) return null;
+      resolved = { name, path };
+    }
+  }
+  return resolved;
+}
+
+/**
+ * The `turn/start` input builder. With a resolved Skill entry the input
+ * carries the existing compliance-voice text item FIRST and the structured
+ * Skill input item `{type:'skill', name, path}` second (the 0.155.1
+ * TurnStartParams.UserInput SkillUserInput shape) — this is what makes
+ * app-server inject the full Skill instructions instead of relying on
+ * model-side marker resolution. Without one the input stays exactly the
+ * historical text-only shape, which is the marker-only control turn.
+ * @param {string} threadId @param {string} text @param {{name:string, path:string}|null} [skill]
+ */
+export function appServerTurnStartParams(threadId, text, skill = null) {
+  if (skill === null || skill === undefined) return { threadId, input: [{ type: 'text', text }] };
+  if (!skill || typeof skill !== 'object' || Array.isArray(skill)
+    || typeof skill.name !== 'string' || skill.name.length === 0
+    || typeof skill.path !== 'string' || skill.path.length === 0) {
+    throw probeError('PROBE_SKILL_INPUT_INVALID', 'The structured Skill input item requires nonempty name and path strings.');
+  }
+  return { threadId, input: [{ type: 'text', text }, { type: 'skill', name: skill.name, path: skill.path }] };
+}
+
+/**
+ * The exact `mcpServer/tool/call` transport-control request shape (0.155.1
+ * McpServerToolCallParams: server, threadId, and tool are required;
+ * arguments is optional). The probe sends the empty arguments object its
+ * tools require and never injects `_meta`: whatever per-call metadata the
+ * Host attaches to a direct call is the Host's own fact.
+ * @param {string} server @param {string} threadId @param {string} tool
+ */
+export function appServerToolCallParams(server, threadId, tool) {
+  if (typeof server !== 'string' || !server) throw probeError('PROBE_TOOL_CALL_INVALID', 'The mcpServer/tool/call server must be a nonempty string.');
+  if (typeof threadId !== 'string' || !threadId) throw probeError('PROBE_TOOL_CALL_INVALID', 'The mcpServer/tool/call threadId must be a nonempty string.');
+  if (typeof tool !== 'string' || !tool) throw probeError('PROBE_TOOL_CALL_INVALID', 'The mcpServer/tool/call tool must be a nonempty string.');
+  return { server, threadId, tool, arguments: {} };
+}
+
+/**
+ * Pure classifier of the transport-control observation. Exactly three facts
+ * are recorded per run: the JSON-RPC outcome (request rejected vs a success
+ * frame carrying `isError`), and the durable capture delta ATTRIBUTED to
+ * the diagnostic thread (diagnosticCaptureAttribution — never the global
+ * capture count). A durable capture attributable to the diagnostic thread
+ * is the strongest proof (the direct call was durably recorded by the
+ * configured handler). An error result with zero attributable captures is
+ * recorded as `error-result-undetermined-origin`: the driver retains no
+ * response content, so a handler-generated error is indistinguishable from
+ * a host-generated refusal wrapped in a success frame — the ORIGIN of the
+ * error result is undetermined, and handler reachability is NOT claimed. A
+ * rejected request proves only that the call never completed. Anything else
+ * is unobserved. This control is diagnostic only: no outcome here feeds the
+ * authority gate or any lifecycle case.
+ * @param {{requestFailed:boolean, responseIsError:(boolean|null), captureDelta:number}} input
+ * @returns {'capture-recorded'|'call-failed'|'error-result-undetermined-origin'|'unobserved'}
+ */
+export function classifyTransportControlOutcome({ requestFailed, responseIsError, captureDelta }) {
+  if (Number.isSafeInteger(captureDelta) && captureDelta > 0) return 'capture-recorded';
+  if (requestFailed === true) return 'call-failed';
+  if (responseIsError === true) return 'error-result-undetermined-origin';
+  return 'unobserved';
+}
+
+/**
+ * Pure turn-scoped attribution of a capture window: counts the durable
+ * captures that are NEW since the pre-window snapshot AND attributable to
+ * the window's own identity set — a capture is attributable when ANY of its
+ * salted candidate thread hashes (envelope threadId, inner session_id,
+ * inner thread_id) equals one of the supplied hashes (the turn's own thread
+ * plus, when known, the salted ids of children spawned within the window's
+ * conversation). The GLOBAL count is never used: a late capture from
+ * another conversation's Child — e.g. a Child of the structured treatment
+ * recording its capture after the treatment turn went terminal, landing
+ * inside the text-only control's window — carries only its own threads'
+ * hashes and is never attributed to the wrong window.
+ *
+ * With `quietWindow`, a NEW capture whose candidate hashes are ALL null also
+ * attributes: in a window the driver keeps quiet (a dedicated thread, both
+ * capture turns already terminal, the held turn not yet started — no other
+ * conversation is started inside the window) such a capture can only be the
+ * direct call's own handler-side record, preserving the handler-reachability
+ * fact for an identity-less call; a late Child capture always carries
+ * non-null thread hashes and is excluded, so the clause cannot misattribute.
+ * (The current observer schema rejects all-null candidate captures at append
+ * time, so this clause is a policy guard for the handler-reached-but-
+ * identity-less shape, never a live misattribution channel.) A capture with
+ * only SOME null candidates never matches the null clause; an empty hash set
+ * attributes nothing.
+ * @param {{callNonce?:string, envelopeThreadIdHash:(string|null), innerSessionIdHash:(string|null), threadHash:(string|null)}[]} beforeEvents @param {{callNonce?:string, envelopeThreadIdHash:(string|null), innerSessionIdHash:(string|null), threadHash:(string|null)}[]} afterEvents @param {(string|null|undefined)[]} threadHashes @param {{quietWindow?:boolean}} [options]
+ * @returns {number}
+ */
+export function attributableCaptureCount(beforeEvents, afterEvents, threadHashes, { quietWindow = false } = {}) {
+  const hashes = (threadHashes ?? []).filter((hash) => typeof hash === 'string' && hash.length > 0);
+  if (hashes.length === 0) return 0;
+  const beforeNonces = new Set((beforeEvents ?? []).map((event) => event?.callNonce));
+  return (afterEvents ?? []).filter((event) => {
+    if (!event || beforeNonces.has(event.callNonce)) return false;
+    const candidates = [event.envelopeThreadIdHash ?? null, event.innerSessionIdHash ?? null, event.threadHash ?? null];
+    if (candidates.some((hash) => hash !== null && hashes.includes(hash))) return true;
+    return quietWindow === true && candidates.every((hash) => hash === null);
+  }).length;
+}
+
+/**
+ * The transport-control window's attribution: the diagnostic thread's own
+ * salted id, plus the quiet-window null-hash clause (see
+ * attributableCaptureCount for the window discipline).
+ * @param {{callNonce?:string, envelopeThreadIdHash:(string|null), innerSessionIdHash:(string|null), threadHash:(string|null)}[]} beforeEvents @param {{callNonce?:string, envelopeThreadIdHash:(string|null), innerSessionIdHash:(string|null), threadHash:(string|null)}[]} afterEvents @param {string} diagnosticThreadHash @param {{quietWindow?:boolean}} [options]
+ * @returns {number}
+ */
+export function diagnosticCaptureAttribution(beforeEvents, afterEvents, diagnosticThreadHash, options = {}) {
+  return attributableCaptureCount(beforeEvents, afterEvents, [diagnosticThreadHash], options);
+}
+
+/** Poll interval for the treatment window's bounded capture-census settle. */
+export const CAPTURE_SETTLE_POLL_MS = 250;
+/**
+ * Minimum observation window for the capture-census settle: stability alone
+ * may not settle before this much of the wait has elapsed, so a FIRST late
+ * Child capture arriving more than the stability budget after
+ * turn/completed still enters the refreshed window (a false-negative
+ * authority qualification is worse than a bounded extra wait).
+ */
+export const CAPTURE_SETTLE_MIN_OBSERVATION_MS = 3_000;
+
+/**
+ * Pure settle decision for the treatment window's bounded capture-census
+ * wait. A Child spawned by the structured treatment turn may record its
+ * capture AFTER the turn went terminal; the post-turn window snapshot is
+ * therefore refreshed only once the durable capture census has stopped
+ * growing for the stability budget AND the minimum observation window has
+ * elapsed — so the late capture is inside the refreshed window for BOTH the
+ * attributed delta and the authority gate's Root/Child pairing slice — or
+ * once the total budget is exhausted, so the common no-late-capture case
+ * does not stall the run. `lastChangeMs` is the elapsed time of the MOST
+ * RECENT count change: the stability clock RESETS on every growth, so a
+ * capture arriving near the wait's start cannot let the next unchanged poll
+ * settle the window after only a fraction of the stability budget (that
+ * would close the window before a Child's capture and falsely fail the
+ * authority gate). The durable log is append-only: a shrinking census is a
+ * contract violation and fails closed.
+ * @param {{previousCount:number, currentCount:number, elapsedMs:number, lastChangeMs:number, minObservationMs?:number, stabilityMs?:number, budgetMs?:number}} input
+ * @returns {boolean}
+ */
+export function captureCensusSettled({ previousCount, currentCount, elapsedMs, lastChangeMs, minObservationMs = CAPTURE_SETTLE_MIN_OBSERVATION_MS, stabilityMs = 2_000, budgetMs = 10_000 }) {
+  for (const value of [previousCount, currentCount, elapsedMs, lastChangeMs, minObservationMs, budgetMs]) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw probeError('PROBE_SETTLE_INPUT_INVALID', 'The capture settle decision requires non-negative integer inputs.');
+    }
+  }
+  if (minObservationMs > budgetMs) {
+    throw probeError('PROBE_SETTLE_INPUT_INVALID', 'The capture settle minimum observation window cannot exceed the settle budget.');
+  }
+  if (currentCount < previousCount) {
+    throw probeError('PROBE_SETTLE_INPUT_INVALID', 'The capture settle decision requires a non-decreasing capture census.');
+  }
+  if (lastChangeMs > elapsedMs) {
+    throw probeError('PROBE_SETTLE_INPUT_INVALID', 'The capture settle decision requires the last change to lie within the elapsed budget.');
+  }
+  const stable = previousCount === currentCount && elapsedMs - lastChangeMs >= stabilityMs;
+  const observed = elapsedMs >= minObservationMs;
+  return (stable && observed) || elapsedMs >= budgetMs;
+}
+
+/**
+ * Pure gate of the explicit-interrupt discipline: `turn/interrupt` is sent
+ * ONLY after `hold_for_lifecycle` has durably entered the handler (the
+ * driver's durable hold-started wait). Without a durable held call the
+ * interrupt is NOT sent — an already-terminal or unrelated turn would only
+ * characterize an interrupt rejection — and the honest reason is recorded.
+ * @param {{heldCallObserved:boolean}} input
+ * @returns {{send:boolean, trigger:'durable-hold-started'|'no-durable-hold'}}
+ */
+export function planTurnInterrupt({ heldCallObserved }) {
+  return heldCallObserved === true
+    ? { send: true, trigger: 'durable-hold-started' }
+    : { send: false, trigger: 'no-durable-hold' };
 }
 
 /** @param {string} threadId @param {string} turnId */
@@ -2219,8 +2853,10 @@ const THREAD_CANDIDATE_FIELDS = Object.freeze([
 /**
  * Pure gate for the app-server capture phase's equality evidence. The
  * app-server-path equality facts may be recorded only when the bounded
- * capture turn COMPLETED and it durably produced the expected Root and
- * Child captures attributable to the app-server-created threads.
+ * STRUCTURED-SKILL TREATMENT turn COMPLETED and it durably produced the
+ * expected Root and Child captures attributable to that turn's threads —
+ * the text-only control turn and the `mcpServer/tool/call` transport
+ * control never open this gate.
  * Attribution is by ANY candidate hash: a fresh capture counts as
  * attributable to a thread when ANY of its salted candidate hashes
  * (envelopeThreadIdHash, innerSessionIdHash, innerThreadIdHash) matches ANY

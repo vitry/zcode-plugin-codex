@@ -1,5 +1,92 @@
 # Codex MCP Invocation Context Qualification
 
+## 0.155.1 requalification (current)
+
+Status: **authority namespace NOT qualified on 0.155.1; lifecycle re-characterized; Task 4 stays blocked.** The amended app-server probe separated the two variables the 0.154.0 runs had confounded — Skill resolution and model MCP-tool selection — and proved the first: the installed probe Skill resolves through the Host's own `skills/list` and is injected as a structured Skill input item. The second did not follow: the app-server model made zero probe MCP calls in BOTH the structured-Skill treatment turn and the text-only control turn, so the authority gate never opened and `qualification/mcp-context.json` remains absent. The `mcpServer/tool/call` transport control recorded only an error result of undetermined origin (diagnostic; see below), never authority or lifecycle evidence. The explicit-interrupt dimension also stays unproven: the held call never became durable, so under the amended discipline `turn/interrupt` was NOT sent at all. `qualification/mcp-lifecycle.json` records the five honest 0.155.1 observations with `selectedStrategies` unchanged (`explicitInterrupt: release-blocked` re-frozen per this run's evidence). This section contains no identity values; only field names, JSON types, method shapes, and observations.
+
+- Date: 2026-09-21
+- Host under test: `codex-cli 0.155.1` (arm64 macOS). The default launcher (`~/.local/bin/codex`, symlinked to the standalone `current` release) was canonicalized with `realpath`, pinned by device/inode, and re-version-checked before every spawn. The source home was only read for a mode-0600 `auth.json` copy into each isolated home.
+- Probe harness: `tools/mcp-context-probe/` as amended for 0.155.1 — bounded `skills/list` Skill resolution (probe workspace, `forceReload: true`) with a pure fail-closed resolver; the structured `{type:'skill', name, path}` treatment turn input alongside the existing compliance-voice text; the historical text-only control capture turn whose captures never feed the authority gate; the diagnostic-only `mcpServer/tool/call` transport control; the durable-hold-gated `turn/interrupt` discipline (interrupt only after `hold_for_lifecycle` durably enters the handler; handler cancellation never inferred from `turn/completed.status === 'interrupted'`); streamed delta notifications counted redacted without retention; and a 900-second Host conversation outer deadline. Unit-covered by `tests/mcp-context-probe.test.mjs`, gated by `tests/e2e/codex-mcp-context-e2e.test.mjs`.
+- Request shapes verified against the pinned binary's generated app-server JSON Schema and live: `skills/list` `{cwds, forceReload}` → `{data:[{cwd, errors, skills:[{name, path, enabled, pluginId, …}]}]}`; Skill input item `{type:'skill', name, path}`; `turn/start` `{threadId, input:[…]}`; `turn/interrupt` `{threadId, turnId}`; `mcpServer/tool/call` `{server, threadId, tool, arguments?}` → `{content, isError?, structuredContent?}`.
+- Result records: `qualification/mcp-context.json` (absent — context not qualified) and `qualification/mcp-lifecycle.json` (status `characterized`, `codexVersion` `codex-cli 0.155.1`), reduced from one durable event log (113 events, 7 phases, 6 captures — the scripted matrix's five plus the Root resume — 4 held calls, 21 recorded equality facts, and exactly five durable `app-server-control` events — the five controls' count is the only delta from the earlier-revision run's 108) under a single per-run nonce.
+
+### Outcome
+
+Five of six context assertions true; `identityNamespaceQualified` false:
+
+| Assertion | Outcome |
+|---|---|
+| `identityFieldsVisible` | true |
+| `identityNamespaceQualified` | **false** |
+| `laterTurnDistinct` | true |
+| `concurrentChildrenDistinct` | true |
+| `metadataChangesAcrossTurns` | true |
+| `serverLoadedWithConfig` | true |
+
+No authority field path is recorded (`authorityFields` are null for Root thread, Child thread, and turn): the app-server capture-evidence gate never opened because the bounded structured-Skill treatment turn — although it COMPLETED — durably produced zero probe MCP captures. Zero winners means `qualification/mcp-context.json` stays absent; no path was guessed.
+
+### The three-way Skill-resolution / tool-selection distinction
+
+The 0.154.0 failure ("the app-server model never invoked the probe MCP tool") mixed two variables. This run separates them:
+
+1. **Skill resolution (explicit structured injection): proven at the schema/transport level.** A bounded `skills/list` request over the probe workspace with `forceReload: true` resolved the installed probe Skill by its exact host-reported name and path; the treatment turn's input carried the compliance-voice text item plus the structured `{type:'skill', name, path}` item, so app-server injected the full Skill instructions. The turn completed without protocol error.
+2. **Marker-only resolution (text-only control): recorded as its own observation.** The control turn sent the historical text-only shape (the `$zcode-mcp-context-probe:context` marker in the prompt alone) on a separate thread and also completed.
+3. **Model MCP-tool selection on the app-server path: absent in BOTH turns.** The structured turn and the control turn each produced zero durable `capture_context` calls (the transcript-level MCP engagement counts were zero in both windows). The structured injection changed nothing about tool selection.
+
+Consequence: on 0.155.1 the app-server-path blocker is the model's MCP-tool selection itself, not Skill delivery. The same prompts and the same fixture achieve full exec-path compliance in the same run (the scripted matrix's five captures plus the Root-resume capture, all settled), so prompt voice, fixture packaging, descriptor loading, and server health are all ruled out as the explanation. The authority join therefore remains bounded by app-server-path model behavior, exactly as the 0.154.0 baseline recorded — now with the Skill-resolution hypothesis experimentally excluded.
+
+### Transport control (diagnostic only)
+
+One bounded `mcpServer/tool/call` sent `capture_context` directly through app-server for the configured probe server on a dedicated thread. Observed outcome: **`error-result-undetermined-origin`** — the call returned an error result with no durable capture, and the driver retains no response content, so the error's ORIGIN is undetermined: a handler-generated error is indistinguishable from a host-generated refusal wrapped in a success frame. (The probe handler has no deliberate fail-closed-on-identity gate: reached with incomplete metadata, a `capture_context` fails at durable-append validation and returns an error result without a durable capture — indistinguishable, without retained content, from a host refusal; reached with complete metadata it would have produced a durable capture. No shape here attributes the error to the handler.) What this control proves is only that app-server accepts and answers a direct `mcpServer/tool/call` for the configured server; transport-level reachability of the SERVER (not the handler) is separately supported by the durable `server-started` events in the same phase window, and handler reachability remains unproven. Per the decision rules it cannot substitute for the Skill entry point: it is not a model turn, its metadata is never treated as an active model turn, it fed no equality fact and no lifecycle case, and it cannot satisfy the authority gate.
+
+### Equality matrix (no app-server winner, again)
+
+- **Hook-authority columns (all proven true from the exec windows, replicating 0.154.0 exactly):** Root — envelope `threadId`, inner `session_id`, and inner `thread_id` all equal the hook session id; inner `turn_id` equals the hook turn id. Child — envelope `threadId` and inner `thread_id` equal the hook `agent_id` (the spawn handle is the child thread id); inner `session_id` equals the hook session id; inner `turn_id` equals the hook turn id. The cross contrasts (envelope `threadId` vs hook session id, inner `session_id` vs hook `agent_id`, inner `thread_id` vs hook session id) are false.
+- **App-server-authority columns (fact-less):** every `appServerThreadId` and `appServerTurnId` cell is false because the capture-evidence gate never opened — the structured-Skill treatment turn produced no attributable captures. These cells are fact-less false, not contradicted.
+- **Returned-Child-handle column (fact-less):** handle facts are recorded only inside the capture-evidence branch, so no handle fact was fabricated.
+
+### Lifecycle characterization (all five cases; honest observations)
+
+| Case | hostProcess | turnTerminalStatus | toolCallOutcome | handlerSettlement | transportState | hookEvent | unknownReason |
+|---|---|---|---|---|---|---|---|
+| `appServerTurnInterrupt` | running | completed | not-observed | not-observed | open | stop | host-omitted-event |
+| `cliSigint` | exited-clean | not-observed | pending | not-observed | server-exited | session-end | process-exited-first |
+| `cliSigkill` | exited-signal | not-observed | pending | transport-close | stdin-eof | not-observed | none |
+| `pluginToolTimeout` | exited-clean | not-observed | failed | not-observed | server-exited | stop | process-exited-first |
+| `directConfigToolTimeout` | exited-clean | not-observed | failed | not-observed | server-exited | stop | process-exited-first |
+
+Reading of each case:
+
+1. **`appServerTurnInterrupt` (amended discipline).** The held turn carried the structured Skill treatment alongside its text; the model never invoked `hold_for_lifecycle`, so no held call became durable within the bounded durable-start wait. Under the amended discipline `turn/interrupt` was **NOT sent** (no durable held call to interrupt — interrupting would only characterize a rejection against a live or terminal turn). The held turn ran to its own terminal `completed` state, the app-server session stayed `running`/`open` throughout, and a `Stop` hook fired in the window. The explicit-interrupt dimension stays unproven on this host: no abort settlement, no interrupted-turn shape, and not even a held call to interrupt.
+2. **`cliSigint`.** Same shape as 0.154.0: SIGINT to the pinned Host PID exited the Host cleanly inside the 10-second window with no durable settlement, the `SessionEnd` hook fired, and the phase's server had already exited — cancellation is still not delivered to a pending stdio handler on this path.
+3. **`cliSigkill`.** Same shape as 0.154.0: SIGKILL orphans the stdio server, whose own stdin-EOF watcher settles the held call durably as `transport-close` and exits.
+4. **`pluginToolTimeout` (2-second plugin fixture).** Same shape as 0.154.0: clean Host exit inside the 30-second ceiling, the nested `mcp_tool_call` item rendered as failed in the transcript, and no handler notification — no abort, no transport close.
+5. **`directConfigToolTimeout` (2-second direct `[mcp_servers.*]` config, skill-only fixture).** Identical to the plugin fixture on 0.155.1 as on 0.154.0: direct configuration versus plugin descriptor loading still makes no behavioral difference for tool-timeout cancellation.
+
+### Gate outcomes (decision rules)
+
+- **Authority gate: NOT proven.** The model-driven structured-Skill app-server path did not create attributable Root+Child MCP captures (`identityNamespaceQualified` false via the structured path; zero attributable captures at all). The `mcpServer/tool/call` control cannot satisfy this gate. `qualification/mcp-context.json` stays absent; Task 4 and authority-dependent MCP work remain blocked.
+- **Interruption gate: NOT proven.** No durable held call ever existed on the app-server path, so no `turn/interrupt` was delivered and no handler settlement was observed; nothing licenses a lifecycle change. `explicitInterrupt` stays frozen at `release-blocked`; Task 6's other selections (`hostLoss: durable-supervision`, `hostTimeout: server-deadline`) are unchanged and remain within this run's re-derived candidate table.
+- The shell baseline and adapter binding behavior of PR #62 are unaffected: the canonical shell Skills remain the only shipped foreground wait adapter.
+
+### 0.155.1 run provenance note
+
+THIS section's record is the FINAL confirmation run, produced by the exact committed driver (`tools/mcp-context-probe/` at the single requalification commit on `feat/dual-foreground-wait-adapters`, tree clean, no code changes for the run) after the harness was hardened through an eleven-round review loop. The driver pinned the installed `codex-cli 0.155.1` binary fail-closed (`PROBE_CODEX_UNSUPPORTED` on anything else), resolved the probe Skill through app-server `skills/list` (`forceReload`, probe workspace), and executed all seven phases under one per-run nonce. The earlier driver revision's first 0.155.1 campaign is preserved in this file's git history: six attempts there, the first five aborting fail-closed on instrument calibrations that 0.155.1 outgrew (the 600-second outer deadline, the unavailability vocabulary, the retained-notification delta cap, and the introspective negative-control engagement shape), each fixed test-first with no gate weakened. Those calibrations are baked into the committed driver this run used; none fired here.
+
+Every control durably recorded exactly one `app-server-control` event with a closed-enum outcome — the five events that make the final log the committed driver's proof transcript:
+
+| Durable `app-server-control` event | Outcome |
+|---|---|
+| `skill-resolution` | `resolved` |
+| `structured-treatment-turn` | `completed` (zero captures) |
+| `text-only-control-turn` | `completed` (zero captures) |
+| `transport-control` | `error-result-undetermined-origin` |
+| `held-turn-interrupt` | `not-sent` |
+
+The final run replicated the earlier revision's recorded outcome exactly — same six assertion values, same five lifecycle observations verbatim, same 8 true hook-authority equality cells with every app-server-authority cell fact-less false — so the regenerated `qualification/mcp-lifecycle.json` is byte-identical to the committed record and `qualification/mcp-context.json` stays absent (zero winning candidates; none guessed). The driver exited 1 by design when the six-boolean context gate failed; cleanup ran to completion (probe plugin and marketplaces removed from each isolated home, tracked PIDs stopped by verified start identity, isolated `auth.json` copies deleted, temporary homes removed). No evidence was rewritten: `result.json` is the closed reduction of exactly the durable log this run produced, and the committed record changes follow mechanically from it.
+
+## 0.154.0 baseline (historical, preserved verbatim)
+
 Status: **authority namespace NOT qualified on this run; lifecycle characterized; Task 4 stays blocked.** The amended Task 2 separates pass/fail authority assertions from closed lifecycle observations. On this rerun five of the six context assertions reduced true, but `identityNamespaceQualified` reduced **false**: the hardened attribution gate requires MCP captures attributable to the app-server-created threads, and the app-server model never called the probe tool, so every app-server authority cell stayed fact-less and no authority field path could be recorded. `qualification/mcp-context.json` was therefore deleted (no proven authority namespace), and `qualification/mcp-lifecycle.json` records five honest lifecycle observations with candidate strategies (`selectedStrategies` stays null; Task 6 owns selection). This report contains no identity values; only field names, JSON types, exit codes, field-path equalities, and observations.
 
 - Date: 2026-09-19 (three completed amended-characterization runs with the hardened harness, plus two additional attempts that aborted in the negative-control phase — a transcript-shape flake since fixed in the harness, which now accepts the failed-attempts engagement shape; see the provenance note. The earlier same-week run established the loading/distinctness facts re-proven below)

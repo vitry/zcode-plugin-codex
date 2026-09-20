@@ -26,7 +26,7 @@ import {
   reduceProbeResult,
 } from '../tools/mcp-context-probe/observer.mjs';
 import { createProbeServer, DISCONNECT_EXIT_GRACE_MS, probeObserverFromEnv, SERVER_EXIT_GRACE_MS, scheduleDisposalExit } from '../tools/mcp-context-probe/server.mjs';
-import { APP_SERVER_CAPTURE_PROMPT, appServerCaptureEvidenceGate, boundedStdoutLines, startAppServerSession, mcpCallStatusesFromCounts, ensureHooksFeatureFlag, spawnAgentHandleFromFrame, correlateTurnSet, appServerInitializeParams, appServerThreadStartParams, appServerTurnInterruptParams, appServerTurnStartParams, appServerTurnStatusFromNotifications, appendMcpServerConfig, freshCaptureJoinFacts, assertAuthoritativeIdentityCorrelation, assertProcessIdentity, assertResumeThreadIdentity, assertToolUnavailableTranscript, assembleAppServerTurnInterruptObservation, captureProcessIdentity, cleanupTargetMatchesIdentity, concurrentChildHookFacts, deriveCandidateStrategies, deriveTimeoutToolCallOutcome, deriveTransportState, HOLD_PROMPT, qualifyMcpContext, resolveProcessInspectionExecutable, returnedChildHandleFacts, saltedHashSetsEqual } from '../tools/mcp-context-probe/qualify.mjs';
+import { APP_SERVER_CAPTURE_PROMPT, appServerCaptureEvidenceGate, appServerSkillsListParams, appServerToolCallParams, attributableCaptureCount, boundedStdoutLines, CAPTURE_SETTLE_POLL_MS, captureCensusSettled, startAppServerSession, mcpCallStatusesFromCounts, ensureHooksFeatureFlag, spawnAgentHandleFromFrame, classifyTransportControlOutcome, correlateTurnSet, appServerInitializeParams, appServerThreadStartParams, appServerTurnInterruptParams, appServerTurnStartParams, appServerTurnStatusFromNotifications, appendMcpServerConfig, diagnosticCaptureAttribution, freshCaptureJoinFacts, assertAuthoritativeIdentityCorrelation, assertProcessIdentity, assertResumeThreadIdentity, assertToolUnavailableTranscript, assembleAppServerTurnInterruptObservation, captureProcessIdentity, cleanupTargetMatchesIdentity, concurrentChildHookFacts, deriveCandidateStrategies, deriveTimeoutToolCallOutcome, deriveTransportState, HOLD_PROMPT, mcpToolCallIdentityKey, planTurnInterrupt, qualifyMcpContext, requireRequalifiedCodexVersion, resolveProcessInspectionExecutable, resolveProbeSkillEntry, returnedChildHandleFacts, saltedHashSetsEqual } from '../tools/mcp-context-probe/qualify.mjs';
 
 const serverModulePath = fileURLToPath(new URL('../tools/mcp-context-probe/server.mjs', import.meta.url));
 const hookObserverModulePath = fileURLToPath(new URL('../tools/mcp-context-probe/hook-observer.mjs', import.meta.url));
@@ -196,6 +196,15 @@ function qualifiedEventSequence(observerPaths = null) {
   // settled by the explicit interrupt, and the honest observation.
   push(phaseBody('app-server-interrupt'));
   serverStarted();
+  // The amended 0.155.1 controls are durable: exactly one event per closed
+  // control, in the driver's canonical order, mirroring the recorded run's
+  // control outcomes (the synthetic held call settles as a delivered
+  // interrupt's signal abort).
+  push({ kind: 'app-server-control', control: 'skill-resolution', outcome: 'resolved', captures: 0 });
+  push({ kind: 'app-server-control', control: 'structured-treatment-turn', outcome: 'completed', captures: 0 });
+  push({ kind: 'app-server-control', control: 'text-only-control-turn', outcome: 'completed', captures: 0 });
+  push({ kind: 'app-server-control', control: 'transport-control', outcome: 'error-result-undetermined-origin', captures: 0 });
+  push({ kind: 'app-server-control', control: 'held-turn-interrupt', outcome: 'delivered', captures: 0 });
   const appServerRoot = captureStartedBody();
   const appServerChild = captureStartedBody();
   settledCapture(appServerRoot);
@@ -500,6 +509,55 @@ test('appendProbeEvent validates the new hook, authority, equality, and lifecycl
   });
 });
 
+test('app-server-control events carry the closed control/outcome vocabulary with bounded counts', async () => {
+  await withProbeRun('zcode-probe-controls-', async (run) => {
+    const nonce = runNonce();
+    const control = (controlName, outcome, captures = 0) => ({ kind: 'app-server-control', control: controlName, outcome, captures });
+    // One valid event per closed control, each from its own outcome subset.
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('skill-resolution', 'resolved') });
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('structured-treatment-turn', 'completed', 2) });
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('text-only-control-turn', 'skipped') });
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('transport-control', 'error-result-undetermined-origin', 1) });
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('held-turn-interrupt', 'delivered') });
+    await appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('held-turn-interrupt', 'not-sent') });
+    const events = await readProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(events.filter((record) => record.event.kind === 'app-server-control').length, 6);
+    // Unknown control.
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('thread-control', 'resolved') }),
+      /control/i,
+    );
+    // An outcome outside the control's own subset (cross-assignment).
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('skill-resolution', 'capture-recorded') }),
+      /outcome/i,
+    );
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('transport-control', 'resolved') }),
+      /outcome/i,
+    );
+    // The interrupt-delivery control only accepts delivery outcomes.
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('held-turn-interrupt', 'resolved') }),
+      /outcome/i,
+    );
+    // Capture counts are bounded non-negative integers.
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('transport-control', 'unobserved', -1) }),
+      /capture|integer/i,
+    );
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: control('transport-control', 'unobserved', 1.5) }),
+      /capture|integer/i,
+    );
+    // Exact-key discipline: no ad-hoc fields, ever.
+    await assert.rejects(
+      () => appendProbeEvent({ runDirectory: run, runNonce: nonce, event: { ...control('transport-control', 'unobserved'), threadId: 'raw' } }),
+      /unknown field/i,
+    );
+  });
+});
+
 test('readProbeEvents returns ordered events and rejects foreign logs', async () => {
   await withProbeRun('zcode-probe-events-', async (run) => {
     const nonce = runNonce();
@@ -756,6 +814,103 @@ test('the final reducer rejects a log with extra hold invocations', async () => 
     bodies.push(holdStartedBody());
     await appendAll(run, nonce, bodies);
     await assert.rejects(() => reduceProbeResult({ runDirectory: run, runNonce: nonce }), /hold|census|incomplete/i);
+  });
+});
+
+test('the final reducer accepts the amended app-server turn census (structured treatment, text-only control, transport control)', async () => {
+  await withProbeRun('zcode-probe-result-', async (run) => {
+    const nonce = runNonce();
+    // The amended app-server phase drives up to three bounded conversations:
+    // the structured-Skill treatment turn (Root + one spawned Child), the
+    // text-only control turn (Root + one spawned Child), and the
+    // mcpServer/tool/call transport control (whose capture lands only when
+    // the Host attaches complete metadata). All are best-effort captures
+    // outside the scripted matrix: they must settle, never replace the
+    // matrix census, and the phase still carries at most one held call.
+    const records = qualifiedEventSequence({ eventsPath: join(run, 'events.jsonl'), lockPath: join(run, 'events.lock') });
+    const pluginMarker = records.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'plugin-tool-timeout');
+    assert.ok(pluginMarker > 0);
+    const controlRoot = captureStartedBody();
+    const controlChild = captureStartedBody();
+    const diagnostic = captureStartedBody();
+    for (const capture of [controlRoot, controlChild, diagnostic]) {
+      records.splice(pluginMarker, 0,
+        { runNonce: nonce, timestamp: new Date().toISOString(), event: capture },
+        { runNonce: nonce, timestamp: new Date().toISOString(), event: captureSettledBody(capture.callNonce) });
+    }
+    await appendAll(run, nonce, records.map((record) => record.event));
+    const result = await reduceProbeResult({ runDirectory: run, runNonce: nonce });
+    assert.deepEqual(Object.keys(result), ['context', 'lifecycle']);
+    await rm(join(run, 'result.json'));
+  });
+});
+
+test('the final reducer still rejects an unsettled app-server-path capture', async () => {
+  await withProbeRun('zcode-probe-result-', async (run) => {
+    const nonce = runNonce();
+    const records = qualifiedEventSequence({ eventsPath: join(run, 'events.jsonl'), lockPath: join(run, 'events.lock') });
+    const pluginMarker = records.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'plugin-tool-timeout');
+    records.splice(pluginMarker, 0, { runNonce: nonce, timestamp: new Date().toISOString(), event: captureStartedBody() });
+    await appendAll(run, nonce, records.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: run, runNonce: nonce }), /unsettled|incomplete/i);
+  });
+});
+
+test('the final reducer requires the durable app-server-control events', async () => {
+  await withProbeRun('zcode-probe-controls-', async (run) => {
+    // A log whose app-server controls never ran is indistinguishable from a
+    // healthy run no longer: the reduction requires exactly one durable
+    // app-server-control event per closed control, in canonical order, with
+    // schema-valid values — so the committed result can only come from a
+    // log that substantiates the three-way distinction.
+    const missingAll = join(run, 'missing-all');
+    await mkdir(missingAll, { mode: 0o700 });
+    const nonceAll = runNonce();
+    const withoutControls = qualifiedEventSequence({ eventsPath: join(missingAll, 'events.jsonl'), lockPath: join(missingAll, 'events.lock') })
+      .filter((record) => record.event.kind !== 'app-server-control');
+    await appendAll(missingAll, nonceAll, withoutControls.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: missingAll, runNonce: nonceAll }), /app-server-control/i);
+    await rm(join(missingAll, 'result.json'), { force: true });
+
+    // A held-call control without its interrupt-delivery outcome cannot
+    // reduce: the record would be indistinguishable from a delivered
+    // interrupt with no handler notification, with no durable proof the
+    // interruption was exercised at all.
+    const missingInterrupt = join(run, 'missing-interrupt');
+    await mkdir(missingInterrupt, { mode: 0o700 });
+    const nonceInterrupt = runNonce();
+    const withoutInterruptDelivery = qualifiedEventSequence({ eventsPath: join(missingInterrupt, 'events.jsonl'), lockPath: join(missingInterrupt, 'events.lock') })
+      .filter((record) => !(record.event.kind === 'app-server-control' && record.event.control === 'held-turn-interrupt'));
+    await appendAll(missingInterrupt, nonceInterrupt, withoutInterruptDelivery.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: missingInterrupt, runNonce: nonceInterrupt }), /held-turn-interrupt/i);
+    await rm(join(missingInterrupt, 'result.json'), { force: true });
+
+    // A duplicated control event breaks the exactly-once census.
+    const duplicated = join(run, 'duplicate');
+    await mkdir(duplicated, { mode: 0o700 });
+    const nonceTwo = runNonce();
+    const duplicatedRecords = qualifiedEventSequence({ eventsPath: join(duplicated, 'events.jsonl'), lockPath: join(duplicated, 'events.lock') });
+    const marker = duplicatedRecords.findIndex((record) => record.event.kind === 'phase-observed' && record.event.phase === 'plugin-tool-timeout');
+    duplicatedRecords.splice(marker, 0, { runNonce: nonceTwo, timestamp: new Date().toISOString(), event: { kind: 'app-server-control', control: 'skill-resolution', outcome: 'resolved', captures: 0 } });
+    await appendAll(duplicated, nonceTwo, duplicatedRecords.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: duplicated, runNonce: nonceTwo }), /app-server-control/i);
+    await rm(join(duplicated, 'result.json'), { force: true });
+
+    // Canonical order: the controls must appear in the driver's order.
+    const misordered = join(run, 'misordered');
+    await mkdir(misordered, { mode: 0o700 });
+    const nonceThree = runNonce();
+    const misorderedRecords = qualifiedEventSequence({ eventsPath: join(misordered, 'events.jsonl'), lockPath: join(misordered, 'events.lock') });
+    const skillIndex = misorderedRecords.findIndex((record) => record.event.kind === 'app-server-control' && record.event.control === 'skill-resolution');
+    const transportIndex = misorderedRecords.findIndex((record) => record.event.kind === 'app-server-control' && record.event.control === 'transport-control');
+    const [transportRecord] = misorderedRecords.splice(transportIndex, 1);
+    misorderedRecords.splice(skillIndex, 0, transportRecord);
+    await appendAll(misordered, nonceThree, misorderedRecords.map((record) => record.event));
+    await assert.rejects(() => reduceProbeResult({ runDirectory: misordered, runNonce: nonceThree }), /app-server-control|order/i);
+    await rm(join(misordered, 'result.json'), { force: true });
+    for (const directory of [missingAll, missingInterrupt, duplicated, misordered]) {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1226,6 +1381,88 @@ test('the negative-control transcript must show the tool-unavailable shape', () 
   );
 });
 
+test('the 0.155.1 negative-control unavailability phrasings are engagement evidence', () => {
+  // Recorded verbatim from a 0.155.1 isolated-home negative-control
+  // conversation: the model names the probe tool and states its
+  // unavailability with phrasings the original vocabulary missed ("isn't
+  // exposed", "isn't available"), so the gate refused healthy controls. The
+  // DURABLE WINDOW remains the hard proof that the server never loaded; this
+  // assert only widens the unavailability vocabulary — it still fails closed
+  // on zero engagement evidence of any shape.
+  const frameAccount = (entries, excerpts = [], nestedEntries = []) => ({
+    malformed: 0,
+    frameTypes: new Map(entries),
+    nestedItemTypes: new Map(nestedEntries),
+    excerpts,
+  });
+  const agentMessage = (text) => ({ frameType: 'item.completed', nestedItemType: 'agent_message', itemStatus: null, excerpt: `{"type":"item.completed","item":{"type":"agent_message","text":${JSON.stringify(text)}}}` });
+  // The exact recorded 0.155.1 closing message.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1]],
+      [agentMessage('`$zcode-mcp-context-probe:context` and `capture_context` are unavailable in this session. No call was made, and no child agent was spawned.')],
+    ),
+    'phase-negative-control',
+  ));
+  // The exact recorded 0.155.1 conversation: the mid-conversation phrasing
+  // ("isn't exposed", with the host's Unicode apostrophe) plus a failed
+  // workspace search, closed by the message that names the probe tool and
+  // states the unavailability — the tool-referencing closing message is the
+  // load-bearing excerpt, exactly as in the recorded run.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1], ['item.completed', 4]],
+      [
+        agentMessage("I\u2019ll use the requested context probe directly in Root, call `capture_context` exactly once, and won\u2019t spawn any child agent."),
+        agentMessage("The requested skill/tool isn\u2019t exposed in this session\u2019s available skills or callable tools. I\u2019m checking the workspace once for a local installation before concluding it\u2019s unavailable; I will not substitute another call."),
+        { frameType: 'item.completed', nestedItemType: 'command_execution', itemStatus: 'failed', excerpt: '{"type":"item.completed","item":{"type":"command_execution","status":"failed","aggregated_output":"ls: cannot access"}}' },
+        agentMessage("`$zcode-mcp-context-probe:context` and `capture_context` are unavailable in this session. No call was made, and no child agent was spawned."),
+      ],
+    ),
+    'phase-negative-control',
+  ));
+  // The negative-copula phrasings themselves are unavailability evidence
+  // when they name the probe tool (each was observed across the aborted
+  // 0.155.1 controls).
+  for (const text of [
+    "`mcp__zcode-mcp-context-probe__capture_context` isn't available in this session.",
+    "The requested skill/tool isn't exposed in this session's available skills or callable tools; `$zcode-mcp-context-probe:context` is not loadable.",
+    'The capture_context tool is not exposed in this session.',
+    'capture_context cannot be called because the probe plugin is not loaded.',
+  ]) {
+    assert.doesNotThrow(() => assertToolUnavailableTranscript(
+      frameAccount([['thread.started', 1]], [agentMessage(text)]),
+      'phase-negative-control',
+    ), text);
+  }
+  // An unavailability phrasing that never references the probe tool is NOT
+  // engagement evidence: with zero tool-referencing excerpts the gate still
+  // fails closed.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1]],
+        [agentMessage("The requested skill/tool isn't exposed in this session's available skills or callable tools.")],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+  // Still zero tolerance for conversations with no engagement evidence at
+  // all: unrelated error frames without any probe-tool reference stay a
+  // failure even with the widened vocabulary.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1], ['error', 4]],
+        [{ frameType: 'error', nestedItemType: null, itemStatus: null, excerpt: '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}' }],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+});
+
 test('failed-attempt engagement with a matching excerpt and zero successful calls is accepted', () => {
   const frameAccount = (entries, excerpts = [], nestedEntries = []) => ({
     malformed: 0,
@@ -1310,6 +1547,201 @@ test('successful or unclassified mcp_tool_call evidence is never tool-unavailabl
     ),
     /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
   );
+  // A completed call naming the probe under its host-exposed mcp__ name is
+  // probe-server interaction proof — never unavailability.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1]],
+        [
+          { frameType: 'item.completed', nestedItemType: 'mcp_tool_call', itemStatus: 'completed', excerpt: '{"type":"item.completed","item":{"type":"mcp_tool_call","status":"completed","tool":"mcp__zcode-mcp-context-probe__capture_context"}}' },
+          { frameType: 'item.completed', nestedItemType: 'agent_message', itemStatus: null, excerpt: '{"type":"item.completed","item":{"type":"agent_message","text":"capture_context ran."}}' },
+        ],
+        [['mcp_tool_call', 1]],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+});
+
+test('the 0.155.1 introspective negative-control shape counts as genuine engagement', () => {
+  // Recorded verbatim from a 0.155.1 isolated-home negative-control
+  // conversation: the model first drives the HOST's built-in MCP
+  // introspection tools (`list_mcp_resources`, `list_mcp_resource_templates`
+  // — both complete successfully regardless of the plugin), finds the probe
+  // capability absent from the catalog, and states the probe tool's
+  // unavailability by name. The gate's original assumption — any completed
+  // mcp_tool_call item is probe-server interaction — is false on this host:
+  // the DURABLE WINDOW (zero server-started/capture-started events, checked
+  // separately) remains the hard proof that the server never loaded, the
+  // item tool names prove no probe call was made, and the unavailable
+  // statement names the tool. Zero tolerance is unchanged for a completed
+  // call that DOES reference the probe tool or server.
+  const frameAccount = (entries, excerpts = [], nestedEntries = []) => ({
+    malformed: 0,
+    frameTypes: new Map(entries),
+    nestedItemTypes: new Map(nestedEntries),
+    excerpts,
+  });
+  const agentMessage = (text) => ({ frameType: 'item.completed', nestedItemType: 'agent_message', itemStatus: null, excerpt: `{"type":"item.completed","item":{"type":"agent_message","text":${JSON.stringify(text)}}}` });
+  const mcpCall = (tool, status) => ({
+    frameType: status === 'in_progress' ? 'item.started' : 'item.completed',
+    nestedItemType: 'mcp_tool_call',
+    itemStatus: status,
+    excerpt: `{"type":"item.completed","item":{"type":"mcp_tool_call","status":"${status}","tool":"${tool}"}}`,
+  });
+  // The exact recorded 0.155.1 introspective shape: foreign successful
+  // introspection + the named unavailability statement + zero probe calls.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1], ['item.completed', 7], ['item.started', 2]],
+      [
+        agentMessage("I\u2019ll use the requested context-probe capability directly in Root and invoke `capture_context` exactly once, with no child agents."),
+        mcpCall('list_mcp_resources', 'in_progress'),
+        mcpCall('list_mcp_resource_templates', 'in_progress'),
+        mcpCall('list_mcp_resources', 'completed'),
+        mcpCall('list_mcp_resource_templates', 'completed'),
+        agentMessage("The named capability is not advertised in the available skill/tool catalog, so I\u2019m making the single requested invocation directly against its expected MCP tool identifier."),
+        agentMessage("`capture_context` was unavailable in Root, so the requested call could not execute. No Child was spawned, and no additional invocation was attempted."),
+      ],
+      [['mcp_tool_call', 4]],
+    ),
+    'phase-negative-control',
+  ));
+  // A failed probe attempt beside foreign introspection is the
+  // failed-attempt shape and passes too.
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(
+    frameAccount(
+      [['thread.started', 1], ['item.completed', 3]],
+      [
+        mcpCall('list_mcp_resources', 'completed'),
+        mcpCall('mcp__zcode-mcp-context-probe__capture_context', 'failed'),
+        agentMessage('capture_context failed: the probe server is not available in this session.'),
+      ],
+      [['mcp_tool_call', 2]],
+    ),
+    'phase-negative-control',
+  ));
+  // Foreign introspection with NO unavailability statement naming the probe
+  // tool is zero engagement: the control proves nothing.
+  assert.throws(
+    () => assertToolUnavailableTranscript(
+      frameAccount(
+        [['thread.started', 1]],
+        [
+          mcpCall('list_mcp_resources', 'completed'),
+          agentMessage('I looked through the available tools and answered the question.'),
+        ],
+        [['mcp_tool_call', 1]],
+      ),
+      'phase-negative-control',
+    ),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+  );
+});
+
+test('the successful-probe-call rejection never depends on the diagnostic excerpt cap', () => {
+  // The excerpt list is capped at 32 diagnostic frames: when the cap fills
+  // before a successful probe call arrives, that call has NO excerpt, so an
+  // excerpt-only derivation sees no successful probe evidence while the
+  // introspective shape still matches earlier retained evidence — the
+  // control would wrongly pass despite the zero-tolerance rule. The
+  // driver's uncapped identity tally (mirroring mcpCallStatusCounts) counts
+  // every nested mcp_tool_call item; the rejection must come from the tally.
+  const frameAccount = (entries, excerpts = [], nestedEntries = [], identityCounts = null) => ({
+    malformed: 0,
+    frameTypes: new Map(entries),
+    nestedItemTypes: new Map(nestedEntries),
+    excerpts,
+    ...(identityCounts === null ? {} : { mcpCallIdentityCounts: identityCounts }),
+  });
+  const agentMessage = (text) => ({ frameType: 'item.completed', nestedItemType: 'agent_message', itemStatus: null, excerpt: `{"type":"item.completed","item":{"type":"agent_message","text":${JSON.stringify(text)}}}` });
+  const foreignSuccessful = { frameType: 'item.completed', nestedItemType: 'mcp_tool_call', itemStatus: 'completed', excerpt: '{"type":"item.completed","item":{"type":"mcp_tool_call","status":"completed","tool":"list_mcp_resources"}}' };
+  const filler = (index) => ({ frameType: 'item.completed', nestedItemType: 'reasoning', itemStatus: 'completed', excerpt: `{"type":"item.completed","item":{"type":"reasoning","status":"completed","text":"step ${index}"}}` });
+  // Exactly the cap (32) excerpts: the matching unavailability statement and
+  // one foreign introspection are IN the cap; the successful probe call and
+  // a second foreign call arrive after the cap and exist only in the tally.
+  const excerpts = [
+    agentMessage('`capture_context` was unavailable in this session. No call was made, and no child agent was spawned.'),
+    foreignSuccessful,
+    ...Array.from({ length: 30 }, (_, index) => filler(index)),
+  ];
+  assert.equal(excerpts.length, 32);
+  const cappedAccount = frameAccount(
+    [['thread.started', 1], ['item.completed', 35], ['item.started', 1]],
+    excerpts,
+    [['mcp_tool_call', 2]],
+    new Map([['probe:successful', 1], ['foreign:successful', 1]]),
+  );
+  assert.throws(
+    () => assertToolUnavailableTranscript(cappedAccount, 'phase-negative-control'),
+    /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/,
+    'a successful probe call beyond the excerpt cap must still reject the control',
+  );
+  // The same capped shape whose tally counts ONLY foreign success (no probe
+  // call anywhere) remains the accepted introspective shape.
+  const foreignOnlyAccount = frameAccount(
+    [['thread.started', 1], ['item.completed', 35], ['item.started', 1]],
+    excerpts,
+    [['mcp_tool_call', 2]],
+    new Map([['foreign:successful', 2]]),
+  );
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(foreignOnlyAccount, 'phase-negative-control'));
+});
+
+test('mcpToolCallIdentityKey classifies every mcp_tool_call item for the uncapped tally', () => {
+  // Probe-referencing by the item's tool field…
+  assert.equal(mcpToolCallIdentityKey({ tool: 'mcp__zcode-mcp-context-probe__capture_context', status: 'completed' }, '{"tool":"mcp__zcode-mcp-context-probe__capture_context"}'), 'probe:successful');
+  assert.equal(mcpToolCallIdentityKey({ tool: 'capture_context', status: 'failed' }, '{"tool":"capture_context","status":"failed"}'), 'probe:failed');
+  // …or by any probe reference on the frame line itself.
+  assert.equal(mcpToolCallIdentityKey({ status: 'completed' }, '{"item":{"type":"mcp_tool_call","status":"completed","server":"zcode-mcp-context-probe"}}'), 'probe:successful');
+  // Foreign items classify by the same status classes.
+  assert.equal(mcpToolCallIdentityKey({ tool: 'list_mcp_resources', status: 'completed' }, '{"tool":"list_mcp_resources"}'), 'foreign:successful');
+  assert.equal(mcpToolCallIdentityKey({ tool: 'list_mcp_resources', status: 'in_progress' }, '{"tool":"list_mcp_resources"}'), 'foreign:unclassified');
+  assert.equal(mcpToolCallIdentityKey({ tool: 'list_mcp_resources' }, '{"tool":"list_mcp_resources"}'), 'foreign:unclassified');
+  // A non-item or malformed payload classifies nothing.
+  assert.equal(mcpToolCallIdentityKey(null, '{}'), null);
+});
+
+test('a foreign tool name decides the classification even when its line mentions the probe', () => {
+  // The host enumerating the probe's resources can produce a successful
+  // FOREIGN introspection call whose arguments or output merely MENTION the
+  // probe tool or server. When the item carries a tool name, that name
+  // decides the probe reference EXCLUSIVELY — the whole-frame fallback
+  // exists only for payloads that omit the tool name — so such an item
+  // stays foreign:successful and never trips the zero-tolerance rejection
+  // for successful probe calls.
+  const line = '{"type":"item.completed","item":{"type":"mcp_tool_call","status":"completed","tool":"list_mcp_resources","arguments":{"query":"capture_context"},"output":"inspected zcode-mcp-context-probe"}}';
+  assert.equal(mcpToolCallIdentityKey({ tool: 'list_mcp_resources', status: 'completed' }, line), 'foreign:successful');
+  // The same payload WITHOUT the tool name falls back to the frame line and
+  // is probe-referencing; an empty tool field counts as omitted.
+  assert.equal(mcpToolCallIdentityKey({ status: 'completed' }, line), 'probe:successful');
+  assert.equal(mcpToolCallIdentityKey({ tool: '', status: 'completed' }, line), 'probe:successful');
+});
+
+test('the identity tally is authoritative and exclusive when present', () => {
+  // With tool-name precedence, mcpToolCallIdentityKey correctly records a
+  // foreign introspection call whose arguments/output mention the probe as
+  // foreign:successful — but the whole-frame EXCERPT scan would still see a
+  // completed probe-referencing call in that frame and falsely reject a
+  // valid negative control. When the tally is present it is EXCLUSIVE: the
+  // excerpt derivation runs only for hand-built fixtures that carry no
+  // tally.
+  const foreignMentioningProbe = { frameType: 'item.completed', nestedItemType: 'mcp_tool_call', itemStatus: 'completed', excerpt: '{"type":"item.completed","item":{"type":"mcp_tool_call","status":"completed","tool":"list_mcp_resources","arguments":{"query":"capture_context"},"output":"inspected zcode-mcp-context-probe"}}' };
+  const unavailableStatement = { frameType: 'item.completed', nestedItemType: 'agent_message', itemStatus: null, excerpt: '{"type":"item.completed","item":{"type":"agent_message","text":"`capture_context` was unavailable in this session. No call was made, and no child agent was spawned."}}' };
+  const account = {
+    malformed: 0,
+    frameTypes: new Map([['thread.started', 1], ['item.completed', 3]]),
+    nestedItemTypes: new Map([['mcp_tool_call', 1]]),
+    mcpCallIdentityCounts: new Map([['foreign:successful', 1]]),
+    excerpts: [unavailableStatement, foreignMentioningProbe],
+  };
+  assert.doesNotThrow(() => assertToolUnavailableTranscript(account, 'phase-negative-control'), 'the authoritative tally saw no probe call; the excerpt mention must not reject');
+  // Exclusive also means the tally rejects in its own direction: a
+  // successful probe call never escapes through clean-looking excerpts.
+  const probeTally = { ...account, mcpCallIdentityCounts: new Map([['probe:successful', 1]]) };
+  assert.throws(() => assertToolUnavailableTranscript(probeTally, 'phase-negative-control'), /tool-unavailable|PROBE_NEGATIVE_CONTROL_SHAPE/);
 });
 
 test('the resume Host must re-emit exactly one thread.started matching the Root id', () => {
@@ -1418,6 +1850,387 @@ test('the app-server turn inputs carry the exec-compliance prompts', () => {
   // The held turn must require the Skill, exactly one held call, and
   // nothing else — the shared exec hold voice, unchanged.
   assert.equal(HOLD_PROMPT, 'Use $zcode-mcp-context-probe:context and call hold_for_lifecycle exactly once. Wait for that tool and do nothing else.');
+});
+
+test('the app-server skill resolution request pins the exact skills/list shape', () => {
+  // The 0.155.1 app-server schema (SkillsListParams): `cwds` defaults to the
+  // session cwd when empty; forceReload bypasses the skills cache. The probe
+  // always asks for the probe workspace with a forced reload so the freshly
+  // installed plugin skill is re-scanned.
+  assert.deepEqual(appServerSkillsListParams(['/workspace-a']), { cwds: ['/workspace-a'], forceReload: true });
+  assert.deepEqual(appServerSkillsListParams([]), { cwds: [], forceReload: true });
+  // The caller's list is copied: mutating the argument after the call cannot
+  // change the built params.
+  const cwds = ['/workspace-a'];
+  const params = appServerSkillsListParams(cwds);
+  cwds.push('/elsewhere');
+  assert.deepEqual(params.cwds, ['/workspace-a']);
+});
+
+test('resolveProbeSkillEntry resolves the installed probe skill by its exact host-reported name and path', () => {
+  const entry = (skill) => ({ cwd: '/workspace-a', errors: [], skills: [skill] });
+  const namespaced = {
+    name: 'zcode-mcp-context-probe:context',
+    description: 'Probe-only skill',
+    path: '/run/plugins/zcode-mcp-context-probe/skills/context/SKILL.md',
+    scope: 'user',
+    enabled: true,
+    pluginId: 'zcode-mcp-context-probe@zcode-mcp-probe',
+  };
+  // The qualified host-reported form (`plugin:skill`): the exact name and
+  // path flow through to the structured Skill input item, never a guess.
+  assert.deepEqual(resolveProbeSkillEntry([entry(namespaced)], {
+    pluginName: 'zcode-mcp-context-probe', skillName: 'context',
+  }), { name: 'zcode-mcp-context-probe:context', path: '/run/plugins/zcode-mcp-context-probe/skills/context/SKILL.md' });
+  // A host that reports the bare skill name is still resolved through its
+  // owning plugin id (plugin or plugin@marketplace).
+  assert.deepEqual(resolveProbeSkillEntry([entry({ ...namespaced, name: 'context', pluginId: 'zcode-mcp-context-probe@zcode-mcp-probe' })], {
+    pluginName: 'zcode-mcp-context-probe', skillName: 'context',
+  }), { name: 'context', path: '/run/plugins/zcode-mcp-context-probe/skills/context/SKILL.md' });
+  // The same skill listed under several cwd entries (agreeing name+path)
+  // resolves once — the response is per-cwd, not ambiguous.
+  assert.deepEqual(resolveProbeSkillEntry([entry(namespaced), { cwd: '/workspace-b', errors: [], skills: [namespaced] }], {
+    pluginName: 'zcode-mcp-context-probe', skillName: 'context',
+  }), { name: 'zcode-mcp-context-probe:context', path: '/run/plugins/zcode-mcp-context-probe/skills/context/SKILL.md' });
+
+  // Fail closed: absent, disabled, path-less, foreign, or ambiguous entries
+  // resolve to null — the driver then records that the structured Skill
+  // input cannot be sent instead of guessing name or path.
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, name: 'something-else' })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a foreign skill name never resolves');
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, enabled: false })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a disabled skill never resolves');
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, path: '' })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'an empty path never resolves');
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, path: 7 })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a non-string path never resolves');
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, name: 'context', pluginId: null })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a bare name without the owning plugin id never resolves');
+  assert.equal(resolveProbeSkillEntry([entry({ ...namespaced, name: 'context', pluginId: 'zcode@vitry' })], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a bare name owned by a different plugin never resolves');
+  assert.equal(resolveProbeSkillEntry([], { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'an empty list resolves nothing');
+  assert.equal(resolveProbeSkillEntry(null, { pluginName: 'zcode-mcp-context-probe', skillName: 'context' }), null, 'a non-array response resolves nothing');
+  // Two same-named entries with different paths are ambiguous — null, never
+  // a silent first-pick.
+  assert.equal(resolveProbeSkillEntry(
+    [entry(namespaced), { cwd: '/workspace-b', errors: [], skills: [{ ...namespaced, path: '/elsewhere/SKILL.md' }] }],
+    { pluginName: 'zcode-mcp-context-probe', skillName: 'context' },
+  ), null);
+});
+
+test('appServerTurnStartParams appends the structured Skill input item only when a resolved entry is supplied', () => {
+  // The 0.155.1 app-server schema (TurnStartParams.UserInput): the Skill
+  // input item is exactly `{type:'skill', name, path}` — the fields make
+  // app-server inject the full Skill instructions instead of relying on
+  // model-side marker resolution. The text item stays first.
+  const skill = { name: 'zcode-mcp-context-probe:context', path: '/run/skills/context/SKILL.md' };
+  assert.deepEqual(appServerTurnStartParams('thread-1', APP_SERVER_CAPTURE_PROMPT, skill), {
+    threadId: 'thread-1',
+    input: [
+      { type: 'text', text: APP_SERVER_CAPTURE_PROMPT },
+      { type: 'skill', name: 'zcode-mcp-context-probe:context', path: '/run/skills/context/SKILL.md' },
+    ],
+  });
+  assert.deepEqual(appServerTurnStartParams('thread-1', HOLD_PROMPT, skill), {
+    threadId: 'thread-1',
+    input: [
+      { type: 'text', text: HOLD_PROMPT },
+      { type: 'skill', name: 'zcode-mcp-context-probe:context', path: '/run/skills/context/SKILL.md' },
+    ],
+  });
+  // Without a resolved entry the input stays exactly the historical
+  // text-only shape — the marker-only control turn depends on it.
+  assert.deepEqual(appServerTurnStartParams('thread-1', APP_SERVER_CAPTURE_PROMPT), {
+    threadId: 'thread-1',
+    input: [{ type: 'text', text: APP_SERVER_CAPTURE_PROMPT }],
+  });
+  assert.deepEqual(appServerTurnStartParams('thread-1', APP_SERVER_CAPTURE_PROMPT, null).input.length, 1);
+  // A malformed entry fails closed: the structured input is never sent with
+  // a guessed or partial name/path.
+  for (const bad of [{}, { name: '' }, { name: 'x', path: '' }, { name: 'x', path: 3 }, { name: 4, path: 'p' }, 'skill', 7]) {
+    assert.throws(() => appServerTurnStartParams('thread-1', 'text', bad), /skill/i, `expected a rejection for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('the mcpServer tool/call transport control pins the exact request shape', () => {
+  // The 0.155.1 app-server schema (McpServerToolCallParams): server,
+  // threadId, and tool are required; arguments is optional. The probe sends
+  // the empty arguments object its tools require.
+  assert.deepEqual(appServerToolCallParams('zcode-mcp-context-probe', 'thread-1', 'capture_context'), {
+    server: 'zcode-mcp-context-probe',
+    threadId: 'thread-1',
+    tool: 'capture_context',
+    arguments: {},
+  });
+  for (const bad of [['', 'thread-1', 'capture_context'], ['s', '', 'capture_context'], ['s', 'thread-1', '']]) {
+    assert.throws(() => appServerToolCallParams(...bad), /server|threadId|tool/i);
+  }
+});
+
+test('the transport-control outcome classifies durable captures over responses over request failures', () => {
+  // A durable capture is the strongest transport proof: the direct call was
+  // durably recorded by the configured handler.
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: false, captureDelta: 1 }), 'capture-recorded');
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: true, captureDelta: 2 }), 'capture-recorded');
+  // No capture: a rejected request never completed at all.
+  assert.equal(classifyTransportControlOutcome({ requestFailed: true, responseIsError: null, captureDelta: 0 }), 'call-failed');
+  // No capture but an error result: the ORIGIN of the error is undetermined
+  // — the driver retains no response content, so a handler-generated error
+  // is indistinguishable from a host-generated refusal wrapped in a success
+  // frame, and handler reachability is never claimed from this outcome.
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: true, captureDelta: 0 }), 'error-result-undetermined-origin');
+  // No capture and no error: nothing diagnostic was observed.
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: false, captureDelta: 0 }), 'unobserved');
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: null, captureDelta: 0 }), 'unobserved');
+});
+
+test('diagnostic capture attribution counts only new captures on the diagnostic thread', () => {
+  // The capture delta must be per-thread, not global: a late capture-started
+  // from a Child spawned by either preceding capture turn can land inside
+  // the transport-control window, and counting it would misreport the direct
+  // call as capture-recorded. Attribution is by ANY salted candidate thread
+  // hash matching the diagnostic thread (discovery, not preselection), and
+  // only for captures NEW since the snapshot.
+  const diagHash = 'd'.repeat(64);
+  const capture = (callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash) => ({ callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash });
+  const before = [capture('c1', 'env-1', 'sess-1', 'thread-1'), capture('c2', 'env-2', 'sess-2', 'thread-2')];
+  // In the window: a late Child capture from a preceding turn's spawn (new
+  // nonce, foreign hashes) plus three diagnostic-thread captures, each
+  // matching through a DIFFERENT candidate field — any-candidate discovery,
+  // never a preselected field — plus the snapshot's own events unchanged.
+  const after = [
+    capture('c3', 'child-env', 'child-sess', 'child-thread'),
+    capture('c4', diagHash, null, null),
+    capture('c5', null, diagHash, null),
+    capture('c6', null, null, diagHash),
+    ...before,
+  ];
+  assert.equal(diagnosticCaptureAttribution(before, after, diagHash), 3, 'only new captures attributable to the diagnostic thread count');
+  assert.equal(diagnosticCaptureAttribution(before, after, 'f'.repeat(64)), 0, 'a foreign thread attributes nothing');
+  assert.equal(diagnosticCaptureAttribution(before, after, null), 0, 'a missing diagnostic hash attributes nothing (never matches null candidate fields)');
+  assert.equal(diagnosticCaptureAttribution(before, after, undefined), 0);
+  assert.equal(diagnosticCaptureAttribution(before, before, diagHash), 0, 'the snapshot itself is never re-attributed');
+  assert.equal(diagnosticCaptureAttribution([], [], diagHash), 0);
+  // Composed with the classifier: a foreign capture landing in the window
+  // leaves the delta at zero, so an errored direct call stays
+  // error-result-undetermined-origin and can never become capture-recorded.
+  const foreignOnlyDelta = diagnosticCaptureAttribution(before, [...before, capture('c3', 'child-env', 'child-sess', 'child-thread')], diagHash);
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: true, captureDelta: foreignOnlyDelta }), 'error-result-undetermined-origin');
+});
+
+test('turn capture attribution counts only the turn thread and its own spawned children', () => {
+  // The treatment/control turn windows are NOT global censuses: a Child
+  // spawned by the structured treatment can record its capture after the
+  // treatment turn went terminal, landing inside the CONTROL turn's window.
+  // Attribution is therefore by identity set — the turn's own thread plus
+  // the salted ids of the children spawned within that turn's window — so
+  // a late child-of-treatment capture never counts for the text-only
+  // control.
+  const capture = (callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash) => ({ callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash });
+  const treatmentThread = 't'.repeat(64);
+  const treatmentChild = 'c'.repeat(64);
+  const controlThread = 'k'.repeat(64);
+  const controlChild = 'w'.repeat(64);
+  const before = [capture('b1', 'env-root', 'sess-root', 'thread-root')];
+  // Inside the control window: a late child-of-TREATMENT capture (its turn
+  // already terminal), the control's own thread capture, and the control
+  // child's capture (matching through the session candidate).
+  const after = [
+    ...before,
+    capture('late-t', null, null, treatmentChild),
+    capture('own', null, null, controlThread),
+    capture('own-child', controlChild, null, null),
+  ];
+  const controlHashes = [controlThread, controlChild];
+  assert.equal(attributableCaptureCount(before, after, controlHashes), 2, 'the late treatment-child capture is not control evidence; the control thread and its own child are');
+  // The same late capture attributes to the TREATMENT turn's identity set.
+  const treatmentHashes = [treatmentThread, treatmentChild];
+  assert.equal(attributableCaptureCount(before, [...before, capture('late-t', null, null, treatmentChild)], treatmentHashes), 1);
+  // Any-candidate discovery: matching through the envelope or session field
+  // counts exactly like the inner thread field.
+  assert.equal(attributableCaptureCount([], [capture('x', controlThread, null, null)], controlHashes), 1);
+  assert.equal(attributableCaptureCount([], [capture('x', null, controlChild, null)], controlHashes), 1);
+  // No identity set, or only foreign hashes, attributes nothing.
+  assert.equal(attributableCaptureCount(before, after, []), 0);
+  assert.equal(attributableCaptureCount(before, after, [null, undefined]), 0);
+  assert.equal(attributableCaptureCount(before, [...before, capture('z', 'other', 'other', 'other')], controlHashes), 0);
+});
+
+test('a null-candidate capture in a quiet transport window preserves the reachability fact', () => {
+  // When the direct mcpServer/tool/call reaches capture_context and the
+  // Host supplies no thread identity, the handler-side record carries all
+  // NULL candidate hashes; per-thread attribution alone would drop exactly
+  // the handler-reachability fact the diagnostic exists to measure. In a
+  // QUIET window (a dedicated thread, both capture turns already terminal,
+  // the held turn not yet started — the driver starts no other conversation
+  // in the window) such a capture can only be the direct call's own record:
+  // a late Child capture always carries non-null thread hashes and is
+  // excluded, so the clause cannot misattribute.
+  const diagHash = 'd'.repeat(64);
+  const capture = (callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash) => ({ callNonce, envelopeThreadIdHash, innerSessionIdHash, threadHash });
+  const before = [capture('b1', 'env-1', 'sess-1', 'thread-1')];
+  const nullCapture = capture('null-1', null, null, null);
+  assert.equal(diagnosticCaptureAttribution(before, [...before, nullCapture], diagHash, { quietWindow: true }), 1, 'the null-capture reachability fact is preserved in a quiet window');
+  assert.equal(classifyTransportControlOutcome({ requestFailed: false, responseIsError: false, captureDelta: 1 }), 'capture-recorded');
+  // Outside the window (already in the snapshot): not attributed.
+  assert.equal(diagnosticCaptureAttribution([nullCapture], [nullCapture], diagHash, { quietWindow: true }), 0);
+  // A non-quiet window never attributes null captures: other conversations
+  // may be active, so the origin would be undetermined.
+  assert.equal(diagnosticCaptureAttribution(before, [...before, nullCapture], diagHash), 0);
+  // A late Child capture carries non-null foreign hashes and is excluded
+  // even in a quiet window; mixed windows attribute only the null capture.
+  const lateChild = capture('late', 'child-env', 'child-sess', 'child-thread');
+  assert.equal(diagnosticCaptureAttribution(before, [...before, lateChild], diagHash, { quietWindow: true }), 0);
+  assert.equal(diagnosticCaptureAttribution(before, [...before, nullCapture, lateChild], diagHash, { quietWindow: true }), 1);
+});
+
+test('the capture-census settle decision is bounded and fails closed on impossible input', () => {
+  // lastChangeMs is the elapsed time of the MOST RECENT count change;
+  // stability requires the census unchanged for the stability budget SINCE
+  // that change (lastChangeMs = 0 means unchanged since the wait started).
+  assert.equal(captureCensusSettled({ previousCount: 6, currentCount: 6, elapsedMs: CAPTURE_SETTLE_POLL_MS, lastChangeMs: 0 }), false, 'one poll without growth is not yet settled');
+  // A census unchanged since the wait began still needs the minimum
+  // observation window: stability alone may not settle before a FIRST late
+  // Child capture (>2 s after turn/completed) has had a chance to arrive —
+  // settling at 2 s would omit it from the treatment snapshot and exclude
+  // it from both windows (a false-negative authority qualification).
+  assert.equal(captureCensusSettled({ previousCount: 6, currentCount: 6, elapsedMs: 2_000, lastChangeMs: 0 }), false, 'stability alone does not settle before the minimum observation window');
+  assert.equal(captureCensusSettled({ previousCount: 6, currentCount: 6, elapsedMs: 3_000, lastChangeMs: 0 }), true, 'settled once the minimum observation window has elapsed');
+  // Still growing: not settled, even late in the budget.
+  assert.equal(captureCensusSettled({ previousCount: 6, currentCount: 7, elapsedMs: 5_000, lastChangeMs: 0 }), false);
+  // The total budget bounds the wait even for a growing census.
+  assert.equal(captureCensusSettled({ previousCount: 6, currentCount: 9, elapsedMs: 10_000, lastChangeMs: 0 }), true);
+  // Fail closed on malformed or impossible inputs: the durable log is
+  // append-only, so a shrinking census is a contract violation, never a
+  // settle; a last change ahead of the clock is equally impossible; and a
+  // minimum observation window beyond the budget is a misconfiguration.
+  for (const bad of [
+    { previousCount: -1, currentCount: 0, elapsedMs: 5_000, lastChangeMs: 0 },
+    { previousCount: 1, currentCount: 1.5, elapsedMs: 5_000, lastChangeMs: 0 },
+    { previousCount: 1, currentCount: 1, elapsedMs: -1, lastChangeMs: 0 },
+    { previousCount: 1, currentCount: 1, elapsedMs: 5_000, lastChangeMs: -1 },
+    { previousCount: 1, currentCount: 1, elapsedMs: 5_000, lastChangeMs: 6_000 },
+    { previousCount: 1, currentCount: 1, elapsedMs: 5_000, lastChangeMs: 0, minObservationMs: 20_000, budgetMs: 10_000 },
+    { previousCount: 1, currentCount: 1 },
+  ]) {
+    assert.throws(() => captureCensusSettled(bad), /settle|integer|budget/i, JSON.stringify(bad));
+  }
+  assert.throws(
+    () => captureCensusSettled({ previousCount: 3, currentCount: 2, elapsedMs: 5_000, lastChangeMs: 0 }),
+    /settle|non-decreasing|census/i,
+    'a shrinking census must throw, never settle',
+  );
+});
+
+test('the stability clock resets on every census growth', () => {
+  // The reviewer's exact scenario: a structured Root capture at 1.9 s, then
+  // its Child at 2.8 s. Stability is measured from the MOST RECENT count
+  // change — settling the window at 2.0 s (elapsed since the wait started)
+  // would close it before the Child arrives and falsely fail the authority
+  // gate; the window must instead settle ~2 s after the 1.9 s growth
+  // (≈3.9 s), admitting the 2.8 s capture.
+  const atGrowth = { previousCount: 6, currentCount: 7, elapsedMs: 1_900, lastChangeMs: 1_900 };
+  assert.equal(captureCensusSettled(atGrowth), false, 'the growth poll resets the clock and is never settled');
+  const justAfterGrowth = { previousCount: 7, currentCount: 7, elapsedMs: 2_000, lastChangeMs: 1_900 };
+  assert.equal(captureCensusSettled(justAfterGrowth), false, 'only 100 ms of stability has elapsed since the 1.9 s growth');
+  const settledAt = { previousCount: 7, currentCount: 7, elapsedMs: 3_900, lastChangeMs: 1_900 };
+  assert.equal(captureCensusSettled(settledAt), true, 'stability is reached ~2 s after the 1.9 s growth (≈3.9 s), admitting a capture at 2.8 s');
+  // A second growth at 2.8 s resets the clock again.
+  const secondGrowth = { previousCount: 7, currentCount: 8, elapsedMs: 2_800, lastChangeMs: 2_800 };
+  assert.equal(captureCensusSettled(secondGrowth), false);
+  const stableAfterSecond = { previousCount: 8, currentCount: 8, elapsedMs: 4_800, lastChangeMs: 2_800 };
+  assert.equal(captureCensusSettled(stableAfterSecond), true);
+});
+
+test('the refreshed treatment window admits a late child capture and the control window stays exclusive', () => {
+  // Driver-order mirror of the P2: the child capture lands AFTER the
+  // treatment turn's immediate post-turn snapshot but DURING/AFTER child
+  // discovery. The treatment window must therefore be computed from the
+  // REFRESHED post-discovery snapshot — the delta attributes it and the
+  // gate's slice (the Root/Child pairing input) contains it. The control
+  // turn's BEFORE baseline is that same refreshed snapshot, so the late
+  // capture is in its before-set and can never count for the control.
+  const capture = (callNonce, threadHash) => ({ callNonce, envelopeThreadIdHash: null, innerSessionIdHash: null, threadHash });
+  const treatmentThread = 't'.repeat(64);
+  const treatmentChild = 'c'.repeat(64);
+  const controlThread = 'k'.repeat(64);
+  const beforeTreatment = [capture('root', 'r'.repeat(64))];
+  const staleAfterTurn = [...beforeTreatment];
+  const refreshedAfterDiscovery = [...beforeTreatment, capture('child-late', treatmentChild)];
+  const treatmentHashes = [treatmentThread, treatmentChild];
+  // The stale window (the pre-fix slice source) misses the late child…
+  assert.equal(attributableCaptureCount(beforeTreatment, staleAfterTurn, treatmentHashes), 0);
+  assert.equal(staleAfterTurn.slice(beforeTreatment.length).length, 0);
+  // …while the refreshed window admits it for both the delta and the gate
+  // slice.
+  assert.equal(attributableCaptureCount(beforeTreatment, refreshedAfterDiscovery, treatmentHashes), 1);
+  const treatmentCaptureEvents = refreshedAfterDiscovery.slice(beforeTreatment.length);
+  assert.deepEqual(treatmentCaptureEvents, [capture('child-late', treatmentChild)]);
+  // Control exclusivity: its BEFORE baseline is the refreshed snapshot.
+  const controlAfter = [...refreshedAfterDiscovery, capture('control-own', controlThread)];
+  assert.equal(attributableCaptureCount(refreshedAfterDiscovery, controlAfter, [controlThread]), 1);
+  // Control-path refresh mirror: a control CHILD capture landing after the
+  // control turn went terminal is admitted to the control's durable count
+  // only when the control window is computed from a REFRESHED
+  // post-settlement snapshot (the driver settles after child discovery
+  // before snapshotting) — computed from a stale immediate snapshot it
+  // would be omitted, invalidating the treatment/control comparison.
+  const controlChild = 'w'.repeat(64);
+  const controlChildHashes = [controlThread, controlChild];
+  const staleAfterControl = [...refreshedAfterDiscovery, capture('control-own', controlThread)];
+  const refreshedAfterControl = [...staleAfterControl, capture('control-child-late', controlChild)];
+  assert.equal(attributableCaptureCount(refreshedAfterDiscovery, staleAfterControl, controlChildHashes), 1, 'the stale window misses the late control child');
+  assert.equal(attributableCaptureCount(refreshedAfterDiscovery, refreshedAfterControl, controlChildHashes), 2, 'the refreshed window admits the control thread and its late child');
+});
+
+test('the explicit interrupt is planned only after a durable held-call start', () => {
+  // The handoff discipline: turn/interrupt is sent ONLY once
+  // hold_for_lifecycle has durably entered the handler. Without the durable
+  // start the interrupt is NOT sent and the honest reason is recorded —
+  // an already-terminal turn rejects the interrupt, so interrupting without
+  // a held call would characterize a rejection, not cancellation.
+  assert.deepEqual(planTurnInterrupt({ heldCallObserved: true }), { send: true, trigger: 'durable-hold-started' });
+  assert.deepEqual(planTurnInterrupt({ heldCallObserved: false }), { send: false, trigger: 'no-durable-hold' });
+});
+
+test('the driver only characterizes the requalified codex-cli 0.155.1', () => {
+  // The 0.155.1-specific app-server characterization (skills/list, the
+  // structured {type:'skill'} input item, mcpServer/tool/call) is
+  // schema-pinned to the requalified host. On any other version those
+  // requests would degrade into ordinary resolution failures — the
+  // structured treatment would silently disappear and the run would keep
+  // emitting mislabeled observations — so the version check must fail
+  // closed before any app-server request is issued.
+  assert.equal(requireRequalifiedCodexVersion('codex-cli 0.155.1'), 'codex-cli 0.155.1');
+  for (const bad of ['codex-cli 0.154.0', 'codex-cli 0.156.0', 'codex-cli 0.155', 'codex-cli 0.155.1-beta', 'codex-cli unknown', 'codex 0.155.1', 'codex-cli ', '', 'codex-cli 0.155.1 ', undefined]) {
+    assert.throws(() => requireRequalifiedCodexVersion(bad), /unsupported|requalified/i, `expected a rejection for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('the reducer never maps an interrupted turn to a handler settlement', () => {
+  // The docs guarantee the interrupted turn RESULT, never propagation to an
+  // MCP handler: a lifecycle observation recording turnTerminalStatus
+  // 'interrupted' with no durable settlement must reduce with
+  // handlerSettlement 'not-observed' — never 'signal-abort' by inference.
+  const events = qualifiedEventSequence();
+  for (const record of events) {
+    if (record.event.kind === 'lifecycle-observed' && record.event.lifecycleCase === 'appServerTurnInterrupt') {
+      record.event.turnTerminalStatus = 'interrupted';
+      record.event.handlerSettlement = 'not-observed';
+      record.event.unknownReason = 'host-omitted-event';
+    }
+    // Remove the durable settlement so nothing but the turn status exists.
+    if (record.event.kind === 'hold-settled') record.event.settlement = 'transport-close';
+  }
+  const holdsBefore = events.filter((record) => record.event.kind === 'hold-settled').length;
+  const stripped = events.filter((record) => {
+    if (record.event.kind !== 'hold-settled') return true;
+    // Keep the sigkill settlement (its case recorded transport-close); strip
+    // only the app-server interrupt window's settlement.
+    const appServerStart = events.findIndex((entry) => entry.event.kind === 'phase-observed' && entry.event.phase === 'app-server-interrupt');
+    const pluginStart = events.findIndex((entry) => entry.event.kind === 'phase-observed' && entry.event.phase === 'plugin-tool-timeout');
+    const index = events.indexOf(record);
+    return !(index > appServerStart && index < pluginStart);
+  });
+  assert.equal(holdsBefore >= 1, true);
+  const result = reduceProbeEvents(stripped, { runNonce: HEX_NONCE });
+  assert.equal(result.lifecycle.appServerTurnInterrupt.turnTerminalStatus, 'interrupted');
+  assert.equal(result.lifecycle.appServerTurnInterrupt.handlerSettlement, 'not-observed');
+  assert.equal(result.lifecycle.appServerTurnInterrupt.unknownReason, 'host-omitted-event');
 });
 
 test('the turn/completed notification mapping reduces to the closed terminal statuses', () => {
@@ -1849,6 +2662,47 @@ test('notification overflow fails the bounded app-server session closed', async 
     // The redacted counter reflects the discarded frames (a getter over the
     // live session state, not a creation-time snapshot).
     assert.ok(session.notificationsOverflow >= 1, 'the overflow counter must count the discarded notifications');
+  } finally {
+    await session.terminate();
+  }
+});
+
+test('delta notifications are counted redacted without terminating the bounded session', async () => {
+  // The recorded 0.155.1 instrument artifact: model turns stream high-volume
+  // delta notifications (item/agentMessage/delta and friends), and retaining
+  // them overflowed the bounded retained cap mid-turn — terminating the
+  // session before the held-call characterization could observe anything.
+  // Deltas must be counted redacted and never retained: no reducer consumes
+  // them (the terminal wait reads only turn/completed), the terminal
+  // notification survives the delta stream, and the non-delta flood above
+  // still terminates.
+  const fakeServer = [
+    'let count = 0;',
+    'let done = false;',
+    'const timer = setInterval(() => {',
+    '  for (let i = 0; i < 32; i += 1) {',
+    "    count += 1;",
+    "    process.stdout.write(JSON.stringify({ method: 'item/agentMessage/delta', params: { n: count } }) + '\\n');",
+    '  }',
+    '  if (!done && count >= 640) {',
+    '    done = true;',
+    "    process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } }) + '\\n');",
+    '    clearInterval(timer);',
+    '  }',
+    '}, 10);',
+  ].join('\n');
+  const session = startAppServerSession({ command: process.execPath, args: ['-e', fakeServer], env: process.env, cwd: tmpdir() });
+  try {
+    let status = null;
+    const deadline = Date.now() + 15_000;
+    while (status === null && Date.now() < deadline) {
+      status = appServerTurnStatusFromNotifications(session.notifications, 'thread-1', 'turn-1');
+      if (status === null) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(status, 'completed', 'the terminal notification must survive the delta stream');
+    assert.ok(session.notificationsDeltaCount >= 640, `the delta counter must count the discarded deltas (observed ${session.notificationsDeltaCount})`);
+    assert.equal(session.notificationsOverflow, 0, 'a delta stream must not count as a terminating overflow');
+    assert.equal(session.notifications.some((notification) => notification.method === 'item/agentMessage/delta'), false, 'deltas are never retained');
   } finally {
     await session.terminate();
   }
