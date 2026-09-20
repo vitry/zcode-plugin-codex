@@ -84,9 +84,9 @@ function assertRescuePlacementContract(source) {
   assert.match(source, /Host placement[^\n]+only[^\n]+`wait_agent`/i);
   assert.match(source, /Companion execution[^\n]+only[^\n]+detached runner/i);
   assert.doesNotMatch(source, /private `execution` enum/);
-  assert.match(source, /"version":4[^\n]+"hostPlacement":"foreground"[^\n]+"companionExecution":"background"/);
-  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
-  assert.match(source, /version 3[^\n]+only[^\n]+read-compatible/i);
+  assert.match(source, /"version":5[^\n]+"hostPlacement":"foreground"[^\n]+"companionExecution":"background"[^\n]+"foregroundAdapter":"shell"/);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`foregroundAdapter`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
+  assert.match(source, /versions? 3 and 4[^\n]+only[^\n]+read-compatible/i);
   assert.match(source, /[Vv]ersions? 1 and 2[^\n]+removed/i);
   assert.match(source, /[Vv]ersions? 1 and 2[^\n]+rejected/i);
 }
@@ -322,9 +322,9 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
-  assert.match(source, /exact version-4 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
-  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 4/i);
-  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
+  assert.match(source, /exact version-5 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
+  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 5/i);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`foregroundAdapter`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
   assert.match(source, /omit[^\n]+absent[^\n]+(?:never|not)[^\n]+null/i);
 });
 
