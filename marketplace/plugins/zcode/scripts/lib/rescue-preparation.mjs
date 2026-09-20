@@ -15,7 +15,7 @@ import {
 import { PERMISSION_MODES } from './identity.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
-export const RESCUE_PREPARATION_VERSION = 4;
+export const RESCUE_PREPARATION_VERSION = 5;
 export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 // JSON can expand each one-byte task control character to a six-byte \uXXXX
 // escape. The fixed allowance covers the bounded continuation pair, options,
@@ -23,7 +23,12 @@ export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES * 6 + 4096;
 
 const RESCUE_PREPARATION_RECORD_VERSION = 3;
-const LEGACY_RESCUE_ENVELOPE_VERSION = 3;
+const LEGACY_RESCUE_ENVELOPE_VERSIONS = new Set([3, 4]);
+const FOREGROUND_ADAPTERS = new Set(['shell', 'mcp']);
+const V5_OPTION_KEYS = new Set([
+  'companionExecution', 'effort', 'foregroundAdapter',
+  'hostPlacement', 'model', 'resume',
+]);
 const LEGACY_PREPARATION_RECORD_VERSION = 1;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
@@ -97,20 +102,31 @@ export async function readRescuePreparation(stream) {
 /** @param {unknown} value */
 export function validateRescuePreparation(value) {
   if (!plain(value)
-    || ![LEGACY_RESCUE_ENVELOPE_VERSION, RESCUE_PREPARATION_VERSION].includes(value.version)
+    || (![...LEGACY_RESCUE_ENVELOPE_VERSIONS, RESCUE_PREPARATION_VERSION].includes(value.version))
     || !sameKeys(value, ENVELOPE_KEYS)
     || !SOURCES.has(value.source)
     || typeof value.task !== 'string' || value.task.trim().length === 0
     || Buffer.byteLength(value.task) > RESCUE_TASK_MAX_BYTES
     || !plain(value.options)) throw invalidPreparation();
-  const optionKeys = value.version === RESCUE_PREPARATION_VERSION ? V4_OPTION_KEYS : V3_OPTION_KEYS;
+  const optionKeys = value.version === RESCUE_PREPARATION_VERSION ? V5_OPTION_KEYS
+    : value.version === 4 ? V4_OPTION_KEYS : V3_OPTION_KEYS;
   for (const key of Object.keys(value.options)) {
     if (!optionKeys.has(key) || value.options[key] === null) throw invalidPreparation();
   }
-  if (value.version === RESCUE_PREPARATION_VERSION) {
+  if (value.version !== 3) {
+    // The split placement dialect (v4 legacy read compatibility and v5): the
+    // Host placement and Companion execution are independent dimensions and
+    // both are required in every envelope.
     if (value.options.hostPlacement === undefined || value.options.companionExecution === undefined
       || !PLACEMENTS.has(value.options.hostPlacement) || !PLACEMENTS.has(value.options.companionExecution)
       || (value.options.hostPlacement === 'background' && value.options.companionExecution === 'background')) {
+      throw invalidPreparation();
+    }
+    // Version 5 binds the preparation to one exact private wait adapter; the
+    // legacy versions predate adapters and imply shell at consume time.
+    if (value.version === RESCUE_PREPARATION_VERSION
+      && (value.options.foregroundAdapter === undefined
+        || !FOREGROUND_ADAPTERS.has(value.options.foregroundAdapter))) {
       throw invalidPreparation();
     }
   } else if (value.options.execution !== undefined && !EXECUTIONS.has(value.options.execution)) {
@@ -132,6 +148,21 @@ export function validateRescuePreparation(value) {
     options: { ...value.options },
     continuationTarget,
   };
+}
+
+/**
+ * Derive the private transport adapter one validated preparation envelope is
+ * bound to: version 5 carries the exact `foregroundAdapter` selector, and
+ * every legacy version predates adapters and therefore implies the canonical
+ * shell. Unvalidated input is refused instead of silently deriving shell.
+ * @param {unknown} envelope
+ * @returns {'shell'|'mcp'}
+ */
+export function rescuePreparationForegroundAdapter(envelope) {
+  const validated = validateRescuePreparation(envelope);
+  return validated.version === RESCUE_PREPARATION_VERSION
+    ? validated.options.foregroundAdapter
+    : 'shell';
 }
 
 /** @param {string} prompt */
@@ -304,6 +335,18 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation executor does not match.',
           );
           throw preparationError('RESCUE_PREPARATION_CONSUMED', 'The Rescue preparation has already been consumed.');
+        }
+        // Transport revalidation inside the lock: a caller whose expected wait
+        // adapter differs from the prepared envelope's bound adapter (exact
+        // for v5, implied shell for legacy versions) never releases the
+        // preparation — the refusal is non-consuming and precedes every
+        // reservation, binding mutation, and provider call.
+        if (input.expectedForegroundAdapter !== undefined
+          && input.expectedForegroundAdapter !== rescuePreparationForegroundAdapter(record.envelope)) {
+          throw preparationError(
+            'RESCUE_FOREGROUND_ADAPTER_MISMATCH',
+            'The Rescue preparation foreground adapter does not match this transport.',
+          );
         }
         if (kind !== 'legacy' && record.requiredExecutorAgentId !== null
           && record.requiredExecutorAgentId !== input.executorAgentId) {
@@ -622,7 +665,8 @@ function validateConsumeInput(input) {
   validateTurnInput(input);
   if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)
     || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function'
-    || input.beforeConsume !== undefined && typeof input.beforeConsume !== 'function') {
+    || input.beforeConsume !== undefined && typeof input.beforeConsume !== 'function'
+    || input.expectedForegroundAdapter !== undefined && !FOREGROUND_ADAPTERS.has(input.expectedForegroundAdapter)) {
     throw invalidPreparation();
   }
   timestamp(input.now);
