@@ -1026,8 +1026,8 @@ async function recordParentSession(context, sessionId) {
   await recordSession(context.dataRoot, { cwd: context.workspace, session_id: sessionId, source: 'startup' });
 }
 
-/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input */
-async function prepareDirectRescueChild(context, input) {
+/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input @param {Record<string,unknown>} [envelope] Optional private preparation envelope override (defaults to the canonical split v4 fresh fixture). */
+async function prepareDirectRescueChild(context, input, envelope) {
   const parent = { sessionId: input.parentSessionId, turnId: input.parentTurnId, workspace: context.workspace, permissionMode: 'workspace-write', prompt: input.prompt };
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   // The REAL lifecycle order: SessionStart records the epoch anchor BEFORE the
@@ -1044,7 +1044,7 @@ async function prepareDirectRescueChild(context, input) {
     agent_type: 'zcode-rescue',
   }, active);
   context.env.FAKE_CODEX_THREAD_JSON = JSON.stringify(rawCodexChild({ id: input.childId, parentThreadId: input.parentSessionId, cwd: await realpath(context.workspace) }));
-  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 4, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`);
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify(envelope ?? { version: 4, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`);
   assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId }, input: preparation, dependencies: legacyPreparationDependencies }), legacyPreparedRoute);
   return { callerContext, parent };
 }
@@ -4995,6 +4995,59 @@ test('bound Rescue choice canonicalizes the persisted caller workspace before re
   assert.equal(undecided.code, 3); assert.equal(JSON.parse(undecided.stdout).type, 'needs-choice'); assert.equal(undecided.internal, '');
   const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
   const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(resumed.job.status, 'succeeded');
+  assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
+});
+
+test('an mcp-adapter preparation refuses the shell transport before reservation, session send, or stop', async () => {
+  const context = await fixture(); const record = join(context.directory, 'adapter-mismatch.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'adapter-mismatch-parent'; const childId = 'adapter-mismatch-child'; const childTurnId = 'adapter-mismatch-child-turn';
+  // The v5 envelope binds the preparation to the private MCP adapter before
+  // any child exists; preparation itself stays transport-neutral.
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'adapter-mismatch-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait reject the shell transport',
+  }, {
+    version: 5, source: 'explicit', task: 'reject the shell transport',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'mcp', resume: 'fresh' },
+    continuationTarget: null,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: await realpath(context.workspace) });
+  const preparedDirectory = join(storage.directory, 'invocations', 'prepared');
+  const [preparedName] = await readdir(preparedDirectory);
+  const preparationPath = join(preparedDirectory, preparedName);
+  const before = await readFile(preparationPath);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+  }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(preparationPath), before, 'the adapter-mismatched preparation is never consumed');
+  assert.equal(await readFile(record, 'utf8'), '', 'no provider session send or stop is attempted');
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), [], 'no job is reserved');
+});
+
+test('v5 shell preparation keeps the canonical initial and choice replay path', async () => {
+  const context = await fixture(); const parentSessionId = 'v5-shell-choice-parent'; const childId = 'v5-shell-choice-child'; const childTurnId = 'v5-shell-choice-turn';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'v5-shell-choice-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish v5 shell session',
+  }, {
+    version: 5, source: 'explicit', task: 'establish v5 shell session',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' },
+    continuationTarget: null,
+  });
+  const initial = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(initial.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'v5-shell-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue v5 shell session' });
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 5, source: 'explicit', task: 'continue v5 shell session', options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell' }, continuationTarget: null })}\n`);
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation, dependencies: reactivationDependencies(childId) });
+  const undecided = await run(process.execPath, [rescueLauncher, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(undecided.code, 3); assert.equal(JSON.parse(undecided.stdout).type, 'needs-choice');
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
   assert.equal(resumed.job.status, 'succeeded');
   assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
 });

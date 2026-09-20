@@ -22,7 +22,7 @@ import { createExistingManagedZCodeClient, createManagedZCodeClient } from './li
 import { readZCodeCliRuntimeModel } from './lib/zcode-runtime-config.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
-import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
+import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES, RESCUE_PREPARATION_VERSION } from './lib/rescue-preparation.mjs';
 import { hostOwnedCancelledPatch, hostOwnedStopIntentPatch, rescueBindingAuthorityView, STOP_CAUSES, validHostLifecycleRecord, validStopIntent } from './lib/rescue-binding.mjs';
 import { reconcileRescueChildForPreparation } from './lib/rescue-child-reconciliation.mjs';
 import { createRescueLifecycleReconciler } from './lib/rescue-lifecycle.mjs';
@@ -812,7 +812,7 @@ function managementReconcileError(message) {
   return new PluginError('RESCUE_MANAGEMENT_RECONCILE_FAILED', message, { category: 'state', remedy: 'Remote stop and reread stay owned by the cancellation election and owner recovery.' });
 }
 
-/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},expectedForegroundAdapter?:'shell'|'mcp',dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot, entryPath: invocationEntryPath() });
   const [entry, command, choice, ...extra] = argv;
@@ -820,6 +820,13 @@ export async function runDirectInvocation(argv, runtime = {}) {
   const prepareInvocation = entry === 'prepare' && command === 'rescue' && choice === undefined && extra.length === 0;
   const preparedInvocation = entry === 'invoke-prepared' && command === 'rescue' && choice === undefined && extra.length === 0;
   if (!statusInvocation && !prepareInvocation && !preparedInvocation && (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length)) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+  // The private wait-adapter expectation: the shell CLI supplies `shell` and
+  // the later MCP handlers supply `mcp` (Task 4). It is required transport
+  // state for the Rescue initial and choice consume paths and is revalidated
+  // inside the locked preparation/pending consume operations; every other
+  // entry ignores it.
+  const expectedForegroundAdapter = runtime.expectedForegroundAdapter ?? 'shell';
+  if (expectedForegroundAdapter !== 'shell' && expectedForegroundAdapter !== 'mcp') throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
   const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
   const identity = createIdentityStore({ dataRoot });
   if (prepareInvocation) {
@@ -917,7 +924,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
         expectedBindingUpdatedAt: exact.bindingUpdatedAt, expectedResumeSessionId: exact.zcodeSessionId,
         ...(migrationProof ? { migrationProof } : {}) };
     };
-    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, beforeConsume,
+    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, expectedForegroundAdapter, beforeConsume,
       ...(recoveredWithoutExecutor ? { activationProof: { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') } } : {}) }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
@@ -927,13 +934,13 @@ export async function runDirectInvocation(argv, runtime = {}) {
       ), executor.parentSessionId, executor.agentId);
       let activationProof = executor ? preparedActivationProof(host, executor) : null;
       try {
-        if (activationProof) prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof, beforeConsume });
+        if (activationProof) prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, expectedForegroundAdapter, activationProof, beforeConsume });
         else throw error;
       } catch (proofError) {
         if (!(proofError instanceof PluginError) || proofError.code !== 'RESCUE_PREPARATION_MISMATCH') throw proofError;
         if (executor?.active) {
           activationProof = { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') };
-          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof, beforeConsume }); }
+          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, expectedForegroundAdapter, activationProof, beforeConsume }); }
           catch (residentError) {
             if (!(residentError instanceof PluginError) || residentError.code !== 'RESCUE_PREPARATION_MISMATCH') throw residentError;
           }
@@ -1062,7 +1069,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     const consume = () => invocations.consumePending({ sessionId, workspace: invocationWorkspace, command, choice,
       ...(executorAgentId === undefined ? {} : { executorAgentId }), ...(command === 'rescue' ? {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
-        originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace,
+        originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace, expectedForegroundAdapter,
       } : {}) });
     if (jobCreator) await runtime.dependencies?.testOnlyBeforePendingInvocationConsume?.(caller);
     invocation = jobCreator
@@ -1071,7 +1078,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     executionCaller = invocation.caller;
     if (command === 'rescue' && invocation.authority) throw new PluginError('PENDING_INVOCATION_INVALID', 'The pending Rescue invocation is invalid.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
     if (command === 'rescue' && choice === 'fresh') {
-      await authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation });
+      await authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation, expectedForegroundAdapter });
       return { type: 'parent-replan', command: 'rescue' };
     }
     if (command === 'rescue' && invocation.route?.routeKind !== 'bound') {
@@ -1209,8 +1216,8 @@ async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor
     command: 'rescue', source, executorAgentId, spec: { argv }, ...(envelope === undefined ? {} : { envelope }), ...route });
 }
 
-/** @param {{dataRoot:string,caller:any,executorAgentId:string|undefined,invocation:any}} input */
-async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation }) {
+/** @param {{dataRoot:string,caller:any,executorAgentId:string|undefined,invocation:any,expectedForegroundAdapter:'shell'|'mcp'}} input */
+async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation, expectedForegroundAdapter }) {
   if (!executorAgentId || invocation?.source === undefined) throw new PluginError(
     'PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.',
     { category: 'authorization', remedy: 'Repeat the original command in this Codex thread.' },
@@ -1219,17 +1226,20 @@ async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, 
   const options = { ...parsed.options }; delete options.resume;
   // The tombstone must equal the Root re-prepare envelope minus resume. The
   // needs-choice receipt carries the true validated prepared envelope — the
-  // Host placement dimension never crosses argv — translated to the split v4
-  // shape when the consumed preparation spoke the legacy v3 coupled dialect:
-  // post-upgrade Root re-prepares with the independent pair, so a v3 tombstone
-  // could never match. The argv reconstruction remains only as a fallback for
-  // receipts written before the receipt carried an envelope at all.
+  // Host placement dimension never crosses argv — translated to the current
+  // v5 split shape (with the implied canonical shell adapter) when the
+  // consumed preparation spoke a legacy dialect: post-upgrade Root re-prepares
+  // with the independent pair and the exact v5 adapter, so a legacy tombstone
+  // could never match. A v5 receipt passes through unchanged, preserving its
+  // exact adapter in the pending-fresh state. The argv reconstruction remains
+  // only as a fallback for receipts written before the receipt carried an
+  // envelope at all — that legacy state predates adapters and emits shell.
   const envelope = invocation.envelope !== undefined ? tombstoneEnvelopeFromReceipt(invocation.envelope)
     : (() => {
       const { execution, ...rest } = options;
       return {
-        version: 4, source: invocation.source, task: parsed.positionals.join(' '),
-        options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', ...rest },
+        version: RESCUE_PREPARATION_VERSION, source: invocation.source, task: parsed.positionals.join(' '),
+        options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', foregroundAdapter: 'shell', ...rest },
         continuationTarget: null,
       };
     })();
@@ -1243,43 +1253,46 @@ async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, 
       originatingTurnId: invocation.caller.turnId,
     },
   });
-  await preparations.consume({ ...caller, executorAgentId });
+  await preparations.consume({ ...caller, executorAgentId, expectedForegroundAdapter });
 }
 
 /**
  * Translate one receipt envelope into the tombstone shape the post-upgrade
- * Root re-prepare emits. A v4 envelope passes through unchanged; the legacy v3
- * coupled dialect maps onto its split v4 equivalent — the coupled execution
- * enum becomes the Companion execution beside a foreground Host placement,
- * the only authorized pair for coupled background. A v3 tombstone could never
- * match a v4 re-prepare (exactPendingFreshEnvelope compares versions), so the
- * translation is what keeps the cross-upgrade fresh-replan window working.
+ * Root re-prepare emits. A v5 envelope passes through unchanged, preserving
+ * its exact `foregroundAdapter` in the pending-fresh state; the legacy v3/v4
+ * dialects translate onto their v5 equivalent with the implied canonical
+ * shell adapter — the coupled v3 execution enum becomes the Companion
+ * execution beside a foreground Host placement, the only authorized pair for
+ * coupled background. A legacy tombstone could never match a v5 re-prepare
+ * (exactPendingFreshEnvelope compares versions), so the translation is what
+ * keeps the cross-upgrade fresh-replan window working.
  * @param {{version:number,source:string,task:string,options:Record<string,string>,continuationTarget:any}} envelope
  * @returns {{version:number,source:string,task:string,options:Record<string,string>,continuationTarget:any}}
  */
 function tombstoneEnvelopeFromReceipt(envelope) {
-  if (envelope.version === 4) return { ...envelope };
+  if (envelope.version === RESCUE_PREPARATION_VERSION) return { ...envelope };
   const { execution, ...rest } = envelope.options;
   return {
-    version: 4, source: envelope.source, task: envelope.task,
-    options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', ...rest },
+    version: RESCUE_PREPARATION_VERSION, source: envelope.source, task: envelope.task,
+    options: { hostPlacement: 'foreground', companionExecution: execution ?? 'foreground', foregroundAdapter: 'shell', ...rest },
     continuationTarget: envelope.continuationTarget,
   };
 }
 
 /**
- * Restore the private Host placement for one replayed Rescue choice. Version 4
- * receipts carry the faithful per-dimension restore. Version 3 keeps its
- * historical coupled meaning (spec v3 compatibility): the replay EXECUTES the
- * historical semantics directly without re-emitting an envelope, so coupled
- * background stays Host background — unlike the fresh-path tombstone, which
- * must be a validator-acceptable v4 envelope and therefore translates to the
- * split pair. Receipts without an envelope keep the argv-coupled fallback.
+ * Restore the private Host placement for one replayed Rescue choice. Versions
+ * 4 and 5 receipts carry the faithful per-dimension restore. Version 3 keeps
+ * its historical coupled meaning (spec v3 compatibility): the replay EXECUTES
+ * the historical semantics directly without re-emitting an envelope, so
+ * coupled background stays Host background — unlike the fresh-path tombstone,
+ * which must be a validator-acceptable v5 envelope and therefore translates
+ * to the split pair. Receipts without an envelope keep the argv-coupled
+ * fallback.
  * @param {{version:number,options:{hostPlacement?:string,execution?:string}}} envelope
  * @returns {'foreground'|'background'}
  */
 function replayHostPlacementFromReceipt(envelope) {
-  if (envelope.version === 4) return /** @type {'foreground'|'background'} */ (envelope.options.hostPlacement);
+  if (envelope.version !== 3) return /** @type {'foreground'|'background'} */ (envelope.options.hostPlacement);
   return envelope.options.execution === 'background' ? 'background' : 'foreground';
 }
 
@@ -1316,16 +1329,18 @@ async function afterPreparedBindingResolution(dependencies) {
  * argv — the internal `--background` switch is added only for Companion
  * background, and the user-facing public flags never cross this boundary.
  * The Host placement dimension travels separately as lifecycle evidence and
- * is never converted into argv. Version 3 keeps the historical coupled
- * fallback where one `execution` enum chose both dimensions.
+ * is never converted into argv. Versions 4 and 5 read the independent split
+ * pair; version 3 keeps the historical coupled fallback where one `execution`
+ * enum chose both dimensions.
  * @param {{version:number,task:string,options:{hostPlacement?:'foreground'|'background',companionExecution?:'foreground'|'background',execution?:'foreground'|'background',resume?:string,model?:string,effort?:string}}} envelope
  * @returns {{argv:string[],hostPlacement:'foreground'|'background'}}
  */
 function rescueInvocationFromPreparation(envelope) {
-  const companionExecution = envelope.version === 4
+  const splitPlacement = envelope.version !== 3;
+  const companionExecution = splitPlacement
     ? envelope.options.companionExecution
     : envelope.options.execution ?? 'foreground';
-  const hostPlacement = envelope.version === 4
+  const hostPlacement = splitPlacement
     ? /** @type {'foreground'|'background'} */ (envelope.options.hostPlacement)
     : companionExecution === 'background' ? 'background' : 'foreground';
   const argv = ['rescue'];
@@ -2714,6 +2729,9 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
     const authorization = setup || roleStatus || direct || rescueRunner ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
     const foregroundProgress = worker || rescueRunner ? {} : {
       ...(entry === 'prepare' ? { input: process.stdin, preparationTransport: { writeReady: (/** @type {string} */ line) => process.stdout.write(line) } } : {}),
+      // The canonical shell transport binds every direct Rescue entry to the
+      // shell adapter expectation, which the locked consume paths revalidate.
+      ...(direct && argv[1] === 'rescue' ? { expectedForegroundAdapter: 'shell' } : {}),
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
       ...(signalController ? { signal: signalController.signal } : {}),
