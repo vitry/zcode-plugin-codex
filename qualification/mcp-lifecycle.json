@@ -63,5 +63,9 @@
       "release-blocked"
     ]
   },
-  "selectedStrategies": null
+  "selectedStrategies": {
+    "explicitInterrupt": "release-blocked",
+    "hostLoss": "durable-supervision",
+    "hostTimeout": "server-deadline"
+  }
 }
