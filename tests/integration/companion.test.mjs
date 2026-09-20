@@ -16,6 +16,7 @@ import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
+import { formatDirectInvocationError, formatDirectInvocationSuccess } from '../../scripts/lib/direct-invocation-result.mjs';
 import { atomicWriteJson, withFileLock } from '../../scripts/lib/fs.mjs';
 import { spawnRescueRunner } from '../../scripts/lib/rescue-runner.mjs';
 import { createJobController, ownerIdForSession, resumableJobIndicator } from '../../scripts/lib/job-control.mjs';
@@ -7718,4 +7719,36 @@ test('role-status stays read-only advisory over a stuck Rescue child', async (t)
   assert.equal(after.executor.active, true);
   assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
   void session;
+});
+
+test('the shared result mapping renders the real CLI stdout bytes for every direct transport outcome', async () => {
+  const context = await fixture();
+  const review = await companion(context, ['review']);
+  assert.equal(review.code, 0, `${review.stderr}${review.stdout}`);
+  const reviewFormatted = formatDirectInvocationSuccess(JSON.parse(review.internal));
+  assert.equal(review.stdout, reviewFormatted.text);
+  assert.equal(reviewFormatted.outcome, 'terminal');
+  assert.equal(reviewFormatted.exitCode, 0);
+
+  const reserved = await companion(context, ['review', '--background']);
+  assert.equal(reserved.code, 0, reserved.stderr);
+  const queuedFormatted = formatDirectInvocationSuccess(JSON.parse(reserved.internal));
+  assert.equal(reserved.stdout, queuedFormatted.text);
+  assert.equal(queuedFormatted.outcome, 'terminal');
+
+  await companion(context, ['rescue', '--fresh', 'first task']);
+  const undecided = await companion(context, ['rescue', 'next task']);
+  const choiceFormatted = formatDirectInvocationSuccess(JSON.parse(undecided.stdout));
+  assert.equal(undecided.code, choiceFormatted.exitCode);
+  assert.equal(undecided.stdout, choiceFormatted.text);
+  assert.equal(choiceFormatted.outcome, 'needs-choice');
+  assert.equal(choiceFormatted.exitCode, 3);
+
+  const failed = await companion(context, ['unknown-command']);
+  const envelope = JSON.parse(failed.internal);
+  const errorFormatted = formatDirectInvocationError(new PluginError(envelope.error.code, envelope.error.message, { category: envelope.error.category, remedy: envelope.error.remedy }));
+  assert.equal(failed.code, errorFormatted.exitCode);
+  assert.equal(failed.stdout, errorFormatted.text);
+  assert.equal(errorFormatted.outcome, 'error');
+  assert.equal(errorFormatted.isError, true);
 });

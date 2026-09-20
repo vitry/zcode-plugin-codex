@@ -29,7 +29,8 @@ import { createRescueLifecycleReconciler } from './lib/rescue-lifecycle.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, extractFinalResult, publishSuccessfulResultWithLockHeld, readResultArtifact, ResumeFailureSettlementError } from './lib/review.mjs';
 import { cancelJob as cancelRecoveryJob, completeEndedJob, endedRemoteEvidence, failJob as failRecoveryJob, reconcileOwnedJobs, runnerCleanupDuty, scavengeWritableJobs, unavailableOrReadableEvidence, withWorkerLease } from './lib/recovery.mjs';
-import { errorEnvelope, renderOutput } from './lib/render.mjs';
+import { errorEnvelope } from './lib/render.mjs';
+import { formatDirectInvocationError, formatDirectInvocationSuccess } from './lib/direct-invocation-result.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, readQueuedRescueMigrationRollback, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { RESCUE_RUNNER_SUBCOMMAND, spawnRescueRunner } from './lib/rescue-runner.mjs';
@@ -2739,27 +2740,32 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
     output = direct ? await runDirectInvocation(argv, foregroundProgress) : await runCompanion(argv, { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
     if (!setup && !roleStatus && !direct && !rescueRunner && !worker) await writeInternalResponse(output);
     if (!worker && !rescueRunner) {
-      const rendered = renderOutput(output);
+      const formatted = formatDirectInvocationSuccess(output);
       if (/** @type {any} */ (output)?.type === 'background-terminal' && /** @type {any} */ (output)?.job?.id && /** @type {any} */ (output)?.noticeTarget) {
         // OWNERSHIP-AWARE single-notice delivery (design 308-317): the durable
         // winner is already published by the completion path above, the claim
         // decides single ownership, and the acknowledgement happens only after
         // the notice is CONFIRMED flushed to stdout.
-        await deliverCompletionNotice(output, rendered);
+        await deliverCompletionNotice(output, formatted.text);
       } else {
-        process.stdout.write(rendered);
+        process.stdout.write(formatted.text);
       }
+      if (formatted.exitCode !== 0) process.exitCode = formatted.exitCode;
     }
-    if (output?.type === 'needs-choice') process.exitCode = 3;
   }
   catch (error) {
+    // The domain interruption settles through the shared formatter but keeps
+    // its own delivery path: empty stdout, bounded stderr, signal exit code.
+    // `outcome` cannot discriminate it (interruptions classify as `error`),
+    // so the branch keeps its explicit PluginError condition.
     if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED') {
-      const signal = typeof error.details.signal === 'string' ? error.details.signal : 'signal';
-      process.stderr.write(`Interrupted by ${signal}.\n`);
-      if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
+      const formatted = formatDirectInvocationError(error);
+      process.stderr.write(formatted.stderr);
+      if (formatted.exitCode !== 0) process.exitCode = formatted.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = !['setup', 'role-status', 'prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry) && !rescueRunner && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    const formatted = formatDirectInvocationError(error);
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = !['setup', 'role-status', 'prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry) && !rescueRunner && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(formatted.text); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = formatted.exitCode;
   }
   finally { signalController?.cleanup(); }
 }
