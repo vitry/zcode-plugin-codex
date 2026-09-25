@@ -1990,6 +1990,93 @@ test('direct evidence recovers uncommitted records on the next append without br
   });
 });
 
+// --- Codex gate re-review round 5: DEBUG_DIRECT_PROBE stderr redaction is a
+// --- class — every debug print in every probe process emits fixed codes and
+// --- bounded counts only, never raw evidence content. Regressions FIRST.
+
+test('direct evidence recovery debug prints counts only, never raw uncommitted line text', async () => {
+  await withDirectProbeRun('zcode-direct-observer-', async (run) => {
+    const nonce = directRunNonce();
+    const writers = makeDirectProbeWriters(run, nonce);
+    const label = directLabel();
+    await writers.driverAppend({ kind: 'request-sent', probeLabel: label, tool: 'hold_direct', state: 'sent' });
+    // A simulated crash left a torn, malformed line in the log whose raw
+    // text carries sensitive values (a path-shaped string and a token).
+    const sensitive = `SECRET-HOST-RAW sensitive-path=${run}/events.jsonl token=raw-host-value`;
+    await writeFile(join(run, 'events.jsonl'), 'not-json-at-all ' + sensitive + '\n', { flag: 'a', mode: 0o600 });
+    const previousDebug = process.env.DEBUG_DIRECT_PROBE;
+    process.env.DEBUG_DIRECT_PROBE = '1';
+    const debugLines = [];
+    const originalConsoleError = console.error;
+    console.error = (...args) => { debugLines.push(args.map((entry) => String(entry)).join(' ')); };
+    try {
+      // The next append recovers: the torn line moves to the sidecar.
+      await writers.handlerAppend({ kind: 'handler-entered', probeLabel: directLabel(), callNonce: directCallNonce(), serverInstanceHash: directHash('fixture-instance') });
+    } finally {
+      console.error = originalConsoleError;
+      if (previousDebug === undefined) delete process.env.DEBUG_DIRECT_PROBE;
+      else process.env.DEBUG_DIRECT_PROBE = previousDebug;
+    }
+    const debugText = debugLines.join('\n');
+    // The debug output may carry NO raw evidence content: not the sensitive
+    // line fragment, not the outcome values, not any path.
+    assert.equal(debugText.includes('SECRET-HOST-RAW'), false, 'raw uncommitted line text never reaches the recovery debug output');
+    assert.equal(debugText.includes('not-json-at-all'), false, 'malformed line fragments never reach the recovery debug output');
+    assert.equal(debugText.includes(run), false, 'no run path reaches the recovery debug output');
+    assert.equal(debugText.includes('token=raw-host-value'), false, 'no raw token reaches the recovery debug output');
+    // The redacted diagnostics still exist: fixed code plus bounded counts.
+    assert.equal(debugText.includes('DEBUG-REC36'), true, 'the recovery debug line is present under the flag');
+    assert.equal(debugText.includes('malformed=1'), true, 'the malformed count is printed');
+    assert.equal(debugText.includes('uncommitted=1'), true, 'the uncommitted count is printed');
+    // The raw bytes themselves were preserved AS EVIDENCE in the private
+    // sidecar — the redaction governs stderr, never the durable corpus.
+    const sidecar = await readFile(join(run, 'events-uncommitted.jsonl'), 'utf8');
+    assert.ok(sidecar.includes('SECRET-HOST-RAW'), 'the sidecar preserves the torn raw bytes as durable evidence');
+  });
+});
+
+test('the server debug diagnostics print closed codes only, never raw stacks or paths', async () => {
+  await withDirectProbeRun('zcode-direct-server-debug-', async (run) => {
+    const nonce = directRunNonce();
+    const { client } = await connectDirectProbeClient(run, nonce);
+    // A first successful call creates the run files; then every run FILE
+    // loses access, so the next handler-entered append fails with EACCES
+    // naming `run/events.jsonl`. With DEBUG_DIRECT_PROBE set, the
+    // tool-error diagnostic must print ONLY the closed error code — no raw
+    // stack, error string, or path (stderr is commonly retained).
+    const warmup = await callCaptureDirect(client, directLabel());
+    assert.equal(warmup.isError, undefined, 'the warmup call succeeds');
+    for (const entry of fs.readdirSync(run)) {
+      const entryPath = join(run, entry);
+      if (fs.statSync(entryPath).isFile()) fs.chmodSync(entryPath, 0o000);
+    }
+    const previousDebug = process.env.DEBUG_DIRECT_PROBE;
+    process.env.DEBUG_DIRECT_PROBE = '1';
+    const debugLines = [];
+    const originalConsoleError = console.error;
+    console.error = (...args) => { debugLines.push(args.map((entry) => String(entry)).join(' ')); };
+    try {
+      const result = await callCaptureDirect(client, directLabel());
+      assert.equal(result.isError, true, 'the failing append surfaces as a tool error');
+    } finally {
+      console.error = originalConsoleError;
+      if (previousDebug === undefined) delete process.env.DEBUG_DIRECT_PROBE;
+      else process.env.DEBUG_DIRECT_PROBE = previousDebug;
+      for (const entry of fs.readdirSync(run)) {
+        const entryPath = join(run, entry);
+        if (fs.statSync(entryPath).isFile()) fs.chmodSync(entryPath, 0o600);
+      }
+    }
+    const debugText = debugLines.join('\n');
+    assert.equal(debugText.includes(run), false, 'no run path reaches the tool-error diagnostic');
+    assert.equal(debugText.includes('EACCES'), false, 'no raw filesystem error text reaches the diagnostic');
+    assert.equal(debugText.includes('permission denied'), false, 'no raw errno message reaches the diagnostic');
+    assert.equal(/\bat \b/.test(debugText), false, 'no raw stack frames reach the diagnostic');
+    assert.ok(debugLines.some((entry) => /^DEBUG-TOOL-ERR \S+$/.test(entry)), 'the diagnostic carries exactly one closed error token');
+    await client.close();
+  });
+});
+
 test('direct evidence a new server instance cannot rebase onto a rolled back head', async () => {
   await withDirectProbeRun('zcode-direct-observer-', async (run) => {
     const nonce = directRunNonce();
@@ -7496,7 +7583,7 @@ function directFakeAppServerScript(scenario, serverModulePath, intermediatePath)
   return `#!/usr/bin/env node
 // Generated fake app-server fixture (tests/direct-mcp-probe.test.mjs) — disposable, never committed.
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const SCENARIO = ${JSON.stringify(scenario)};
@@ -7564,7 +7651,33 @@ const lockLogOnShutdown = () => {
   }
   process.exit(0);
 };
-process.stdin.on('end', lockLogOnShutdown);
+process.stdin.on('end', () => {
+  if (SCENARIO === 'lifecycle-disconnect-propagate') {
+    // The host survives the client disconnect (long enough for the driver's
+    // verification) and DETERMINISTICALLY propagates it: close the probe
+    // server's stdin so its held worker settles connection-closed inside
+    // the case window, then exit after a short grace.
+    if (serverChild) serverChild.stdin.end();
+    setTimeout(() => process.exit(0), 2000);
+    return;
+  }
+  if (SCENARIO === 'lifecycle-disconnect-silent') {
+    // The host survives the client disconnect WITHOUT propagating it: the
+    // fixture keeps running (holding the probe server's stdin open) so the
+    // held worker never learns the client vanished. Cleanup terminates the
+    // fixture later; the case window itself observes no settlement.
+    return;
+  }
+  if (SCENARIO === 'lifecycle-disconnect-propagate') {
+    // The host survives the client disconnect and DETERMINISTICALLY
+    // propagates it: the fixture stays alive (so the driver's survival
+    // verification sees a live host) while closing the probe server's
+    // stdin, whose durable settlement the case window then observes.
+    if (serverChild) serverChild.stdin.end();
+    return;
+  }
+  lockLogOnShutdown();
+});
 process.on('SIGTERM', lockLogOnShutdown);
 
 const FIXTURE_THREAD_ID = 'fixture-thread-0001-0002-0003-0004';
@@ -7572,11 +7685,16 @@ const FIXTURE_THREAD_ID_2 = 'fixture-thread-0005-0006-0007-0008';
 const FIXTURE_TURN_ID = 'fixture-turn-aaaa-bbbb-cccc-ddd';
 let fixtureThreadStarts = 0;
 let fixtureTurnStarted = false;
+let fixtureDispatchCount = 0;
 // One PERSISTENT disposable-server child: the identity schedule makes
 // several calls against ONE server process (one handler-owner registration),
 // exactly as a real host keeps one server per thread.
 let serverChild = null;
 let serverReadyResolve = null;
+const fixtureChildIdByDriverFrameId = new Map();
+// The DRIVER's JSON-RPC request id per dispatched mcpServer/tool/call, in
+// dispatch order (1st = the case target, 2nd = the sentinel).
+const fixtureDriverToolCallIds = [];
 let serverNextId = 3;
 const serverWaiters = new Map();
 const serverReadyPromise = () => {
@@ -7611,14 +7729,18 @@ const ensureServerChild = () => {
   sendToServer({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-fixture', version: '0.0.0' } } });
   return serverChild;
 };
-const callServerTool = (probeLabel, meta) => new Promise((resolveCall) => {
+let fixtureLastToolCallId = null;
+let fixtureTargetChildCallId = null;
+const callServerTool = (toolName, toolArguments, meta, onDispatch) => new Promise((resolveCall) => {
   const child = ensureServerChild();
   const dispatch = async () => {
     await serverReadyPromise();
     const id = serverNextId++;
+    fixtureLastToolCallId = id;
+    if (onDispatch) onDispatch(id);
     serverWaiters.set(id, (value) => resolveCall(value));
     sendToServer2(child, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    sendToServer2(child, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'capture_direct', arguments: { probeLabel }, ...(meta ? { _meta: meta } : {}) } });
+    sendToServer2(child, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: toolArguments, ...(meta ? { _meta: meta } : {}) } });
   };
   void dispatch();
 });
@@ -7635,6 +7757,29 @@ process.stdin.on('data', (chunk) => {
     if (line.trim() !== '') {
       let frame;
       try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
+      if (frame.method === 'notifications/cancelled') {
+        // The driver releases the sentinel: the cancellation arrives on the
+        // fake app-server's stdin. Forward it to the MCP server child,
+        // mapping the fixture's tools/call response id to the child's
+        // tools/call id, and record WHICH driver request id the release
+        // targeted, beside every dispatched tool-call request id, so the
+        // e2e can assert the targeted release named the SENTINEL's request
+        // (not the target's).
+        const childCallId = fixtureChildIdByDriverFrameId.get(frame.params && frame.params.requestId);
+        if (childCallId !== undefined) {
+          sendToServer2(serverChild, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: childCallId, reason: frame.params && frame.params.reason } });
+        }
+        if (fixtureDriverToolCallIds.length > 0 && process.env.ZCODE_DIRECT_MCP_PROBE_RUN) {
+          try {
+            writeFileSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'fixture-cancelled-request.json'), JSON.stringify({
+              cancelledRequestId: frame.params && frame.params.requestId,
+              driverToolCallIds: fixtureDriverToolCallIds,
+            }) + '\\n');
+          } catch { /* diagnostics only */ }
+        }
+        newline = buffer.indexOf('\\n');
+        continue;
+      }
       if (frame.id === 9001 && frame.method === undefined) {
         // The driver answered the held approval: decision 'cancel' denies the
         // command AND interrupts the turn — emit the completion. The silent
@@ -7646,7 +7791,7 @@ process.stdin.on('data', (chunk) => {
       } else if (frame.id !== undefined && typeof frame.method === 'string') {
         if (frame.method === 'initialize') send({ id: frame.id, result: {} });
         else if (frame.method === 'thread/start') {
-          if (SCENARIO.startsWith('identity-')) ensureServerChild();
+          if (SCENARIO.startsWith('identity-') || SCENARIO.startsWith('lifecycle-')) ensureServerChild();
           fixtureThreadStarts += 1;
           send({ id: frame.id, result: { thread: { id: fixtureThreadStarts === 1 ? FIXTURE_THREAD_ID : FIXTURE_THREAD_ID_2 } } });
         } else if (frame.method === 'turn/start') {
@@ -7654,28 +7799,196 @@ process.stdin.on('data', (chunk) => {
           // turn and then HOLD a CommandExecutionRequestApproval naming the
           // exact turn (the documented active-turn mechanism); the no-hold
           // variant answers with an already-completed turn and emits the
-          // completion notification immediately.
-          if (SCENARIO.startsWith('identity-hold')) {
+          // completion notification immediately. Lifecycle interrupt scenarios
+          // reuse both shapes: the hold variant also answers turn/interrupt
+          // and emits the interrupted completion when interrupted.
+          if (SCENARIO === 'lifecycle-interrupt-hold') {
+            fixtureTurnStarted = true;
+            send({ id: frame.id, result: { turn: { id: FIXTURE_TURN_ID, status: 'inProgress' } } });
+            send({ id: 9002, method: 'CommandExecutionRequestApproval', params: { threadId: FIXTURE_THREAD_ID, turnId: FIXTURE_TURN_ID, itemId: 'fixture-item-1', command: ['sleep', '45'] } });
+          } else if (SCENARIO.startsWith('identity-hold')) {
             fixtureTurnStarted = true;
             send({ id: frame.id, result: { turn: { id: FIXTURE_TURN_ID, status: 'inProgress' } } });
             send({ id: 9001, method: 'CommandExecutionRequestApproval', params: { threadId: FIXTURE_THREAD_ID, turnId: FIXTURE_TURN_ID, itemId: 'fixture-item-1', command: ['sleep', '45'] } });
-          } else if (SCENARIO === 'identity-no-hold') {
+          } else if (SCENARIO === 'identity-no-hold' || SCENARIO.startsWith('lifecycle-')) {
             fixtureTurnStarted = false;
             send({ id: frame.id, result: { turn: { id: FIXTURE_TURN_ID, status: 'completed' } } });
             send({ method: 'turn/completed', params: { threadId: FIXTURE_THREAD_ID, turn: { id: FIXTURE_TURN_ID, status: 'completed' } } });
+          } else send({ id: frame.id, error: { code: -32601, message: 'unknown method' } });
+        } else if (frame.method === 'turn/interrupt') {
+          // The lifecycle interrupt-hold scenario: the exact-turn interrupt is
+          // acknowledged and the turn completes interrupted. The pending MCP
+          // tool call is NOT touched — whether an interrupt reaches the held
+          // downstream call is precisely what the case observes.
+          if (SCENARIO === 'lifecycle-interrupt-hold') {
+            fixtureTurnStarted = false;
+            send({ id: frame.id, result: {} });
+            send({ method: 'turn/completed', params: { threadId: FIXTURE_THREAD_ID, turn: { id: FIXTURE_TURN_ID, status: 'interrupted' } } });
           } else send({ id: frame.id, error: { code: -32601, message: 'unknown method' } });
         } else if (frame.method === 'mcpServerStatus/list') {
           if (SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32601, message: 'discovery rejected' } });
           else send({ id: frame.id, result: { data: [{ name: 'zcode-direct-mcp-probe', runtimeStatus: 'connected', tools: { capture_direct: { name: 'capture_direct' } } }], nextCursor: null } });
         } else if (frame.method === 'mcpServer/tool/call') {
           const probeLabel = frame.params && frame.params.arguments ? frame.params.arguments.probeLabel : null;
+          fixtureDispatchCount += 1;
+          fixtureDriverToolCallIds.push(frame.id);
+          if (SCENARIO === 'lifecycle-refuses-after-trigger' && fixtureDispatchCount > 1) {
+            // The host answers the FIRST dispatch (the case's held target)
+            // but refuses EVERY later dispatch — exactly the shape in which
+            // a sentinel can no longer be sent after the trigger.
+            send({ id: frame.id, error: { code: -32000, message: 'refused after trigger' } });
+            return;
+          }
+          if (SCENARIO === 'lifecycle-host-exits-before-close') {
+            // Same deterministic death as lifecycle-host-dies-before-trigger,
+            // but the case under test is connection-close: by the time the
+            // driver closes the client input, the owning host is verifiably
+            // gone, so the observation cannot count as surviving-host.
+            const child = ensureServerChild();
+            const dispatch = async () => {
+              await serverReadyPromise();
+              child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\\n', () => {
+                child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 7800, method: 'tools/call', params: { name: (frame.params && frame.params.name) || 'hold_direct', arguments: (frame.params && frame.params.arguments) || { probeLabel } } }) + '\\n', () => process.exit(0));
+              });
+            };
+            void dispatch().catch(() => process.exit(0));
+            return;
+          }
+          if (SCENARIO === 'lifecycle-host-dies-before-trigger') {
+            // Forward the first dispatch (it reaches the handler and writes
+            // the durable hold-started), then DIE before the driver's
+            // trigger: the host process can no longer be signalled. The exit
+            // is deterministic relative to the driver's observation: the
+            // fixture dies in the forwarding-write's flush callback — before
+            // the server child even processes the dispatch, so hold-started
+            // cannot exist yet — while the driver's hold-started poll can
+            // only observe the record on a LATER 250 ms cadence tick. The
+            // fixture is therefore provably dead before the driver can act.
+            const child = ensureServerChild();
+            const dispatch = async () => {
+              await serverReadyPromise();
+              const forward = (frame, done) => child.stdin.write(JSON.stringify(frame) + '\\n', done);
+              sendToServer2(child, { jsonrpc: '2.0', method: 'notifications/initialized' });
+              forward({ jsonrpc: '2.0', id: 7700, method: 'tools/call', params: { name: (frame.params && frame.params.name) || 'hold_direct', arguments: (frame.params && frame.params.arguments) || { probeLabel } } }, () => process.exit(0));
+            };
+            void dispatch().catch(() => process.exit(0));
+            return;
+          }
+          if (SCENARIO === 'lifecycle-cancels-everything') {
+            // The host cancels EVERY call active at trigger time: forward the
+            // dispatch, then poll the durable evidence log for the driver's
+            // trigger-sent record; on sighting it, send MCP cancellations for
+            // every outstanding forwarded tool request. Under a sentinel
+            // established BEFORE the trigger both holds settle cancelled and
+            // the case must catch the broad cancellation; a sentinel that
+            // starts only AFTER the trigger would complete untouched and
+            // forge an isolation pass.
+            callServerTool((frame.params && frame.params.name) || 'hold_direct', (frame.params && frame.params.arguments) || { probeLabel }, undefined).then(() => {}, () => {});
+            if (!globalThis.__cancelPoller) {
+              globalThis.__cancelPoller = setInterval(() => {
+                try {
+                  const log = readFileSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'events.jsonl'), 'utf8');
+                  if (log.includes('"trigger-sent"')) {
+                    clearInterval(globalThis.__cancelPoller);
+                    for (const [id] of serverWaiters) {
+                      sendToServer2(serverChild, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'broad cancellation' } });
+                    }
+                  }
+                } catch { /* log not readable yet */ }
+              }, 20);
+            }
+            return;
+          }
+          if (SCENARIO === 'lifecycle-race-generic-error') {
+            // Forward the dispatch to the REAL server (the synthetic worker
+            // completes on its own) but answer the driver with a GENERIC host
+            // error: under the honest boundary rule a generic RPC error is
+            // not cancellation evidence.
+            const toolName = (frame.params && frame.params.name) || 'hold_direct';
+            const toolArguments = (frame.params && frame.params.arguments) || { probeLabel };
+            callServerTool(toolName, toolArguments, undefined).then(() => {
+              send({ id: frame.id, result: { content: [{ type: 'text', text: 'generic host error' }], isError: true } });
+            }, () => send({ id: frame.id, error: { code: -32000, message: 'tool call failed' } }));
+            return;
+          }
+          if (SCENARIO === 'lifecycle-slow-sentinel') {
+            // A host whose sentinel setup is SLOW: the target dispatch is
+            // forwarded immediately; when the configured timeout boundary
+            // fires (8 s after the target's hold-started) ONLY the target is
+            // cancelled, and the delayed sentinel dispatch is forwarded only
+            // AFTER the target's cancellation settlement is durable — the
+            // sentinel therefore starts after the boundary, never spanning it.
+            if (fixtureDispatchCount === 1) {
+              callServerTool((frame.params && frame.params.name) || 'hold_direct', (frame.params && frame.params.arguments) || { probeLabel }, undefined).then(() => {}, () => {});
+              if (!globalThis.__slowBoundaryArmed) {
+                globalThis.__slowBoundaryArmed = true;
+                let phase = 'waiting-hold-started';
+                const poll = setInterval(() => {
+                  try {
+                    const log = readFileSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'events.jsonl'), 'utf8');
+                    if (phase === 'waiting-hold-started' && log.includes('"hold-started"')) {
+                      phase = 'waiting-boundary';
+                      setTimeout(() => {
+                        sendToServer2(serverChild, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: fixtureLastToolCallId, reason: 'tool timeout boundary' } });
+                      }, 8_000);
+                    } else if (phase === 'waiting-boundary' && log.includes('"worker-settled"')) {
+                      clearInterval(poll);
+                      const pending = globalThis.__pendingSentinelFrame;
+                      if (pending) {
+                        callServerTool((pending.params && pending.params.name) || 'hold_direct', (pending.params && pending.params.arguments) || { probeLabel: undefined }, undefined).then(() => {}, () => {});
+                      }
+                    }
+                  } catch { /* log not readable yet */ }
+                }, 20);
+              }
+            } else {
+              globalThis.__pendingSentinelFrame = frame;
+            }
+            return;
+          }
+          if (SCENARIO === 'lifecycle-cancels-at-timeout') {
+            // A host that cancels the TARGET call when its configured tool
+            // timeout fires: forward the dispatch, and once the TARGET's
+            // hold-started is durably observable, schedule the boundary —
+            // 8 s later (the descriptor's tool_timeout_sec), cancel the
+            // TARGET only. The driver then orders the sentinel's release.
+            const isTarget = fixtureDispatchCount === 1;
+            callServerTool((frame.params && frame.params.name) || 'hold_direct', (frame.params && frame.params.arguments) || { probeLabel }, undefined, (childCallId) => {
+              fixtureChildIdByDriverFrameId.set(frame.id, childCallId);
+              if (isTarget) fixtureTargetChildCallId = childCallId;
+            });
+            if (isTarget && !globalThis.__boundaryArmed) {
+              globalThis.__boundaryArmed = true;
+              const poll = setInterval(() => {
+                try {
+                  const log = readFileSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'events.jsonl'), 'utf8');
+                  if (log.includes('"hold-started"')) {
+                    clearInterval(poll);
+                    setTimeout(() => {
+                      if (fixtureTargetChildCallId !== null) {
+                        sendToServer2(serverChild, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: fixtureTargetChildCallId, reason: 'tool timeout boundary' } });
+                      }
+                    }, 8_000);
+                  }
+                } catch { /* log not readable yet */ }
+              }, 20);
+            }
+            return;
+          }
           if (SCENARIO === 'call-never-answers') {
             // The host accepts the dispatch but never answers: the client's
             // request deadline is the only bound, and the honest outcome is an
             // unanswered call.
             return;
           }
-          if (SCENARIO === 'reject' || SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32000, message: 'tool call rejected' } });
+          if (SCENARIO === 'reject') {
+            // The host rejection text deliberately embeds the run-directory
+            // path: real host messages can carry paths or other sensitive
+            // values, so the redaction test can prove none of it reaches the
+            // driver's stderr even with DEBUG_DIRECT_PROBE set.
+            send({ id: frame.id, error: { code: -32000, message: 'tool call rejected at ' + (process.env.ZCODE_DIRECT_MCP_PROBE_RUN || 'run-unknown') } });
+          }
+          else if (SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32000, message: 'tool call rejected' } });
           else if (SCENARIO === 'server-restart') {
             // The host RESTARTS the disposable server during dispatch: it
             // spawns instance A, waits for its durable startup, kills A,
@@ -7799,7 +8112,12 @@ process.stdin.on('data', (chunk) => {
               // metadata attached — the host emitted the completion only
               // after assembling the dispatch context)
             }
-            callServerTool(probeLabel, meta).then((toolResult) => {
+            // Lifecycle scenarios forward the REAL dispatched tool (hold_direct
+            // with its synthetic worker arguments); every other scenario keeps
+            // dispatching capture_direct exactly as before.
+            const toolName = SCENARIO.startsWith('lifecycle-') ? (frame.params.name ?? 'hold_direct') : 'capture_direct';
+            const toolArguments = SCENARIO.startsWith('lifecycle-') ? (frame.params.arguments ?? { probeLabel }) : { probeLabel };
+            callServerTool(toolName, toolArguments, meta).then((toolResult) => {
               if (SCENARIO === 'error-with-entry') send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-wrapped error' }], isError: true } });
               else send({ id: frame.id, result: toolResult });
             }, () => send({ id: frame.id, error: { code: -32000, message: 'tool call failed' } }));
@@ -8172,6 +8490,43 @@ test('the direct driver CLI maps failures to a closed error code without raw pat
     assert.equal(stderrText.includes(run), false, 'the run directory path never reaches stderr');
     assert.equal(stderrText.includes(fixture.codexPath), false, 'the codex path never reaches stderr');
     assert.equal(stdout, '', 'no counters are printed on a failed run');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver prints no raw host text, paths, or stacks on stderr even with DEBUG_DIRECT_PROBE set', async () => {
+  const fixture = await buildDirectDriverFixture('reject');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The fake host rejects the direct call with a message that deliberately
+    // embeds the run-directory path: real host rejection text can carry paths
+    // or other sensitive values. With the debug flag enabled the driver must
+    // still emit ONLY closed codes on stderr — stderr is commonly retained by
+    // the caller, and the CLI boundary must hold even under DEBUG_DIRECT_PROBE.
+    const child = spawn(process.execPath, [
+      directDriverModulePath, '--mode', 'reachability', '--codex', fixture.codexPath, '--run-directory', run,
+      '--source-codex-home', fixture.sourceHome,
+    ], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DEBUG_DIRECT_PROBE: '1' } });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    const exit = await new Promise((resolveExit) => child.once('close', (code) => resolveExit(code)));
+    assert.equal(exit, 0, 'a rejected direct call is an observation, not a crash');
+    const stderrText = Buffer.concat(stderrChunks).toString('utf8');
+    // The raw host rejection text — with its embedded path — never reaches stderr.
+    assert.equal(stderrText.includes('tool call rejected'), false, 'raw host rejection text never reaches stderr');
+    assert.equal(stderrText.includes(run), false, 'the run-directory path inside the host rejection never reaches stderr');
+    assert.equal(stderrText.includes(fixture.parent), false, 'the fixture parent path never reaches stderr');
+    assert.equal(stderrText.includes(fixture.codexPath), false, 'the codex path never reaches stderr');
+    assert.equal(stderrText.includes(fixture.sourceHome), false, 'the source home path never reaches stderr');
+    // No raw stack frames and no raw host-message field reach stderr.
+    assert.equal(/^\s+at /m.test(stderrText), false, 'no raw stack frames reach stderr');
+    assert.equal(stderrText.includes('hostMessage'), false, 'the raw host-message field is never printed');
+    // Under the flag the driver may print ONLY the closed error code.
+    assert.equal(stderrText.includes('DEBUG-CALL-ERR PROBE_APP_SERVER_REQUEST_FAILED'), true, 'the debug line carries only the closed error code');
   } finally {
     await rm(fixture.parent, { recursive: true, force: true });
   }
@@ -9565,4 +9920,2169 @@ test('identity authorization bridge distinguishes a well-formed unknown receipt 
   const cancelled = store.cancel(unknownReceipt, DIRECT_IDENTITY_BASE + 1_000);
   assert.equal(cancelled.status, 'rejected');
   assert.equal(cancelled.reasonCode, 'preparation-missing', 'cancel reports the same unknown-receipt code as admit');
+});
+
+// ---------------------------------------------------------------------------
+// Task 5: lifecycle settlement — the synthetic worker, the command-specific
+// expected-outcome table, the local case state machine, and the G3 gate.
+// Everything here is LOCAL: in-process disposable servers and authenticated
+// fixture transcripts. The real-host cases run separately and never upgrade
+// G3 from RPC or turn status alone.
+// ---------------------------------------------------------------------------
+
+/** Issues one hold_direct call with the optional synthetic worker duration. */
+async function callHoldDirect(client, probeLabel, holdMs) {
+  const args = { probeLabel };
+  if (holdMs !== undefined) args.holdMs = holdMs;
+  return client.request({ method: 'tools/call', params: { name: 'hold_direct', arguments: args } }, CallToolResultSchema);
+}
+
+test('direct lifecycle synthetic worker completes normally and settles both terminals exactly once', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { client, server } = await connectDirectProbeClient(run, nonce, 'lifecycle');
+    const label = directLabel();
+    const held = callHoldDirect(client, label, 300);
+    const started = await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    // The entry, the hold, and the synthetic worker claim are durable BEFORE
+    // the call answers: the worker claim is the hold-started record's
+    // workerHash, written while the RPC is still outstanding.
+    let records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.deepEqual(records.map((record) => record.kind), ['handler-entered', 'hold-started']);
+    assert.equal(records[1].workerHash, started.workerHash);
+    const result = await held;
+    assert.equal(result.isError ?? false, false);
+    await waitUntilDirectEventKind(run, nonce, 'worker-settled');
+    records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.deepEqual(records.map((record) => record.kind), ['handler-entered', 'hold-started', 'handler-settled', 'worker-settled']);
+    assert.equal(records[2].outcome, 'completed');
+    assert.equal(records[3].outcome, 'completed', 'the synthetic worker completed normally');
+    assert.equal(records[3].workerHash, started.workerHash, 'the settled worker is exactly the claimed synthetic worker');
+    // Idempotent settlement: re-running the reconciliation must not duplicate
+    // any terminal record.
+    server.probeDirectDisconnect.settlePendingHoldsOnDisconnect();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const after = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(after.filter((record) => record.kind === 'handler-settled').length, 1, 'handler settlement stays exactly once');
+    assert.equal(after.filter((record) => record.kind === 'worker-settled').length, 1, 'worker settlement stays exactly once');
+    await client.close();
+  });
+});
+
+test('direct lifecycle completion-versus-cancellation race durably decides exactly one outcome', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Boundary A: the cancellation (safety deadline) fires before completion.
+    const canceller = createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: DIRECT_DRIVER_SECRET, holdSafetyDeadlineMs: 200 });
+    const clientA = new Client({ name: 'direct-lifecycle-race-a', version: '0.0.0' });
+    const [transportA, serverTransportA] = InMemoryTransport.createLinkedPair();
+    await Promise.all([canceller.connect(serverTransportA), clientA.connect(transportA)]);
+    const labelA = directLabel();
+    const raceA = callHoldDirect(clientA, labelA, 500);
+    await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    const resultA = await raceA;
+    assert.equal(resultA.isError ?? false, false);
+    await waitUntilDirectEventKind(run, nonce, 'worker-settled');
+    let records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(records[2].outcome, 'safety-deadline', 'the injected cancellation decided before completion');
+    assert.equal(records[3].outcome, 'safety-deadline');
+    await clientA.close();
+    // Boundary B: completion fires before the cancellation.
+    const completer = createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: DIRECT_DRIVER_SECRET, holdSafetyDeadlineMs: 5_000 });
+    const clientB = new Client({ name: 'direct-lifecycle-race-b', version: '0.0.0' });
+    const [transportB, serverTransportB] = InMemoryTransport.createLinkedPair();
+    await Promise.all([completer.connect(serverTransportB), clientB.connect(transportB)]);
+    const labelB = directLabel();
+    const raceB = callHoldDirect(clientB, labelB, 150);
+    await raceB;
+    await waitUntilDirectEventKind(run, nonce, 'worker-settled');
+    records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    // Each race settles ITS OWN hold exactly once: boundary A durably decided
+    // by the cancellation, boundary B by completion.
+    const settlementA = records.filter((record) => record.kind === 'worker-settled' && record.outcome === 'safety-deadline');
+    assert.equal(settlementA.length, 1, 'the cancelled race settled exactly once');
+    const settlementB = records.filter((record) => record.kind === 'worker-settled' && record.outcome === 'completed');
+    assert.equal(settlementB.length, 1, 'the completed race settled exactly once');
+    assert.equal(records.filter((record) => record.kind === 'handler-settled' && record.outcome === 'completed').length, 1);
+    await clientB.close();
+  });
+});
+
+test('direct lifecycle a cancellation that wins never lets completion land afterwards', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { client, server } = await connectDirectProbeClient(run, nonce, 'lifecycle');
+    const label = directLabel();
+    // A long synthetic completion racing a client close: whichever decision
+    // lands first wins once, and the durable log must never contain a
+    // completion after the cancellation.
+    const held = callHoldDirect(client, label, 400).catch(() => null);
+    await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    await client.close();
+    const result = await Promise.race([held, new Promise((resolve) => setTimeout(() => resolve(null), 2_000))]);
+    if (result !== null) assert.equal(result.isError ?? false, false);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    server.probeDirectDisconnect.settlePendingHoldsOnDisconnect();
+    await waitUntilDirectEventKind(run, nonce, 'handler-settled');
+    const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    const outcomes = records.filter((record) => record.kind === 'handler-settled').map((record) => record.outcome);
+    assert.equal(outcomes.length, 1, 'exactly one handler settlement');
+    assert.equal(['cancelled', 'connection-closed'].includes(outcomes[0]), true, 'the cancellation decided the hold');
+    assert.equal(records.some((record) => record.kind === 'worker-settled' && record.outcome === 'completed'), false, 'completion never lands after the cancellation');
+  });
+});
+
+test('direct lifecycle safety deadline settles a still-running hold (mechanism-only injected ceiling)', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // MECHANISM-ONLY: the short injected ceiling exercises the same forced
+    // settlement MECHANISM as the production 100-hour safety ceiling; it is
+    // never evidence that the tested host supports a 100-hour tool call.
+    const server = createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, holdSafetyDeadlineMs: 250 });
+    const client = new Client({ name: 'direct-lifecycle-ceiling', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const held = callHoldDirect(client, directLabel());
+    await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    const result = await held;
+    assert.equal(result.isError ?? false, false);
+    await waitUntilDirectEventKind(run, nonce, 'worker-settled');
+    const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.deepEqual(records.map((record) => record.kind), ['handler-entered', 'hold-started', 'handler-settled', 'worker-settled']);
+    assert.equal(records[2].outcome, 'safety-deadline');
+    assert.equal(records[3].outcome, 'safety-deadline', 'the still-running worker was force-settled by the injected ceiling');
+    assert.equal(records[3].workerHash, records[1].workerHash);
+    await client.close();
+  });
+});
+
+test('direct lifecycle sentinel call is unaffected by an unrelated held call', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { client, server } = await connectDirectProbeClient(run, nonce, 'lifecycle');
+    const heldLabel = directLabel();
+    const sentinelLabel = directLabel();
+    const held = callHoldDirect(client, heldLabel);
+    await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    // The unrelated sentinel completes normally while the hold is pending.
+    const sentinel = await callCaptureDirect(client, sentinelLabel);
+    assert.equal(sentinel.isError ?? false, false);
+    // The held call's settlement must not touch the sentinel call.
+    server.probeDirectDisconnect.settlePendingHoldsOnDisconnect();
+    await held;
+    await waitUntilDirectEventKind(run, nonce, 'worker-settled');
+    const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    const sentinelEntry = records.find((record) => record.kind === 'handler-entered' && record.probeLabel === sentinelLabel);
+    const holdNonce = records.find((record) => record.kind === 'handler-entered' && record.probeLabel === heldLabel).callNonce;
+    assert.ok(sentinelEntry, 'the sentinel call entered the handler');
+    const sentinelRecords = records.filter((record) => record.callNonce === sentinelEntry.callNonce || record.probeLabel === sentinelLabel);
+    assert.equal(sentinelRecords.some((record) => record.kind === 'handler-settled' || record.kind === 'worker-settled'), false, 'an unrelated hold settlement never settles the sentinel');
+    assert.equal(records.filter((record) => record.kind === 'worker-settled').length, 1, 'exactly one synthetic worker settlement exists');
+    assert.equal(records.find((record) => record.kind === 'worker-settled').callNonce, holdNonce);
+    await client.close();
+  });
+});
+
+test('direct lifecycle host loss leaves the held worker without durable settlement', { skip: !posix }, async () => {
+  await withDirectProbeRun('zcode-direct-stdio-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    const ownerSecret = directRunNonce();
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [directServerModulePath],
+      env: {
+        ...process.env,
+        ZCODE_DIRECT_MCP_PROBE_RUN: run,
+        ZCODE_DIRECT_MCP_PROBE_NONCE: nonce,
+        ZCODE_DIRECT_MCP_PROBE_PHASE: 'lifecycle',
+        DIRECT_PROBE_OWNER_SECRET: ownerSecret,
+      },
+    });
+    const client = new Client({ name: 'direct-lifecycle-host-loss', version: '0.0.0' });
+    await client.connect(transport);
+    const held = client.request({ method: 'tools/call', params: { name: 'hold_direct', arguments: { probeLabel: label } } }, CallToolResultSchema).catch(() => null);
+    await waitUntilDirectEventKind(run, nonce, 'hold-started');
+    // ABRUPT HOST LOSS: the owning process of the held call is killed without
+    // any settlement path. No durable terminal may appear, whatever grace
+    // passes: a killed writer cannot settle, and the honest record is a
+    // hold with no terminals.
+    process.kill(transport.pid, 'SIGKILL');
+    await held;
+    await new Promise((resolve) => setTimeout(resolve, DIRECT_SERVER_EXIT_GRACE_TEST_MS));
+    const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(records.some((record) => record.kind === 'hold-started'), true, 'the hold and its worker claim are durable');
+    assert.equal(records.some((record) => record.kind === 'handler-settled'), false, 'no handler settlement survives host loss');
+    assert.equal(records.some((record) => record.kind === 'worker-settled'), false, 'no worker settlement survives host loss');
+  });
+});
+
+// Command-specific expected outcomes and the local lifecycle state machine.
+
+async function buildDirectLifecycleTranscript(run, {
+  nonce = directRunNonce(),
+  label = directLabel(),
+  callNonce = directCallNonce(),
+  workerHash = directHash('fixture-worker'),
+  requestState = 'sent',
+  withEntry = true,
+  withHold = true,
+  triggerSent = null,
+  triggerObserved = null,
+  handlerOutcome = null,
+  workerOutcome = null,
+  rpcOutcome = null,
+  sentinel = null,
+  sentinelSettledBeforeTarget = false,
+  sentinelJoinedAfterTargetSettlement = false,
+  sentinelSpanningBoundary = false,
+  sentinelJoinBeforeTrigger = false,
+  sentinelJoinAfterTrigger = false,
+  triggerAfterSettlement = false,
+  sentinelDriverRelease = false,
+  sentinelEarlyReleaseMarker = false,
+} = {}) {
+  await directDriverAppend(run, nonce, { kind: 'readiness-observed', state: 'discovered', source: 'host' }, 'lifecycle');
+  await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: withHold ? 'hold_direct' : 'capture_direct', state: requestState }, 'lifecycle');
+  const server = trackDirectProbeServer(run, createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: DIRECT_DRIVER_SECRET }));
+  await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('fixture-instance') });
+  if (withEntry) {
+    await server.probeDirectAppend({ kind: 'handler-entered', probeLabel: label, callNonce, serverInstanceHash: directHash('fixture-instance') });
+    if (withHold) await server.probeDirectAppend({ kind: 'hold-started', callNonce, workerHash });
+    // RED-shape fixture: the sentinel's own completed settlement can be
+    // written BEFORE the target's boundary settlement, encoding a sentinel
+    // that was already finished when the cancellation acted.
+    const sentinelWorkerHash = sentinel !== null ? directHash(`fixture-sentinel-worker:${sentinel.label}`) : null;
+    const sentinelJoin = async () => {
+      await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: sentinel.label, tool: sentinel.tool ?? 'hold_direct', state: sentinel.requestState ?? 'sent' }, 'lifecycle');
+      await server.probeDirectAppend({ kind: 'handler-entered', probeLabel: sentinel.label, callNonce: sentinel.callNonce, serverInstanceHash: directHash('fixture-instance') });
+      await server.probeDirectAppend({ kind: 'hold-started', callNonce: sentinel.callNonce, workerHash: sentinelWorkerHash });
+    };
+    const sentinelSettle = async () => {
+      if (sentinel.workerOutcome !== null && sentinel.workerOutcome !== undefined) {
+        if (sentinel.workerOnly) {
+          // Partial sentinel write: the worker terminal alone.
+          await server.probeDirectAppend({ kind: 'worker-settled', callNonce: sentinel.callNonce, workerHash: sentinelWorkerHash, outcome: sentinel.workerOutcome });
+          return;
+        }
+        const handlerOutcomeForSentinel = sentinel.handlerOutcome !== null && sentinel.handlerOutcome !== undefined
+          ? sentinel.handlerOutcome
+          : sentinel.workerOutcome;
+        await server.probeDirectAppend({ kind: 'handler-settled', callNonce: sentinel.callNonce, outcome: handlerOutcomeForSentinel });
+        await server.probeDirectAppend({ kind: 'worker-settled', callNonce: sentinel.callNonce, workerHash: sentinelWorkerHash, outcome: sentinel.workerOutcome });
+      }
+    };
+    // JoinBeforeTrigger: the sentinel is durably held BEFORE the driver even
+    // declares the trigger — the real driver schedule.
+    if (sentinel !== null && sentinelJoinBeforeTrigger) await sentinelJoin();
+    // Settled-before-target: the sentinel joins AND settles before the
+    // target's boundary settlement (the expired-at-boundary RED shape).
+    if (sentinel !== null && sentinelSettledBeforeTarget) {
+      await sentinelJoin();
+      await sentinelSettle();
+    }
+    // Spanning: the sentinel JOINS before the driver's trigger declaration
+    // (the real driver schedule: establish the sentinel, then declare the
+    // trigger) and settles after the target's boundary settlement — the
+    // genuine boundary-spanning shape.
+    if (sentinel !== null && sentinelSpanningBoundary) await sentinelJoin();
+    const appendTriggerRecords = async () => {
+      if (triggerSent !== null) await directDriverAppend(run, nonce, { kind: 'trigger-sent', callNonce, outcome: triggerSent }, 'lifecycle');
+      if (triggerObserved !== null) await directDriverAppend(run, nonce, { kind: 'trigger-observed', callNonce, outcome: triggerObserved, source: 'host' }, 'lifecycle');
+    };
+    if (!triggerAfterSettlement) await appendTriggerRecords();
+    if (sentinel !== null && sentinelJoinAfterTrigger) await sentinelJoin();
+    // EarlyReleaseMarker: the driver's release markers commit BEFORE the
+    // target's boundary settlement (the round-13 D4 RED shape — the marker
+    // does not follow the durably observed boundary).
+    if (sentinel !== null && sentinelEarlyReleaseMarker) {
+      await directDriverAppend(run, nonce, { kind: 'trigger-sent', callNonce: sentinel.callNonce, outcome: 'turn-interrupt' }, 'lifecycle');
+      await directDriverAppend(run, nonce, { kind: 'trigger-observed', callNonce: sentinel.callNonce, outcome: 'acknowledged', source: 'driver' }, 'lifecycle');
+    }
+    // HandlerEarly: the sentinel's handler terminal commits BEFORE the
+    // target's boundary settlement while its worker terminal commits after
+    // it — the delayed-log-write RED shape.
+    if (sentinel !== null && sentinelSpanningBoundary && sentinel.handlerEarly) {
+      await server.probeDirectAppend({ kind: 'handler-settled', callNonce: sentinel.callNonce, outcome: sentinel.workerOutcome });
+    }
+    if (handlerOutcome !== null) await server.probeDirectAppend({ kind: 'handler-settled', callNonce, outcome: handlerOutcome });
+    if (workerOutcome !== null) await server.probeDirectAppend({ kind: 'worker-settled', callNonce, workerHash, outcome: workerOutcome });
+    if (triggerAfterSettlement) await appendTriggerRecords();
+    if (sentinel !== null && !sentinelSpanningBoundary && !sentinelJoinedAfterTargetSettlement && !sentinelSettledBeforeTarget && !sentinelJoinBeforeTrigger && !sentinelJoinAfterTrigger) {
+      await sentinelJoin();
+      await sentinelSettle();
+    }
+    // Driver-ordered release: after the boundary, the driver explicitly
+    // releases the sentinel — declaring the release (trigger-sent for the
+    // sentinel's own call) and marking it acknowledged (trigger-observed).
+    if (sentinel !== null && sentinelDriverRelease) {
+      await directDriverAppend(run, nonce, { kind: 'trigger-sent', callNonce: sentinel.callNonce, outcome: 'turn-interrupt' }, 'lifecycle');
+      await directDriverAppend(run, nonce, { kind: 'trigger-observed', callNonce: sentinel.callNonce, outcome: 'acknowledged', source: 'driver' }, 'lifecycle');
+    }
+    if (sentinel !== null && (sentinelSpanningBoundary || sentinelJoinBeforeTrigger || sentinelJoinAfterTrigger) && !sentinel.handlerEarly) await sentinelSettle();
+    if (sentinel !== null && sentinelSpanningBoundary && sentinel.handlerEarly) {
+      await server.probeDirectAppend({ kind: 'worker-settled', callNonce: sentinel.callNonce, workerHash: sentinelWorkerHash, outcome: sentinel.workerOutcome });
+    }
+    if (rpcOutcome !== null) await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, callNonce, outcome: rpcOutcome }, 'lifecycle');
+    if (sentinel !== null && sentinelJoinedAfterTargetSettlement) {
+      await sentinelJoin();
+      await sentinelSettle();
+    }
+  } else {
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, outcome: rpcOutcome ?? 'not-observed' }, 'lifecycle');
+  }
+  return { label, callNonce, workerHash, sentinel, nonce };
+}
+
+test('status observation cancellation ends only observation and leaves the tracked job active', async () => {
+  const lifecycle = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  // The status --wait placement is pure observation: cancelling the wait may
+  // never settle the tracked job, on any cancellation trigger.
+  for (const trigger of ['turn-interrupt', 'config-timeout']) {
+    const expectation = lifecycle.directLifecycleExpectation({ command: 'status-wait', trigger });
+    assert.equal(expectation.scope, 'observation', 'status --wait cancellation is observation-scoped');
+    assert.equal(expectation.settlesWorker, false, 'status --wait cancellation never settles the tracked job');
+    assert.deepEqual(expectation.workerOutcomes, ['completed'], 'the tracked job may only settle by its own completion');
+  }
+  assert.throws(() => lifecycle.directLifecycleExpectation({ command: 'status-wait', trigger: 'mystery' }), /DIRECT_LIFECYCLE_INVALID/, 'an unknown trigger fails closed');
+  assert.throws(() => lifecycle.directLifecycleExpectation({ command: 'mystery', trigger: 'turn-interrupt' }), /DIRECT_LIFECYCLE_INVALID/, 'an unknown command fails closed');
+});
+
+test('status observation expectation rejects a reducer that kills the status target', async () => {
+  const lifecycle = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  const { classifyDirectLifecycleCase } = lifecycle;
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The expectation table demands `completed` for the tracked job under
+    // status --wait; the reducer reported it cancelled. A non-per-call
+    // trigger (completion) isolates the expectation check: the mismatch must
+    // surface on the TARGET's outcome, never masked by a sentinel
+    // classification.
+    const { label, callNonce, workerHash } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'completion',
+    });
+    assert.equal(verdict.classification, 'expectation-mismatch', 'a reducer that reports the status target cancelled is rejected');
+    assert.equal(verdict.reasonCode, 'status-target-killed');
+    assert.equal(verdict.workerOutcome, 'cancelled');
+    assert.equal(verdict.workerOwned, true, 'ownership is still attributable even in a mismatch');
+    assert.equal(callNonce, (await readDirectProbeEvents({ runDirectory: run, runNonce: nonce })).find((record) => record.kind === 'handler-entered' && record.probeLabel === label).callNonce);
+    assert.ok(verdict.evidenceRefs.some((ref) => ref.startsWith('worker-settled@')), 'the mismatch cites the durable worker record');
+    assert.ok(workerHash, 'the fixture worker hash is carried');
+  });
+});
+
+test('direct lifecycle expectations are command-specific, never one generic worker rule', async () => {
+  const lifecycle = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  // The same trigger maps to DIFFERENT expectations per placement: the
+  // foreground execution settles cancelled, while a background placement and
+  // the status --wait observation survive caller cancellation.
+  for (const trigger of ['turn-interrupt', 'config-timeout']) {
+    const foreground = lifecycle.directLifecycleExpectation({ command: 'execution-foreground', trigger });
+    const background = lifecycle.directLifecycleExpectation({ command: 'execution-background', trigger });
+    const statusWait = lifecycle.directLifecycleExpectation({ command: 'status-wait', trigger });
+    assert.equal(foreground.scope, 'operation');
+    assert.equal(foreground.settlesWorker, true, 'foreground cancellation reaches the exact operation');
+    assert.deepEqual(foreground.workerOutcomes, trigger === 'turn-interrupt' ? ['cancelled'] : ['cancelled', 'timed-out']);
+    assert.equal(background.scope, 'observation');
+    assert.equal(background.settlesWorker, false, 'background placement survives caller cancellation');
+    assert.equal(statusWait.settlesWorker, false, 'status --wait cancellation never reaches the tracked job');
+    assert.notDeepEqual(foreground.workerOutcomes, background.workerOutcomes, 'one generic expectation cannot cover both placements');
+  }
+  // Infrastructure triggers are classified from the durable record alone —
+  // the table never presumes a settlement the host may not produce.
+  for (const trigger of ['connection-close', 'host-stop', 'host-kill']) {
+    const expectation = lifecycle.directLifecycleExpectation({ command: 'execution-foreground', trigger });
+    assert.equal(expectation.scope, 'infrastructure');
+    assert.equal(expectation.settlesWorker, false, 'infrastructure loss is not a caller cancellation rule');
+    assert.equal(expectation.workerOutcomes, null, 'no presumed worker outcome exists for infrastructure loss');
+  }
+  // Completion and the injected ceiling settle the operation for every command.
+  assert.deepEqual(lifecycle.directLifecycleExpectation({ command: 'execution-background', trigger: 'completion' }).workerOutcomes, ['completed']);
+  assert.deepEqual(lifecycle.directLifecycleExpectation({ command: 'status-wait', trigger: 'safety-deadline' }).workerOutcomes, ['safety-deadline']);
+});
+
+test('direct lifecycle the race expectation is placement-specific, never one operation rule', async () => {
+  const lifecycle = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  // The race's cancellation side is a configured caller cancellation: for
+  // the foreground placement it may reach the operation (one decided
+  // winner), but background and status --wait keep the observation-only
+  // rule — caller cancellation can never settle the tracked job, so the
+  // race cell there expects only the job's own completion.
+  const foreground = lifecycle.directLifecycleExpectation({ command: 'execution-foreground', trigger: 'cancel-race' });
+  assert.equal(foreground.scope, 'operation');
+  assert.deepEqual(foreground.workerOutcomes, ['completed', 'cancelled', 'safety-deadline']);
+  for (const command of ['execution-background', 'status-wait']) {
+    const cell = lifecycle.directLifecycleExpectation({ command, trigger: 'cancel-race' });
+    assert.equal(cell.scope, 'observation', `the ${command} race stays observation-scoped`);
+    assert.equal(cell.settlesWorker, false, `the ${command} race never settles the tracked job`);
+    assert.deepEqual(cell.workerOutcomes, ['completed'], `the ${command} race never expects a cancellation-settled job`);
+  }
+});
+
+test('direct lifecycle a race that settles the observed status target is the target-killed contradiction', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The race's cancellation side killed the TRACKED job: under the
+    // observation-only placements (status --wait, allowed background) the
+    // durable cancelled terminals contradict the command expectation
+    // outright — the contradiction must surface even though the race
+    // boundary was observed and the sentinel state is unprovable.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const statusWait = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'cancel-race',
+      cancellationObserved: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(statusWait.classification, 'expectation-mismatch', 'a race that settles the tracked job contradicts the observation placement');
+    assert.equal(statusWait.reasonCode, 'status-target-killed');
+    const background = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-background', trigger: 'cancel-race',
+      cancellationObserved: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(background.classification, 'expectation-mismatch', 'a race that settles the background job is the same contradiction');
+    assert.equal(background.reasonCode, 'unexpected-worker-outcome');
+  });
+});
+
+test('direct lifecycle behavior-confirmed requires an acknowledged trigger and a wait that ended', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // An indefinitely pending wait must never become a passing case: with
+    // the trigger acknowledged but the wait call never answering (rpc-observed
+    // `not-observed`), the observation-only placement proves nothing.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'not-observed',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const pending = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(pending.classification, 'settlement-unproven', 'a wait that never ended cannot confirm the observation behavior');
+    assert.equal(pending.reasonCode, 'wait-ended-unobserved');
+    // A wait-ended RPC observation without a durably acknowledged trigger is
+    // equally unproven: no cancellation was ever in play.
+    const second = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'rejected',
+      rpcOutcome: 'error-result',
+      sentinel: { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' },
+    });
+    const secondReduce = await reduceDirectRun(run, nonce);
+    const unacknowledged = classifyDirectLifecycleCase({
+      records: secondReduce.records, reduced: secondReduce.reduced, probeLabel: second.label, phase: 'lifecycle',
+      command: 'status-wait', trigger: 'turn-interrupt', exactTurnConfirmed: true, sentinelLabel: second.sentinel.label,
+    });
+    assert.equal(unacknowledged.classification, 'settlement-unproven', 'a rejected trigger never acknowledged the cancellation');
+    assert.equal(unacknowledged.reasonCode, 'wait-ended-unobserved');
+  });
+});
+
+test('direct lifecycle an unsettled sentinel keeps the observation behavior unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Acknowledged trigger, ended wait — but the joined sentinel has NO
+    // durable settlement of its own: the unrelated call's fate is unknown
+    // (it may have been cancelled by the same action), so the case can
+    // never confirm the observation-only placement behavior. The G3 gate
+    // accepts behavior-confirmed, so an unresolved sentinel must never
+    // ride through it.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: null };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven', 'an unresolved sentinel leaves the unrelated call fate unknown');
+    assert.equal(verdict.reasonCode, 'sentinel-never-settled');
+    assert.equal(verdict.sentinelClassification, 'unproven');
+  });
+});
+
+test('direct lifecycle a settled-but-unprovable sentinel keeps the observation behavior unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The finding's exact shape: acknowledged trigger, ended wait, NO target
+    // settlement, and a sentinel durably settled CANCELLED. For the
+    // host-internal config-timeout boundary the sentinel's classification is
+    // `unproven` (`sentinel-ordering-unprovable`) — the existence of its
+    // worker terminal proves nothing about whether the broad cancellation
+    // caught it — so the case must stay unproven, never behavior-confirmed.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'cancelled' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'config-timeout',
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven', 'an unprovable sentinel classification keeps the case unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-unprovable');
+    assert.equal(verdict.sentinelClassification, 'unproven');
+    // A PARTIAL sentinel terminal (worker settled, handler missing) is the
+    // same refusal: the classification result, not the terminal's existence,
+    // gates the observation pass.
+    const partial = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed', workerOnly: true };
+    const second = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel: partial,
+    });
+    const secondReduce = await reduceDirectRun(run, nonce);
+    const partialVerdict = classifyDirectLifecycleCase({
+      records: secondReduce.records, reduced: secondReduce.reduced, probeLabel: second.label, phase: 'lifecycle',
+      command: 'status-wait', trigger: 'turn-interrupt', exactTurnConfirmed: true, sentinelLabel: partial.label,
+    });
+    assert.equal(partialVerdict.classification, 'settlement-unproven', 'a partial sentinel write proves no conclusive result');
+    assert.equal(partialVerdict.reasonCode, 'boundary-not-yet-observed');
+    assert.equal(partialVerdict.sentinelClassification, 'unproven');
+  });
+});
+
+test('direct lifecycle a caught sentinel is the observation mismatch, never a pass', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // A demonstrably CAUGHT sentinel (durably settled cancelled by the same
+    // action) under an observation placement is the expectation-mismatch
+    // contradiction — broad cancellation is never qualified behavior.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'cancelled' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'status-wait', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'expectation-mismatch', 'a caught sentinel is the broad-cancellation contradiction');
+    assert.equal(verdict.reasonCode, 'sentinel-caught');
+  });
+});
+
+test('direct lifecycle case classifier proves exact ownership and bounded settlement on matching records', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      handlerOutcome: 'completed',
+      workerOutcome: 'completed',
+      rpcOutcome: 'success-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'completion',
+    });
+    assert.equal(verdict.classification, 'settlement-observed');
+    assert.equal(verdict.reasonCode, null);
+    assert.equal(verdict.workerOwned, true, 'the settled worker hash joins the held worker exactly');
+    assert.equal(verdict.handlerOutcome, 'completed');
+    assert.equal(verdict.workerOutcome, 'completed');
+    assert.ok(verdict.evidenceRefs.includes(`hold-started@${records.find((record) => record.kind === 'hold-started').sequence}`));
+  });
+});
+
+test('direct lifecycle case classifier records not-sent when the hold prerequisite is missing', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // A label with no records at all: not observed.
+    const absentLabel = directLabel();
+    // A dispatched request whose handler never entered: the hold prerequisite
+    // is missing, so the case records not-sent, never a settlement.
+    const { label: unheldLabel } = await buildDirectLifecycleTranscript(run, { nonce, withHold: false, rpcOutcome: 'success-result' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const absent = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: absentLabel, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+    });
+    assert.equal(absent.classification, 'not-observed');
+    const unheld = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: unheldLabel, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+    });
+    assert.equal(unheld.classification, 'not-sent');
+    assert.equal(unheld.reasonCode, 'hold-not-started');
+  });
+});
+
+test('direct lifecycle case classifier records not-sent when the exact turn is unconfirmed for interrupt', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Durable entry and hold exist, but no confirmed active exact turn: the
+    // interrupt trigger is honestly not sent and the case records not-sent.
+    const { label } = await buildDirectLifecycleTranscript(run, { nonce, handlerOutcome: 'connection-closed', workerOutcome: 'connection-closed' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt', exactTurnConfirmed: false,
+    });
+    assert.equal(verdict.classification, 'not-sent');
+    assert.equal(verdict.reasonCode, 'turn-not-confirmed', 'the missing exact-turn prerequisite is recorded, never inferred past');
+  });
+});
+
+test('direct lifecycle case classifier marks settlement-unproven when a foreground worker never settles', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The interrupt was sent and acknowledged but no terminal record exists:
+    // an interrupted turn with a still-running worker.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'not-observed',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven', 'a still-running worker after interruption is unproven settlement');
+    // The sentinel completed without any durable cancellation boundary for
+    // the target: the boundary was never observed, so isolation is unproven.
+    assert.equal(verdict.reasonCode, 'boundary-not-yet-observed');
+    assert.equal(verdict.workerOutcome, null);
+  });
+});
+
+test('direct lifecycle observation placements record the sentinel classification honestly', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Caller cancellation durably acknowledged AND the wait itself ended
+    // (the wait call answered — rpc-observed `error-result`), no worker
+    // settlement: the placement table says the tracked job survives, but
+    // behavior-confirmed demands a CONCLUSIVE sentinel result. Since the
+    // decision-order adjudication no per-call sentinel classification is
+    // conclusive, so these cases honestly record the sentinel's unproven
+    // reason — the placement rule itself is pinned by the table cells and
+    // the target-killed contradiction, never by an unprovable sentinel.
+    const backgroundSentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label: backgroundLabel } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel: backgroundSentinel,
+    });
+    const first = await reduceDirectRun(run, nonce);
+    const background = classifyDirectLifecycleCase({
+      records: first.records, reduced: first.reduced, probeLabel: backgroundLabel, phase: 'lifecycle', command: 'execution-background', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: backgroundSentinel.label,
+    });
+    assert.equal(background.classification, 'settlement-unproven', 'the completed sentinel cannot prove isolation across the unobserved boundary');
+    assert.equal(background.reasonCode, 'boundary-not-yet-observed');
+    assert.equal(background.sentinelClassification, 'unproven');
+    const statusSentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label: statusLabel } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      rpcOutcome: 'error-result',
+      sentinel: statusSentinel,
+    });
+    const second = await reduceDirectRun(run, nonce);
+    const statusWait = classifyDirectLifecycleCase({
+      records: second.records, reduced: second.reduced, probeLabel: statusLabel, phase: 'lifecycle', command: 'status-wait', trigger: 'config-timeout', exactTurnConfirmed: true,
+      sentinelLabel: statusSentinel.label,
+    });
+    assert.equal(statusWait.classification, 'settlement-unproven', 'the host-internal timeout boundary is durably unorderable');
+    assert.equal(statusWait.reasonCode, 'sentinel-ordering-unprovable');
+  });
+});
+
+test('direct lifecycle case classifier catches a sentinel cancelled by an unrelated per-call trigger', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'cancelled' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt', exactTurnConfirmed: true,
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'expectation-mismatch', 'overly broad cancellation is a contradiction');
+    assert.equal(verdict.reasonCode, 'sentinel-caught', 'the unrelated sentinel was cancelled by the per-call trigger');
+    assert.equal(verdict.sentinelClassification, 'caught');
+    assert.equal(verdict.workerOwned, true);
+  });
+});
+
+test('direct lifecycle G3 gate stays not-proven unless every required case is durably observed', async () => {
+  const { classifyDirectGateG3 } = await loadDirectDriver();
+  const demonstrated = assessReconciliationDemonstrated();
+  // The full positive control: every required trigger observed, settlement
+  // matching, reconciliation demonstrated — and even then the gate only
+  // upgrades when the interrupted-turn case was actually sent.
+  const fullCases = requiredLifecycleCases().map(({ trigger, command }) => ({
+    trigger, command, classification: 'settlement-observed', workerOutcome: 'completed', workerOwned: true, sent: true,
+  }));
+  const full = classifyDirectGateG3({ cases: fullCases, reconciliation: demonstrated });
+  assert.equal(full.status, 'proven');
+  assert.equal(full.reasonCode, 'lifecycle-settlement-durably-observed');
+  // The interrupted-turn case recorded not-sent (its prerequisite was never
+  // demonstrated): G3 stays not-proven — a not-sent case is a missing
+  // prerequisite, never a pass.
+  const interruptNotSent = fullCases.map((entry) => (
+    entry.trigger === 'turn-interrupt' ? { ...entry, classification: 'not-sent', sent: false, reasonCode: 'turn-not-confirmed' } : entry
+  ));
+  const withNotSent = classifyDirectGateG3({ cases: interruptNotSent, reconciliation: demonstrated });
+  assert.equal(withNotSent.status, 'not-proven');
+  assert.equal(withNotSent.reasonCode, 'interrupt-case-not-sent');
+  // Coverage missing: a required trigger with no case at all never proves.
+  const partial = classifyDirectGateG3({ cases: fullCases.slice(0, 3), reconciliation: demonstrated });
+  assert.equal(partial.status, 'not-proven');
+  assert.equal(partial.reasonCode, 'case-coverage-missing');
+  // Reconciliation not demonstrated: the gate stays down whatever the cases show.
+  const unreconciled = classifyDirectGateG3({ cases: fullCases, reconciliation: { status: 'rejected', reasonCode: 'ownership-or-boundedness-unproven' } });
+  assert.equal(unreconciled.status, 'not-proven');
+  assert.equal(unreconciled.reasonCode, 'ownership-or-boundedness-unproven');
+  // An expectation mismatch anywhere is a contradiction that fails the gate.
+  const mismatched = fullCases.map((entry) => (
+    entry.trigger === 'config-timeout' ? { ...entry, classification: 'expectation-mismatch', reasonCode: 'status-target-killed' } : entry
+  ));
+  const withMismatch = classifyDirectGateG3({ cases: mismatched, reconciliation: demonstrated });
+  assert.equal(withMismatch.status, 'not-proven');
+  assert.equal(withMismatch.reasonCode, 'expectation-mismatch-observed');
+  // A host signal that cannot be verified as delivered records the case
+  // not-sent with signal-unverified, and the gate names that prerequisite.
+  const withUnverifiedSignal = fullCases.map((entry) => (
+    entry.trigger === 'host-stop' ? { ...entry, classification: 'not-sent', sent: false, reasonCode: 'signal-unverified' } : entry
+  ));
+  const unverified = classifyDirectGateG3({ cases: withUnverifiedSignal, reconciliation: demonstrated });
+  assert.equal(unverified.status, 'not-proven');
+  assert.equal(unverified.reasonCode, 'host-signal-unverified');
+  // Behavior-confirmed observation-only placements do not block the gate,
+  // but a settlement-unproven case does.
+  const withUnproven = fullCases.map((entry) => (
+    entry.trigger === 'host-kill' ? { ...entry, classification: 'settlement-unproven', reasonCode: 'worker-never-settled' } : entry
+  ));
+  const unproven = classifyDirectGateG3({ cases: withUnproven, reconciliation: demonstrated });
+  assert.equal(unproven.status, 'not-proven');
+  assert.equal(unproven.reasonCode, 'settlement-unproven');
+});
+
+test('direct lifecycle G3 gate fails on an interrupted turn with a still-running worker', async () => {
+  const { classifyDirectGateG3 } = await loadDirectDriver();
+  // The plan rule, pinned: an interrupted turn with a still-running worker
+  // must fail G3 — take precedence over every other reason.
+  const cases = requiredLifecycleCases().map(({ trigger, command }) => (
+    trigger === 'turn-interrupt'
+      ? { trigger, command, classification: 'settlement-unproven', workerOutcome: null, workerOwned: false, sent: true, reasonCode: 'worker-never-settled' }
+      : { trigger, command, classification: 'settlement-observed', workerOutcome: 'completed', workerOwned: true, sent: true }
+  ));
+  const verdict = classifyDirectGateG3({ cases, reconciliation: assessReconciliationDemonstrated() });
+  assert.equal(verdict.status, 'not-proven');
+  assert.equal(verdict.reasonCode, 'interrupted-worker-unsettled');
+});
+
+test('direct lifecycle reconciliation strategy is limited to surviving processes and never upgrades G3 alone', async () => {
+  const { assessDirectReconciliationStrategy } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  // The synthetic worker tests prove exact ownership and bounded settlement
+  // for the LOCAL mechanism: the strategy is accepted as demonstrated ONLY
+  // under its conditions.
+  const local = assessDirectReconciliationStrategy({
+    exactOwnershipProven: true,
+    boundedSettlementProven: true,
+    hostLossSettlementDemonstrated: false,
+  });
+  assert.equal(local.status, 'demonstrated-with-limits');
+  assert.equal(local.reasonCode, 'host-loss-unreconcilable', 'no durable writer survives host loss, so the strategy cannot cover that trigger');
+  // Without the synthetic proof of ownership or boundedness, the strategy is
+  // rejected outright.
+  const rejected = assessDirectReconciliationStrategy({
+    exactOwnershipProven: true,
+    boundedSettlementProven: false,
+    hostLossSettlementDemonstrated: false,
+  });
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.reasonCode, 'ownership-or-boundedness-unproven');
+});
+
+/** The reconciliation facts the synthetic worker tests demonstrated locally. */
+function assessReconciliationDemonstrated() {
+  return { status: 'demonstrated-with-limits', reasonCode: 'host-loss-unreconcilable' };
+}
+
+/** The full required case matrix: every lifecycle trigger with its command placement. */
+function requiredLifecycleCases() {
+  return [
+    { trigger: 'turn-interrupt', command: 'execution-foreground' },
+    { trigger: 'connection-close', command: 'execution-foreground' },
+    { trigger: 'host-stop', command: 'execution-foreground' },
+    { trigger: 'host-kill', command: 'execution-foreground' },
+    { trigger: 'config-timeout', command: 'execution-foreground' },
+    { trigger: 'safety-deadline', command: 'execution-foreground' },
+    { trigger: 'completion', command: 'execution-foreground' },
+    { trigger: 'cancel-race', command: 'execution-foreground' },
+  ];
+}
+
+/** The in-process server exit grace, for tests that wait past a killed writer. */
+const DIRECT_SERVER_EXIT_GRACE_TEST_MS = 7_000;
+
+// The lifecycle schedule and CLI, against the fake app-server fixture. The
+// fake host forwards the REAL hold_direct dispatch to the REAL disposable
+// server executable, so every durable settlement is genuine handler evidence.
+
+test('direct lifecycle driver schedule classifies the completion case against the fake app-server', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-completion');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 15_000,
+      cases: ['completion'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.cases.completion, 'settlement-observed');
+    assert.equal(phase.workerOutcomes.completion, 'completed');
+    // The case output names the command expectation it tested (plan Task 5
+    // Step 4) and carries the classifier's ownership verdict.
+    assert.deepEqual(phase.commandExpectations.completion, { scope: 'operation', settlesWorker: false, workerOutcomes: ['completed'] });
+    assert.equal(phase.workerOwned.completion, true, 'the classifier joined the settled worker exactly');
+    assert.equal(phase.prerequisites.holdStartedSeen, true, 'the case waited for the durable hold-started before acting');
+    assert.equal(phase.gateG3.status, 'not-proven', 'one observed case never proves the whole gate');
+    assert.equal(phase.gateG3.reasonCode, 'case-coverage-missing');
+    assert.equal(phase.cleanup, 'released');
+    assert.equal(phase.uncommittedCount, 0);
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver records not-sent for an interrupt with no controlled hold', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-interrupt-no-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      turnSetupBudgetMs: 3_000, lifecycleObserveWindowMs: 10_000,
+      cases: ['turn-interrupt'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.cases['turn-interrupt'], 'not-sent', 'a missing exact-turn prerequisite is recorded not-sent');
+    assert.equal(phase.caseReasons['turn-interrupt'], 'turn-not-confirmed');
+    assert.equal(phase.activeTurnHold.status, 'not-proven');
+    // No hold was dispatched for the case, so the gate names the interrupt
+    // prerequisite, not a settlement.
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.gateG3.reasonCode, 'interrupt-case-not-sent');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver interrupt with a controlled hold leaves the worker unsettled and fails G3', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-interrupt-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      // The boundary-spanning sentinel settles at 12 s: the window must
+      // cover its in-window settlement for the isolation check to run.
+      turnSetupBudgetMs: 5_000, lifecycleObserveWindowMs: 16_000, directCallDeadlineMs: 8_000,
+      cases: ['turn-interrupt'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.activeTurnHold.status, 'observed', 'the fake approval request holds the exact turn');
+    assert.equal(phase.cases['turn-interrupt'], 'settlement-unproven', 'the interrupt reached the turn but never the held worker');
+    assert.equal(phase.caseReasons['turn-interrupt'], 'boundary-not-yet-observed', 'the target never settled a cancellation, so no boundary marker exists');
+    assert.equal(phase.workerOwned['turn-interrupt'], false, 'no worker settlement exists, so ownership is not attributable');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.gateG3.reasonCode, 'interrupted-worker-unsettled', 'an interrupted turn with a still-running worker must fail G3');
+    assert.equal(phase.cleanup, 'released');
+    // The corrected durable ordering, pinned end-to-end: the sentinel's
+    // hold-started precedes the driver's trigger-sent record (the sentinel
+    // was established before the action was declared).
+    const rawLog = await readFile(join(run, 'events.jsonl'), 'utf8');
+    const sentinelHoldSeq = rawLog.trim().split('\n').map((l) => JSON.parse(l))
+      .filter((r) => r.kind === 'hold-started')[0].sequence;
+    const triggerSentSeq = rawLog.trim().split('\n').map((l) => JSON.parse(l))
+      .filter((r) => r.kind === 'trigger-sent')[0].sequence;
+    assert.ok(sentinelHoldSeq < triggerSentSeq, 'the sentinel hold must precede the trigger declaration');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver records settlement-unproven when a disconnect is not propagated', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-disconnect-silent');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 5_000,
+      cases: ['connection-close'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.prerequisites.hostSurvivedConnectionClose, 'survived', 'the host process survived the client disconnect');
+    assert.equal(phase.cases['connection-close'], 'settlement-unproven', 'a silent host leaves the held worker unsettled inside the window');
+    assert.equal(phase.caseReasons['connection-close'], 'worker-never-settled');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver classifies a propagated connection close from durable settlement', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  // The fake host exits on client disconnect (its default), which closes the
+  // probe server's stdin: the server settles the held worker connection-closed
+  // within its bounded grace — the positive control for the case.
+  const fixture = await buildDirectDriverFixture('lifecycle-disconnect-propagate');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 15_000,
+      cases: ['connection-close'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The host survives (deterministically verified) and propagates the
+    // close: the case window observes the server's durable two-terminal
+    // connection-closed settlement.
+    assert.equal(phase.prerequisites.hostSurvivedConnectionClose, 'survived');
+    assert.equal(phase.cases['connection-close'], 'settlement-observed');
+    assert.equal(phase.workerOutcomes['connection-close'], 'connection-closed');
+    assert.equal(phase.workerOwned['connection-close'], true);
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver refuses a destructive case inside a shared selection', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-completion');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    await assert.rejects(
+      () => runDirectLifecycleProbe({
+        codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+        cases: ['completion', 'host-kill'],
+      }),
+      /DIRECT_DRIVER_USAGE_INVALID/,
+      'a destructive case must run in its own fresh isolated session',
+    );
+    await assert.rejects(
+      () => runDirectLifecycleProbe({
+        codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+        cases: ['mystery-trigger'],
+      }),
+      /DIRECT_DRIVER_USAGE_INVALID/,
+      'an unknown trigger fails closed',
+    );
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver safety deadline case is labeled mechanism-only and settles the held worker', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-safety-deadline');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 20_000,
+      cases: ['safety-deadline'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.mechanismOnlySafetyDeadline, true, 'the injected ceiling is labeled mechanism-only evidence');
+    assert.equal(phase.cases['safety-deadline'], 'settlement-observed');
+    assert.equal(phase.workerOutcomes['safety-deadline'], 'safety-deadline');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver CLI accepts --mode lifecycle and prints only redacted counters', async () => {
+  const fixture = await buildDirectDriverFixture('lifecycle-completion');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const run2 = join(fixture.parent, 'run-invalid-cases');
+    await fsp.mkdir(run2, { mode: 0o700 });
+    const result = spawnSync(process.execPath, [
+      directDriverModulePath, '--mode', 'lifecycle', '--cases', 'completion',
+      '--codex', fixture.codexPath, '--run-directory', run,
+    ], { encoding: 'utf8', timeout: 240_000 });
+    assert.equal(result.status, 0, `the lifecycle CLI run failed: ${result.stderr}`);
+    const counters = JSON.parse(result.stdout);
+    assert.equal(counters.mode, 'lifecycle');
+    assert.equal(counters.phases.lifecycle.cases.completion, 'settlement-observed');
+    // The stdout carries only closed counter values: no path, label, nonce,
+    // or raw identifier may cross the CLI boundary.
+    assert.equal(result.stdout.includes(fixture.parent), false, 'no fixture path leaks to stdout');
+    assert.equal(result.stdout.includes(fixture.codexPath), false, 'no codex path leaks to stdout');
+    const invalid = spawnSync(process.execPath, [
+      directDriverModulePath, '--mode', 'lifecycle', '--cases', 'mystery',
+      '--codex', fixture.codexPath, '--run-directory', run2,
+    ], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /DIRECT_DRIVER_USAGE_INVALID/);
+    assert.equal(invalid.stderr.includes(fixture.parent), false, 'no raw path on the failure boundary');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle a respawned handler adopts the registration of a dead owner', async () => {
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const secret = directRunNonce();
+    const { hashProbeValue: hash } = await import('../tools/mcp-context-probe/observer.mjs');
+    const registrationPath = join(run, 'handler-owner.json');
+    const writeRegistration = (pid, digest) => writeFileSync(registrationPath, `${JSON.stringify({ version: 1, runNonce: nonce, pid, secretDigest: digest })}\n`, { mode: 0o600 });
+    // The host spawned a handler instance that recorded the run capability
+    // and then exited; its stale registration is all that remains.
+    writeRegistration(await findDeadProcessPid(), hash(nonce, secret));
+    // A respawned instance holding the SAME run capability must adopt the
+    // registration of the dead owner and serve — not fail with
+    // PROBE_OWNER_CONFLICT, which is what made the host's call-time restart
+    // fail its initialize handshake.
+    const respawned = createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: secret });
+    await respawned.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('respawned-instance') });
+    const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+    assert.equal(records.some((record) => record.kind === 'server-started'), true, 'the adopted handler can append durable evidence');
+    // A LIVE owner with the same capability still conflicts: adoption never
+    // takes over a running handler.
+    const liveChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      writeRegistration(liveChild.pid, hash(nonce, secret));
+      assert.throws(() => createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: secret }), /PROBE_OWNER_CONFLICT/, 'a live owner is never adopted over');
+      // A DIFFERENT capability (any state) still conflicts.
+      writeRegistration(await findDeadProcessPid(), directHash('other-secret'));
+      assert.throws(() => createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'lifecycle' }, ownerSecret: secret }), /PROBE_OWNER_CONFLICT/, 'a foreign capability is never adopted');
+    } finally {
+      liveChild.kill('SIGKILL');
+    }
+  });
+});
+
+/** Finds a pid that is currently not alive (never the test process). */
+async function findDeadProcessPid() {
+  for (let candidate = 100_000; candidate < 2 ** 31; candidate += 7919) {
+    try {
+      process.kill(candidate, 0);
+    } catch (error) {
+      if (/** @type {any} */ (error).code === 'ESRCH') return candidate;
+    }
+  }
+  throw new Error('no dead pid found');
+}
+
+// Self-review round (commit dfa75e8 findings): regressions first.
+
+test('direct lifecycle a failed sentinel dispatch is a contradiction, never dropped', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'completed',
+      workerOutcome: 'completed',
+      rpcOutcome: 'success-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    // The per-call trigger landed and the case settled — but the sentinel
+    // dispatch itself failed. The case may not quietly classify
+    // settlement-observed with an invisible sentinel: an undispatched
+    // sentinel is a contradiction under its command expectation.
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: directLabel(), sentinelDispatchFailed: true,
+    });
+    assert.equal(verdict.classification, 'expectation-mismatch');
+    assert.equal(verdict.reasonCode, 'sentinel-undispatched');
+  });
+});
+
+test('direct lifecycle case window keeps a later case from relabeling an earlier one', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Case A settles completed under a per-call trigger; a LATER case B
+    // settles cancelled in the same run. Bounded to its own window, case A's
+    // sentinel lookup cannot see case B's records, so B cannot relabel A;
+    // unbounded, the same sentinel attribution would read case B's
+    // cancellation as overly broad — the window is load-bearing.
+    const { label: labelA } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+    });
+    const windowEnd = (await readDirectProbeEvents({ runDirectory: run, runNonce: nonce })).length;
+    const { label: labelB } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const bounded = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: labelA, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: labelB, windowStart: 0, windowEnd,
+    });
+    // Within case A's window the sentinel has joined but never settled: the
+    // stricter sentinel rule records that honestly as unproven — and case B's
+    // cancellation can neither survive nor catch case A from outside the
+    // window.
+    assert.equal(bounded.classification, 'settlement-unproven', 'the later case lies outside the window and cannot settle this one');
+    assert.equal(bounded.reasonCode, 'sentinel-never-settled');
+    assert.equal(bounded.sentinelClassification, 'unproven', 'the sentinel attribution is bounded to the case window');
+    for (const ref of bounded.evidenceRefs) {
+      const sequence = Number(ref.split('@')[1]);
+      assert.ok(sequence < windowEnd, `evidence ref ${ref} lies outside the case window`);
+    }
+    const unbounded = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: labelA, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: labelB,
+    });
+    assert.equal(unbounded.sentinelClassification, 'unproven', 'without the window the later case reaches the verdict');
+    assert.equal(unbounded.reasonCode, 'sentinel-ordering-unprovable', 'the window changed the verdict specificity, proving it is load-bearing');
+    assert.equal(unbounded.classification, 'settlement-unproven');
+  });
+});
+
+test('direct lifecycle a per-call case without an established sentinel is unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    // No sentinel label at all: the per-call isolation check cannot run, so
+    // the case is unproven — never settlement-observed.
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-missing');
+  });
+});
+
+test('direct lifecycle driver flags a sentinel the host refuses after the trigger', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-refuses-after-trigger');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 5_000,
+      cases: ['config-timeout'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The refused sentinel never durably joined, so the isolation check
+    // cannot run: the case is honestly unproven.
+    assert.equal(phase.cases['config-timeout'], 'settlement-unproven', 'a per-call case without a joined sentinel is never settlement-observed');
+    assert.equal(phase.caseReasons['config-timeout'], 'sentinel-missing');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver records signal-unverified when the host dies before the trigger', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-host-dies-before-trigger');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 15_000,
+      cases: ['host-stop'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The hold started durably (the dispatch reached the handler), but the
+    // owning host was gone before the trigger: the signal cannot be verified
+    // as delivered, so the case records the not-sent-style prerequisite.
+    assert.equal(phase.prerequisites.holdStartedSeen, true);
+    assert.equal(phase.cases['host-stop'], 'not-sent', 'an unverifiable host signal never proceeds into observation');
+    assert.equal(phase.caseReasons['host-stop'], 'signal-unverified');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.gateG3.reasonCode, 'host-signal-unverified');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+// Codex gate review round (Task 5): regressions first.
+
+test('direct lifecycle an unsettled sentinel is unproven, never survived', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The target settled cancelled under the per-call timeout trigger; the
+    // sentinel JOINED (handler entry, hold) but never settled within the
+    // case window — a timed-out sentinel RPC can still report a joined call.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce() };
+    const { label, sentinel: joinedSentinel } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: joinedSentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven', 'a joined sentinel without a durable settlement is unproven');
+    assert.equal(verdict.classification, 'settlement-unproven', 'the per-call isolation check cannot pass on an unsettled sentinel');
+    assert.equal(verdict.reasonCode, 'sentinel-never-settled');
+  });
+});
+
+test('direct lifecycle settlement requires both joined terminals with consistent outcomes', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Partial settlement: the worker terminal exists without any durable
+    // handler outcome — never a demonstrated settlement.
+    const { label: partialLabel } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      handlerOutcome: null,
+      workerOutcome: 'completed',
+      rpcOutcome: 'success-result',
+    });
+    // Inconsistent terminals: the two durable outcomes disagree.
+    const { label: inconsistentLabel } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      handlerOutcome: 'completed',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'success-result',
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const partial = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: partialLabel, phase: 'lifecycle', command: 'execution-foreground', trigger: 'completion',
+    });
+    assert.equal(partial.classification, 'settlement-unproven', 'a worker terminal alone is a partial settlement');
+    assert.equal(partial.reasonCode, 'handler-terminal-missing');
+    const inconsistent = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: inconsistentLabel, phase: 'lifecycle', command: 'execution-foreground', trigger: 'completion',
+    });
+    assert.equal(inconsistent.classification, 'settlement-unproven', 'disagreeing terminals do not demonstrate one settlement');
+    assert.equal(inconsistent.reasonCode, 'inconsistent-terminals');
+  });
+});
+
+test('direct lifecycle a race without an observed cancellation boundary is unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The worker completed and the RPC answered successfully: nothing
+    // durable shows a cancellation was ever in play, so this is not a
+    // demonstrated completion-versus-cancellation race.
+    const boundarySentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'completed',
+      workerOutcome: 'completed',
+      rpcOutcome: 'success-result',
+      sentinel: boundarySentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const unproven = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'cancel-race',
+      sentinelLabel: boundarySentinel.label,
+    });
+    assert.equal(unproven.classification, 'settlement-unproven');
+    assert.equal(unproven.reasonCode, 'cancellation-boundary-unobserved');
+    // Positive control: durable cancellation evidence (the RPC observed the
+    // host acting, or the worker settled by a cancellation outcome) admits
+    // the race classification.
+    const raceSentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const cancelled = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel: raceSentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const second = await reduceDirectRun(run, nonce);
+    const observed = classifyDirectLifecycleCase({
+      records: second.records, reduced: second.reduced, probeLabel: cancelled.label, phase: 'lifecycle',
+      command: 'execution-foreground', trigger: 'cancel-race', cancellationObserved: true,
+      sentinelLabel: raceSentinel.label,
+    });
+    // Even a perfectly ordered cancel-race transcript cannot claim isolation:
+    // the timeout decision is host-internal and durably unorderable.
+    assert.equal(observed.classification, 'settlement-unproven');
+    assert.equal(observed.reasonCode, 'sentinel-ordering-unprovable');
+    assert.equal(observed.workerOutcome, 'cancelled');
+  });
+});
+
+test('direct lifecycle both sentinel terminals must postdate the cancellation boundary', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // DELAYED-LOG-WRITE shape: the sentinel's handler-settled commits BEFORE
+    // the target's cancellation settlement (the boundary marker), and its
+    // worker-settled commits afterward — the sentinel had already finished
+    // when the cancellation acted, so the straddling worker record alone
+    // must never forge per-call isolation.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed', handlerEarly: true };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven', 'a straddling worker terminal with an expired handler terminal proves nothing');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-handler-expired-before-boundary');
+  });
+});
+
+test('direct lifecycle case reasons are closed across the classifier and the driver emissions', async () => {
+  const lifecycle = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  assert.deepEqual([...lifecycle.DIRECT_LIFECYCLE_DRIVER_REASON_CODES], ['signal-unverified', 'host-lost-during-close']);
+  assert.ok(Object.isFrozen(lifecycle.DIRECT_LIFECYCLE_DRIVER_REASON_CODES), 'the driver-emitted reason set is frozen');
+  // Scan the driver source for every reason it can write into the redacted
+  // caseReasons output; each must belong to a closed enumeration.
+  const driverSource = readFileSync(directDriverModulePath, 'utf8');
+  const written = [...driverSource.matchAll(/caseReasons\[[^\]]*\] = '([a-z][a-z0-9-]*)'/g)].map((match) => match[1]);
+  assert.ok(written.includes('signal-unverified'), 'the scan sees the signal gate');
+  assert.ok(written.includes('host-lost-during-close'), 'the scan sees the close gate');
+  assert.ok(written.includes('turn-not-confirmed'), 'the scan sees the turn gate');
+  const enumerated = new Set([...lifecycle.DIRECT_LIFECYCLE_REASON_CODES, ...lifecycle.DIRECT_LIFECYCLE_DRIVER_REASON_CODES]);
+  for (const code of written) {
+    assert.ok(enumerated.has(code), `caseReasons value ${code} is outside every closed enumeration`);
+  }
+});
+
+test('direct lifecycle driver excludes host loss during the close from the surviving-host case', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-host-exits-before-close');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 15_000,
+      cases: ['connection-close'],
+    });
+    const phase = counters.phases.lifecycle;
+    assert.equal(phase.prerequisites.holdStartedSeen, true, 'the durable hold existed before the close');
+    assert.equal(phase.prerequisites.hostSurvivedConnectionClose, 'not-survived', 'the host was verifiably gone during the close');
+    assert.equal(phase.cases['connection-close'], 'settlement-unproven', 'host loss during the close is never the surviving-host result');
+    assert.equal(phase.caseReasons['connection-close'], 'host-lost-during-close');
+    // The durable trail must not claim the close was acknowledged when no
+    // host survived to observe it: the closed trigger-observed vocabulary
+    // carries 'not-observed' for exactly this.
+    const rawLog = await readFile(join(run, 'events.jsonl'), 'utf8');
+    const triggerObserved = rawLog.trim().split('\n').map((line) => JSON.parse(line)).filter((record) => record.kind === 'trigger-observed');
+    assert.equal(triggerObserved.length, 1, 'exactly one trigger observation is durable');
+    assert.equal(triggerObserved[0].outcome, 'not-observed', 'an unobserved close is recorded not-observed, never acknowledged');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver records an unobserved cancellation boundary for the race case', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-completion');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 20_000,
+      cases: ['cancel-race'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The fake host has no cancellation side: the worker completes with a
+    // successful RPC and nothing durable shows cancellation in play, so the
+    // race prerequisite is honestly unproven.
+    assert.equal(phase.cases['cancel-race'], 'settlement-unproven');
+    assert.equal(phase.caseReasons['cancel-race'], 'cancellation-boundary-unobserved');
+    assert.equal(phase.cancellationObserved['cancel-race'], false);
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver establishes the sentinel before the trigger so broad cancellation is caught', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-cancels-everything');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 20_000,
+      cases: ['config-timeout'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The fake host cancels every call active at trigger time. The sentinel
+    // hold was durably established BEFORE the trigger, so it settles
+    // cancelled too and the broad cancellation is caught — it can never
+    // masquerade as isolated cancellation of the target.
+    assert.equal(phase.prerequisites.holdStartedSeen, true);
+    // The timeout boundary is host-internal: even a broad cancellation
+    // caught by the sentinel cannot be durably ordered against the
+    // decision, so the case is honestly unproven.
+    assert.equal(phase.cases['config-timeout'], 'settlement-unproven');
+    assert.equal(phase.caseReasons['config-timeout'], 'sentinel-ordering-unprovable');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle driver never lets a generic RPC error forge the race boundary', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-race-generic-error');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 30_000,
+      cases: ['cancel-race'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The worker completed on its own and the driver saw a GENERIC host
+    // error: that is not cancellation evidence, so the boundary is honestly
+    // unobserved and the race stays unproven.
+    assert.equal(phase.cancellationObserved['cancel-race'], false, 'a generic RPC error is not cancellation evidence');
+    assert.equal(phase.cases['cancel-race'], 'settlement-unproven');
+    assert.equal(phase.caseReasons['cancel-race'], 'cancellation-boundary-unobserved');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle a sentinel that expires before the cancellation boundary is unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The sentinel's completed settlement is durable BEFORE the target's
+    // cancellation settlement: at the boundary moment the sentinel was
+    // already finished, so its completion cannot prove per-call isolation.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSettledBeforeTarget: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-unprovable', 'a host-internal timeout boundary cannot order the sentinel against the decision');
+    // Control: even the DRIVER-ORDERED release chain (the release marker
+    // following the boundary) cannot upgrade a sentinel that settled by its
+    // OWN watchdog — a self-completed terminal proves nothing about
+    // isolation, whatever the orderings show.
+    const after = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel: { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' },
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const second = await reduceDirectRun(run, nonce);
+    const survived = classifyDirectLifecycleCase({
+      records: second.records, reduced: second.reduced, probeLabel: after.label, phase: 'lifecycle',
+      command: 'execution-foreground', trigger: 'turn-interrupt', exactTurnConfirmed: true, sentinelLabel: after.sentinel.label,
+    });
+    assert.equal(survived.sentinelClassification, 'unproven', 'a self-completed sentinel proves nothing even under the verified release chain');
+    assert.equal(survived.classification, 'settlement-unproven');
+    assert.equal(survived.reasonCode, 'sentinel-watchdog-unprovable');
+  });
+});
+
+test('direct lifecycle a sentinel that starts after the boundary settlement is unproven', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The target's cancellation settlement (the boundary marker) is durable
+    // BEFORE the sentinel even joins: the sentinel never spanned the
+    // boundary, so survival must be refused however clean its later
+    // completion looks.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelJoinedAfterTargetSettlement: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-unprovable', 'a host-internal timeout boundary cannot order the sentinel against the decision');
+  });
+});
+
+test('direct lifecycle driver flags a slow sentinel that starts after the timeout boundary', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-slow-sentinel');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 30_000,
+      cases: ['config-timeout'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The fake host cancels ONLY the target at the 8-second timeout boundary
+    // and forwards the sentinel dispatch only after the boundary settlement
+    // is durable: the sentinel started after the boundary, so the case can
+    // never claim the sentinel survived it.
+    assert.equal(phase.prerequisites.holdStartedSeen, true);
+    // The delayed sentinel forwarding also makes the driver's own trigger
+    // declaration land AFTER the durable target settlement: the journal
+    // cannot prove the settlement followed the declared action at all, so
+    // the case is honestly unproven on the window gap.
+    assert.equal(phase.cases['config-timeout'], 'settlement-unproven', 'a sentinel that started after the boundary never spans it');
+    assert.equal(phase.caseReasons['config-timeout'], 'settlement-before-trigger');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle a host-internal cancellation boundary cannot prove sentinel isolation', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // Every journal ordering satisfied: the sentinel joined before the
+    // target's cancellation settlement and completed after it. The timeout
+    // decision itself happens INSIDE the host — no journal ordering can
+    // prove the sentinel was held at the decision instant.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'config-timeout',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'config-timeout',
+      sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-unprovable');
+  });
+});
+
+test('direct lifecycle driver cancels the boundary-spanning sentinel at the timeout boundary', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-cancels-at-timeout');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 30_000,
+      cases: ['config-timeout'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The fake host broadly cancels every active call when the configured
+    // 8-second timeout boundary fires (the target's durable cancellation
+    // settlement is the boundary marker). The sentinel — held longer than
+    // the timeout because it was established before the trigger — is active
+    // at that moment and MUST be caught; a sentinel that had already
+    // completed would prove nothing.
+    assert.equal(phase.prerequisites.holdStartedSeen, true);
+    // The boundary was host-internal: isolation is durably unorderable, so
+    // the case is unproven even though the sentinel was caught by the broad
+    // cancellation.
+    assert.equal(phase.cases['config-timeout'], 'settlement-unproven');
+    assert.equal(phase.caseReasons['config-timeout'], 'sentinel-ordering-unprovable');
+    assert.equal(phase.gateG3.status, 'not-proven');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('direct lifecycle a sentinel that starts after the trigger declaration is inverted', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // INVERTED journal: the driver declared the trigger (trigger-sent)
+    // BEFORE the sentinel ever joined — the action occurred before the
+    // sentinel entry, so the later-completing hold proves nothing.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    // The sentinel's hold began AFTER the driver had already declared the
+    // trigger — the isolation ordering is inverted (the sentinel cannot
+    // prove it was held ahead of the action), recorded on the unproven
+    // path, never as survived isolation.
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-inverted');
+  });
+});
+
+test('direct lifecycle the real driver order alone cannot prove a self-completed sentinel', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The REAL driver schedule, durably ordered: sentinel hold-started
+    // precedes the driver's trigger-sent, which precedes the target's
+    // cancellation settlement (the boundary), and the sentinel completes
+    // after it — every ordering holds, and the case is STILL unproven: the
+    // completion decision was the probe server's internal watchdog, which
+    // is durably unorderable against the host's cancellation action. Only
+    // the driver-ordered release with a CANCELLED settlement proves
+    // isolation.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelJoinBeforeTrigger: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven', 'the real driver order alone cannot prove a self-completed sentinel');
+    assert.equal(verdict.reasonCode, 'sentinel-watchdog-unprovable');
+  });
+});
+
+test('direct lifecycle a target settled before the trigger declaration cannot claim isolation', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // WINDOW B (the gap): the sentinel hold-started precedes the target's
+    // cancellation settlement, which precedes the driver's trigger-sent —
+    // the target was cancelled independently BEFORE the driver ever fired
+    // turn/interrupt, so the apparent span proves no isolation.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      triggerAfterSettlement: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'settlement-before-trigger');
+  });
+});
+
+test('direct lifecycle a sentinel joined after the trigger declaration is refused', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // WINDOW A: the driver declared the trigger BEFORE the sentinel joined;
+    // the isolation ordering is inverted and the case refuses.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelJoinAfterTrigger: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-inverted');
+  });
+});
+
+test('direct lifecycle a rejected interrupt observation refuses the settlement claim', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The host REJECTED the requested turn/interrupt (trigger-observed
+    // rejected), yet the target independently settled cancelled afterwards
+    // and the sentinel completed: the durable chain looks clean, but the
+    // settlement/isolation would be misattributed to an action that never
+    // took effect — the case must refuse.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'rejected',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'trigger-not-acknowledged');
+  });
+});
+
+test('direct lifecycle the sentinel requires both matching terminals like the target', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The sentinel settled by its WORKER terminal alone: its handler
+    // terminal is missing — under the VERIFIED release chain a partial
+    // sentinel write can neither claim survived isolation nor pass the case.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed', workerOnly: true };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-handler-terminal-missing');
+    // Conflicting sentinel terminals: the handler and worker disagree —
+    // the sentinel's own two-terminal invariant is violated too.
+    const conflictingSentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed', handlerOutcome: 'cancelled' };
+    const second = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel: conflictingSentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const secondReduce = await reduceDirectRun(run, nonce);
+    const conflicting = classifyDirectLifecycleCase({
+      records: secondReduce.records, reduced: secondReduce.reduced, probeLabel: second.label, phase: 'lifecycle',
+      command: 'execution-foreground', trigger: 'turn-interrupt', exactTurnConfirmed: true, sentinelLabel: conflictingSentinel.label,
+    });
+    assert.equal(conflicting.classification, 'settlement-unproven');
+    assert.equal(conflicting.reasonCode, 'sentinel-terminals-inconsistent');
+  });
+});
+
+test('direct lifecycle a watchdog self-completed sentinel can never claim isolation', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The reviewer's exact gap: the sentinel's completion was DECIDED by our
+    // server's internal watchdog before the boundary, and both terminals
+    // committed after it — all orderings hold, but the completion decision
+    // is durably unorderable against the host's cancellation action.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-watchdog-unprovable');
+  });
+});
+
+test('direct lifecycle a sentinel terminal predating the verified release proves nothing', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The release marker follows the boundary, but the sentinel's HANDLER
+    // terminal predates it (a straddling/delayed-log-write shape): the
+    // sentinel was not verifiably pending at the driver-ordered release, so
+    // BOTH terminals must postdate the marker for isolation.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'cancelled', handlerEarly: true };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven', 'a handler terminal predating the verified release proves no post-release hold');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-handler-before-release');
+  });
+});
+
+test('direct lifecycle driver releases the sentinel at the observed boundary over notifications/cancelled', async () => {
+  const { runDirectLifecycleProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('lifecycle-cancels-at-timeout');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectLifecycleProbe({
+      codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run,
+      lifecycleObserveWindowMs: 30_000,
+      cases: ['config-timeout'],
+    });
+    const phase = counters.phases.lifecycle;
+    // The host cancels the TARGET at the configured timeout: the boundary is
+    // durably observed, the driver releases the sentinel over
+    // notifications/cancelled, and the classifier honestly records the
+    // host-internal isolation as unprovable.
+    assert.equal(phase.prerequisites.holdStartedSeen, true);
+    assert.equal(phase.cases['config-timeout'], 'settlement-unproven');
+    assert.equal(phase.caseReasons['config-timeout'], 'sentinel-ordering-unprovable');
+    assert.equal(phase.cleanup, 'released');
+    // The durable journal pins the real release path: the sentinel join
+    // precedes the driver's release marker (trigger-observed acknowledged,
+    // source driver), and BOTH sentinel terminals postdate the marker.
+    const rawLog = await readFile(join(run, 'events.jsonl'), 'utf8');
+    const recs = rawLog.trim().split('\n').map((l) => JSON.parse(l));
+    const releaseMarker = recs.find((r) => r.kind === 'trigger-observed' && r.outcome === 'acknowledged' && r.source === 'driver');
+    assert.ok(releaseMarker, 'the driver release marker is durable');
+    const sentinelCallNonce = recs.find((r) => r.kind === 'trigger-sent' && r.callNonce !== undefined && r.sequence > 0
+      && recs.some((o) => o.kind === 'trigger-observed' && o.callNonce === r.callNonce && o.source === 'driver')).callNonce;
+    const boundaryRecord = recs.find((r) => r.kind === 'worker-settled' && r.callNonce !== sentinelCallNonce && r.outcome === 'cancelled');
+    assert.ok(boundaryRecord, 'the target cancellation boundary is durable');
+    assert.ok(releaseMarker.sequence > boundaryRecord.sequence, 'the release marker follows the durably observed boundary');
+    const sentinelTerminals = recs.filter((r) => (r.kind === 'handler-settled' || r.kind === 'worker-settled') && r.callNonce === sentinelCallNonce);
+    assert.equal(sentinelTerminals.length, 2, 'both sentinel terminals are durable');
+    for (const terminal of sentinelTerminals) {
+      assert.ok(terminal.sequence > boundaryRecord.sequence, 'the sentinel terminal postdates the observed boundary');
+      // The sentinel settled CANCELLED by the forwarded targeted release: a
+      // release that had hit the target's request id could never produce
+      // this (the sentinel would only settle by its own watchdog later).
+      assert.equal(terminal.outcome, 'cancelled', 'the released sentinel settled cancelled by the targeted release');
+    }
+    // The targeted release hit the SENTINEL's own request id, never the
+    // target's: the fake host records WHICH driver request id the
+    // notifications/cancelled frame named, beside every dispatched tool-call
+    // request id (1st = the case target, 2nd = the sentinel).
+    const cancelledRecord = JSON.parse(await readFile(join(run, 'fixture-cancelled-request.json'), 'utf8'));
+    assert.equal(cancelledRecord.driverToolCallIds.length, 2, 'the case dispatched exactly the target and the sentinel');
+    assert.notEqual(cancelledRecord.cancelledRequestId, cancelledRecord.driverToolCallIds[0], 'the targeted release never names the target request');
+    assert.equal(cancelledRecord.cancelledRequestId, cancelledRecord.driverToolCallIds[1], 'the targeted release names the sentinel request');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+// Codex gate round 13 escalation (four P1s): regressions first.
+
+test('direct lifecycle delayed sentinel terminal writes after an earlier broad cancellation are decision-order unprovable', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The misattribution shape: a broad cancellation DECIDES the sentinel's
+    // outcome before the driver releases it, while the server writes the
+    // terminal records afterward — and the server sends the tools/call
+    // response only AFTER both terminals are durably committed. The sentinel
+    // request is therefore still outstanding when the driver releases it
+    // (cancelRequestById returns true), both terminals postdate the verified
+    // marker, and the journal is IDENTICAL to a genuine post-release
+    // decision. The decision instant is durably unorderable against the
+    // targeted release, so isolation stays unproven however clean the
+    // orderings look.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'cancelled' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven', 'a verified release cannot prove the decision followed it');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-decision-order-unprovable');
+  });
+});
+
+test('direct lifecycle a verified release with non-cancelled sentinel terminals is outcome-unprovable', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The release chain holds, but the sentinel settled `timed-out`: only a
+    // `cancelled` settlement is the server's cancellation decision at all —
+    // any other non-completed outcome cannot witness the targeted release.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'timed-out' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.sentinelClassification, 'unproven', 'a non-cancelled terminal cannot witness the targeted release');
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-outcome-unprovable');
+  });
+});
+
+test('direct lifecycle sentinel completed terminals after the verified release are watchdog-unprovable', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The watchdog won the race: the sentinel completed (its own timer) even
+    // though the driver's verified release marker followed the boundary.
+    // The target settles cancelled (the durably observed boundary), and both
+    // sentinel terminals commit after the marker — the completion decision
+    // is still the probe server's internal watchdog, so isolation stays
+    // unprovable.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelDriverRelease: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-watchdog-unprovable');
+  });
+});
+
+test('direct lifecycle an early release marker before the boundary is ordering-unprovable', async () => {
+  const { classifyDirectLifecycleCase } = await import('../tools/direct-mcp-probe/lifecycle.mjs');
+  await withDirectProbeRun('zcode-direct-lifecycle-', async (run) => {
+    const nonce = directRunNonce();
+    // The release marker (trigger-observed acknowledged for the sentinel's
+    // call) is durable BEFORE the target's cancellation settlement: the
+    // marker does not follow the durably observed boundary, so the
+    // driver-ordered release chain is unproven.
+    const sentinel = { label: directLabel(), callNonce: directCallNonce(), workerOutcome: 'completed' };
+    const { label } = await buildDirectLifecycleTranscript(run, {
+      nonce,
+      triggerSent: 'turn-interrupt',
+      triggerObserved: 'acknowledged',
+      handlerOutcome: 'cancelled',
+      workerOutcome: 'cancelled',
+      rpcOutcome: 'error-result',
+      sentinel,
+      sentinelSpanningBoundary: true,
+      sentinelEarlyReleaseMarker: true,
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const verdict = classifyDirectLifecycleCase({
+      records, reduced, probeLabel: label, phase: 'lifecycle', command: 'execution-foreground', trigger: 'turn-interrupt',
+      exactTurnConfirmed: true, sentinelLabel: sentinel.label,
+    });
+    assert.equal(verdict.classification, 'settlement-unproven');
+    assert.equal(verdict.reasonCode, 'sentinel-ordering-unprovable', 'a marker preceding the boundary proves no post-boundary release');
+  });
 });

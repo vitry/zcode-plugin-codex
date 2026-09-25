@@ -55,6 +55,12 @@ import {
 } from './observer.mjs';
 import { directProbeSealHead } from './probe-log.mjs';
 import { classifyDirectIdentitySample } from './identity.mjs';
+import {
+  DIRECT_LIFECYCLE_TRIGGERS,
+  assessDirectReconciliationStrategy,
+  classifyDirectLifecycleCase,
+  directLifecycleExpectation,
+} from './lifecycle.mjs';
 
 /** The disposable probe's MCP server identity inside the generated descriptor. */
 export const DIRECT_PROBE_SERVER_NAME = 'zcode-direct-mcp-probe';
@@ -374,7 +380,13 @@ export function startAppServerSession(options) {
       if (!entry) return;
       pending.delete(frame.id);
       clearTimeout(entry.timer);
-      if (frame.error) entry.reject(directError('PROBE_APP_SERVER_REQUEST_FAILED', `The app-server rejected ${entry.method}.`));
+      if (frame.error) {
+        const rejection = directError('PROBE_APP_SERVER_REQUEST_FAILED', `The app-server rejected ${entry.method}.`);
+        // PRIVATE ephemeral diagnostics only (read under DEBUG_DIRECT_PROBE);
+        // never logged by default and never persisted or committed.
+        rejection.hostMessage = frame.error.message;
+        entry.reject(rejection);
+      }
       else entry.resolve(frame.result ?? {});
     } else if (frame && typeof frame === 'object' && typeof frame.method === 'string' && frame.id !== undefined) {
       // Server-to-client request. The identity schedule may HOLD matching
@@ -465,7 +477,7 @@ export function startAppServerSession(options) {
     /** @param {string} method @param {Record<string, unknown>} params @param {number} [timeoutMs] */
     request(method, params, timeoutMs = APP_SERVER_REQUEST_DEADLINE_MS) {
       const id = nextId++;
-      return new Promise((resolveRequest, rejectRequest) => {
+      const promise = new Promise((resolveRequest, rejectRequest) => {
         const timer = setTimeout(() => {
           pending.delete(id);
           rejectRequest(directError('PROBE_APP_SERVER_TIMEOUT', `The app-server did not answer ${method} in time.`));
@@ -477,10 +489,29 @@ export function startAppServerSession(options) {
           rejectRequest(/** @type {Error} */ (error));
         }
       });
+      // Synchronous access to the JSON-RPC id: the driver-ordered sentinel
+      // release cancels THIS exact outstanding request.
+      promise.requestId = id;
+      return promise;
     },
     /** @param {{method: string, params: Record<string, unknown>}} value */
     notify(value) {
       try { writeFrame(value); } catch { /* session is ending */ }
+    },
+    /**
+     * Sends notifications/cancelled for the driver's EXACT outstanding
+     * request id (the JSON-RPC cancellation route): the explicit
+     * driver-controlled release of the held sentinel call. Returns true only
+     * when that exact id was verifiably outstanding and the cancellation
+     * frame was written; false otherwise — the caller must then treat the
+     * release as unverified.
+     * @param {number} requestId
+     * @returns {boolean}
+     */
+    cancelRequestById(requestId) {
+      if (!pending.has(requestId)) return false;
+      try { writeFrame({ method: 'notifications/cancelled', params: { requestId } }); } catch { return false; }
+      return true;
     },
     /**
      * Terminates the bounded session (stdin end, SIGTERM, then SIGKILL).
@@ -494,6 +525,29 @@ export function startAppServerSession(options) {
         const exited = await waitForExit(child.pid ?? -1, Math.max(1, graceMs));
         if (!exited && isProcessAlive(child.pid ?? -1)) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
       }
+    },
+    /**
+     * Closes ONLY the client connection (the JSON-RPC stdin) without
+     * signalling the process: the host is expected to survive. The lifecycle
+     * connection-close case uses this to separate connection loss from
+     * process loss.
+     */
+    endInput() {
+      try { child.stdin?.end(); } catch { /* session is ending */ }
+    },
+    /**
+     * Signals the host process AFTER re-verifying its spawn-time start
+     * identity (the same discipline as cleanup); returns false — without
+     * signalling — when the identity cannot be verified or the process is
+     * already gone.
+     * @param {string} signal @param {number} [verifyMs]
+     * @returns {Promise<boolean>}
+     */
+    async signal(signal, verifyMs = 1_000) {
+      const pid = child.pid ?? -1;
+      if (!boundedIdentityMatches(pid, identity, verifyMs)) return false;
+      try { child.kill(signal); } catch { return false; }
+      return true;
     },
   };
 }
@@ -700,6 +754,78 @@ export function classifyDirectGateG2({ identity, activeTurnHold, authorization }
 }
 
 /**
+ * The lifecycle-trigger coverage G3's proven branch requires: every separate
+ * case the spec names must be durably observed, and the explicit
+ * interruption must have actually been sent (its exact-turn prerequisite
+ * demonstrated) — a `not-sent` interruption is a missing prerequisite, never
+ * a pass.
+ */
+const DIRECT_LIFECYCLE_REQUIRED_TRIGGERS = Object.freeze([
+  'turn-interrupt', 'connection-close', 'host-stop', 'host-kill',
+  'config-timeout', 'safety-deadline', 'completion', 'cancel-race',
+]);
+
+/**
+ * The G3 gate decision for the lifecycle campaign (plan Task 5). The rule
+ * pinned by the synthetic worker tests: an interrupted turn with a
+ * still-running worker FAILS G3 — it takes precedence over every other
+ * reason. `proven` further requires (1) the reconciliation strategy assessed
+ * under demonstrated exact ownership and bounded settlement, (2) no
+ * expectation mismatch anywhere (a reducer that kills the status target or
+ * cancels a sentinel is a contradiction), (3) no settlement-unproven case,
+ * and (4) every required trigger observed with its case actually sent.
+ * `not-sent` cases are missing prerequisites; they keep the gate down and
+ * name the deepest missing link.
+ * @param {{cases: {trigger: string, command: string, classification: string, workerOutcome: ?string, workerOwned: boolean, sent: boolean, reasonCode: ?string}[], reconciliation: {status: string, reasonCode: ?string}}} input
+ */
+export function classifyDirectGateG3({ cases, reconciliation }) {
+  if (!Array.isArray(cases)) throw directError('DIRECT_CASE_INVALID', 'The G3 gate requires the lifecycle case list.');
+  if (!reconciliation || typeof reconciliation.status !== 'string') {
+    throw directError('DIRECT_CASE_INVALID', 'The G3 gate requires the reconciliation assessment.');
+  }
+  // (1) The interrupted-turn rule, first regardless of everything else.
+  const interruptedUnsettled = cases.some((entry) => entry.trigger === 'turn-interrupt' && entry.sent === true
+    && (entry.workerOutcome === null || entry.workerOwned !== true));
+  if (interruptedUnsettled) return { status: 'not-proven', reasonCode: 'interrupted-worker-unsettled', evidenceRefs: [] };
+  // (2) The reconciliation candidate: accepted only under its demonstrated
+  // conditions. `demonstrated-with-limits` stays acceptable when the cases
+  // themselves demonstrate the settlement (checked below); a rejected
+  // strategy names its own reason.
+  if (reconciliation.status === 'rejected') {
+    return { status: 'not-proven', reasonCode: reconciliation.reasonCode ?? 'reconciliation-not-demonstrated', evidenceRefs: [] };
+  }
+  if (reconciliation.status !== 'demonstrated' && reconciliation.status !== 'demonstrated-with-limits') {
+    return { status: 'not-proven', reasonCode: 'reconciliation-not-demonstrated', evidenceRefs: [] };
+  }
+  // (3) Contradictions fail the gate.
+  const mismatch = cases.find((entry) => entry.classification === 'expectation-mismatch');
+  if (mismatch) return { status: 'not-proven', reasonCode: 'expectation-mismatch-observed', evidenceRefs: [] };
+  // (4) A demanded settlement that was never durably observed.
+  const unproven = cases.find((entry) => entry.classification === 'settlement-unproven');
+  if (unproven) return { status: 'not-proven', reasonCode: 'settlement-unproven', evidenceRefs: [] };
+  // (5) The explicit interruption must have actually been sent. A present
+  // but not-sent interrupt case is the deepest specific missing link — it
+  // takes precedence over the generic coverage reason.
+  const interrupt = cases.find((entry) => entry.trigger === 'turn-interrupt');
+  if (interrupt && interrupt.sent !== true) {
+    return { status: 'not-proven', reasonCode: 'interrupt-case-not-sent', evidenceRefs: [] };
+  }
+  // (5b) A host signal that could not be verified as delivered is the same
+  // class of missing prerequisite for the destructive cases.
+  const unverifiedSignal = cases.find((entry) => entry.classification === 'not-sent' && entry.reasonCode === 'signal-unverified');
+  if (unverifiedSignal) {
+    return { status: 'not-proven', reasonCode: 'host-signal-unverified', evidenceRefs: [] };
+  }
+  // (6) Every required trigger must have a case at all.
+  const covered = new Set(cases.map((entry) => entry.trigger));
+  const missing = DIRECT_LIFECYCLE_REQUIRED_TRIGGERS.find((trigger) => !covered.has(trigger));
+  if (missing) return { status: 'not-proven', reasonCode: 'case-coverage-missing', evidenceRefs: [] };
+  const allObserved = cases.every((entry) => ['settlement-observed', 'behavior-confirmed'].includes(entry.classification));
+  if (allObserved) return { status: 'proven', reasonCode: 'lifecycle-settlement-durably-observed', evidenceRefs: [] };
+  return { status: 'not-proven', reasonCode: 'cases-missing-classification', evidenceRefs: [] };
+}
+
+/**
  * Validates the requested marketplace output directory: absolute, existing,
  * a real non-symlink directory, private (0700), and empty.
  * @param {string} output
@@ -723,11 +849,16 @@ async function validateMarketplaceOutput(output) {
  * directory: the marketplace descriptor, the plugin manifest, and the
  * plugin-root `.mcp.json` whose descriptor references the validated absolute
  * probe server path and forwards exactly the probe env vars the spawned
- * server reads. This is the probe's OWN disposable descriptor — never a
- * production plugin descriptor.
- * @param {string} output @param {string} serverPath
+ * server reads. `toolTimeoutSec` is the documented per-server tool timeout
+ * the host enforces; the lifecycle mode tightens it (bounded campaign) while
+ * every other mode keeps the default. This is the probe's OWN disposable
+ * descriptor — never a production plugin descriptor.
+ * @param {string} output @param {string} serverPath @param {number} [toolTimeoutSec]
  */
-async function buildDirectProbeMarketplace(output, serverPath) {
+async function buildDirectProbeMarketplace(output, serverPath, toolTimeoutSec = 30) {
+  if (!Number.isSafeInteger(toolTimeoutSec) || toolTimeoutSec < 1 || toolTimeoutSec > 300) {
+    throw directError('DIRECT_DRIVER_USAGE_INVALID', 'toolTimeoutSec must be an integer of 1 to 300 seconds.');
+  }
   await validateMarketplaceOutput(output);
   const stats = await lstat(serverPath).catch(() => null);
   if (!stats || stats.isSymbolicLink() || !stats.isFile()) {
@@ -769,9 +900,9 @@ async function buildDirectProbeMarketplace(output, serverPath) {
         args: [serverPath],
         cwd: '.',
         enabled: true,
-        env_vars: [...DIRECT_SERVER_ENV_VARS],
+        env_vars: [...DIRECT_SERVER_ENV_VARS, 'DIRECT_PROBE_HOLD_SAFETY_DEADLINE_MS'],
         startup_timeout_sec: 10,
-        tool_timeout_sec: 30,
+        tool_timeout_sec: toolTimeoutSec,
       },
     },
   };
@@ -840,13 +971,14 @@ function parseArguments(argv) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!flag.startsWith('--') || !value || value.startsWith('--')) {
-      throw directError('DIRECT_DRIVER_USAGE_INVALID', 'usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> [--source-codex-home <dir>]');
+      throw directError('DIRECT_DRIVER_USAGE_INVALID', 'usage: driver.mjs --mode reachability|identity|lifecycle --codex <path> --run-directory <dir> [--source-codex-home <dir>] [--cases <trigger>]');
     }
     if (flag === '--mode') parsed.mode = value;
     else if (flag === '--codex') parsed.codex = value;
     else if (flag === '--run-directory') parsed.runDirectory = value;
     else if (flag === '--source-codex-home') parsed.sourceCodexHome = value;
-    else throw directError('DIRECT_DRIVER_USAGE_INVALID', `usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> (unknown ${flag})`);
+    else if (flag === '--cases') parsed.cases = value;
+    else throw directError('DIRECT_DRIVER_USAGE_INVALID', `usage: driver.mjs --mode reachability|identity|lifecycle --codex <path> --run-directory <dir> (unknown ${flag})`);
   }
   return parsed;
 }
@@ -858,10 +990,10 @@ function parseArguments(argv) {
  * An expired case ceiling records the request as not-sent and the call as
  * not-observed — never a pass. Returns whether the call was dispatched and
  * the joined call nonce, if any.
- * @param {object} ctx @param {string} probeLabel @param {string} toolName @param {string} [threadId]
+ * @param {object} ctx @param {string} probeLabel @param {string} toolName @param {string} [threadId] @param {object} [extraArguments] @param {{requestId?: number}} [requestMeta]
  * @returns {Promise<{sent: boolean, callNonce: string|undefined}>}
  */
-async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threadId) {
+async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threadId, extraArguments = {}, requestMeta = null) {
   const { runDirectory, runNonce, phaseCounters, session } = ctx;
   if (ctx.budgetRemainingMs() <= 0) {
     // The ceiling expired before dispatch: the request is recorded honestly
@@ -885,13 +1017,15 @@ async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threa
 
   const callDeadlineMs = Math.max(1, Math.min(ctx.directCallDeadlineMs, ctx.budgetRemainingMs()));
   let rpcOutcome = 'not-observed';
+  const responsePromise = session.request('mcpServer/tool/call', {
+    server: DIRECT_PROBE_SERVER_NAME,
+    threadId,
+    tool: toolName,
+    arguments: { probeLabel, ...extraArguments },
+  }, callDeadlineMs);
+  if (requestMeta !== null) requestMeta.requestId = responsePromise.requestId;
   try {
-    const response = await session.request('mcpServer/tool/call', {
-      server: DIRECT_PROBE_SERVER_NAME,
-      threadId,
-      tool: toolName,
-      arguments: { probeLabel },
-    }, callDeadlineMs);
+    const response = await responsePromise;
     rpcOutcome = response?.isError === true ? 'error-result' : 'success-result';
     transcript(`phase-${ctx.phase}: the direct call answered (${rpcOutcome})`);
   } catch (callError) {
@@ -900,6 +1034,14 @@ async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threa
     // received an answer stays honestly not-observed.
     rpcOutcome = code === 'PROBE_APP_SERVER_REQUEST_FAILED' ? 'rpc-rejected' : 'not-observed';
     transcript(`phase-${ctx.phase}: the direct call did not answer successfully (${code || 'error'})`);
+    // PRIVATE ephemeral diagnostics: with DEBUG_DIRECT_PROBE set this path
+    // prints ONLY the closed error code. The raw stack and the host's
+    // rejection message (which can embed paths or other sensitive values)
+    // are never printed: stderr is commonly retained by the caller, and the
+    // CLI boundary — closed codes only — holds even under the debug flag.
+    if (process.env.DEBUG_DIRECT_PROBE) {
+      console.error(`DEBUG-CALL-ERR ${code || 'error'}`);
+    }
   }
 
   // Durable handler-entry join: the driver may name a callNonce in its RPC
@@ -942,7 +1084,7 @@ async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threa
  * classification. `runDirectReachabilityProbe` and `runDirectIdentityProbe`
  * are the two thin mode wrappers below.
  * @param {{codexPath: string, sourceCodexHome: string, runDirectory: string, directCallDeadlineMs?: number, caseBudgetMs?: number}} input
- * @param {{mode: string, phase: string, createPhaseCounters: () => object, discoverServerBeforeSchedule: boolean, sessionOptions?: object, turnSetupBudgetMs?: number, runSchedule: (ctx: object) => Promise<void>, classify: (ctx: object, records: object[], reduced: object) => Promise<void>}} hooks
+ * @param {{mode: string, phase: string, createPhaseCounters: () => object, discoverServerBeforeSchedule: boolean, sessionOptions?: object, turnSetupBudgetMs?: number, toolTimeoutSec?: number, serverEnv?: object, lifecycleCases?: string[], lifecycleObserveWindowMs?: number, runSchedule: (ctx: object) => Promise<void>, classify: (ctx: object, records: object[], reduced: object) => Promise<void>}} hooks
  * @returns {Promise<object>} the redacted phase/outcome counters
  */
 async function runDirectProbeCase(input, hooks) {
@@ -1187,7 +1329,7 @@ async function runDirectProbeCase(input, hooks) {
       throw directError('PROBE_QUALIFICATION_UNAVAILABLE', 'qualification-unavailable: the isolated Codex home failed `codex login status`.');
     }
 
-    await buildDirectProbeMarketplace(marketplaceRoot, serverModulePath);
+    await buildDirectProbeMarketplace(marketplaceRoot, serverModulePath, hooks.toolTimeoutSec);
     transcript('fixtures: direct probe marketplace built');
     const added = await runCodexCommand(['plugin', 'marketplace', 'add', marketplaceRoot, '--json'], 'marketplace-add');
     if (added.code !== 0) throw directError('PROBE_INSTALL_FAILED', `marketplace add failed: exit ${added.code}`);
@@ -1206,6 +1348,7 @@ async function runDirectProbeCase(input, hooks) {
       ZCODE_DIRECT_MCP_PROBE_NONCE: runNonce,
       ZCODE_DIRECT_MCP_PROBE_PHASE: hooks.phase,
       DIRECT_PROBE_OWNER_SECRET: ownerSecret,
+      ...(hooks.serverEnv ?? {}),
     };
 
     session = startAppServerSession({ command: await recheckCodex(), args: ['app-server'], env: probeEnv, cwd: runDirectory, ...(hooks.sessionOptions ?? {}) });
@@ -1259,6 +1402,8 @@ async function runDirectProbeCase(input, hooks) {
       directCallDeadlineMs,
       caseBudgetMs,
       turnSetupBudgetMs: hooks.turnSetupBudgetMs ?? null,
+      lifecycleCases: hooks.lifecycleCases ?? [],
+      lifecycleObserveWindowMs: hooks.lifecycleObserveWindowMs ?? 120_000,
       budgetRemainingMs,
       beginCaseBudget: () => { postReadinessDeadline = Date.now() + caseBudgetMs; },
       noteBudgetExhausted,
@@ -1273,11 +1418,15 @@ async function runDirectProbeCase(input, hooks) {
       // (the disposable server commits between the driver's appends) and
       // retry when the head moves between the head read and the reduction.
       reduceNow: async () => {
+        // The expected owner pid: the discovered server process, or — when
+        // the process scan missed it — the pid the durable registration
+        // names. A scan miss must never masquerade as a forged owner.
+        const expectedOwnerPid = serverPid ?? registeredOwnerPid(runDirectory);
         let head = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           head = directProbeSealHead({ runDirectory, runNonce, ownerSecret });
           try {
-            return await reduceDirectProbeLog({ runDirectory, runNonce, ownerSecret, ownerPid: serverPid, expectedFinalState: head });
+            return await reduceDirectProbeLog({ runDirectory, runNonce, ownerSecret, ownerPid: expectedOwnerPid, expectedFinalState: head });
           } catch (error) {
             const nextHead = directProbeSealHead({ runDirectory, runNonce, ownerSecret });
             if (attempt < 2 && nextHead !== null && head !== null
@@ -1314,7 +1463,10 @@ async function runDirectProbeCase(input, hooks) {
         serverPid = mine[0].pid;
         serverIdentity = boundedCaptureIdentity(serverPid, budgetRemainingMs());
       }
-      transcript(`phase-${hooks.phase}: server process ${serverPid === null ? 'not identified at discovery' : 'identified and tracked'}`);
+      // Redacted diagnostic: distinguishes a dead server (no match at all)
+      // from a live server whose parent is not the tracked host process
+      // (present but reparented or spawned through an intermediate).
+      transcript(`phase-${hooks.phase}: server process ${serverPid === null ? 'not identified at discovery' : 'identified and tracked'} (matching processes: ${matches.length}, direct children: ${mine.length})`);
     };
     // The identity schedule reduces mid-run, which requires the expected
     // server pid: discover the disposable server BEFORE the schedule when the
@@ -1459,7 +1611,9 @@ async function runDirectProbeCase(input, hooks) {
         event: { kind: 'cleanup-observed', outcome: processCleanup === 'released' ? 'released' : 'release-failed', source: 'driver' },
       });
       const reduced = await reduceDirectProbeLog({
-        runDirectory, runNonce, ownerSecret, ownerPid: serverPid, expectedFinalState: finalAppend.commit,
+        runDirectory, runNonce, ownerSecret,
+        ownerPid: serverPid ?? registeredOwnerPid(runDirectory),
+        expectedFinalState: finalAppend.commit,
       });
       const records = await readDirectProbeEvents({ runDirectory, runNonce });
       phaseCounters.eventRecords = records.length;
@@ -2005,10 +2159,453 @@ export async function runDirectIdentityProbe(input) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle mode (plan Task 5). The same pin/auth/install/readiness/cleanup
+// machinery runs the SEPARATE lifecycle cases over held `hold_direct` calls:
+// each case is a fresh handler whose durable `hold-started` (with the
+// synthetic worker claim) is awaited BEFORE any trigger, the observation is
+// bounded by the case ceiling, and the classification is derived ONLY from
+// the durable settlement records inside the case's own record window —
+// never from the RPC outcome or the turn status.
+// ---------------------------------------------------------------------------
+
+const DIRECT_LIFECYCLE_PHASE = 'lifecycle';
+const DIRECT_LIFECYCLE_HOLD_TOOL = 'hold_direct';
+// The probe-owned synthetic worker's completion duration for the completion
+// case, and the tightened documented `tool_timeout_sec` the lifecycle
+// descriptor uses so the config-timeout and cancel-race cases fit the
+// bounded campaign budget.
+const LIFECYCLE_COMPLETION_HOLD_MS = 3_000;
+const LIFECYCLE_CONFIG_TIMEOUT_SEC = 8;
+const LIFECYCLE_CANCEL_RACE_HOLD_MS = LIFECYCLE_CONFIG_TIMEOUT_SEC * 1_000 + 2_000;
+// The MECHANISM-ONLY injected server safety ceiling (the production target is
+// the 100-hour ceiling; this exercises only the forced-settlement mechanism).
+const LIFECYCLE_SAFETY_DEADLINE_MS = 5_000;
+const LIFECYCLE_DIRECT_CALL_DEADLINE_MS = 15_000;
+/** Poll interval for durable-record observation inside a case window. */
+const LIFECYCLE_OBSERVE_POLL_MS = 250;
+/** The sentinel hold's own completion duration: it must remain ACTIVE past
+ * the configured tool-timeout boundary (plus margin) so a completed
+ * settlement postdates the durable boundary marker and genuinely proves
+ * per-call isolation at that moment — while still settling inside the case
+ * window. */
+const LIFECYCLE_SENTINEL_HOLD_MS = LIFECYCLE_CONFIG_TIMEOUT_SEC * 1_000 + 4_000;
+/**
+ * The default preserving-case list: every case here keeps the host
+ * connection alive until the FINAL case, which closes only the client
+ * connection. The destructive and injected cases (`host-stop`, `host-kill`,
+ * `safety-deadline`) each REQUIRE their own single-case invocation — a fresh
+ * isolated session — and are refused inside a shared selection.
+ */
+const DIRECT_LIFECYCLE_DEFAULT_CASES = Object.freeze([
+  'completion', 'config-timeout', 'cancel-race', 'turn-interrupt', 'connection-close',
+]);
+const DIRECT_LIFECYCLE_STANDALONE_CASES = Object.freeze(['host-stop', 'host-kill', 'safety-deadline']);
+/** The lifecycle cases whose trigger is scoped to the one target call. */
+const LIFECYCLE_PER_CALL_CASES = Object.freeze(['turn-interrupt', 'config-timeout', 'cancel-race']);
+
+function createLifecyclePhaseCounters() {
+  return {
+    readiness: 'not-observed',
+    requestsSent: 0,
+    rpcObservations: 0,
+    handlerEntries: 0,
+    serverStarts: 0,
+    cases: {
+      'turn-interrupt': 'not-run', 'connection-close': 'not-run', 'host-stop': 'not-run', 'host-kill': 'not-run',
+      'config-timeout': 'not-run', 'safety-deadline': 'not-run', completion: 'not-run', 'cancel-race': 'not-run',
+    },
+    caseReasons: {},
+    workerOutcomes: {},
+    // Per-case command expectation (the table cell the case tested) and the
+    // classifier's exact-ownership verdict, so the run's output names which
+    // command expectation every case tested (plan Task 5 Step 4).
+    commandExpectations: {},
+    workerOwned: {},
+    // Per-case durable evidence that the cancellation boundary was in play
+    // (race cases): the host acted on the call, or the worker settled by a
+    // cancellation outcome.
+    cancellationObserved: {},
+    prerequisites: { holdStartedSeen: false, exactTurnConfirmed: false, hostSurvivedConnectionClose: 'not-observed' },
+    activeTurnHold: { status: 'not-proven', reasonCode: 'not-run' },
+    // The safety-deadline case is mechanism-only evidence, labeled as such.
+    mechanismOnlySafetyDeadline: false,
+    classification: 'not-observed',
+    gateG3: { status: 'not-proven', reasonCode: 'not-run', evidenceRefs: [] },
+    eventsBefore: 0,
+    eventsAfter: 0,
+    eventRecords: 0,
+    uncommittedCount: 0,
+    cleanup: 'not-observed',
+    postReadinessBudget: 'within-budget',
+  };
+}
+
+/**
+ * Waits for the durable `hold-started` joined to THIS label's handler entry.
+ * Returns the joined hold record, or null when the window closed first —
+ * a missing prerequisite is never inferred past.
+ */
+async function awaitLifecycleHoldStarted(ctx, probeLabel, deadline) {
+  for (;;) {
+    const records = await ctx.readEvents();
+    const entry = records.find((record) => record.kind === 'handler-entered' && record.phase === DIRECT_LIFECYCLE_PHASE && record.probeLabel === probeLabel) ?? null;
+    if (entry) {
+      const hold = records.find((record) => record.kind === 'hold-started' && record.phase === DIRECT_LIFECYCLE_PHASE && record.callNonce === entry.callNonce) ?? null;
+      if (hold) return hold;
+    }
+    if (Date.now() >= deadline || ctx.budgetRemainingMs() <= 0) return null;
+    await sleep(Math.min(LIFECYCLE_OBSERVE_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+}
+
+/**
+ * Observes one case's durable settlement: polls for the worker-settled
+ * record joined to the call nonce until it lands or the window closes.
+ */
+async function observeLifecycleSettlement(ctx, callNonce, deadline) {
+  for (;;) {
+    const records = await ctx.readEvents();
+    const worker = records.find((record) => record.kind === 'worker-settled' && record.phase === DIRECT_LIFECYCLE_PHASE && record.callNonce === callNonce) ?? null;
+    if (worker) return worker;
+    if (Date.now() >= deadline || ctx.budgetRemainingMs() <= 0) return null;
+    await sleep(Math.min(LIFECYCLE_OBSERVE_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+}
+
+/** Records one case's command expectation (the plan Task 5 Step 4 output fact). */
+function recordCommandExpectation(ctx, trigger, command = 'execution-foreground') {
+  const expectation = directLifecycleExpectation({ command, trigger });
+  ctx.phaseCounters.commandExpectations[trigger] = expectation;
+  return expectation;
+}
+
+/** Records one case's closed classification facts in the phase counters. */
+function recordLifecycleCase(ctx, trigger, verdict, extras = {}) {
+  const expectation = recordCommandExpectation(ctx, trigger, verdict.command);
+  ctx.phaseCounters.cases[trigger] = verdict.classification;
+  if (verdict.reasonCode !== null && verdict.reasonCode !== undefined) ctx.phaseCounters.caseReasons[trigger] = verdict.reasonCode;
+  if (verdict.workerOutcome !== null && verdict.workerOutcome !== undefined) ctx.phaseCounters.workerOutcomes[trigger] = verdict.workerOutcome;
+  ctx.phaseCounters.workerOwned[trigger] = verdict.workerOwned === true;
+  Object.assign(ctx.phaseCounters, extras);
+  transcript(`phase-lifecycle: the ${trigger} case is recorded ${verdict.classification}${verdict.reasonCode ? ` (${verdict.reasonCode})` : ''} — command expectation tested: ${expectation.scope} scope, worker outcomes [${expectation.workerOutcomes === null ? 'none presumed' : expectation.workerOutcomes.join(', ')}]`);
+}
+
+/** Runs ONE lifecycle case end to end and records its classification. */
+async function runLifecycleCase(ctx, trigger, { holdMs = undefined, exactTurnConfirmed = false } = {}) {
+  const command = 'execution-foreground';
+  const probeLabel = randomBytes(16).toString('hex');
+  const startSequence = (await ctx.readEvents()).length;
+  ctx.beginCaseBudget();
+  // The direct call runs in the background: a hold answers only at
+  // settlement, and the case acts only after the DURABLE hold-started.
+  // The TARGET dispatch captures no request id — the targeted release below
+  // must cancel the SENTINEL's outstanding request, never the target's.
+  void runDirectCallOnce(ctx, probeLabel, DIRECT_LIFECYCLE_HOLD_TOOL, ctx.threadId, holdMs !== undefined ? { holdMs } : {}).catch(() => {});
+  const caseDeadline = Date.now() + Math.min(ctx.caseBudgetMs, ctx.lifecycleObserveWindowMs);
+  const hold = await awaitLifecycleHoldStarted(ctx, probeLabel, caseDeadline);
+  ctx.phaseCounters.prerequisites.holdStartedSeen = hold !== null;
+  if (!hold) {
+    // Missing prerequisite: the trigger is never sent and the case records
+    // not-sent with the deepest missing link, never a settlement.
+    const records = await ctx.readEvents();
+    const dispatched = records.some((record) => record.kind === 'request-sent' && record.phase === DIRECT_LIFECYCLE_PHASE && record.probeLabel === probeLabel && record.state === 'sent');
+    ctx.phaseCounters.cases[trigger] = 'not-sent';
+    ctx.phaseCounters.caseReasons[trigger] = dispatched ? 'hold-not-started' : 'request-not-sent';
+    ctx.phaseCounters.workerOwned[trigger] = false;
+    const expectation = recordCommandExpectation(ctx, trigger, command);
+    transcript(`phase-lifecycle: the ${trigger} case is recorded not-sent (${dispatched ? 'hold-not-started' : 'request-not-sent'}) — command expectation tested: ${expectation.scope} scope, worker outcomes [${expectation.workerOutcomes === null ? 'none presumed' : expectation.workerOutcomes.join(', ')}]`);
+    return;
+  }
+  const endSequence = { value: (await ctx.readEvents()).length };
+  // The unrelated sentinel is established BEFORE the trigger for per-call
+  // cases: the hold must be ACTIVE at trigger time, or a trigger that
+  // cancels every call active then would leave a later-dispatched sentinel
+  // untouched and forge an isolation pass. The sentinel is a settlable
+  // hold_direct whose worker writes the durable settlement the classifier
+  // reads. Any failure to establish it (budget cannot cover it, dispatch
+  // refused, hold never joined) leaves the case honestly unproven — never
+  // settlement-observed; only a transport-level dispatch failure is flagged
+  // as the 'sentinel-undispatched' contradiction.
+  let sentinelLabel = null;
+  let sentinelDispatchFailed = false;
+  // The SENTINEL's own request-id holder: captured on the sentinel's own
+  // dispatch, so the driver-ordered release cancels the sentinel's EXACT
+  // outstanding JSON-RPC request id (never the target's).
+  const sentinelRequest = { requestId: undefined };
+  if (LIFECYCLE_PER_CALL_CASES.includes(trigger)) {
+    if (ctx.budgetRemainingMs() > 5_000) {
+      sentinelLabel = randomBytes(16).toString('hex');
+      void runDirectCallOnce(ctx, sentinelLabel, DIRECT_LIFECYCLE_HOLD_TOOL, ctx.threadId, { holdMs: LIFECYCLE_SENTINEL_HOLD_MS }, sentinelRequest).catch(() => { sentinelDispatchFailed = true; });
+      const sentinelHold = await awaitLifecycleHoldStarted(ctx, sentinelLabel, caseDeadline);
+      if (sentinelHold === null) {
+        transcript(`phase-lifecycle: the ${trigger} sentinel hold never joined durably; the case stays unproven`);
+        sentinelLabel = null;
+      } else {
+        ctx.lifecycleSentinelHold = sentinelHold;
+      }
+    } else {
+      transcript(`phase-lifecycle: the ${trigger} case budget cannot cover the sentinel; the case stays unproven`);
+    }
+  }
+  // The trigger, per case. Infrastructure triggers record no trigger-sent
+  // event: the closed trigger-sent vocabulary carries only triggers the
+  // DRIVER sends toward the call, and a host signal is not one. The race
+  // case's cancellation side IS the configured tool timeout, so its
+  // trigger-sent outcome records the closed 'config-timeout'.
+  const triggerSentOutcome = trigger === 'cancel-race' ? 'config-timeout' : trigger;
+  if (trigger === 'config-timeout' || trigger === 'cancel-race' || trigger === 'safety-deadline' || trigger === 'turn-interrupt' || trigger === 'connection-close') {
+    await ctx.appendDriverEvent({ kind: 'trigger-sent', callNonce: hold.callNonce, outcome: triggerSentOutcome });
+  }
+  if (trigger === 'turn-interrupt') {
+    // The exact turn was confirmed by the controlled hold before dispatch;
+    // the interrupt targets exactly that turn and its acknowledgement is
+    // recorded, whatever it is.
+    try {
+      await ctx.session.request('turn/interrupt', { threadId: ctx.threadId, turnId: ctx.lifecycleExactTurnId }, 30_000);
+      await ctx.appendDriverEvent({ kind: 'trigger-observed', callNonce: hold.callNonce, outcome: 'acknowledged', source: 'host' });
+    } catch {
+      await ctx.appendDriverEvent({ kind: 'trigger-observed', callNonce: hold.callNonce, outcome: 'rejected', source: 'host' });
+    }
+  }
+  if (trigger === 'connection-close') {
+    // Close ONLY the client connection; verify the host process survives.
+    ctx.session.endInput();
+    const hostSurvived = boundedIdentityMatches(ctx.session.pid, ctx.session.identity, Math.min(PS_INSPECTION_MS, Math.max(1, ctx.budgetRemainingMs())));
+    ctx.phaseCounters.prerequisites.hostSurvivedConnectionClose = hostSurvived ? 'survived' : 'not-survived';
+    // The observation outcome records what was actually observed: the host
+    // acknowledged the close when it was verified alive after it; a
+    // verifiably gone host observed nothing, and the closed vocabulary's
+    // 'not-observed' is the accurate value.
+    await ctx.appendDriverEvent({ kind: 'trigger-observed', callNonce: hold.callNonce, outcome: hostSurvived ? 'acknowledged' : 'not-observed', source: 'transport' });
+    if (!hostSurvived) {
+      // Host loss during the close: this observation belongs to the separate
+      // host-loss case, never to client-close-with-surviving-host. The case
+      // records the unproven prerequisite instead of proceeding.
+      ctx.phaseCounters.cases[trigger] = 'settlement-unproven';
+      ctx.phaseCounters.caseReasons[trigger] = 'host-lost-during-close';
+      ctx.phaseCounters.workerOwned[trigger] = false;
+      const expectation = recordCommandExpectation(ctx, trigger, command);
+      transcript(`phase-lifecycle: the ${trigger} case is recorded settlement-unproven (host-lost-during-close) — command expectation tested: ${expectation.scope} scope, worker outcomes [${expectation.workerOutcomes === null ? 'none presumed' : expectation.workerOutcomes.join(', ')}]`);
+      return;
+    }
+  }
+  if (trigger === 'host-stop' || trigger === 'host-kill') {
+    // The signal itself is a prerequisite: when the owning host's identity
+    // cannot be verified (it is already gone or unmatchable), the trigger
+    // was NOT verifiably delivered. The case records the not-sent-style
+    // prerequisite — mirroring the exact-turn gate for interrupts — instead
+    // of observing a window no trigger ever opened.
+    const signalled = await ctx.session.signal(trigger === 'host-stop' ? 'SIGTERM' : 'SIGKILL', Math.min(PS_INSPECTION_MS, Math.max(1, ctx.budgetRemainingMs())));
+    if (!signalled) {
+      ctx.phaseCounters.cases[trigger] = 'not-sent';
+      ctx.phaseCounters.caseReasons[trigger] = 'signal-unverified';
+      ctx.phaseCounters.workerOwned[trigger] = false;
+      const expectation = recordCommandExpectation(ctx, trigger, command);
+      transcript(`phase-lifecycle: the ${trigger} case is recorded not-sent (signal-unverified) — command expectation tested: ${expectation.scope} scope, worker outcomes [${expectation.workerOutcomes === null ? 'none presumed' : expectation.workerOutcomes.join(', ')}]`);
+      return;
+    }
+    transcript(`phase-lifecycle: the owning host received ${trigger === 'host-stop' ? 'SIGTERM' : 'SIGKILL'}`);
+  }
+  // The bounded observation window: at most the case ceiling after the
+  // trigger, reading DURABLE records only. For per-call cases the window
+  // also waits (bounded) for the sentinel's own settlement, so its terminal
+  // is inside the case's record window before classification.
+  const settled = await observeLifecycleSettlement(ctx, hold.callNonce, caseDeadline);
+  transcript(`phase-lifecycle: the ${trigger} observation ${settled !== null ? `recorded the worker settlement (${settled.outcome})` : 'closed without a durable worker settlement'}`);
+  // Driver-ordered sentinel release: when the target's cancellation boundary
+  // is durably observed (the worker settled cancelled/timed-out), the driver
+  // explicitly releases the sentinel — declaring the release (trigger-sent
+  // for the sentinel's own call), marking it acknowledged (trigger-observed),
+  // and sending notifications/cancelled for the sentinel's outstanding
+  // request. The sentinel's settlement must then land after this marker.
+  const boundaryObserved = settled !== null && (settled.outcome === 'cancelled' || settled.outcome === 'timed-out');
+  if (sentinelLabel !== null && boundaryObserved && ctx.lifecycleSentinelHold) {
+    // Driver-ordered sentinel release: cancel the sentinel's EXACT
+    // outstanding request id. Only a VERIFIED cancellation (the targeted
+    // notifications/cancelled frame was written for that exact id) is
+    // recorded as the release marker — failure or absence leaves the marker
+    // unwritten and the case unproven.
+    const released = sentinelRequest.requestId !== undefined
+      ? ctx.session.cancelRequestById(sentinelRequest.requestId)
+      : false;
+    if (released) {
+      await ctx.appendDriverEvent({ kind: 'trigger-sent', callNonce: ctx.lifecycleSentinelHold.callNonce, outcome: 'turn-interrupt' });
+      await ctx.appendDriverEvent({ kind: 'trigger-observed', callNonce: ctx.lifecycleSentinelHold.callNonce, outcome: 'acknowledged', source: 'driver' });
+      transcript('phase-lifecycle: the sentinel release was verified and marked acknowledged (notifications/cancelled)');
+    } else {
+      transcript('phase-lifecycle: the sentinel release could not be verified; no release marker was written');
+    }
+  }
+  if (ctx.lifecycleSentinelHold !== null && ctx.lifecycleSentinelHold !== undefined) {
+    const sentinelSettled = await observeLifecycleSettlement(ctx, ctx.lifecycleSentinelHold.callNonce, caseDeadline);
+    transcript(`phase-lifecycle: the sentinel observation ${sentinelSettled !== null ? `recorded the sentinel settlement (${sentinelSettled.outcome})` : 'closed without a durable sentinel settlement'}`);
+    ctx.lifecycleSentinelHold = null;
+  }
+  endSequence.value = (await ctx.readEvents()).length;
+  const reduced = await ctx.reduceNow();
+  const records = await ctx.readEvents();
+  // The race boundary, from durable records only: the configured
+  // cancellation was in play when the worker itself settled by a
+  // cancellation outcome ('cancelled' or the host timeout's 'timed-out').
+  // Generic RPC errors and rejections are request failures, not
+  // cancellation-specific evidence — the durable vocabulary cannot
+  // distinguish them today, so only the cancellation-outcome worker
+  // settlement is honest boundary proof.
+  let cancellationObserved = false;
+  if (trigger === 'cancel-race') {
+    cancellationObserved = settled !== null && (settled.outcome === 'cancelled' || settled.outcome === 'timed-out');
+    ctx.phaseCounters.cancellationObserved[trigger] = cancellationObserved;
+    transcript(`phase-lifecycle: the ${trigger} cancellation boundary was ${cancellationObserved ? 'observed on the durable record' : 'never observed'}`);
+  }
+  const verdict = classifyDirectLifecycleCase({
+    records, reduced, probeLabel, phase: DIRECT_LIFECYCLE_PHASE, command, trigger,
+    exactTurnConfirmed, sentinelLabel, sentinelDispatchFailed, cancellationObserved,
+    windowStart: startSequence, windowEnd: endSequence.value,
+  });
+  recordLifecycleCase(ctx, trigger, verdict);
+}
+
+/** The lifecycle schedule: the selected cases in dependency-safe order. */
+async function runLifecycleSchedule(ctx) {
+  const threadHash = hashProbeValue(ctx.runNonce, ctx.threadId);
+  for (const trigger of ctx.lifecycleCases) {
+    if (trigger === 'turn-interrupt') {
+      // The exact-turn prerequisite: the controlled active-turn hold must be
+      // observed BEFORE any hold dispatch. Missing prerequisite records the
+      // case not-sent — no hold is dispatched and no trigger is sent.
+      const hold = await attemptIdentityHold(ctx, threadHash, ctx.runNonce);
+      ctx.phaseCounters.activeTurnHold = hold.status === 'observed'
+        ? { status: 'observed', reasonCode: null }
+        : { status: 'not-proven', reasonCode: hold.reasonCode };
+      if (hold.status !== 'observed') {
+        ctx.phaseCounters.cases['turn-interrupt'] = 'not-sent';
+        ctx.phaseCounters.caseReasons['turn-interrupt'] = 'turn-not-confirmed';
+        ctx.phaseCounters.workerOwned['turn-interrupt'] = false;
+        const expectation = recordCommandExpectation(ctx, 'turn-interrupt');
+        transcript(`phase-lifecycle: no controlled active turn exists; the turn-interrupt case is recorded not-sent — command expectation tested: ${expectation.scope} scope, worker outcomes [${expectation.workerOutcomes.join(', ')}]`);
+        continue;
+      }
+      ctx.lifecycleExactTurnId = hold.turnId;
+      await runLifecycleCase(ctx, 'turn-interrupt', { exactTurnConfirmed: true });
+      // Settle the controlled turn hold so later cases start from a quiet thread.
+      await settleIdentityHold(ctx, hold, threadHash);
+      continue;
+    }
+    if (trigger === 'connection-close') {
+      await runLifecycleCase(ctx, 'connection-close');
+      continue;
+    }
+    if (trigger === 'host-stop' || trigger === 'host-kill') {
+      await runLifecycleCase(ctx, trigger);
+      continue;
+    }
+    if (trigger === 'safety-deadline') {
+      ctx.phaseCounters.mechanismOnlySafetyDeadline = true;
+      await runLifecycleCase(ctx, 'safety-deadline');
+      continue;
+    }
+    await runLifecycleCase(ctx, trigger, {
+      holdMs: trigger === 'completion' ? LIFECYCLE_COMPLETION_HOLD_MS
+        : trigger === 'cancel-race' ? LIFECYCLE_CANCEL_RACE_HOLD_MS
+          : undefined,
+    });
+  }
+}
+
+/** The lifecycle classification: strongest case plus the G3 gate. */
+async function classifyLifecycle(ctx) {
+  const phaseCounters = ctx.phaseCounters;
+  let classification = 'not-run';
+  for (const cell of Object.values(phaseCounters.cases)) {
+    if (DIRECT_LIFECYCLE_CASE_PRECEDENCE.indexOf(cell) >= 0 && DIRECT_LIFECYCLE_CASE_PRECEDENCE.indexOf(cell) < DIRECT_LIFECYCLE_CASE_PRECEDENCE.indexOf(classification)) {
+      classification = cell;
+    }
+  }
+  phaseCounters.classification = classification;
+  // The reconciliation assessment: the committed synthetic-worker tests prove
+  // exact ownership and bounded settlement of the LOCAL reconciliation
+  // mechanism; host loss is outside its coverage by construction (no durable
+  // writer survives). Mechanism evidence with limits — it never upgrades the
+  // gate by itself.
+  const reconciliation = assessDirectReconciliationStrategy({
+    exactOwnershipProven: true,
+    boundedSettlementProven: true,
+    hostLossSettlementDemonstrated: false,
+  });
+  phaseCounters.reconciliation = reconciliation;
+  const cases = Object.entries(phaseCounters.cases)
+    // A trigger this invocation never selected is an ABSENT case for the
+    // gate, not a present one: coverage is judged on the cases actually run.
+    .filter(([, caseClassification]) => caseClassification !== 'not-run')
+    .map(([trigger, caseClassification]) => ({
+      trigger,
+      command: 'execution-foreground',
+      classification: caseClassification,
+      workerOutcome: phaseCounters.workerOutcomes[trigger] ?? null,
+      // The classifier's exact-ownership verdict for the case, recorded at
+      // classification time — not an inference from an outcome being present.
+      workerOwned: phaseCounters.workerOwned[trigger] === true,
+      sent: !['not-sent', 'not-observed', 'not-run'].includes(caseClassification),
+      reasonCode: phaseCounters.caseReasons[trigger] ?? null,
+    }));
+  phaseCounters.gateG3 = classifyDirectGateG3({ cases, reconciliation });
+}
+
+/** The strongest recorded case classification (closed precedence). */
+const DIRECT_LIFECYCLE_CASE_PRECEDENCE = Object.freeze([
+  'settlement-observed', 'behavior-confirmed', 'expectation-mismatch', 'settlement-unproven',
+  'not-sent', 'not-observed', 'not-run',
+]);
+
+/**
+ * The bounded lifecycle probe (plan Task 5). `cases` selects the case list:
+ * omitted, the default preserving set (the connection-close case runs LAST);
+ * otherwise exactly one standalone case (`host-stop`, `host-kill`, or the
+ * mechanism-only `safety-deadline`), which gets its own fresh isolated
+ * session and, for the injected ceiling, the spawn-time safety-deadline env.
+ * @param {{codexPath: string, sourceCodexHome: string, runDirectory: string, directCallDeadlineMs?: number, caseBudgetMs?: number, turnSetupBudgetMs?: number, lifecycleObserveWindowMs?: number, cases?: string[]}} input
+ * @returns {Promise<object>} the redacted phase/outcome counters
+ */
+export async function runDirectLifecycleProbe(input) {
+  const selected = input.cases ?? [...DIRECT_LIFECYCLE_DEFAULT_CASES];
+  if (!Array.isArray(selected) || selected.length === 0
+    || !selected.every((trigger) => DIRECT_LIFECYCLE_TRIGGERS.includes(trigger))) {
+    throw directError('DIRECT_DRIVER_USAGE_INVALID', 'cases must be a non-empty list of closed lifecycle triggers.');
+  }
+  const standaloneSelected = selected.filter((trigger) => DIRECT_LIFECYCLE_STANDALONE_CASES.includes(trigger));
+  if (standaloneSelected.length > 0 && selected.length !== 1) {
+    throw directError('DIRECT_DRIVER_USAGE_INVALID', 'a destructive or injected lifecycle case requires its own single-case invocation.');
+  }
+  // Execution order: every connection-preserving case before the final
+  // connection-close case; a single-case selection runs alone.
+  const order = [...DIRECT_LIFECYCLE_DEFAULT_CASES.filter((trigger) => selected.includes(trigger)), ...standaloneSelected];
+  return runDirectProbeCase(input, {
+    mode: 'lifecycle',
+    phase: DIRECT_LIFECYCLE_PHASE,
+    createPhaseCounters: createLifecyclePhaseCounters,
+    discoverServerBeforeSchedule: true,
+    directCallDeadlineMs: input.directCallDeadlineMs ?? LIFECYCLE_DIRECT_CALL_DEADLINE_MS,
+    turnSetupBudgetMs: input.turnSetupBudgetMs,
+    lifecycleObserveWindowMs: input.lifecycleObserveWindowMs,
+    sessionOptions: {
+      holdServerRequestPattern: IDENTITY_APPROVAL_REQUEST_PATTERN,
+      retainNotificationPattern: IDENTITY_TURN_NOTIFICATION_PATTERN,
+    },
+    toolTimeoutSec: LIFECYCLE_CONFIG_TIMEOUT_SEC,
+    serverEnv: standaloneSelected.length === 1 && standaloneSelected[0] === 'safety-deadline'
+      ? { DIRECT_PROBE_HOLD_SAFETY_DEADLINE_MS: String(LIFECYCLE_SAFETY_DEADLINE_MS) }
+      : undefined,
+    runSchedule: runLifecycleSchedule,
+    classify: classifyLifecycle,
+    lifecycleCases: order,
+  });
+}
+
 if (runningAsMain) {
   const args = parseArguments(process.argv.slice(2));
-  if (args.mode !== 'reachability' && args.mode !== 'identity') {
-    process.stderr.write('direct driver failed: DIRECT_DRIVER_USAGE_INVALID: usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> [--source-codex-home <dir>]\n');
+  if (args.mode !== 'reachability' && args.mode !== 'identity' && args.mode !== 'lifecycle') {
+    process.stderr.write('direct driver failed: DIRECT_DRIVER_USAGE_INVALID: usage: driver.mjs --mode reachability|identity|lifecycle --codex <path> --run-directory <dir> [--source-codex-home <dir>] [--cases <trigger>]\n');
     process.exit(1);
   }
   try {
@@ -2019,7 +2616,11 @@ if (runningAsMain) {
     };
     const counters = args.mode === 'identity'
       ? await runDirectIdentityProbe(probeInput)
-      : await runDirectReachabilityProbe(probeInput);
+      : args.mode === 'lifecycle'
+        ? await runDirectLifecycleProbe(args.cases !== undefined
+          ? { ...probeInput, cases: args.cases.split(',').map((entry) => entry.trim()) }
+          : probeInput)
+        : await runDirectReachabilityProbe(probeInput);
     process.stdout.write(`${JSON.stringify(counters, null, 2)}\n`);
     process.exitCode = 0;
   } catch (error) {

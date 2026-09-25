@@ -1640,7 +1640,20 @@ function assertHandlerOwner({ runDirectory, runNonce, ownerSecret }) {
     throw directError('PROBE_EVENT_FORBIDDEN', 'The presented capability secret does not match the registered handler owner.');
   }
   if (owner.pid !== process.pid) {
-    throw directError('PROBE_EVENT_FORBIDDEN', 'The calling process is not the registered handler-owner process; handler-side kinds are writable only by the disposable server.');
+    // DEAD-OWNER ADOPTION: when the registered owner process is no longer
+    // alive, a caller presenting the run capability secret is the host's
+    // respawned handler instance. The registration file stays untouched
+    // (it keeps naming the run's first owner) and the capability remains
+    // the write authority. A LIVE foreign pid is still rejected.
+    let ownerAlive = true;
+    try {
+      process.kill(owner.pid, 0);
+    } catch (error) {
+      ownerAlive = /** @type {any} */ (error).code === 'EPERM';
+    }
+    if (ownerAlive) {
+      throw directError('PROBE_EVENT_FORBIDDEN', 'The calling process is not the registered handler-owner process; handler-side kinds are writable only by the disposable server.');
+    }
   }
 }
 
@@ -2028,7 +2041,18 @@ export async function appendDirectProbeLogRecord(input) {
         && existingSidecarBytes.toString('utf8').endsWith(uncommittedText);
       const separator = existingSidecarBytes !== null && existingSidecarBytes.length > 0 ? '\n' : '';
       const appendedBytes = Buffer.from(`${separator}${uncommittedLines.join('\n')}\n`, 'utf8');
-      if (process.env.DEBUG_DIRECT_PROBE) console.error('DEBUG-REC36\n' + eventsBytes.toString('utf8').split('\n').filter((l) => l !== '').map((l) => { try { const p = JSON.parse(l); return `seq=${p.sequence} kind=${p.kind} outcome=${p.outcome ?? '-'}`; } catch { return `JUNK:${l.slice(0, 40)}`; } }).join('\n') + '\n---');
+      // PRIVATE ephemeral diagnostics: with DEBUG_DIRECT_PROBE set this
+      // recovery prints ONLY the fixed code and bounded counts — never
+      // parsed outcome values or fragments of malformed lines (a corrupt
+      // tail can carry raw text, and stderr is commonly retained).
+      if (process.env.DEBUG_DIRECT_PROBE) {
+        const recoveryLines = eventsBytes.toString('utf8').split('\n').filter((line) => line !== '');
+        let parsedLines = 0;
+        for (const recoveryLine of recoveryLines) {
+          try { JSON.parse(recoveryLine); parsedLines += 1; } catch { /* malformed lines are counted, never echoed */ }
+        }
+        console.error(`DEBUG-REC36 recovery-lines=${recoveryLines.length} parsed=${parsedLines} malformed=${recoveryLines.length - parsedLines} uncommitted=${journalState.uncommittedCount}`);
+      }
       const targetSidecarBytes = alreadyPreserved
         ? existingSidecarBytes
         : (existingSidecarBytes === null ? appendedBytes : Buffer.concat([existingSidecarBytes, appendedBytes]));

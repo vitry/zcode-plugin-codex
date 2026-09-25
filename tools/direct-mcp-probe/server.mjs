@@ -65,12 +65,21 @@ const TOOL_DEFINITIONS = Object.freeze([
     description: 'Records durable handler entry, starts a probe-owned synthetic worker, holds until settlement, and records the exact settlement.',
     inputSchema: Object.freeze({
       type: 'object',
-      properties: Object.freeze({ probeLabel: Object.freeze({ type: 'string' }) }),
+      properties: Object.freeze({
+        probeLabel: Object.freeze({ type: 'string' }),
+        // The probe-owned synthetic worker's completion duration: the worker
+        // emulates a command that finishes on its own. Optional; when absent
+        // the hold runs until a trigger or the injected safety ceiling.
+        holdMs: Object.freeze({ type: 'integer', minimum: 1, maximum: 120000 }),
+      }),
       required: Object.freeze(['probeLabel']),
       additionalProperties: false,
     }),
   }),
 ]);
+
+/** Upper bound for one synthetic worker's completion duration. */
+const MAXIMUM_HOLD_MS = 120_000;
 
 /** @param {string} code @param {string} message */
 function directError(code, message) {
@@ -89,6 +98,16 @@ function directError(code, message) {
 const HANDLER_OWNER_FILENAME = 'handler-owner.json';
 const HANDLER_OWNER_PID_BOUND = 2 ** 31;
 
+/** @param {number} pid @returns {boolean} true when the pid is currently alive */
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return /** @type {any} */ (error).code === 'EPERM';
+  }
+}
+
 /**
  * MODULE-PRIVATE writer for the transient handler-owner registration — the
  * only code in the probe that can claim handler ownership, reachable solely
@@ -99,8 +118,17 @@ const HANDLER_OWNER_PID_BOUND = 2 ** 31;
  * verifier expect, with mode 0600 and O_EXCL|O_NOFOLLOW: first registration
  * wins, the same process re-registers idempotently with the same digest, and
  * a different process or a different capability fails loudly with
- * PROBE_OWNER_CONFLICT instead of silently taking over. ACCEPTED INVARIANT,
- * stated and recorded: in the real campaign the server is a spawned separate
+ * PROBE_OWNER_CONFLICT instead of silently taking over.
+ *
+ * DEAD-OWNER ADOPTION: a respawned instance holding the SAME run capability
+ * (same runNonce and secret digest) adopts the registration when the
+ * registered owner pid is no longer alive — the host disconnects its startup
+ * client and later respawns the server per call, and a stale first-wins
+ * registration would otherwise crash every respawn during its initialize
+ * handshake. The file is left untouched (it still names the run capability,
+ * not a live claim), the run capability secret remains the write authority,
+ * and a LIVE owner is never adopted over. ACCEPTED INVARIANT, stated and
+ * recorded: in the real campaign the server is a spawned separate
  * process holding the spawn-time secret in memory, so driver-process code
  * physically cannot write handler evidence; file-based provenance is
  * tamper-evident (non-reducible under the driver expected secret) rather
@@ -131,9 +159,21 @@ function writeHandlerOwnerRegistration({ runDirectory, runNonce, pid, secretDige
       if (error && typeof error === 'object' && /** @type {any} */ (error).code === 'PROBE_LOG_SYMLINK') throw error;
       throw directError('PROBE_OWNER_CONFLICT', 'The handler-owner registration exists but cannot be read.');
     }
-    if (!existing || typeof existing !== 'object' || existing.runNonce !== runNonce || existing.pid !== pid || existing.secretDigest !== secretDigest) {
+    const sameCapability = existing && typeof existing === 'object'
+      && existing.runNonce === runNonce && existing.secretDigest === secretDigest;
+    if (!sameCapability) {
       throw directError('PROBE_OWNER_CONFLICT', 'Another process or capability is already registered as this run handler owner.');
     }
+    const sameProcess = existing.pid === pid;
+    const deadOwner = !sameProcess
+      && Number.isSafeInteger(existing.pid) && existing.pid > 0
+      && !isProcessAlive(existing.pid);
+    if (!sameProcess && !deadOwner) {
+      throw directError('PROBE_OWNER_CONFLICT', 'A live handler owner is already registered for this run capability.');
+    }
+    // Same capability and (dead-or-same) owner: adopt idempotently. The
+    // registration keeps naming the run's first owner; the capability secret
+    // held by THIS instance is the write authority.
   }
   return ownerPath;
 }
@@ -213,9 +253,14 @@ export function inspectDirectMetadata(runNonce, meta) {
  * directory, run nonce, and the current bounded phase (the durable join
  * requires the server and driver to record the same phase), plus optionally
  * the run capability secret (the executable reads it from spawn-time env).
- * @param {{observer: {runDirectory: string, runNonce: string, phase: string, ownerSecret?: string}, ownerSecret?: string, appendImpl?: (options: {runDirectory: string, runNonce: string, phase: string, event: object}) => Promise<unknown>}} options
+ * `holdSafetyDeadlineMs` is the MECHANISM-ONLY injected safety ceiling: a
+ * hold still undecided when it fires is force-settled with the
+ * `safety-deadline` outcome — the same forced-settlement mechanism as the
+ * production 100-hour ceiling, exercised at a test-scale duration. It is
+ * never evidence that a tested host supports a 100-hour tool call.
+ * @param {{observer: {runDirectory: string, runNonce: string, phase: string, ownerSecret?: string}, ownerSecret?: string, holdSafetyDeadlineMs?: number, appendImpl?: (options: {runDirectory: string, runNonce: string, phase: string, event: object}) => Promise<unknown>}} options
  */
-export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
+export function createDirectProbeServer({ observer, ownerSecret, holdSafetyDeadlineMs, appendImpl }) {
   if (!observer || typeof observer.runDirectory !== 'string' || !isAbsolute(observer.runDirectory)) {
     throw directError('DIRECT_PROBE_OBSERVER_INVALID', 'The direct probe server requires an absolute run directory.');
   }
@@ -224,6 +269,10 @@ export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
   }
   if (typeof observer.phase !== 'string' || !DIRECT_PROBE_PHASES.includes(observer.phase)) {
     throw directError('DIRECT_PROBE_OBSERVER_INVALID', 'The direct probe server requires a closed probe phase.');
+  }
+  if (holdSafetyDeadlineMs !== undefined
+    && (!Number.isSafeInteger(holdSafetyDeadlineMs) || holdSafetyDeadlineMs <= 0 || holdSafetyDeadlineMs > MAXIMUM_HOLD_MS)) {
+    throw directError('DIRECT_PROBE_OBSERVER_INVALID', `The injected hold safety deadline must be a positive integer of at most ${MAXIMUM_HOLD_MS} milliseconds.`);
   }
   const { runDirectory, runNonce, phase } = observer;
 
@@ -507,11 +556,21 @@ export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
     }
     if (usedLabels.has(probeLabel)) return errorResult('The probe label was already used in this server run.');
     usedLabels.add(probeLabel);
+    // The optional synthetic worker duration: absent, or a bounded positive
+    // integer. Anything else fails closed before any durable work.
+    const rawHoldMs = request.params.arguments?.holdMs;
+    let holdMs;
+    if (rawHoldMs !== undefined) {
+      if (!Number.isSafeInteger(rawHoldMs) || rawHoldMs < 1 || rawHoldMs > MAXIMUM_HOLD_MS) {
+        return errorResult(`The direct probe requires holdMs to be an integer of 1 to ${MAXIMUM_HOLD_MS} milliseconds.`);
+      }
+      holdMs = rawHoldMs;
+    }
     let entryDurable = false;
     try {
       const result = request.params.name === 'capture_direct'
         ? await captureDirect(probeLabel, extra, () => { entryDurable = true; })
-        : await holdDirect(probeLabel, extra, () => { entryDurable = true; });
+        : await holdDirect(probeLabel, extra, () => { entryDurable = true; }, holdMs);
       return result;
     } catch (error) {
       // Before entry the label is unused, so a retry may try again; after the
@@ -551,7 +610,14 @@ export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
         // release without proof of absence.
       }
       const code = error && typeof error === 'object' && 'code' in error ? /** @type {any} */ (error).code : 'error';
-      if (process.env.DEBUG_DIRECT_PROBE) console.error('DEBUG-TOOL-ERR', error && error.stack ? error.stack.split('\n').slice(0, 8).join(' | ') : String(error));
+      // PRIVATE ephemeral diagnostics: with DEBUG_DIRECT_PROBE set this path
+      // prints ONLY the closed probe error code — never a raw stack, error
+      // string, or path (filesystem errors can embed probe paths, and
+      // stderr is commonly retained by the caller).
+      if (process.env.DEBUG_DIRECT_PROBE) {
+        const debugCode = typeof code === 'string' && /^(PROBE|DIRECT)_/.test(code) ? code : 'error';
+        console.error(`DEBUG-TOOL-ERR ${debugCode}`);
+      }
       return errorResult(`Direct probe tool failed: ${code}`);
     }
   });
@@ -586,11 +652,31 @@ export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
     return { content: [{ type: 'text', text: 'captured' }], structuredContent: { entered: true, metadataState: observation.state } };
   }
 
-  async function holdDirect(probeLabel, extra, onEntered) {
+  async function holdDirect(probeLabel, extra, onEntered, holdMs = undefined) {
     const callNonce = await appendHandlerEntry(probeLabel, onEntered);
     // Probe-owned synthetic worker identity; identifies the probe worker,
     // never a real job.
     const workerHash = hashProbeValue(runNonce, `direct-probe-worker:${randomBytes(16).toString('hex')}`);
+    // The two settlement timers: the synthetic worker's own completion
+    // duration and the injected safety ceiling. Whichever decision lands
+    // first wins once — the decided outcome is never overwritten, and both
+    // timers are cleared on every decision path.
+    let completionTimer = null;
+    let safetyTimer = null;
+    const clearHoldTimers = () => {
+      if (completionTimer !== null) clearTimeout(completionTimer);
+      if (safetyTimer !== null) clearTimeout(safetyTimer);
+      completionTimer = null;
+      safetyTimer = null;
+    };
+    if (holdMs !== undefined) {
+      completionTimer = setTimeout(() => entry.finish('completed'), holdMs);
+      completionTimer?.unref?.();
+    }
+    if (holdSafetyDeadlineMs !== undefined) {
+      safetyTimer = setTimeout(() => entry.finish('safety-deadline'), holdSafetyDeadlineMs);
+      safetyTimer?.unref?.();
+    }
     /** @type {(outcome: string) => void} */
     let resolveSettlement = () => {};
     /** @type {{callNonce: string, workerHash: string, outcome: string|null, lock: Promise<void>, finish: (outcome: string) => void}} */
@@ -604,6 +690,7 @@ export function createDirectProbeServer({ observer, ownerSecret, appendImpl }) {
         // removed only by the settlement reconciliation, after both terminal
         // records are confirmed committed by durable reads.
         if (entry.outcome === null) entry.outcome = outcome;
+        clearHoldTimers();
         resolveSettlement(entry.outcome);
       },
     };
@@ -696,7 +783,18 @@ function sameEntryPath(left, right) {
 async function runAsDirectProbeExecutable() {
   const observer = directProbeObserverFromEnv();
   reportStartup();
-  const server = createDirectProbeServer({ observer });
+  // The mechanism-only injected safety ceiling arrives through spawn-time
+  // env (forwarded only when a lifecycle case needs it); absent means no
+  // ceiling, which is the honest default for every other mode.
+  let holdSafetyDeadlineMs;
+  if (process.env.DIRECT_PROBE_HOLD_SAFETY_DEADLINE_MS !== undefined) {
+    const raw = Number(process.env.DIRECT_PROBE_HOLD_SAFETY_DEADLINE_MS);
+    if (!Number.isSafeInteger(raw) || raw <= 0) {
+      throw directError('DIRECT_PROBE_ENV_INVALID', 'DIRECT_PROBE_HOLD_SAFETY_DEADLINE_MS must be a positive integer of milliseconds.');
+    }
+    holdSafetyDeadlineMs = raw;
+  }
+  const server = createDirectProbeServer({ observer, holdSafetyDeadlineMs });
   // server-started is a handler-side kind: it goes through this instance's
   // own handler writer capability.
   await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: server.probeDirectInstanceHash });
