@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import fs, { readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsp, { chmod, lstat, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
@@ -7303,4 +7303,1075 @@ test('a hard commit directory-fsync error carries the landed commit (server)', a
     const reduced = await writers.reduce();
     assert.equal(reduced.uncommittedCount, 0, 'the run reduces cleanly after the true state is restored');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: bounded direct-call driver — fake app-server transcript tests.
+// The driver's reachability schedule reduces every `mcpServer/tool/call`
+// response, against the durable handler-entry join, into one of the closed
+// classifications with independent evidence references. A prior
+// `server-started` event must never imply handler entry. The schedule tests
+// run against a local fake app-server fixture — no real host in this step.
+// ---------------------------------------------------------------------------
+
+const directDriverModulePath = fileURLToPath(new URL('../tools/direct-mcp-probe/driver.mjs', import.meta.url));
+
+/** Loads the driver module dynamically so its absence is a per-test failure. */
+const loadDirectDriver = () => import('../tools/direct-mcp-probe/driver.mjs');
+
+/** The closure over records + authenticated reduction the case seam consumes. */
+async function reduceDirectRun(run, nonce, ownerSecret = DIRECT_DRIVER_SECRET, ownerPid = process.pid) {
+  const finalState = directAnchors.get(run) ?? null;
+  const reduced = await reduceDirectProbeLog({ runDirectory: run, runNonce: nonce, ownerSecret, ownerPid, expectedFinalState: finalState });
+  const records = await readDirectProbeEvents({ runDirectory: run, runNonce: nonce });
+  return { records, reduced };
+}
+
+test('G1 direct driver reduces a true handler response to success-handler-entered with independent evidence references', async () => {
+  const { DIRECT_PROBE_SERVER_NAME, directReachabilityCase, classifyDirectGateG1 } = await loadDirectDriver();
+  assert.equal(DIRECT_PROBE_SERVER_NAME, 'zcode-direct-mcp-probe');
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    const callNonce = directCallNonce();
+    // The fake app-server transcript: request, server startup, durable entry,
+    // then a true handler response observed by the driver.
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'sent' });
+    const server = trackDirectProbeServer(run, createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'reachability' }, ownerSecret: DIRECT_DRIVER_SECRET }));
+    await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('fixture-instance') });
+    await server.probeDirectAppend({ kind: 'handler-entered', probeLabel: label, callNonce, serverInstanceHash: directHash('fixture-instance') });
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, callNonce, outcome: 'success-result' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: label });
+    assert.equal(reachability.classification, 'success-handler-entered');
+    assert.equal(reachability.handlerEntryObserved, true);
+    assert.equal(reachability.readiness, 'not-observed');
+    // Independent evidence references: the durable entry record and the RPC
+    // observation are distinct records, both referenced by kind@sequence.
+    assert.ok(reachability.evidenceRefs.includes(`handler-entered@${records[2].sequence}`));
+    assert.ok(reachability.evidenceRefs.includes(`rpc-observed@${records[3].sequence}`));
+    assert.ok(reachability.evidenceRefs.includes(`request-sent@${records[0].sequence}`));
+    assert.deepEqual([...reachability.evidenceRefs], [...reachability.evidenceRefs].sort((left, right) => Number(left.split('@')[1]) - Number(right.split('@')[1])));
+    const gate = classifyDirectGateG1(reachability);
+    assert.equal(gate.status, 'proven');
+    assert.equal(gate.reasonCode, 'handler-entry-observed');
+    assert.ok(gate.evidenceRefs.includes(`handler-entered@${records[2].sequence}`), 'the proven gate cites the independent entry evidence');
+  });
+});
+
+test('G1 direct driver attributes a success-shaped error to the handler only through the durable entry join', async () => {
+  const { directReachabilityCase, classifyDirectGateG1 } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    const callNonce = directCallNonce();
+    await directDriverAppend(run, nonce, { kind: 'readiness-observed', state: 'discovered', source: 'host' });
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'sent' });
+    const server = trackDirectProbeServer(run, createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'reachability' }, ownerSecret: DIRECT_DRIVER_SECRET }));
+    await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('fixture-instance') });
+    await server.probeDirectAppend({ kind: 'handler-entered', probeLabel: label, callNonce, serverInstanceHash: directHash('fixture-instance') });
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, callNonce, outcome: 'error-result' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: label });
+    assert.equal(reachability.classification, 'error-result-handler-entered');
+    assert.equal(reachability.readiness, 'discovered');
+    assert.ok(reachability.evidenceRefs.includes(`handler-entered@${records[3].sequence}`));
+    const gate = classifyDirectGateG1(reachability);
+    assert.equal(gate.status, 'proven', 'an independently persisted entry attributable to the request proves G1 even when the result was an error');
+  });
+});
+
+test('G1 direct driver keeps an error origin unknown without a durable entry join even when the server started', async () => {
+  const { directReachabilityCase, classifyDirectGateG1 } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'sent' });
+    const server = trackDirectProbeServer(run, createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'reachability' }, ownerSecret: DIRECT_DRIVER_SECRET }));
+    // The disposable server STARTED — server-started is durable — but no
+    // handler entry ever landed. Server startup must never imply entry.
+    await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('fixture-instance') });
+    // The driver observed a success-shaped error result; with no durable
+    // entry join it carries no call nonce.
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, outcome: 'error-result' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: label });
+    assert.equal(reachability.classification, 'error-result-unknown-origin');
+    assert.equal(reachability.handlerEntryObserved, false);
+    const gate = classifyDirectGateG1(reachability);
+    assert.equal(gate.status, 'not-proven');
+    assert.equal(gate.reasonCode, 'error-origin-unknown');
+    assert.equal(gate.evidenceRefs.some((ref) => ref.startsWith('handler-entered@')), false, 'no handler-entered reference may exist without a durable entry');
+    assert.ok(gate.evidenceRefs.some((ref) => ref.startsWith('server-started@')), 'server startup is honest supporting context, never entry');
+  });
+});
+
+test('G1 direct driver reduces an RPC rejection to rpc-rejected regardless of readiness', async () => {
+  const { directReachabilityCase, classifyDirectGateG1 } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    // Discovery failed AND the call was rejected: the honest classification
+    // is rpc-rejected with the failed readiness recorded beside it.
+    await directDriverAppend(run, nonce, { kind: 'readiness-observed', state: 'failed', source: 'host' });
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'sent' });
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, outcome: 'rpc-rejected' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: label });
+    assert.equal(reachability.classification, 'rpc-rejected');
+    assert.equal(reachability.readiness, 'failed');
+    assert.equal(reachability.requestState, 'sent');
+    const gate = classifyDirectGateG1(reachability);
+    assert.equal(gate.status, 'not-proven');
+    assert.equal(gate.reasonCode, 'rpc-rejected');
+    assert.equal(gate.evidenceRefs.some((ref) => ref.startsWith('handler-entered@')), false);
+  });
+});
+
+test('G1 direct driver records a call it never dispatched as not observed', async () => {
+  const { directReachabilityCase, classifyDirectGateG1 } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    const nonce = directRunNonce();
+    const label = directLabel();
+    // The driver recorded the request as not-sent (a prerequisite failed) and
+    // no RPC was observed: the case is not observed, never fabricated.
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'not-sent' });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: label });
+    assert.equal(reachability.classification, 'not-observed');
+    assert.equal(reachability.requestState, 'not-sent');
+    const gate = classifyDirectGateG1(reachability);
+    assert.equal(gate.status, 'not-proven');
+    assert.equal(gate.reasonCode, 'call-not-observed');
+    assert.deepEqual(gate.evidenceRefs, []);
+    // An unknown label is equally not observed.
+    const missing = directReachabilityCase({ records, reduced, probeLabel: directLabel() });
+    assert.equal(missing.classification, 'not-observed');
+    assert.equal(missing.requestState, null);
+  });
+});
+
+test('the direct driver refuses a run directory that is missing, foreign in mode, or nonempty', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-driver-', async (run) => {
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: '/nonexistent/codex', sourceCodexHome: run, runDirectory: join(run, 'missing') }),
+      /PROBE_RUN_DIRECTORY_MISSING/,
+      'the run directory must already exist',
+    );
+    const shared = join(run, 'shared');
+    await fsp.mkdir(shared, { mode: 0o755 });
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: '/nonexistent/codex', sourceCodexHome: run, runDirectory: shared }),
+      /PROBE_RUN_DIRECTORY_MODE/,
+      'the run directory must be private mode 0700',
+    );
+    await writeFile(join(shared, 'foreign'), 'x');
+    await chmod(shared, 0o700);
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: '/nonexistent/codex', sourceCodexHome: run, runDirectory: shared }),
+      /PROBE_RUN_DIRECTORY_NOT_EMPTY/,
+      'the driver validates an empty run directory',
+    );
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: 'relative/codex', sourceCodexHome: run, runDirectory: join(run, 'empty') }),
+      /PROBE_CODEX_PATH_RELATIVE/,
+      'the codex path must be absolute',
+    );
+  });
+});
+
+/**
+ * Builds the disposable fake app-server fixture: a `codex`-shaped executable
+ * whose `--version`, `login status`, and `plugin *` subcommands behave like
+ * the real CLI, and whose `app-server` subcommand speaks the bounded
+ * newline-delimited JSON-RPC transcript of the scenarios under test. The
+ * tool-call scenarios spawn the REAL disposable probe server executable the
+ * same way the real host would, so handler evidence comes from the genuine
+ * handler writer.
+ * @param {string} scenario @param {string} serverModulePath @param {string} intermediatePath
+ */
+function directFakeAppServerScript(scenario, serverModulePath, intermediatePath) {
+  return `#!/usr/bin/env node
+// Generated fake app-server fixture (tests/direct-mcp-probe.test.mjs) — disposable, never committed.
+import { spawn } from 'node:child_process';
+import { appendFileSync, chmodSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const SCENARIO = ${JSON.stringify(scenario)};
+const SERVER_PATH = ${JSON.stringify(serverModulePath)};
+const INTERMEDIATE_PATH = ${JSON.stringify(intermediatePath)};
+const SELF = fileURLToPath(import.meta.url);
+const send = (frame) => { process.stdout.write(\`\${JSON.stringify(frame)}\\n\`); };
+const fixed = (value) => { send(value); process.exit(0); };
+const argv = process.argv.slice(2);
+if (argv[0] === '--version') { process.stdout.write('codex-cli 9.9.9-fixture\\n'); process.exit(0); }
+if (argv[0] === 'login' && argv[1] === 'status') fixed('{}');
+if (argv[0] === 'plugin' && argv[1] === 'marketplace' && argv[2] === 'add') {
+  if (SCENARIO === 'self-replace') {
+    // Unlink first so the replacement carries a NEW device/inode identity —
+    // the pin the driver's recheck must catch before the next spawn.
+    unlinkSync(SELF);
+    writeFileSync(SELF, [
+      '#!/usr/bin/env node',
+      '// replaced-inode marker: the fixture replaced its own binary during install',
+      "if (process.argv[2] === '--version') { console.log('codex-cli 9.9.9-replaced'); process.exit(0); }",
+      'process.exit(0);',
+      '',
+    ].join('\\n'), { mode: 0o755 });
+  }
+  if (SCENARIO === 'self-rewrite-inplace') {
+    // In-place rewrite: SAME device/inode, different content — only a content
+    // digest recheck can catch this. The rewritten variant answers --version
+    // with a different version and exits nonzero for everything else, so a
+    // driver that misses the change fails loudly at the next command.
+    writeFileSync(SELF, [
+      '#!/usr/bin/env node',
+      '// rewritten-in-place marker: same inode, different content',
+      "if (process.argv[2] === '--version') { console.log('codex-cli 8.8.8-rewritten'); process.exit(0); }",
+      'process.exit(2);',
+      '',
+    ].join('\\n'), { mode: 0o755 });
+  }
+  fixed('{}');
+}
+if (argv[0] === 'plugin' && argv[1] === 'add') fixed('{}');
+if (argv[0] === 'plugin' && argv[1] === 'remove') {
+  if (SCENARIO === 'cleanup-replace') {
+    // Rewrites itself in place DURING cleanup, between the two removal
+    // commands: the driver must re-verify the pin before EACH cleanup
+    // command and refuse to spawn the changed binary.
+    writeFileSync(SELF, [
+      '#!/usr/bin/env node',
+      '// rewritten-during-cleanup marker',
+      "if (process.argv[2] === '--version') { console.log('codex-cli 8.8.8-rewritten'); process.exit(0); }",
+      'process.exit(2);',
+      '',
+    ].join('\\n'), { mode: 0o755 });
+  }
+  fixed('{}');
+}
+if (argv[0] === 'plugin' && argv[1] === 'marketplace' && argv[2] === 'remove') fixed('{}');
+if (argv[0] !== 'app-server') process.exit(2);
+try { appendFileSync(join(dirname(SELF), 'invocations.log'), argv.join(' ') + '\\n'); } catch {}
+const lockLogOnShutdown = () => {
+  if (SCENARIO === 'log-unreadable-known-pid') {
+    // The driver just closed/signalled the session at cleanup time — after
+    // discovery captured the server pid. Lock the log now, so the cleanup
+    // fresh read fails while a captured, verified server pid is in hand.
+    try { chmodSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'events.jsonl'), 0o000); } catch {}
+  }
+  process.exit(0);
+};
+process.stdin.on('end', lockLogOnShutdown);
+process.on('SIGTERM', lockLogOnShutdown);
+
+const callServerTool = (probeLabel) => new Promise((resolveCall) => {
+  const child = spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stderr.resume();
+  let buffer = '';
+  const sendToServer = (frame) => { child.stdin.write(\`\${JSON.stringify(frame)}\\n\`); };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf('\\n');
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      let frame;
+      try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
+      if (frame.id === 1) {
+        sendToServer({ jsonrpc: '2.0', method: 'notifications/initialized' });
+        sendToServer({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'capture_direct', arguments: { probeLabel } } });
+      } else if (frame.id === 2) {
+        resolveCall(frame.result ?? { content: [], isError: true });
+        return;
+      }
+      newline = buffer.indexOf('\\n');
+    }
+  });
+  sendToServer({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-fixture', version: '0.0.0' } } });
+});
+
+let buffer = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  let newline = buffer.indexOf('\\n');
+  while (newline >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    if (line.trim() !== '') {
+      let frame;
+      try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
+      if (frame.id !== undefined && typeof frame.method === 'string') {
+        if (frame.method === 'initialize') send({ id: frame.id, result: {} });
+        else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'fixture-thread-0001-0002-0003-0004' } } });
+        else if (frame.method === 'mcpServerStatus/list') {
+          if (SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32601, message: 'discovery rejected' } });
+          else send({ id: frame.id, result: { data: [{ name: 'zcode-direct-mcp-probe', runtimeStatus: 'connected', tools: { capture_direct: { name: 'capture_direct' } } }], nextCursor: null } });
+        } else if (frame.method === 'mcpServer/tool/call') {
+          const probeLabel = frame.params && frame.params.arguments ? frame.params.arguments.probeLabel : null;
+          if (SCENARIO === 'call-never-answers') {
+            // The host accepts the dispatch but never answers: the client's
+            // request deadline is the only bound, and the honest outcome is an
+            // unanswered call.
+            return;
+          }
+          if (SCENARIO === 'reject' || SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32000, message: 'tool call rejected' } });
+          else if (SCENARIO === 'server-restart') {
+            // The host RESTARTS the disposable server during dispatch: it
+            // spawns instance A, waits for its durable startup, kills A,
+            // removes the handler-owner registration so instance B can
+            // register itself, spawns B, waits for B's durable startup, and
+            // only then answers the call itself without reaching the
+            // handler. The durable log ends with TWO distinct server starts
+            // while only one owner registration exists — cleanup must fail
+            // as unresolved instead of accounting for one and releasing.
+            const startAndProve = (instance) => new Promise((resolveStarted) => {
+              const child = spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+              child.stderr.resume();
+              let sb = '';
+              child.stdout.setEncoding('utf8');
+              child.stdout.on('data', (chunk) => {
+                sb += chunk;
+                let nl = sb.indexOf('\\n');
+                while (nl >= 0) {
+                  const line = sb.slice(0, nl);
+                  sb = sb.slice(nl + 1);
+                  let f;
+                  try { f = JSON.parse(line); } catch { nl = sb.indexOf('\\n'); continue; }
+                  if (f.id === 1) resolveStarted(child);
+                  nl = sb.indexOf('\\n');
+                }
+              });
+              const initFrame = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-restart-' + instance, version: '0.0.0' } } });
+              child.stdin.write(initFrame + '\\n');
+            });
+            (async () => {
+              const first = await startAndProve('a');
+              first.kill('SIGKILL');
+              rmSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'handler-owner.json'));
+              const second = await startAndProve('b');
+              send({ id: frame.id, result: { content: [{ type: 'text', text: 'after restart' }], isError: true } });
+            })();
+          }
+          else if (SCENARIO === 'log-unreadable-known-pid') {
+            // The host starts the REAL server (its durable startup append
+            // lands while the log is still readable — proven by the server
+            // answering its own initialize) and answers the call itself
+            // without reaching the handler. When the driver later closes the
+            // session at cleanup time, the host locks the log just before
+            // exiting: discovery has already captured the server pid, the
+            // log is now unreadable, and release must fail as unresolved
+            // regardless of the captured pid's verified exit.
+            const child = spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stderr.resume();
+            let serverBuffer = '';
+            child.stdout.setEncoding('utf8');
+            child.stdout.on('data', (chunk) => {
+              serverBuffer += chunk;
+              let newline = serverBuffer.indexOf('\\n');
+              while (newline >= 0) {
+                const line = serverBuffer.slice(0, newline);
+                serverBuffer = serverBuffer.slice(newline + 1);
+                let serverFrame;
+                try { serverFrame = JSON.parse(line); } catch { newline = serverBuffer.indexOf('\\n'); continue; }
+                if (serverFrame.id === 1) {
+                  send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-side error' }], isError: true } });
+                }
+                newline = serverBuffer.indexOf('\\n');
+              }
+            });
+            child.stdin.write(\`\${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-known-pid', version: '0.0.0' } } })}\\n\`);
+          } else if (SCENARIO === 'log-unreadable') {
+            // The host makes the durable evidence log unreadable when it
+            // receives the dispatch: every later driver read fails, so
+            // cleanup cannot consult fresh evidence. Cleanup must treat an
+            // unreadable log as unresolved instead of reporting release.
+            chmodSync(join(process.env.ZCODE_DIRECT_MCP_PROBE_RUN, 'events.jsonl'), 0o000);
+            send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-side error' }], isError: true } });
+          } else if (SCENARIO === 'detached-server') {
+            // The host reaches the real handler THROUGH an intermediate
+            // spawner whose own command line never references the server
+            // path: the server's parent is NOT the app-server process, so a
+            // parent-filtered process scan cannot see it. The intermediate
+            // keeps the server's stdio open (the server stays alive until
+            // cleanup resolves it) and exits when the server exits.
+            spawn(process.execPath, [INTERMEDIATE_PATH], { env: { ...process.env, SERVER_PATH, PROBE_LABEL: probeLabel ?? '' }, stdio: 'ignore' });
+            send({ id: frame.id, result: { content: [{ type: 'text', text: 'detached dispatch' }], isError: false } });
+          } else if (SCENARIO === 'server-exits-early') {
+            // The host starts the probe server with no live stdio, so the
+            // server records its durable startup and exits immediately; the
+            // host then answers the call itself. The startup is durably
+            // observable, but no live process will remain to verify its exit.
+            spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: 'ignore' });
+            send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-side error' }], isError: true } });
+          } else if (SCENARIO === 'error-without-entry') {
+            // The host starts the probe server (server-started becomes durable)
+            // but answers the call itself without ever reaching the handler.
+            // The server stays connected over piped stdio exactly as a real
+            // host keeps it, so its exit remains the driver's cleanup problem.
+            spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+            send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-side error' }], isError: true } });
+          } else {
+            callServerTool(probeLabel).then((toolResult) => {
+              if (SCENARIO === 'error-with-entry') send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-wrapped error' }], isError: true } });
+              else send({ id: frame.id, result: toolResult });
+            }, () => send({ id: frame.id, error: { code: -32000, message: 'tool call failed' } }));
+          }
+        } else send({ id: frame.id, error: { code: -32601, message: 'unknown method' } });
+      }
+    }
+    newline = buffer.indexOf('\\n');
+  }
+});
+`;
+}
+
+/**
+ * Builds a fake codex fixture executable plus a source Codex home with a
+ * fake auth.json inside a private parent directory. Returns absolute paths.
+ * @param {string} scenario
+ */
+/**
+ * The intermediate spawner used by the detached-server scenario: it spawns
+ * the real probe server (keeping its stdio open so the server stays alive),
+ * performs the capture dispatch through it, and exits when the server exits.
+ * It deliberately reads the server path from env so its own command line
+ * never references the server module path.
+ */
+function directDetachedSpawnerScript() {
+  return `#!/usr/bin/env node
+// Generated intermediate spawner (tests/direct-mcp-probe.test.mjs) — disposable, never committed.
+import { spawn } from 'node:child_process';
+const child = spawn(process.execPath, [process.env.SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+child.stderr.resume();
+let buffer = '';
+const sendToServer = (frame) => { child.stdin.write(\`\${JSON.stringify(frame)}\\n\`); };
+child.stdout.setEncoding('utf8');
+child.stdout.on('data', (chunk) => {
+  buffer += chunk;
+  let newline = buffer.indexOf('\\n');
+  while (newline >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    let frame;
+    try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
+    if (frame.id === 1) {
+      sendToServer({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      sendToServer({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'capture_direct', arguments: { probeLabel: process.env.PROBE_LABEL } } });
+    }
+    newline = buffer.indexOf('\\n');
+  }
+});
+child.on('exit', () => process.exit(0));
+sendToServer({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-detached-spawner', version: '0.0.0' } } });
+setInterval(() => {}, 1_000);
+`;
+}
+
+async function buildDirectDriverFixture(scenario) {
+  const parent = await mkdtemp(join(tmpdir(), `zcode-direct-fixture-${scenario}-`));
+  await chmod(parent, 0o700);
+  const codexPath = join(parent, 'codex-fixture.mjs');
+  const intermediatePath = join(parent, 'codex-intermediate.mjs');
+  await writeFile(codexPath, directFakeAppServerScript(scenario, directServerModulePath, intermediatePath), { mode: 0o755 });
+  await chmod(codexPath, 0o755);
+  await writeFile(intermediatePath, directDetachedSpawnerScript(), { mode: 0o755 });
+  await chmod(intermediatePath, 0o755);
+  const sourceHome = join(parent, 'source-home');
+  await fsp.mkdir(sourceHome, { mode: 0o700 });
+  await writeFile(join(sourceHome, 'auth.json'), '{"fixture":"auth"}\n', { mode: 0o600 });
+  return { parent, codexPath, sourceHome };
+}
+
+test('the direct driver reachability schedule classifies a true handler response against the fake app-server', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('success');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run });
+    assert.equal(counters.probe, 'zcode-direct-mcp-probe');
+    assert.equal(counters.mode, 'reachability');
+    assert.equal(counters.codexVersion, 'codex-cli 9.9.9-fixture');
+    const phase = counters.phases.reachability;
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.requestsSent, 1);
+    assert.equal(phase.rpcObservations, 1);
+    assert.equal(phase.handlerEntries, 1);
+    assert.equal(phase.classification, 'success-handler-entered');
+    assert.equal(phase.cleanup, 'released');
+    assert.equal(phase.uncommittedCount, 0);
+    assert.ok(phase.eventsAfter > phase.eventsBefore, 'the durable event position advanced across the direct request');
+    // The evidence stays private at mode 0600 inside the run container.
+    const files = await fsp.readdir(run);
+    assert.ok(files.includes('events.jsonl'), 'the durable evidence log exists');
+    const eventsStats = await lstat(join(run, 'events.jsonl'));
+    assert.equal(eventsStats.mode & 0o777, 0o600, 'evidence stays private at mode 0600');
+    // The isolated credential copy and homes are verified-deleted; only the
+    // evidence container remains.
+    const leftovers = files.filter((name) => name.startsWith('codex-home') || name === 'home' || name === 'tmp' || name.startsWith('marketplace') || name === 'workspace');
+    assert.deepEqual(leftovers, [], 'isolated homes and fixtures are removed after the run');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver reachability schedule records an unknown origin when the fake app-server answers without handler entry', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('error-without-entry');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run });
+    const phase = counters.phases.reachability;
+    assert.equal(phase.classification, 'error-result-unknown-origin');
+    assert.equal(phase.handlerEntries, 0, 'no handler entry landed when the host answered without reaching the handler');
+    assert.equal(phase.serverStarts, 1, 'the disposable server started, which alone must never imply entry');
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver reachability schedule reduces an rpc rejection after a fake app-server discovery failure', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('discovery-failure-reject');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run });
+    const phase = counters.phases.reachability;
+    assert.equal(phase.readiness, 'failed', 'the discovery rejection is recorded honestly');
+    assert.equal(phase.requestsSent, 1, 'the transport observation is still attempted after a failed discovery');
+    assert.equal(phase.rpcObservations, 1);
+    assert.equal(phase.classification, 'rpc-rejected');
+    assert.equal(phase.handlerEntries, 0);
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver reachability schedule attributes a host-reported error result to the durable handler entry', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('error-with-entry');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run });
+    const phase = counters.phases.reachability;
+    assert.equal(phase.classification, 'error-result-handler-entered');
+    assert.equal(phase.handlerEntries, 1, 'the entry is independently durable even though the host reported an error result');
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver refuses a codex binary replaced mid-run and still deletes the credential copies', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('self-replace');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_CODEX_REPLACED/,
+      'the device/inode pin refuses a replaced binary before the next spawn',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('auth-copy'), false, 'the isolated credential copy is verified-deleted even on the failure path');
+    assert.equal(files.includes('codex-home'), false, 'the isolated codex home is removed even on the failure path');
+    assert.equal(files.includes('events.jsonl'), false, 'no evidence exists before the app-server phase');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver CLI prints only redacted phase and outcome counters', async () => {
+  const fixture = await buildDirectDriverFixture('success');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const child = spawn(process.execPath, [
+      directDriverModulePath, '--mode', 'reachability', '--codex', fixture.codexPath, '--run-directory', run,
+      '--source-codex-home', fixture.sourceHome,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    const exit = await new Promise((resolveExit) => child.once('close', (code) => resolveExit(code)));
+    assert.equal(exit, 0, `the CLI exits 0 on an instrument-successful run (stderr: ${Buffer.concat(stderrChunks).toString('utf8').slice(0, 300)})`);
+    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+    const counters = JSON.parse(stdout);
+    assert.equal(counters.probe, 'zcode-direct-mcp-probe');
+    assert.equal(counters.mode, 'reachability');
+    assert.equal(counters.phases.reachability.classification, 'success-handler-entered');
+    assert.equal(counters.phases.reachability.cleanup, 'released');
+    // Redaction: no run-directory path, no probe-label-shaped hex, no fake
+    // thread identifier may appear in the counters stream.
+    assert.equal(stdout.includes(run), false, 'the run directory path never reaches stdout');
+    assert.equal(/[0-9a-f]{32}/.test(stdout.replace(/"codexVersion":"[^"]*"/g, '')), false, 'no probe-label-shaped raw hex reaches stdout');
+    assert.equal(stdout.includes('fixture-thread'), false, 'no host-issued thread identifier reaches stdout');
+    assert.equal(stdout.includes(fixture.sourceHome), false, 'the source home path never reaches stdout');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver honors an injected direct-call deadline and records the unanswered call as not observed with verified cleanup', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('call-never-answers');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const startedAt = Date.now();
+    const counters = await runDirectReachabilityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      directCallDeadlineMs: 1_500,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs < 30_000, `the injected deadline must bound the run (observed ${elapsedMs}ms)`);
+    const phase = counters.phases.reachability;
+    assert.equal(phase.readiness, 'discovered', 'readiness was observed before the unanswered dispatch');
+    assert.equal(phase.requestsSent, 1);
+    assert.equal(phase.rpcObservations, 1);
+    assert.equal(phase.classification, 'not-observed', 'a call that never received an answer stays honestly not observed');
+    assert.equal(phase.handlerEntries, 0);
+    assert.equal(phase.cleanup, 'released', 'probe-owned processes must be verified gone after the timeout');
+    // Cleanup after the timeout, verified at the process level as well: no
+    // probe-owned process (fixture host or disposable server) survives.
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const listed = spawnSync('/bin/ps', ['-axo', 'command='], { encoding: 'utf8', timeout: 5_000 });
+      const survivors = listed.status === 0
+        ? listed.stdout.split('\n').filter((line) => line.includes(fixture.codexPath) || line.includes(directServerModulePath))
+        : ['process listing unavailable'];
+      if (survivors.length === 0) break;
+      if (Date.now() > deadline) {
+        assert.fail(`probe-owned processes survived the run: ${survivors.slice(0, 3).join(' | ').slice(0, 300)}`);
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    }
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver app-server session terminates on stdout overflow past its 4 MiB bound', async () => {
+  const { startAppServerSession } = await loadDirectDriver();
+  // A synthetic session flooding stdout past the per-stream bound: the new
+  // client must terminate the child and settle the pending request through
+  // the disconnect path, well before the request's own deadline.
+  const flood = [
+    'const chunk = "x".repeat(65536) + "\\n";',
+    'const timer = setInterval(() => {',
+    '  for (let i = 0; i < 64; i += 1) process.stdout.write(chunk);',
+    '}, 1);',
+  ].join('\n');
+  const session = startAppServerSession({ command: process.execPath, args: ['-e', flood], env: process.env, cwd: tmpdir() });
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      session.request('initialize', { capabilities: null }),
+      (error) => error.code === 'PROBE_APP_SERVER_DISCONNECTED',
+      'stdout overflow must terminate the bounded session and settle the pending request',
+    );
+    assert.ok(Date.now() - startedAt < 30_000, 'the settlement must come from the overflow termination, not the request deadline');
+  } finally {
+    await session.terminate();
+  }
+});
+
+test('the direct driver app-server session terminates on non-delta notification overflow while counting deltas redacted', async () => {
+  const { startAppServerSession } = await loadDirectDriver();
+  // 640 streamed deltas must NOT terminate the bounded session; a retained
+  // non-delta flood past the 512-notification cap must. Pending requests
+  // settle through the disconnect path and the redacted counters record both.
+  const flood = [
+    'let count = 0;',
+    'let deltasDone = false;',
+    'let noiseSent = false;',
+    'const timer = setInterval(() => {',
+    '  if (!deltasDone) {',
+    '    for (let i = 0; i < 32; i += 1) {',
+    '      count += 1;',
+    '      process.stdout.write(JSON.stringify({ method: "item/agentMessage/delta", params: { n: count } }) + "\\n");',
+    '    }',
+    '    if (count >= 640) deltasDone = true;',
+    '    return;',
+    '  }',
+    '  if (!noiseSent) {',
+    '    let noise = "";',
+    '    for (let i = 0; i < 600; i += 1) noise += JSON.stringify({ method: "probe/noise", params: {} }) + "\\n";',
+    '    process.stdout.write(noise);',
+    '    noiseSent = true;',
+    '    return;',
+    '  }',
+    '  clearInterval(timer);',
+    '}, 5);',
+  ].join('\n');
+  const session = startAppServerSession({ command: process.execPath, args: ['-e', flood], env: process.env, cwd: tmpdir() });
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      session.request('initialize', { capabilities: null }),
+      (error) => error.code === 'PROBE_APP_SERVER_DISCONNECTED',
+      'non-delta notification overflow must terminate the bounded session and settle the pending request',
+    );
+    assert.ok(Date.now() - startedAt < 30_000, 'the settlement must come from the overflow termination, not the request deadline');
+    assert.ok(session.notificationsDeltaCount >= 640, `the delta stream must only be counted redacted (observed ${session.notificationsDeltaCount})`);
+    assert.ok(session.notificationsOverflow >= 1, 'the overflow counter must count the discarded notifications');
+  } finally {
+    await session.terminate();
+  }
+});
+
+test('the direct driver deletes the credential copy when auth setup fails inside the protected scope', { skip: !posix }, async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('success');
+  try {
+    // A source auth.json that passes the regular-file lstat but cannot be
+    // read: the copy fails AFTER the isolated homes exist. The credential
+    // setup (directory creation and auth copy) must sit inside the
+    // cleanup-protected scope, so the partial copy and every isolated home
+    // are verified-deleted even on this failure.
+    await chmod(join(fixture.sourceHome, 'auth.json'), 0o000);
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_QUALIFICATION_UNAVAILABLE/,
+      'the auth-copy failure maps to a closed probe code',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated home holding any partial credential copy is verified-deleted on setup failure');
+    assert.equal(files.includes('home'), false, 'the other isolated homes are verified-deleted on setup failure');
+    assert.equal(files.includes('workspace'), false, 'the isolated workspace is verified-deleted on setup failure');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver CLI maps failures to a closed error code without raw paths', { skip: !posix }, async () => {
+  const fixture = await buildDirectDriverFixture('success');
+  try {
+    await chmod(join(fixture.sourceHome, 'auth.json'), 0o000);
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const child = spawn(process.execPath, [
+      directDriverModulePath, '--mode', 'reachability', '--codex', fixture.codexPath, '--run-directory', run,
+      '--source-codex-home', fixture.sourceHome,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    const exit = await new Promise((resolveExit) => child.once('close', (code) => resolveExit(code)));
+    assert.equal(exit, 1, 'a failed run exits nonzero');
+    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+    const stderrText = Buffer.concat(stderrChunks).toString('utf8');
+    // The failure line carries only the closed code; the driver's own
+    // redacted transcript lines (phase names, exit codes, basenames) may
+    // accompany it, but no raw filesystem error message may.
+    assert.equal(stderrText.split('\n').includes('direct driver failed: PROBE_QUALIFICATION_UNAVAILABLE'), true, 'the CLI boundary prints only the closed error code');
+    assert.equal(/EACCES|permission denied/.test(stderrText), false, 'no raw filesystem error text reaches stderr');
+    assert.equal(stderrText.includes(fixture.sourceHome), false, 'the source home path never reaches stderr');
+    assert.equal(stderrText.includes(run), false, 'the run directory path never reaches stderr');
+    assert.equal(stderrText.includes(fixture.codexPath), false, 'the codex path never reaches stderr');
+    assert.equal(stdout, '', 'no counters are printed on a failed run');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver refuses an in-place binary rewrite that keeps the device and inode', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('self-rewrite-inplace');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The fixture rewrites its own file IN PLACE during `plugin marketplace
+    // add` (same path, same device/inode, different content): the driver must
+    // catch the change through its content digest and fail closed before the
+    // next spawn, not silently run a binary whose version no longer matches.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_CODEX_REPLACED/,
+      'a content change under the same inode must fail the pin closed',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is verified-deleted on the failure path');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver fails closed when the pinned binary changes between cleanup commands', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('cleanup-replace');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The fixture behaves normally through the whole schedule, then rewrites
+    // itself in place during `plugin remove`: the second cleanup command
+    // (`marketplace remove`) must be preceded by a fresh pin recheck, and the
+    // detected change must fail the run closed instead of spawning the
+    // rewritten binary.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_CODEX_REPLACED/,
+      'a binary change between cleanup commands must fail the run closed',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is still verified-deleted');
+    assert.equal(files.includes('auth-copy'), false);
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver enforces one post-readiness ceiling across the direct call and cleanup', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('call-never-answers');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The injected per-call deadline alone would allow a 30-second call; the
+    // single post-readiness case ceiling must bound the call AND the cleanup
+    // together, and the ceiling-prevented observation records honestly.
+    const startedAt = Date.now();
+    const counters = await runDirectReachabilityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      directCallDeadlineMs: 30_000,
+      caseBudgetMs: 2_000,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    // The CASE ceiling is enforced, not just the call deadline: with a 2s
+    // budget, discovery, the durable join, and cleanup must all fit inside a
+    // small scheduling allowance above it.
+    assert.ok(elapsedMs < 5_000, `the post-readiness ceiling must bound the whole case, including process inspection and cleanup (observed ${elapsedMs}ms)`);
+    const phase = counters.phases.reachability;
+    assert.equal(phase.requestsSent, 1);
+    assert.equal(phase.rpcObservations, 1);
+    assert.equal(phase.classification, 'not-observed', 'a ceiling-prevented observation records not-observed, never a pass');
+    assert.equal(phase.postReadinessBudget, 'exhausted');
+    assert.equal(phase.cleanup, 'released', 'the bounded cleanup still verifies every probe-owned process is gone');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver resolves a server process the first scan cannot see and verifies its exit during cleanup', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('detached-server');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The host dispatches through an intermediate spawner, so the server's
+    // parent is not the app-server process and the first (parent-filtered)
+    // scan cannot see it. The durable handler entry still exists, so cleanup
+    // must re-inspect, adopt the registered owner process, and verify its
+    // exit — never report release while the server is unaccounted for.
+    const counters = await runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run });
+    const phase = counters.phases.reachability;
+    assert.equal(phase.handlerEntries, 1);
+    assert.equal(phase.classification, 'success-handler-entered');
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.cleanup, 'released', 'the late-resolved server is verified dead, so cleanup is released');
+    assert.equal(phase.postReadinessBudget, 'within-budget');
+  } finally {
+    // Scoped teardown for this fixture only: the intermediate's command line
+    // carries the fixture parent path; killing it closes the detached
+    // server's stdin so the server exits through its own bounded watchdog
+    // even if the assertions above failed first.
+    spawnSync('/usr/bin/pkill', ['-f', fixture.parent], { timeout: 5_000 });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver fails cleanup as unresolved when a durable server start cannot be verified to have exited', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('server-exits-early');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The durable server-started exists but no live process can be found to
+    // verify its exit: cleanup must fail as unresolved instead of reporting
+    // release for an unaccounted-for server.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_SERVER_PID_UNRESOLVED/,
+      'an observed server start whose exit cannot be verified must fail cleanup closed',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is still verified-deleted on the failure path');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver treats an unreadable durable log at cleanup as unresolved release', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('log-unreadable');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The host made the evidence log unreadable when it received the
+    // dispatch: cleanup must RE-READ the durable log fresh (never trust the
+    // earlier counters) and, when the log cannot be read at all, treat the
+    // server exit as unverifiable — release-failed and fail closed — instead
+    // of reporting release for a start it can no longer rule out.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_SERVER_PID_UNRESOLVED/,
+      'an unreadable durable log must fail cleanup as unresolved, never released',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is still verified-deleted on the failure path');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver keeps a live-server case inside the post-readiness ceiling', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('error-without-entry');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // Unlike the other ceiling case, this fixture leaves a LIVE server
+    // process running: discovery adopts it, identity capture and the exit
+    // match are bounded by the remaining case time, and the truncated
+    // cleanup records the exhaustion honestly while still verifying the
+    // server's exit.
+    const startedAt = Date.now();
+    const counters = await runDirectReachabilityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      caseBudgetMs: 3_500,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs < 5_000, `the whole case with a live server must sit inside the ceiling plus a small scheduling allowance (observed ${elapsedMs}ms)`);
+    const phase = counters.phases.reachability;
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.requestsSent, 1);
+    assert.equal(phase.rpcObservations, 1);
+    assert.equal(phase.serverStarts, 1);
+    assert.equal(phase.classification, 'error-result-unknown-origin', 'the host answered without the handler, so the origin stays unknown');
+    assert.equal(phase.cleanup, 'released', 'the live server is still verified gone inside the ceiling');
+    assert.equal(phase.postReadinessBudget, 'exhausted');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver forces release-failed when the log is unreadable even with a captured server pid', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('log-unreadable-known-pid');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The fixture leaves a CAPTURED, live server pid in place while the log
+    // is unreadable: the pid's exit is verified for hygiene, but the release
+    // verdict must still fail as unresolved — the unreadable evidence can no
+    // longer rule out additional observed starts.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_SERVER_PID_UNRESOLVED/,
+      'an unreadable durable log forces release-failed regardless of a captured pid',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is still verified-deleted on the failure path');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver bounds the pin hash by its deadline', { skip: !posix }, async () => {
+  const { sha256File } = await loadDirectDriver();
+  const parent = await mkdtemp(join(tmpdir(), 'zcode-direct-hash-'));
+  try {
+    // /dev/zero delivers infinite bytes: the hash can never complete, so the
+    // bounded hash must abort with the closed code within its deadline (and
+    // still resolve for a regular file).
+    const startedAt = Date.now();
+    await assert.rejects(
+      sha256File('/dev/zero', 250),
+      (error) => error.code === 'PROBE_HASH_TIMEOUT',
+      'a stalled hash must abort with the closed timeout code',
+    );
+    assert.ok(Date.now() - startedAt < 5_000, 'the hash abort must come from the deadline, not an unbounded wait');
+    const regularPath = join(parent, 'regular.bin');
+    await writeFile(regularPath, 'regular bytes');
+    await sha256File(regularPath, 10_000);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver fails cleanup as unresolved when the durable log holds multiple unaccountable server starts', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('server-restart');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The host restarted the disposable server during dispatch: the durable
+    // log holds TWO distinct server starts (distinct instance hashes) while
+    // only one handler-owner registration exists. Cleanup cannot account for
+    // every start, so it must fail as unresolved instead of releasing.
+    await assert.rejects(
+      () => runDirectReachabilityProbe({ codexPath: fixture.codexPath, sourceCodexHome: fixture.sourceHome, runDirectory: run }),
+      /PROBE_SERVER_PID_UNRESOLVED/,
+      'multiple durable server starts must fail cleanup as unresolved, never released',
+    );
+    const files = await fsp.readdir(run);
+    assert.equal(files.includes('codex-home'), false, 'the isolated credential home is still verified-deleted on the failure path');
+  } finally {
+    spawnSync('/usr/bin/pkill', ['-f', fixture.parent], { timeout: 5_000 });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the direct driver skips the removal commands at an exhausted ceiling and records the skip', async () => {
+  const { runDirectReachabilityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('error-without-entry');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    // The live-server case under a tight ceiling: after the truncated
+    // cleanup, the remaining budget is below the cleanup-command floor, so
+    // the removal commands must be SKIPPED (the registration is removed with
+    // its isolated home) and the skip recorded honestly — never spawned past
+    // the ceiling.
+    const counters = await runDirectReachabilityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      caseBudgetMs: 3_500,
+    });
+    const phase = counters.phases.reachability;
+    assert.equal(phase.postReadinessBudget, 'exhausted');
+    assert.equal(phase.cleanup, 'released');
+    const invocations = await readFile(join(fixture.parent, 'invocations.log'), 'utf8');
+    assert.equal(invocations.includes('plugin remove'), false, 'no removal command may spawn past the ceiling');
+    assert.equal(invocations.includes('marketplace remove'), false, 'no marketplace removal may spawn past the ceiling');
+  } finally {
+    spawnSync('/usr/bin/pkill', ['-f', fixture.parent], { timeout: 5_000 });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
 });
