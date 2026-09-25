@@ -32,8 +32,11 @@ import {
   ENTRY_CANDIDATES,
   ENTRY_DISPATCH_MODES,
   ENTRY_FIELD_MARKS,
+  ENTRY_GATE_G4_DECISION_CODES,
+  ENTRY_GATE_G4_MIN_HOLD_MS,
   ENTRY_REQUIRED_ASPECTS,
   ENTRY_ROW_FIELDS,
+  classifyDirectGateG4,
   classifyEntryCandidate,
   inventoryEntryCandidates,
 } from '../tools/direct-mcp-probe/entry-inventory.mjs';
@@ -379,6 +382,19 @@ test('turn-level interruption is never a documented route to the exact pending o
     const candidate = ENTRY_CANDIDATES.find((entry) => entry.id === id);
     assert.equal(candidate.fields.cancellationRoute.mark, 'unproven', `${id} must not present turn-level interruption as a route to the exact pending operation`);
     assert.match(candidate.fields.cancellationRoute.note, /turn-level/i, `${id} scopes its note to turn-level interruption`);
+  }
+});
+
+test('the driver-owned rows scope cancellation with the Task 5 lifecycle campaign findings', () => {
+  for (const id of ['skill-structured-input', 'app-server-client-external']) {
+    const candidate = ENTRY_CANDIDATES.find((entry) => entry.id === id);
+    assert.equal(candidate.fields.cancellationRoute.mark, 'unproven', `${id} keeps cancellation unproven`);
+    assert.match(candidate.fields.cancellationRoute.note, /lifecycle campaign/, `${id} cites the bounded direct-call lifecycle campaign`);
+    assert.match(
+      candidate.fields.cancellationRoute.note,
+      /no route to a durable held MCP handler call is demonstrated/,
+      `${id} states the campaign's cancellation finding, not just the older unmeasured question`,
+    );
   }
 });
 
@@ -10775,6 +10791,188 @@ function requiredLifecycleCases() {
     { trigger: 'cancel-race', command: 'execution-foreground' },
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Task 6: the installed product entry (G4). Step 1 selects a candidate from
+// the Task 1 inventory only; the G4 gate below derives its decision from that
+// inventory's public decisions. These are GATE tests, not the Step 2
+// installed-fixture acceptance demonstration: with no supported candidate the
+// acceptance run is skipped, and the gate must refuse any demonstration
+// recorded without a ready candidate.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fully demonstrated installed-fixture record (the plan Task 6 Step 2
+ * fields): one explicit action dispatched exactly once, a hold beyond two
+ * 60-second legacy wait intervals, zero model decisions, terminal delivery to
+ * the original Root/Child, routed user interruption, and the recorded
+ * wall-clock hold duration plus comparison baseline.
+ */
+function demonstratedEntryFixture(overrides = {}) {
+  return {
+    onInstalledUserSession: true,
+    dispatchOnce: true,
+    heldBeyondTwoWaitIntervals: true,
+    modelDecisionsDuringHold: 0,
+    terminalDelivered: true,
+    cancellationRouted: true,
+    holdDurationMs: 120_000,
+    comparisonBaselineRecorded: true,
+    ...overrides,
+  };
+}
+
+test('direct entry G4 gate records not-proven with the concrete missing link on the shipped inventory', () => {
+  const verdict = classifyDirectGateG4({ inventory: inventoryEntryCandidates() });
+  assert.equal(verdict.status, 'not-proven');
+  assert.equal(verdict.reasonCode, 'no-supported-entry-candidate');
+  assert.deepEqual(
+    verdict.missingAspects,
+    [...ENTRY_REQUIRED_ASPECTS],
+    'no within-boundary candidate demonstrates any required aspect — the concrete missing link',
+  );
+});
+
+test('direct entry G4 gate refuses a demonstration recorded without a ready candidate', () => {
+  const verdict = classifyDirectGateG4({ inventory: inventoryEntryCandidates(), demonstration: demonstratedEntryFixture() });
+  assert.equal(verdict.status, 'not-proven', 'a demonstration without candidate-level proven readiness can never pass the gate');
+  assert.equal(verdict.reasonCode, 'no-supported-entry-candidate');
+});
+
+test('direct entry G4 gate reclassifies candidates inside the gate and never trusts a supplied decision', () => {
+  // Gate-review backfill P2 regression: a shipped row whose caller-supplied
+  // decision was tampered to `proven` — while the candidate's own fields
+  // still show unproven owning-host access and model-selected dispatch —
+  // must not flip the gate, whatever demonstration accompanies it. The gate
+  // derives every decision from the candidate itself (classifyEntryCandidate)
+  // and ignores the supplied one, so the shipped decisions are derived,
+  // never trusted.
+  const tampered = inventoryEntryCandidates().map((entry) => (
+    entry.candidate.id === 'skill-model-selected'
+      ? { candidate: entry.candidate, decision: { status: 'proven', reasons: [] } }
+      : entry
+  ));
+  const tamper = classifyDirectGateG4({ inventory: tampered, demonstration: demonstratedEntryFixture() });
+  assert.equal(tamper.status, 'not-proven', 'a tampered decision can never promote an unproven candidate');
+  assert.equal(tamper.reasonCode, 'no-supported-entry-candidate');
+  assert.deepEqual(tamper.missingAspects, [...ENTRY_REQUIRED_ASPECTS], 'the derived missing link is unchanged by the tampered decision');
+  // The derivation is total: the gate classifies from the candidates alone,
+  // whether or not the caller supplies decision rows at all.
+  const bare = classifyDirectGateG4({
+    inventory: inventoryEntryCandidates().map((entry) => ({ candidate: entry.candidate })),
+    demonstration: demonstratedEntryFixture(),
+  });
+  assert.equal(bare.status, 'not-proven');
+  assert.equal(bare.reasonCode, 'no-supported-entry-candidate');
+});
+
+test('direct entry G4 gate validates every candidate before filtering by boundary', () => {
+  // Gate-review re-review P2 regression: the gate filtered rows by their
+  // CLAIMED installed-plugin boundary before classifying them, so a
+  // malformed row claiming `external` (or carrying no boundary at all) was
+  // silently skipped — and with a ready within-boundary candidate plus a
+  // complete demonstration the gate still returned `proven`. Every
+  // candidate is now validated FIRST (classify everything, then filter the
+  // validated rows by boundary): a malformed row fails closed whatever
+  // boundary it claims.
+  const malformedExternal = demonstratedCandidate({ installedPluginBoundary: 'external' });
+  malformedExternal.fields.userAction = { mark: 'bogus', note: 'an unknown mark makes the row malformed' };
+  const missingBoundary = demonstratedCandidate();
+  delete missingBoundary.installedPluginBoundary;
+  for (const [name, bad] of [['malformed external', malformedExternal], ['missing boundary', missingBoundary]]) {
+    const inventory = [...demonstratedEntryInventory(), { candidate: bad }];
+    assert.throws(
+      () => classifyDirectGateG4({ inventory, demonstration: demonstratedEntryFixture() }),
+      /ENTRY_CANDIDATE_INVALID/,
+      `a ${name} row must fail candidate validation, never be silently skipped beside a proven result`,
+    );
+  }
+});
+
+/** A ready inventory: the demonstrated positive-control candidate is within-boundary and classifies proven. */
+function demonstratedEntryInventory() {
+  const candidate = demonstratedCandidate();
+  return [{ candidate, decision: classifyEntryCandidate(candidate) }];
+}
+
+test('direct entry G4 gate demands the demonstration only after a ready within-boundary candidate', () => {
+  const inventory = demonstratedEntryInventory();
+  assert.equal(inventory[0].decision.status, 'proven', 'the positive-control candidate is genuinely ready');
+  const missing = classifyDirectGateG4({ inventory });
+  assert.equal(missing.status, 'not-proven');
+  assert.equal(missing.reasonCode, 'entry-demonstration-missing');
+});
+
+test('direct entry G4 gate fails closed on a malformed demonstration record', () => {
+  const inventory = demonstratedEntryInventory();
+  assert.throws(
+    () => classifyDirectGateG4({ inventory, demonstration: { ...demonstratedEntryFixture(), unsanctionedField: true } }),
+    /unknown key/,
+  );
+  assert.throws(
+    () => classifyDirectGateG4({ inventory, demonstration: { ...demonstratedEntryFixture(), modelDecisionsDuringHold: 'zero' } }),
+    /model decision count/,
+  );
+  assert.throws(
+    () => classifyDirectGateG4({ inventory, demonstration: { ...demonstratedEntryFixture(), holdDurationMs: -5 } }),
+    /hold duration/,
+  );
+  assert.throws(
+    () => classifyDirectGateG4({ inventory, demonstration: { ...demonstratedEntryFixture(), terminalDelivered: 'yes' } }),
+    /must be a boolean/,
+  );
+  // A non-object demonstration record is malformed; an ABSENT record (null or
+  // undefined) is not malformed — it is the `entry-demonstration-missing` link.
+  assert.throws(() => classifyDirectGateG4({ inventory, demonstration: ['not-an-object'] }), /must be an object/);
+  assert.equal(classifyDirectGateG4({ inventory, demonstration: undefined }).reasonCode, 'entry-demonstration-missing');
+});
+
+test('direct entry G4 gate never counts a driver-owned thread as the installed user session', () => {
+  const verdict = classifyDirectGateG4({
+    inventory: demonstratedEntryInventory(),
+    demonstration: demonstratedEntryFixture({ onInstalledUserSession: false }),
+  });
+  assert.equal(verdict.status, 'not-proven', "the disposable driver's own app-server thread is never the user's CLI/UI session");
+  assert.equal(verdict.reasonCode, 'driver-thread-not-user-session');
+});
+
+test('direct entry G4 gate refuses an incomplete installed demonstration', () => {
+  const incompleteDemonstrations = [
+    demonstratedEntryFixture({ dispatchOnce: false }),
+    demonstratedEntryFixture({ heldBeyondTwoWaitIntervals: false }),
+    demonstratedEntryFixture({ modelDecisionsDuringHold: 2 }),
+    demonstratedEntryFixture({ terminalDelivered: false }),
+    demonstratedEntryFixture({ cancellationRouted: false }),
+    demonstratedEntryFixture({ holdDurationMs: 119_999 }),
+    demonstratedEntryFixture({ comparisonBaselineRecorded: false }),
+  ];
+  for (const demonstration of incompleteDemonstrations) {
+    const verdict = classifyDirectGateG4({ inventory: demonstratedEntryInventory(), demonstration });
+    assert.equal(verdict.status, 'not-proven');
+    assert.equal(verdict.reasonCode, 'entry-demonstration-incomplete', `${JSON.stringify(demonstration)} must not demonstrate the entry`);
+  }
+});
+
+test('direct entry G4 gate classifies a fully demonstrated installed entry as proven', () => {
+  const verdict = classifyDirectGateG4({ inventory: demonstratedEntryInventory(), demonstration: demonstratedEntryFixture() });
+  assert.deepEqual(verdict, { status: 'proven', reasonCode: 'installed-entry-demonstrated', evidenceRefs: [] });
+});
+
+test('the G4 gate decision codes and hold floor are closed', () => {
+  assert.deepEqual(
+    [...ENTRY_GATE_G4_DECISION_CODES],
+    [
+      'no-supported-entry-candidate',
+      'entry-demonstration-missing',
+      'driver-thread-not-user-session',
+      'entry-demonstration-incomplete',
+      'installed-entry-demonstrated',
+    ],
+  );
+  assert.equal(ENTRY_GATE_G4_MIN_HOLD_MS, 120_000, 'the acceptance hold spans at least two 60-second legacy wait intervals');
+});
+
+
 
 /** The in-process server exit grace, for tests that wait past a killed writer. */
 const DIRECT_SERVER_EXIT_GRACE_TEST_MS = 7_000;
