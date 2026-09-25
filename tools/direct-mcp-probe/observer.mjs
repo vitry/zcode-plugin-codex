@@ -119,6 +119,8 @@ export const DIRECT_DRIVER_EVENT_KINDS = Object.freeze([
 const DIRECT_REQUEST_STATES = Object.freeze(['sent', 'not-sent']);
 const DIRECT_READINESS_STATES = Object.freeze(['discovered', 'missing', 'failed', 'not-observed']);
 const DIRECT_TURN_STATES = Object.freeze(['active', 'completed', 'interrupted', 'failed', 'unknown', 'not-observed']);
+/** Re-exported frozen vocabulary (identity rules and later tasks select from it). */
+export { DIRECT_TURN_STATES };
 const DIRECT_METADATA_STATES = Object.freeze(['missing', 'malformed', 'complete']);
 const DIRECT_TRIGGER_SENT_OUTCOMES = Object.freeze(['turn-interrupt', 'connection-close', 'config-timeout', 'safety-deadline', 'completion', 'not-sent']);
 const DIRECT_TRIGGER_OBSERVED_OUTCOMES = Object.freeze(['acknowledged', 'rejected', 'not-observed']);

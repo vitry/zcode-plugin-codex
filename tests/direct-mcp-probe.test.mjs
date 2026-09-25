@@ -1216,6 +1216,7 @@ test('direct evidence exposes only the driver-scoped appender plus read, reduce,
     'DIRECT_PROBE_PHASES',
     'DIRECT_PROVENANCE_FIELDS',
     'DIRECT_RPC_CLASSIFICATIONS',
+    'DIRECT_TURN_STATES',
     'appendDirectProbeEvent',
     'hashProbeValue',
     'readDirectProbeEvents',
@@ -7566,13 +7567,30 @@ const lockLogOnShutdown = () => {
 process.stdin.on('end', lockLogOnShutdown);
 process.on('SIGTERM', lockLogOnShutdown);
 
-const callServerTool = (probeLabel) => new Promise((resolveCall) => {
-  const child = spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  child.stderr.resume();
+const FIXTURE_THREAD_ID = 'fixture-thread-0001-0002-0003-0004';
+const FIXTURE_THREAD_ID_2 = 'fixture-thread-0005-0006-0007-0008';
+const FIXTURE_TURN_ID = 'fixture-turn-aaaa-bbbb-cccc-ddd';
+let fixtureThreadStarts = 0;
+let fixtureTurnStarted = false;
+// One PERSISTENT disposable-server child: the identity schedule makes
+// several calls against ONE server process (one handler-owner registration),
+// exactly as a real host keeps one server per thread.
+let serverChild = null;
+let serverReadyResolve = null;
+let serverNextId = 3;
+const serverWaiters = new Map();
+const serverReadyPromise = () => {
+  if (serverReadyResolve === null) return Promise.resolve();
+  return new Promise((resolveReady) => { const poll = () => (serverReadyResolve === null ? resolveReady() : setTimeout(poll, 20)); poll(); });
+};
+const ensureServerChild = () => {
+  if (serverChild) return serverChild;
+  serverChild = spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  serverChild.stderr.resume();
   let buffer = '';
-  const sendToServer = (frame) => { child.stdin.write(\`\${JSON.stringify(frame)}\\n\`); };
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
+  const sendToServer = (frame) => { serverChild.stdin.write(\`\${JSON.stringify(frame)}\\n\`); };
+  serverChild.stdout.setEncoding('utf8');
+  serverChild.stdout.on('data', (chunk) => {
     buffer += chunk;
     let newline = buffer.indexOf('\\n');
     while (newline >= 0) {
@@ -7580,18 +7598,31 @@ const callServerTool = (probeLabel) => new Promise((resolveCall) => {
       buffer = buffer.slice(newline + 1);
       let frame;
       try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
-      if (frame.id === 1) {
-        sendToServer({ jsonrpc: '2.0', method: 'notifications/initialized' });
-        sendToServer({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'capture_direct', arguments: { probeLabel } } });
-      } else if (frame.id === 2) {
-        resolveCall(frame.result ?? { content: [], isError: true });
-        return;
+      if (frame.id === 1 && serverReadyResolve !== null) { const ready = serverReadyResolve; serverReadyResolve = null; ready(); }
+      else if (frame.id !== undefined && serverWaiters.has(frame.id)) {
+        const waiter = serverWaiters.get(frame.id);
+        serverWaiters.delete(frame.id);
+        waiter(frame.result ?? { content: [], isError: true });
       }
       newline = buffer.indexOf('\\n');
     }
   });
+  serverReadyResolve = () => {};
   sendToServer({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'direct-fixture', version: '0.0.0' } } });
+  return serverChild;
+};
+const callServerTool = (probeLabel, meta) => new Promise((resolveCall) => {
+  const child = ensureServerChild();
+  const dispatch = async () => {
+    await serverReadyPromise();
+    const id = serverNextId++;
+    serverWaiters.set(id, (value) => resolveCall(value));
+    sendToServer2(child, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    sendToServer2(child, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'capture_direct', arguments: { probeLabel }, ...(meta ? { _meta: meta } : {}) } });
+  };
+  void dispatch();
 });
+const sendToServer2 = (child, frame) => { child.stdin.write(\`\${JSON.stringify(frame)}\\n\`); };
 
 let buffer = '';
 process.stdin.setEncoding('utf8');
@@ -7604,10 +7635,36 @@ process.stdin.on('data', (chunk) => {
     if (line.trim() !== '') {
       let frame;
       try { frame = JSON.parse(line); } catch { newline = buffer.indexOf('\\n'); continue; }
-      if (frame.id !== undefined && typeof frame.method === 'string') {
+      if (frame.id === 9001 && frame.method === undefined) {
+        // The driver answered the held approval: decision 'cancel' denies the
+        // command AND interrupts the turn — emit the completion. The silent
+        // scenario never does, so the driver's settle window observes nothing.
+        if (SCENARIO !== 'identity-hold-silent') {
+          fixtureTurnStarted = false;
+          send({ method: 'turn/completed', params: { threadId: FIXTURE_THREAD_ID, turn: { id: FIXTURE_TURN_ID, status: 'interrupted' } } });
+        }
+      } else if (frame.id !== undefined && typeof frame.method === 'string') {
         if (frame.method === 'initialize') send({ id: frame.id, result: {} });
-        else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'fixture-thread-0001-0002-0003-0004' } } });
-        else if (frame.method === 'mcpServerStatus/list') {
+        else if (frame.method === 'thread/start') {
+          if (SCENARIO.startsWith('identity-')) ensureServerChild();
+          fixtureThreadStarts += 1;
+          send({ id: frame.id, result: { thread: { id: fixtureThreadStarts === 1 ? FIXTURE_THREAD_ID : FIXTURE_THREAD_ID_2 } } });
+        } else if (frame.method === 'turn/start') {
+          // The identity scenarios: the hold variants answer with an active
+          // turn and then HOLD a CommandExecutionRequestApproval naming the
+          // exact turn (the documented active-turn mechanism); the no-hold
+          // variant answers with an already-completed turn and emits the
+          // completion notification immediately.
+          if (SCENARIO.startsWith('identity-hold')) {
+            fixtureTurnStarted = true;
+            send({ id: frame.id, result: { turn: { id: FIXTURE_TURN_ID, status: 'inProgress' } } });
+            send({ id: 9001, method: 'CommandExecutionRequestApproval', params: { threadId: FIXTURE_THREAD_ID, turnId: FIXTURE_TURN_ID, itemId: 'fixture-item-1', command: ['sleep', '45'] } });
+          } else if (SCENARIO === 'identity-no-hold') {
+            fixtureTurnStarted = false;
+            send({ id: frame.id, result: { turn: { id: FIXTURE_TURN_ID, status: 'completed' } } });
+            send({ method: 'turn/completed', params: { threadId: FIXTURE_THREAD_ID, turn: { id: FIXTURE_TURN_ID, status: 'completed' } } });
+          } else send({ id: frame.id, error: { code: -32601, message: 'unknown method' } });
+        } else if (frame.method === 'mcpServerStatus/list') {
           if (SCENARIO === 'discovery-failure-reject') send({ id: frame.id, error: { code: -32601, message: 'discovery rejected' } });
           else send({ id: frame.id, result: { data: [{ name: 'zcode-direct-mcp-probe', runtimeStatus: 'connected', tools: { capture_direct: { name: 'capture_direct' } } }], nextCursor: null } });
         } else if (frame.method === 'mcpServer/tool/call') {
@@ -7715,7 +7772,34 @@ process.stdin.on('data', (chunk) => {
             spawn(process.execPath, [SERVER_PATH], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
             send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-side error' }], isError: true } });
           } else {
-            callServerTool(probeLabel).then((toolResult) => {
+            // The host attaches the envelope metadata the real host attaches:
+            // the DISPATCHED thread id (or, in the mismatch scenario, a
+            // foreign thread id) under _meta.threadId — and, while a turn is
+            // active, the inner turn metadata (thread_id + turn_id), exactly
+            // the allowlisted candidate shape the handler fingerprints. A
+            // turnless dispatch (idle, two-threads, completed cells) carries
+            // no turn metadata, matching a host that only emits candidates it
+            // actually holds.
+            const meta = SCENARIO === 'identity-hold-mismatch'
+              ? { threadId: 'fixture-thread-foreign' }
+              : (SCENARIO.startsWith('identity-') && frame.params && typeof frame.params.threadId === 'string'
+                ? (fixtureTurnStarted
+                  ? { threadId: frame.params.threadId, 'x-codex-turn-metadata': { thread_id: frame.params.threadId, turn_id: FIXTURE_TURN_ID } }
+                  : { threadId: frame.params.threadId })
+                : undefined);
+            if (SCENARIO === 'identity-hold-ends' && fixtureTurnStarted) {
+              // The held turn ends while the ACTIVE cell's call is in flight
+              // (the flag restricts this to the first call after turn/start):
+              // the host emits the completion BEFORE answering the call, so
+              // the driver's post-call observation window sees real host
+              // evidence instead of its own authored assumption.
+              fixtureTurnStarted = false;
+              send({ method: 'turn/completed', params: { threadId: frame.params.threadId, turn: { id: FIXTURE_TURN_ID, status: 'interrupted' } } });
+              // (the meta for THIS call was already computed with the turn
+              // metadata attached — the host emitted the completion only
+              // after assembling the dispatch context)
+            }
+            callServerTool(probeLabel, meta).then((toolResult) => {
               if (SCENARIO === 'error-with-entry') send({ id: frame.id, result: { content: [{ type: 'text', text: 'host-wrapped error' }], isError: true } });
               else send({ id: frame.id, result: toolResult });
             }, () => send({ id: frame.id, error: { code: -32000, message: 'tool call failed' } }));
@@ -8374,4 +8458,1111 @@ test('the direct driver skips the removal commands at an exhausted ceiling and r
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
     await rm(fixture.parent, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: bounded turn-identity matrix and the synthetic authorization-bridge
+// candidate. The ordering and authority rules live in
+// `tools/direct-mcp-probe/identity.mjs` (pure, no IO). Every fixture below is
+// a FAKE transcript: no real host is contacted, and every identity value is
+// hashed under one fixed per-suite run nonce exactly as the run would salt
+// them, so raw IDs never appear even in test fixtures.
+// ---------------------------------------------------------------------------
+
+const DIRECT_IDENTITY_NONCE = directRunNonce();
+function identityHash(raw) { return hashProbeValue(DIRECT_IDENTITY_NONCE, raw); }
+
+/** One ordered host turn-state observation (a reduced turn-state-observed fact). */
+function identityTurn(sequence, state, threadRaw, turnRaw) {
+  return {
+    sequence,
+    state,
+    threadHash: threadRaw === null ? null : identityHash(threadRaw),
+    turnHash: turnRaw === null ? null : identityHash(turnRaw),
+  };
+}
+
+function identityCandidates(overrides = {}) {
+  return { envelopeThreadId: null, innerSessionId: null, innerThreadId: null, innerTurnId: null, ...overrides };
+}
+
+test('identity ordering binds an active turn only when ordered host observations bracket handler entry', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Active turn A: the exact turn was observed active BEFORE and AFTER the
+  // durable handler entry, and the metadata candidates match the
+  // independently learned host thread and turn identities.
+  const sample = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({
+      envelopeThreadId: identityHash('thread-T1'),
+      innerTurnId: identityHash('turn-A'),
+    }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'active', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(sample), 'binding-observed');
+});
+
+test('identity ordering classifies an idle-thread call as correlation only, never authority', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // New idle thread: no turn was ever observed (pre and post absent); the
+  // metadata echoes the thread id. The hash matches, but a matching hash on
+  // an idle thread is a transport observation only — it can never bind a turn.
+  const sample = {
+    entryJoined: true,
+    entrySequence: 4,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: null,
+    preTurn: null,
+    postTurn: null,
+  };
+  assert.equal(classifyDirectIdentitySample(sample), 'correlation-only');
+});
+
+test('identity ordering classifies a completed-thread call as correlation with a retained value distinguished from missing metadata', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Completed turn A: the host observed A completing BEFORE the call, and the
+  // metadata may retain A's value. Even an exact match is correlation only —
+  // a completed turn cannot authorize anything.
+  const completed = {
+    entryJoined: true,
+    entrySequence: 20,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-A') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'completed', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(25, 'completed', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(completed), 'correlation-only');
+  // The missing-metadata variant on the same completed thread is recorded
+  // distinctly: without candidates there is nothing to correlate.
+  const missing = { ...completed, metadataCandidates: identityCandidates() };
+  assert.equal(classifyDirectIdentitySample(missing), 'no-candidate-observed');
+});
+
+test('identity ordering binds a later active turn B and rejects a stale A candidate as a mismatch', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Later active turn B on the same thread: ordered observations bracket entry
+  // and the candidate carries B's hash — binding for B.
+  const activeB = {
+    entryJoined: true,
+    entrySequence: 30,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-B') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-B'),
+    preTurn: identityTurn(25, 'active', 'thread-T1', 'turn-B'),
+    postTurn: identityTurn(35, 'active', 'thread-T1', 'turn-B'),
+  };
+  assert.equal(classifyDirectIdentitySample(activeB), 'binding-observed');
+  // Stale turn: the SAME request shape whose candidate still carries A's hash
+  // while the host's independently learned turn is B contradicts the host —
+  // the sample is a mismatch, never a binding, even though the thread matches.
+  const stale = { ...activeB, metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-A') }) };
+  assert.equal(classifyDirectIdentitySample(stale), 'mismatch-observed');
+});
+
+test('identity ordering records an interrupted turn between the pre-read and entry as inconclusive', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // A was active at the pre-read, but the post-read observed it interrupted.
+  // A may have ended before handler entry: without an ordered notification
+  // attributing the interruption to after the entry, the sample is
+  // inconclusive — never a binding.
+  const interrupted = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-A') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'interrupted', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(interrupted), 'inconclusive');
+});
+
+test('identity ordering keeps the A-to-B transition race inconclusive without ordered attribution and binds it once B is ordered before entry', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Transition race: pre-read saw active A, the post-read saw active B. A
+  // finished between the pre-read and entry and B started somewhere in
+  // between; no ordered observation proves which turn owned the event.
+  const race = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-B') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-B'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'active', 'thread-T1', 'turn-B'),
+  };
+  assert.equal(classifyDirectIdentitySample(race), 'inconclusive');
+  // With ordered notifications the race resolves: A's completion is recorded
+  // BEFORE entry and B's activation is also recorded BEFORE entry, so the
+  // event window belongs to B — the binding is provable.
+  const resolved = { ...race, preTurn: identityTurn(6, 'active', 'thread-T1', 'turn-B') };
+  assert.equal(classifyDirectIdentitySample(resolved), 'binding-observed');
+});
+
+test('identity ordering rejects a wrong-thread candidate even when the turn hashes match', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Two threads: the request landed on thread T2 while the comparison expected
+  // the independently learned T1 identity. A candidate from the wrong thread
+  // is a mismatch — thread isolation is never bridged by a matching turn.
+  const wrongThread = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T2'), innerTurnId: identityHash('turn-A') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'active', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(wrongThread), 'mismatch-observed');
+});
+
+test('identity ordering records a missing durable entry join and a diagnostic label can never upgrade a sample', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // Without a durable entry join there is nothing to classify: not observed,
+  // whatever the metadata looks like.
+  const unjoined = {
+    entryJoined: false,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({ envelopeThreadId: identityHash('thread-T1'), innerTurnId: identityHash('turn-A') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'active', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(unjoined), 'not-observed');
+  // The diagnostic probeLabel is correlation input only: the classification
+  // signature has no label input at all, so a matching label can never
+  // upgrade a sample — a sample with every hash unknown stays without
+  // candidates.
+  const labelOnly = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates(),
+    expectedThreadHash: null,
+    expectedTurnHash: null,
+    preTurn: null,
+    postTurn: null,
+  };
+  assert.equal(classifyDirectIdentitySample(labelOnly), 'no-candidate-observed');
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 Step 4: the authorization bridge is a CANDIDATE, not a fact. The
+// store below is a pure LOCAL fixture — modeled on the existing preparation
+// store's consume-time checks (exact turn/workspace/permission/executor
+// binding, once-only atomic consume) — and demonstrates the admission
+// MECHANISM only. Nothing here upgrades G2: the fixture's trusted-caller path
+// is explicitly fixture-internal.
+// ---------------------------------------------------------------------------
+
+const DIRECT_IDENTITY_BASE = 1_700_000_000_000;
+
+function identityAuthorizedRequest(overrides = {}) {
+  return {
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    executorAgentId: null,
+    foregroundAdapter: 'foreground',
+    ...overrides,
+  };
+}
+
+function identityHostObservation(overrides = {}) {
+  return {
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    state: 'active',
+    preObserved: true,
+    postObserved: true,
+    ...overrides,
+  };
+}
+
+test('identity authorization bridge admits the exact authorized turn through a demonstrated trusted caller and consumes once', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorized = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  assert.equal(authorized.status, 'authorized', 'the positive fixture requires the demonstrated trusted-caller path');
+  const preparation = authorized.preparation;
+  assert.equal(preparation.consumedAt, null, 'the preparation starts unconsumed');
+  const verdict = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(verdict.status, 'admitted', 'the exact authorized operation/turn with an unconsumed matching preparation is admitted');
+  assert.equal(typeof verdict.preparationId, 'string');
+  const consumed = store.preparationById(verdict.preparationId);
+  assert.equal(consumed.consumedAt, DIRECT_IDENTITY_BASE + 1_000, 'admit atomically consumes exactly once');
+  const duplicate = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 2_000,
+  });
+  assert.equal(duplicate.status, 'rejected');
+  assert.equal(duplicate.reasonCode, 'preparation-consumed', 'a duplicate request cannot re-consume the same authorization');
+});
+
+test('identity authorization bridge fails closed on an untrusted caller path', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const rejected = store.authorize({
+    callerSource: 'metadata-correlation',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.reasonCode, 'untrusted-caller', 'a caller with no demonstrated trusted path is never authorized');
+  assert.equal(rejected.preparation, undefined, 'no preparation exists for an untrusted caller');
+});
+
+test('identity authorization bridge rejects wrong-thread and stale-turn requests', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorized = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  // Wrong thread: the request CLAIMS the T1/turn-A preparation while
+  // declaring thread T2's identity — the claim is refused on the thread.
+  const wrongThread = store.admit({
+    request: identityAuthorizedRequest({ threadHash: identityHash('thread-T2') }),
+    hostObservation: identityHostObservation(),
+    preparationId: authorized.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(wrongThread.status, 'rejected');
+  assert.equal(wrongThread.reasonCode, 'thread-mismatch');
+  // Stale turn: a request still carrying turn A's identity while the host
+  // observation has independently moved to turn B contradicts the host.
+  const stale = store.admit({
+    request: identityAuthorizedRequest({ turnHash: identityHash('turn-A') }),
+    hostObservation: identityHostObservation({ turnHash: identityHash('turn-B'), state: 'active' }),
+    preparationId: authorized.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(stale.status, 'rejected');
+  assert.equal(stale.reasonCode, 'host-turn-mismatch', 'a stale turn identity never admits');
+});
+
+test('identity authorization bridge rejects a cancelled authorization and an expired one', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const first = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  store.cancel(first.preparation.preparationId, DIRECT_IDENTITY_BASE + 500);
+  const cancelled = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(cancelled.status, 'rejected');
+  assert.equal(cancelled.reasonCode, 'authorization-cancelled', 'a cancelled authorization never admits');
+  const second = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-B'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  assert.equal(second.status, 'authorized', 'the second authorization for turn B is issued normally');
+  const expired = store.admit({
+    request: identityAuthorizedRequest({ turnHash: identityHash('turn-B') }),
+    hostObservation: identityHostObservation({ turnHash: identityHash('turn-B') }),
+    preparationId: second.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 61_000,
+  });
+  assert.equal(expired.status, 'rejected');
+  assert.equal(expired.reasonCode, 'authorization-expired', 'an expired authorization never admits');
+});
+
+test('identity authorization bridge preserves workspace, permission, executor, and adapter checks', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorized = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: identityHash('executor-E1'),
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  for (const [overrides, reasonCode] of [
+    [{ workspaceHash: identityHash('workspace-W2') }, 'workspace-mismatch'],
+    [{ permissionMode: 'acceptEdits' }, 'permission-mismatch'],
+    [{ executorAgentId: identityHash('executor-E2') }, 'executor-mismatch'],
+    [{ executorAgentId: identityHash('executor-E1'), foregroundAdapter: 'background' }, 'adapter-mismatch'],
+  ]) {
+    const verdict = store.admit({
+      request: identityAuthorizedRequest(overrides),
+      hostObservation: identityHostObservation(),
+      preparationId: authorized.preparation.preparationId,
+      now: DIRECT_IDENTITY_BASE + 1_000,
+    });
+    assert.equal(verdict.status, 'rejected', `${reasonCode} must reject`);
+    assert.equal(verdict.reasonCode, reasonCode);
+  }
+});
+
+test('identity authorization bridge requires the host observation to confirm the exact active turn', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorized = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  const notActive = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation({ state: 'completed' }),
+    preparationId: authorized.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(notActive.status, 'rejected');
+  assert.equal(notActive.reasonCode, 'host-turn-not-active', 'a completed turn is never an active authorization');
+  const unobserved = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation({ preObserved: false, postObserved: false }),
+    preparationId: authorized.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(unobserved.status, 'rejected');
+  assert.equal(unobserved.reasonCode, 'host-turn-not-active', 'without ordered pre/post observations there is no confirmed active turn');
+});
+
+test('identity authorization bridge treats an echoed threadId or nonce as correlation only, never admission', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  // No preparation was ever authorized, yet the request echoes exactly the
+  // identity values the host metadata carried (the correlation case). The
+  // echo passes a CORRELATION check only — it must never admit.
+  const echoed = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(echoed.status, 'rejected');
+  assert.equal(echoed.reasonCode, 'preparation-receipt-missing', 'correlation without a demonstrated authorization and without a receipt is not admission');
+});
+
+test('identity authorization bridge race: a late A call can never consume a distinct B preparation', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  let authorizedB = null;
+  for (const turn of ['turn-A', 'turn-B']) {
+    const authorized = store.authorize({
+      callerSource: 'probe-driver-own-thread',
+      threadHash: identityHash('thread-T1'),
+      turnHash: identityHash(turn),
+      operation: 'mcpServerToolCall',
+      workspaceHash: identityHash('workspace-W1'),
+      permissionMode: 'default',
+      requiredExecutorAgentId: null,
+      foregroundAdapter: 'foreground',
+      expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+      now: DIRECT_IDENTITY_BASE,
+    });
+    if (turn === 'turn-B') authorizedB = authorized;
+  }
+  // B admits first and consumes B's preparation.
+  const bVerdict = store.admit({
+    request: identityAuthorizedRequest({ turnHash: identityHash('turn-B') }),
+    hostObservation: identityHostObservation({ turnHash: identityHash('turn-B') }),
+    preparationId: authorizedB.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(bVerdict.status, 'admitted');
+  const bId = bVerdict.preparationId;
+  // The late A call arrives and claims B's preparation id: the claimed
+  // preparation's authorized turn does not match A's request identity, so
+  // the claim is refused and B's preparation stays consumed by B.
+  const lateAClaimingB = store.admit({
+    request: identityAuthorizedRequest({ turnHash: identityHash('turn-A') }),
+    hostObservation: identityHostObservation({ turnHash: identityHash('turn-A') }),
+    preparationId: bId,
+    now: DIRECT_IDENTITY_BASE + 2_000,
+  });
+  assert.equal(lateAClaimingB.status, 'rejected');
+  assert.equal(lateAClaimingB.reasonCode, 'turn-mismatch', 'a late A call cannot consume the distinct B preparation');
+  const bPreparation = store.preparationById(bId);
+  assert.equal(bPreparation.consumedAt, DIRECT_IDENTITY_BASE + 1_000, 'B preparation remains consumed exactly once, by B');
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 Step 3: the driver's identity seam. `directIdentityCase` reduces one
+// identity sample (durable records + authenticated reduction + the driver's
+// independently learned host identity hashes) through the ordered-turn
+// classifier; `classifyDirectGateG2` derives the G2 gate. Fake transcripts
+// only here — the real-host case runs separately and never upgrades a gate.
+// ---------------------------------------------------------------------------
+
+/** Appends a full identity-phase transcript for one joined call and returns the case inputs. */
+async function buildDirectIdentityTranscript(run, {
+  nonce = directRunNonce(),
+  label = directLabel(),
+  callNonce = directCallNonce(),
+  withEntry = true,
+  candidates = {},
+  preTurnRecords = [],
+  postTurnRecords = [],
+  rpcOutcome = 'success-result',
+} = {}) {
+  await directDriverAppend(run, nonce, { kind: 'readiness-observed', state: 'discovered', source: 'host' }, 'identity');
+  await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: label, tool: 'capture_direct', state: 'sent' }, 'identity');
+  // Pre-read host turn observations land BEFORE the durable entry.
+  for (const turnRecord of preTurnRecords) {
+    await directDriverAppend(run, nonce, turnRecord, 'identity');
+  }
+  const server = trackDirectProbeServer(run, createDirectProbeServer({ observer: { runDirectory: run, runNonce: nonce, phase: 'identity' }, ownerSecret: DIRECT_DRIVER_SECRET }));
+  await server.probeDirectAppend({ kind: 'server-started', serverInstanceHash: directHash('fixture-instance') });
+  if (withEntry) {
+    await server.probeDirectAppend({ kind: 'handler-entered', probeLabel: label, callNonce, serverInstanceHash: directHash('fixture-instance') });
+    await server.probeDirectAppend({
+      kind: 'metadata-observed',
+      callNonce,
+      fields: [],
+      fieldsTruncated: false,
+      candidateHashes: { envelopeThreadId: null, innerSessionId: null, innerThreadId: null, innerTurnId: null, ...candidates },
+      state: Object.values(candidates).some((value) => value !== null) ? 'complete' : 'malformed',
+    });
+  }
+  // Post-read host turn observations land AFTER the durable entry.
+  for (const turnRecord of postTurnRecords) {
+    await directDriverAppend(run, nonce, turnRecord, 'identity');
+  }
+  if (withEntry) {
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, callNonce, outcome: rpcOutcome }, 'identity');
+  } else {
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: label, outcome: rpcOutcome }, 'identity');
+  }
+  return { label, server, nonce };
+}
+
+test('identity case reduces an ordered active-turn sample to binding-observed with independent evidence references', async () => {
+  const { directIdentityCase } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-identity-', async (run) => {
+    const nonce = directRunNonce();
+    const threadHash = hashProbeValue(nonce, 'thread-T1');
+    const turnHash = hashProbeValue(nonce, 'turn-A');
+    const { label } = await buildDirectIdentityTranscript(run, {
+      nonce,
+      candidates: { envelopeThreadId: threadHash, innerTurnId: turnHash },
+      preTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'active', source: 'host' }],
+      postTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'active', source: 'host' }],
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const identity = directIdentityCase({
+      records,
+      reduced,
+      probeLabel: label,
+      expectedThreadHash: threadHash,
+      expectedTurnHash: turnHash,
+    });
+    assert.equal(identity.classification, 'binding-observed');
+    assert.equal(identity.entryJoined, true);
+    assert.ok(identity.preTurn !== null && identity.preTurn.state === 'active');
+    assert.ok(identity.postTurn !== null && identity.postTurn.state === 'active');
+    const entryRecord = records.find((record) => record.kind === 'handler-entered');
+    assert.ok(identity.evidenceRefs.includes(`handler-entered@${entryRecord.sequence}`));
+    assert.ok(identity.evidenceRefs.some((ref) => ref.startsWith('turn-state-observed@')), 'the ordered turn observations are cited');
+  });
+});
+
+test('identity case keeps a completed-thread sample at correlation only and an unjoined one not observed', async () => {
+  const { directIdentityCase } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-identity-', async (run) => {
+    const nonce = directRunNonce();
+    const threadHash = hashProbeValue(nonce, 'thread-T1');
+    const turnHash = hashProbeValue(nonce, 'turn-A');
+    // Completed turn A: both ordered observations show the turn completed.
+    const { label } = await buildDirectIdentityTranscript(run, {
+      nonce,
+      candidates: { envelopeThreadId: threadHash, innerTurnId: turnHash },
+      preTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'completed', source: 'host' }],
+      postTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'completed', source: 'host' }],
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const identity = directIdentityCase({
+      records,
+      reduced,
+      probeLabel: label,
+      expectedThreadHash: threadHash,
+      expectedTurnHash: turnHash,
+    });
+    assert.equal(identity.classification, 'correlation-only', 'a completed turn correlates but never authorizes');
+    // An unjoined call on the same transcript shape stays not observed.
+    const unjoinedLabel = directLabel();
+    await directDriverAppend(run, nonce, { kind: 'request-sent', probeLabel: unjoinedLabel, tool: 'capture_direct', state: 'not-sent' }, 'identity');
+    await directDriverAppend(run, nonce, { kind: 'rpc-observed', probeLabel: unjoinedLabel, outcome: 'not-observed' }, 'identity');
+    const second = await reduceDirectRun(run, nonce);
+    const unjoined = directIdentityCase({
+      records: second.records,
+      reduced: second.reduced,
+      probeLabel: unjoinedLabel,
+      expectedThreadHash: threadHash,
+      expectedTurnHash: turnHash,
+    });
+    assert.equal(unjoined.classification, 'not-observed');
+  });
+});
+
+test('identity case reports a candidate that contradicts the learned host identity as a mismatch', async () => {
+  const { directIdentityCase } = await loadDirectDriver();
+  await withDirectProbeRun('zcode-direct-identity-', async (run) => {
+    const nonce = directRunNonce();
+    const threadHash = hashProbeValue(nonce, 'thread-T1');
+    const turnHash = hashProbeValue(nonce, 'turn-A');
+    const { label } = await buildDirectIdentityTranscript(run, {
+      nonce,
+      candidates: { envelopeThreadId: hashProbeValue(nonce, 'thread-OTHER') },
+      preTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'active', source: 'host' }],
+      postTurnRecords: [{ kind: 'turn-state-observed', threadHash, turnHash, state: 'active', source: 'host' }],
+    });
+    const { records, reduced } = await reduceDirectRun(run, nonce);
+    const identity = directIdentityCase({
+      records,
+      reduced,
+      probeLabel: label,
+      expectedThreadHash: threadHash,
+      expectedTurnHash: turnHash,
+    });
+    assert.equal(identity.classification, 'mismatch-observed', 'a wrong-thread candidate is a contradiction, never a binding');
+  });
+});
+
+test('identity G2 gate never upgrades without the trusted-caller chain, whatever the identity evidence shows', async () => {
+  const { classifyDirectGateG2 } = await loadDirectDriver();
+  // Binding observed AND the hold observed: still not proven, because the
+  // authorization bridge was not demonstrated on the host — metadata
+  // correlation is not authority.
+  const strongest = classifyDirectGateG2({
+    identity: 'binding-observed',
+    activeTurnHold: { status: 'observed', reasonCode: null },
+    authorization: { status: 'not-demonstrated', reasonCode: 'no-trusted-caller-path' },
+  });
+  assert.equal(strongest.status, 'not-proven');
+  assert.equal(strongest.reasonCode, 'no-trusted-caller-path');
+  // Hold unproven: the active-turn prerequisite is missing.
+  const noHold = classifyDirectGateG2({
+    identity: 'correlation-only',
+    activeTurnHold: { status: 'not-proven', reasonCode: 'no-controlled-hold' },
+    authorization: { status: 'not-demonstrated', reasonCode: 'no-trusted-caller-path' },
+  });
+  assert.equal(noHold.status, 'not-proven');
+  assert.equal(noHold.reasonCode, 'no-trusted-caller-path', 'the authorization reason takes precedence while it is the deepest missing link');
+  // Even a hypothetically demonstrated authorization without the hold stays unproven.
+  const noHoldAuthorized = classifyDirectGateG2({
+    identity: 'correlation-only',
+    activeTurnHold: { status: 'not-proven', reasonCode: 'no-controlled-hold' },
+    authorization: { status: 'demonstrated', reasonCode: null },
+  });
+  assert.equal(noHoldAuthorized.status, 'not-proven');
+  assert.equal(noHoldAuthorized.reasonCode, 'active-turn-not-proven');
+  // A mismatched or unobserved identity never proves the gate.
+  for (const identity of ['mismatch-observed', 'not-observed', 'inconclusive']) {
+    const verdict = classifyDirectGateG2({
+      identity,
+      activeTurnHold: { status: 'observed', reasonCode: null },
+      authorization: { status: 'demonstrated', reasonCode: null },
+    });
+    assert.equal(verdict.status, 'not-proven');
+    assert.equal(verdict.reasonCode, 'identity-not-authoritative');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 Step 3 (schedule): the bounded real-host identity schedule runs the
+// same pin/auth/install/readiness machinery as reachability, then executes
+// the identity cells against ONE owned app-server connection. The fake
+// app-server scenarios below simulate the host side: an approval-request
+// hold, an unholdable turn, and a foreign metadata candidate.
+// ---------------------------------------------------------------------------
+
+test('the identity schedule classifies the idle, approval-held, and completed cells against the fake app-server', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    assert.equal(counters.mode, 'identity');
+    const phase = counters.phases.identity;
+    assert.equal(phase.readiness, 'discovered');
+    assert.equal(phase.cells.idle, 'correlation-only', 'the idle-thread call is a correlation-only transport observation');
+    assert.equal(phase.cells.activeHold, 'binding-observed', 'the approval-held turn binds through the ordered observations');
+    assert.equal(phase.cells.completed, 'correlation-only', 'the completed-thread call stays correlation only');
+    assert.deepEqual(phase.activeTurnHold, { status: 'observed', reasonCode: null });
+    assert.equal(phase.handlerEntries, 4, 'one entry per cell: idle, twoThreads, activeHold, completed');
+    assert.deepEqual(phase.isolation.threads, { status: 'observed', reasonCode: null });
+    assert.equal(phase.gateG2.status, 'not-proven', 'G2 is never inferred from identity evidence');
+    assert.equal(phase.gateG2.reasonCode, 'no-trusted-caller-path', 'no host-side trusted-caller chain was demonstrated');
+    assert.equal(phase.cleanup, 'released');
+    assert.equal(phase.uncommittedCount, 0);
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the identity schedule records an unholdable turn as not proven and keeps the completed transport observation', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-no-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    const phase = counters.phases.identity;
+    assert.equal(phase.cells.idle, 'correlation-only');
+    assert.deepEqual(phase.activeTurnHold, { status: 'not-proven', reasonCode: 'no-controlled-hold' }, 'the hold attempt is recorded honestly');
+    assert.equal(phase.cells.activeHold, 'not-proven', 'no active-turn sample is taken without a controlled hold');
+    assert.equal(phase.cells.completed, 'correlation-only', 'the call after the confirmed completion stays a transport observation');
+    assert.equal(phase.handlerEntries, 3, 'one entry per cell: idle, twoThreads, completed');
+    assert.deepEqual(phase.isolation.threads, { status: 'observed', reasonCode: null });
+    assert.equal(phase.gateG2.status, 'not-proven');
+    assert.equal(phase.gateG2.reasonCode, 'no-trusted-caller-path');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the identity schedule reports a metadata candidate contradicting the held turn as a mismatch', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-hold-mismatch');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    const phase = counters.phases.identity;
+    assert.equal(phase.cells.activeHold, 'mismatch-observed', 'a foreign metadata candidate contradicts the independently learned identity');
+    // The foreign candidate rides EVERY dispatch, so the two-thread cell's
+    // own sample also genuinely contradicts: the cell classification is the
+    // mismatch, and the isolation reason must name the contradiction — the
+    // own thread WAS resolved (it observed one), so the generic
+    // own-thread-unresolved code would be misleading.
+    assert.equal(phase.cells.twoThreads, 'mismatch-observed');
+    assert.deepEqual(phase.isolation.threads, { status: 'not-proven', reasonCode: 'isolation-mismatch' });
+    assert.equal(phase.gateG2.status, 'not-proven');
+    assert.equal(phase.gateG2.reasonCode, 'no-trusted-caller-path', 'even a binding could not upgrade G2 without the authorization chain');
+    assert.equal(phase.cleanup, 'released');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the identity driver CLI accepts --mode identity and prints only redacted counters', async () => {
+  const fixture = await buildDirectDriverFixture('identity-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const child = spawn(process.execPath, [
+      directDriverModulePath, '--mode', 'identity', '--codex', fixture.codexPath, '--run-directory', run,
+      '--source-codex-home', fixture.sourceHome,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    const exit = await new Promise((resolveExit) => child.once('close', (code) => resolveExit(code)));
+    assert.equal(exit, 0, `the CLI exits 0 (stderr: ${Buffer.concat(stderrChunks).toString('utf8').slice(0, 300)})`);
+    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+    const counters = JSON.parse(stdout);
+    assert.equal(counters.mode, 'identity');
+    assert.equal(counters.phases.identity.gateG2.status, 'not-proven');
+    assert.equal(stdout.includes(run), false, 'the run directory path never reaches stdout');
+    assert.equal(stdout.includes('fixture-thread'), false, 'no host-issued thread identifier reaches stdout');
+    assert.equal(/[0-9a-f]{32}/.test(stdout.replace(/"codexVersion":"[^"]*"/g, '')), false, 'no probe-label-shaped raw hex reaches stdout');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 self-review fixes. Each test pins a reviewed gap: duplicate live
+// authorizations, the G2 proven control, session-candidate asymmetry, and
+// observed-versus-authored turn-state evidence in the identity schedule.
+// ---------------------------------------------------------------------------
+
+test('identity authorization bridge rejects a second live authorization for the identical thread, turn, and operation', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorize = (turnHash) => store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash,
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  const first = authorize(identityHash('turn-A'));
+  assert.equal(first.status, 'authorized');
+  // Same identity, second live authorization: refused — the lookup must never
+  // depend on insertion order to tell two identical authorizations apart.
+  const duplicate = authorize(identityHash('turn-A'));
+  assert.equal(duplicate.status, 'rejected');
+  assert.equal(duplicate.reasonCode, 'duplicate-authorization');
+  // After the first is consumed, re-authorization for the same identity is
+  // allowed again: no live duplicate exists.
+  const admitted = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(admitted.status, 'admitted');
+  const reauthorized = authorize(identityHash('turn-A'));
+  assert.equal(reauthorized.status, 'authorized', 're-authorization after consume is not a live duplicate');
+});
+
+test('identity authorization bridge resolves admission strictly by receipt, never by thread-turn identity', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  // One preparation consumed, then a re-authorization for the SAME identity:
+  // only the RECEIPT decides which preparation an admit touches. The spent
+  // original's receipt refuses as consumed; the newer receipt admits.
+  const first = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  const admitted = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(admitted.status, 'admitted');
+  const second = store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE + 2_000,
+  });
+  const readmitted = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: second.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 3_000,
+  });
+  assert.equal(readmitted.status, 'admitted', 'the re-authorization admits through its own receipt (once-only per preparation)');
+  const spentReceipt = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 4_000,
+  });
+  assert.equal(spentReceipt.status, 'rejected');
+  assert.equal(spentReceipt.reasonCode, 'preparation-consumed', "the spent original's receipt never resolves to the live re-authorization");
+});
+
+test('identity authorization bridge refuses a replayed unclaimed request after same-turn reauthorization instead of consuming the newer preparation', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  const authorize = () => store.authorize({
+    callerSource: 'probe-driver-own-thread',
+    threadHash: identityHash('thread-T1'),
+    turnHash: identityHash('turn-A'),
+    operation: 'mcpServerToolCall',
+    workspaceHash: identityHash('workspace-W1'),
+    permissionMode: 'default',
+    requiredExecutorAgentId: null,
+    foregroundAdapter: 'foreground',
+    expiresAt: DIRECT_IDENTITY_BASE + 60_000,
+    now: DIRECT_IDENTITY_BASE,
+  });
+  const first = authorize();
+  assert.equal(first.status, 'authorized');
+  const firstAdmit = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(firstAdmit.status, 'admitted');
+  // Same-turn reauthorization is allowed (the first preparation is spent).
+  const second = authorize();
+  assert.equal(second.status, 'authorized');
+  // P1's request is REPLAYED without its receipt: admission must refuse —
+  // thread/turn identity alone must never select the newer preparation.
+  const replay = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    now: DIRECT_IDENTITY_BASE + 2_000,
+  });
+  assert.equal(replay.status, 'rejected', 'an unclaimed replay must never admit against the newer preparation');
+  assert.equal(replay.reasonCode, 'preparation-receipt-missing');
+  assert.equal(store.preparationById(second.preparation.preparationId).consumedAt, null, 'the replay must not consume P2');
+  // The newer preparation remains usable through its OWN receipt.
+  const secondAdmit = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: second.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 3_000,
+  });
+  assert.equal(secondAdmit.status, 'admitted');
+  // And P1's receipt still identifies the CONSUMED original.
+  const replayedReceipt = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: first.preparation.preparationId,
+    now: DIRECT_IDENTITY_BASE + 4_000,
+  });
+  assert.equal(replayedReceipt.status, 'rejected');
+  assert.equal(replayedReceipt.reasonCode, 'preparation-consumed', "P1's receipt resolves to the consumed original");
+});
+
+test('identity G2 gate has a reachable proven branch demonstrated by the positive control', async () => {
+  const { classifyDirectGateG2 } = await loadDirectDriver();
+  // Positive control: ALL three demonstrations present — an ordered live-turn
+  // identity binding, a controlled active-turn hold observed on the host, and
+  // a demonstrated trusted-caller authorization chain. Only this combination
+  // may reach proven; this test exists to kill any mutant that makes the
+  // proven branch unreachable.
+  const verdict = classifyDirectGateG2({
+    identity: 'binding-observed',
+    activeTurnHold: { status: 'observed', reasonCode: null },
+    authorization: { status: 'demonstrated', reasonCode: null },
+  });
+  assert.equal(verdict.status, 'proven');
+  assert.equal(verdict.reasonCode, 'identity-binding-observed');
+});
+
+test('identity ordering treats the session candidate as recorded but never comparable', async () => {
+  const { classifyDirectIdentitySample } = await import('../tools/direct-mcp-probe/identity.mjs');
+  // The schedule learns only host thread.id/turn.id — there is NO host-side
+  // session identity to learn, so innerSessionId can never be compared. Pin
+  // the asymmetry both ways:
+  // (1) SESSION-ONLY NEGATIVE: an innerSessionId alone is recorded presence
+  // but is NOT independently comparable, so it can never establish the
+  // metadata-to-turn binding — even with the ordered active observations,
+  // the sample downgrades to correlation-only. Binding requires a matching,
+  // comparable thread AND turn candidate.
+  const sessionOnly = {
+    entryJoined: true,
+    entrySequence: 10,
+    metadataCandidates: identityCandidates({ innerSessionId: identityHash('session-1') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: identityHash('turn-A'),
+    preTurn: identityTurn(5, 'active', 'thread-T1', 'turn-A'),
+    postTurn: identityTurn(15, 'active', 'thread-T1', 'turn-A'),
+  };
+  assert.equal(classifyDirectIdentitySample(sessionOnly), 'correlation-only');
+  // (2) a DIFFERENT session value in the same shape is equally
+  // non-authoritative: the classification is unchanged, because nothing the
+  // schedule learned can agree or disagree with a session id.
+  const otherSession = { ...sessionOnly, metadataCandidates: identityCandidates({ innerSessionId: identityHash('session-2') }) };
+  assert.equal(classifyDirectIdentitySample(otherSession), 'correlation-only');
+  // (3) on an idle thread the session-only sample stays correlation-only:
+  // recorded, non-comparable, and never authority.
+  const idle = {
+    entryJoined: true,
+    entrySequence: 4,
+    metadataCandidates: identityCandidates({ innerSessionId: identityHash('session-1') }),
+    expectedThreadHash: identityHash('thread-T1'),
+    expectedTurnHash: null,
+    preTurn: null,
+    postTurn: null,
+  };
+  assert.equal(classifyDirectIdentitySample(idle), 'correlation-only');
+});
+
+test('the identity schedule runs a live two-thread isolation cell independent of the active-turn hold', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-hold');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    const phase = counters.phases.identity;
+    // The two-thread state is a transport-level isolation observation: a
+    // second independently created thread on the SAME owned connection, one
+    // direct call on each, and NO hold prerequisite.
+    assert.equal(phase.cells.twoThreads, 'correlation-only', 'the second thread call is a correlation-only transport observation');
+    assert.deepEqual(phase.isolation.threads, { status: 'observed', reasonCode: null }, 'each thread candidates only its own identity: isolation observed');
+    // Child isolation stays not-proven: the host exposes no independently
+    // learnable Child identity, and a caller-supplied Child id is never copied.
+    assert.deepEqual(phase.isolation.children, { status: 'not-proven', reasonCode: 'child-identity-unestablishable' });
+    assert.equal(phase.cells.idle, 'correlation-only');
+    assert.equal(phase.cells.activeHold, 'binding-observed', 'the hold cell is unaffected by the two-thread cell');
+    assert.equal(phase.cells.completed, 'correlation-only');
+    assert.equal(phase.handlerEntries, 4, 'one entry per cell: idle, twoThreads, activeHold, completed');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the identity schedule derives the active cell post-read from host evidence instead of authoring it', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-hold-ends');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    const phase = counters.phases.identity;
+    // The host emitted the turn completion DURING the call window. The
+    // post-read must carry that OBSERVED terminal state — the sample is then
+    // inconclusive (active at the pre-read, interrupted at the post-read),
+    // never a binding authored from an assumed still-active turn.
+    assert.equal(phase.activeTurnHold.status, 'observed', 'the hold itself was established');
+    assert.equal(phase.cells.activeHold, 'inconclusive', 'an observed mid-call completion makes the sample inconclusive');
+    assert.equal(phase.cells.completed, 'correlation-only');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('the identity schedule never records a terminal turn state it did not observe', async () => {
+  const { runDirectIdentityProbe } = await loadDirectDriver();
+  const fixture = await buildDirectDriverFixture('identity-hold-silent');
+  try {
+    const run = join(fixture.parent, 'run');
+    await fsp.mkdir(run, { mode: 0o700 });
+    const counters = await runDirectIdentityProbe({
+      codexPath: fixture.codexPath,
+      sourceCodexHome: fixture.sourceHome,
+      runDirectory: run,
+      turnSetupBudgetMs: 15_000,
+    });
+    const phase = counters.phases.identity;
+    assert.equal(phase.cells.completed, 'correlation-only', 'the completed-thread call stays a transport observation');
+    // The durable evidence must not claim the presumed 'interrupted' terminal:
+    // the settle window observed nothing, so every turn-state record after the
+    // held call carries state 'unknown' (no hashes), never an authored state.
+    const eventsText = await readFile(join(run, 'events.jsonl'), 'utf8');
+    const turnStates = eventsText.split('\n').filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.kind === 'turn-state-observed')
+      .map((record) => record.state);
+    assert.equal(turnStates.includes('interrupted'), false, 'an unobserved terminal state must never be authored into the evidence');
+    assert.equal(turnStates.includes('active'), true, 'the held-call window is still evidenced as active while the approval was outstanding');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('identity authorization bridge distinguishes a well-formed unknown receipt from a missing one', async () => {
+  const { createDirectIdentityPreparationStore } = await import('../tools/direct-mcp-probe/identity.mjs');
+  const store = createDirectIdentityPreparationStore();
+  // A receipt of the right SHAPE that identifies no preparation: admission
+  // and cancellation both report preparation-missing — distinct from
+  // preparation-receipt-missing (no receipt presented at all) and from
+  // preparation-consumed (a receipt resolving to a spent original).
+  const unknownReceipt = createHash('sha256').update('unknown-receipt').digest('hex').slice(0, 32);
+  const verdict = store.admit({
+    request: identityAuthorizedRequest(),
+    hostObservation: identityHostObservation(),
+    preparationId: unknownReceipt,
+    now: DIRECT_IDENTITY_BASE + 1_000,
+  });
+  assert.equal(verdict.status, 'rejected');
+  assert.equal(verdict.reasonCode, 'preparation-missing');
+  const cancelled = store.cancel(unknownReceipt, DIRECT_IDENTITY_BASE + 1_000);
+  assert.equal(cancelled.status, 'rejected');
+  assert.equal(cancelled.reasonCode, 'preparation-missing', 'cancel reports the same unknown-receipt code as admit');
 });

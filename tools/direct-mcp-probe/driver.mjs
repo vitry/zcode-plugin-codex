@@ -49,9 +49,12 @@ import { resolveProcessInspectionExecutable } from '../mcp-context-probe/qualify
 import {
   DIRECT_PROBE_PHASES,
   appendDirectProbeEvent,
+  hashProbeValue,
   readDirectProbeEvents,
   reduceDirectProbeLog,
 } from './observer.mjs';
+import { directProbeSealHead } from './probe-log.mjs';
+import { classifyDirectIdentitySample } from './identity.mjs';
 
 /** The disposable probe's MCP server identity inside the generated descriptor. */
 export const DIRECT_PROBE_SERVER_NAME = 'zcode-direct-mcp-probe';
@@ -72,6 +75,12 @@ const MAXIMUM_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_APP_SERVER_NOTIFICATIONS = 512;
 // Streaming-turn delta notifications are counted redacted and never retained.
 const APP_SERVER_DELTA_NOTIFICATION = /delta/i;
+// Bounded hold queue for server->client requests the identity schedule keeps
+// pending (the controlled active-turn hold is an unanswered approval request).
+const MAXIMUM_HELD_SERVER_REQUESTS = 8;
+// Bounded ring of retained turn-lifecycle notifications for the identity
+// schedule; past the cap notifications are counted redacted, never kept.
+const MAXIMUM_RETAINED_NOTIFICATIONS = 64;
 const SUBPROCESS_DEADLINE_MS = 120_000;
 const APP_SERVER_REQUEST_DEADLINE_MS = 60_000;
 // The G1 case budget is at most 120 seconds after readiness; the direct call
@@ -312,6 +321,12 @@ function runBounded(command, args, options) {
  * @param {{command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string}} options
  */
 export function startAppServerSession(options) {
+  // Optional identity-schedule seams: a pattern of server->client request
+  // methods to HOLD pending (answered explicitly by the schedule), and a
+  // pattern of notification methods to retain in a bounded ring. Both default
+  // to null, which preserves the plain reachability behavior unchanged.
+  const holdServerRequestPattern = options.holdServerRequestPattern ?? null;
+  const retainNotificationPattern = options.retainNotificationPattern ?? null;
   const child = spawn(options.command, options.args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   // Spawn-time identity capture; the case budget has not started yet, so
   // only the inspection tool's own cap bounds it.
@@ -319,6 +334,11 @@ export function startAppServerSession(options) {
   let nextId = 1;
   /** @type {Map<number, {resolve: (value: any) => void, reject: (error: Error) => void, timer: NodeJS.Timeout, method: string}>} */
   const pending = new Map();
+  /** @type {{id: number, method: string, params: object}[]} */
+  const heldServerRequests = [];
+  /** @type {{method: string, params: object}[]} */
+  const retainedNotifications = [];
+  let retainedOverflowCount = 0;
   let notificationsOverflow = 0;
   let notificationsDeltaCount = 0;
   let stdoutState = { buffer: '', totalBytes: 0, overflow: false };
@@ -357,12 +377,31 @@ export function startAppServerSession(options) {
       if (frame.error) entry.reject(directError('PROBE_APP_SERVER_REQUEST_FAILED', `The app-server rejected ${entry.method}.`));
       else entry.resolve(frame.result ?? {});
     } else if (frame && typeof frame === 'object' && typeof frame.method === 'string' && frame.id !== undefined) {
-      // Server-to-client request: benign bounded response.
-      const result = /elicitation/i.test(frame.method) ? { action: 'cancel' } : {};
-      try { child.stdin?.write(`${JSON.stringify({ id: frame.id, result })}\n`); } catch { /* session is ending */ }
+      // Server-to-client request. The identity schedule may HOLD matching
+      // requests pending — an unanswered approval request is the controlled
+      // active-turn hold — and answer them explicitly. The hold queue is
+      // bounded; past the cap the benign answer applies instead.
+      if (holdServerRequestPattern !== null && holdServerRequestPattern.test(frame.method)
+        && heldServerRequests.length < MAXIMUM_HELD_SERVER_REQUESTS) {
+        heldServerRequests.push({ id: frame.id, method: frame.method, params: frame.params ?? {} });
+      } else {
+        const result = /elicitation/i.test(frame.method) ? { action: 'cancel' } : {};
+        try { child.stdin?.write(`${JSON.stringify({ id: frame.id, result })}\n`); } catch { /* session is ending */ }
+      }
     } else if (frame && typeof frame === 'object' && typeof frame.method === 'string') {
       if (APP_SERVER_DELTA_NOTIFICATION.test(frame.method)) {
         notificationsDeltaCount += 1;
+        return;
+      }
+      // The identity schedule retains a bounded ring of turn-lifecycle
+      // notifications (its only window on the host's turn states); anything
+      // past the retained cap is counted redacted and kept nowhere.
+      if (retainNotificationPattern !== null && retainNotificationPattern.test(frame.method)) {
+        if (retainedNotifications.length < MAXIMUM_RETAINED_NOTIFICATIONS) {
+          retainedNotifications.push({ method: frame.method, params: frame.params ?? {} });
+        } else {
+          retainedOverflowCount += 1;
+        }
         return;
       }
       if (notificationsOverflow === 0 && countNotifications() >= MAXIMUM_APP_SERVER_NOTIFICATIONS) {
@@ -404,6 +443,25 @@ export function startAppServerSession(options) {
     get notificationsOverflow() { return notificationsOverflow; },
     /** Redacted count of streamed delta notifications (never retained). */
     get notificationsDeltaCount() { return notificationsDeltaCount; },
+    /** Snapshot of the bounded held server->client requests (identity hold seam). */
+    heldServerRequests: () => [...heldServerRequests],
+    /** Returns the first held request matching the predicate WITHOUT removing it. */
+    findHeldServerRequest: (predicate) => heldServerRequests.find((entry) => predicate(entry)) ?? null,
+    /** Removes one held request (after it has been answered). */
+    dropHeldServerRequest: (id) => {
+      const index = heldServerRequests.findIndex((entry) => entry.id === id);
+      if (index >= 0) heldServerRequests.splice(index, 1);
+    },
+    /** Answers one held server->client request explicitly (identity hold seam). */
+    respondToServerRequest: (id, result) => { writeFrame({ id, result }); },
+    /** Drains and returns the bounded retained notification ring. */
+    drainRetainedNotifications: () => {
+      const drained = [...retainedNotifications];
+      retainedNotifications.length = 0;
+      return drained;
+    },
+    /** Redacted count of notifications dropped past the retained ring cap. */
+    get retainedOverflowCount() { return retainedOverflowCount; },
     /** @param {string} method @param {Record<string, unknown>} params @param {number} [timeoutMs] */
     request(method, params, timeoutMs = APP_SERVER_REQUEST_DEADLINE_MS) {
       const id = nextId++;
@@ -514,6 +572,131 @@ export function classifyDirectGateG1(reachability) {
     default:
       throw directError('DIRECT_CASE_INVALID', 'Unknown reachability classification.');
   }
+}
+
+/**
+ * The identity seam for ONE bounded identity case (plan Task 4): consumes the
+ * durable records, the AUTHENTICATED reduction, and the driver's INDEPENDENT
+ * host-identity knowledge (per-run salted hashes computed in memory from the
+ * host-issued IDs the driver learned on its own connection — never from the
+ * request metadata), and classifies the sample through the ordered-turn
+ * rules of `identity.mjs`. The pre/post turn observations come from the
+ * durable `turn-state-observed` records around the joined handler-entry
+ * sequence; a matching diagnostic label is correlation input only and never
+ * upgrades the sample.
+ * @param {{records: object[], reduced: {calls: object[], unjoined: object[]}, probeLabel: string, phase?: string, expectedThreadHash?: string|null, expectedTurnHash?: string|null}} input
+ */
+export function directIdentityCase({
+  records,
+  reduced,
+  probeLabel,
+  phase = 'identity',
+  expectedThreadHash = null,
+  expectedTurnHash = null,
+}) {
+  if (!Array.isArray(records)) throw directError('DIRECT_CASE_INVALID', 'The identity case requires the validated event records.');
+  if (!reduced || !Array.isArray(reduced.calls) || !Array.isArray(reduced.unjoined)) {
+    throw directError('DIRECT_CASE_INVALID', 'The identity case requires the authenticated reduction.');
+  }
+  if (typeof probeLabel !== 'string' || !/^[0-9a-f]{32}$/.test(probeLabel)) {
+    throw directError('DIRECT_CASE_INVALID', 'The identity case requires a valid probeLabel.');
+  }
+  if (typeof phase !== 'string' || !DIRECT_PROBE_PHASES.includes(phase)) {
+    throw directError('DIRECT_CASE_INVALID', 'The identity case requires a closed probe phase.');
+  }
+  const joined = reduced.calls.find((call) => call.phase === phase && call.probeLabel === probeLabel) ?? null;
+  const request = records.find((record) => record.kind === 'request-sent' && record.phase === phase && record.probeLabel === probeLabel) ?? null;
+  const readinessRecord = records.find((record) => record.kind === 'readiness-observed' && record.phase === phase) ?? null;
+  if (!joined) {
+    return {
+      classification: 'not-observed',
+      entryJoined: false,
+      entrySequence: null,
+      preTurn: null,
+      postTurn: null,
+      candidateState: 'not-observed',
+      requestState: request ? request.state : null,
+      readiness: readinessRecord ? readinessRecord.state : 'not-observed',
+      evidenceRefs: request && request.state === 'sent' ? [`request-sent@${request.sequence}`] : [],
+    };
+  }
+  const entrySequence = joined.entrySequence;
+  const metadataRecord = records.find((record) => record.kind === 'metadata-observed' && record.phase === phase && record.callNonce === joined.callNonce) ?? null;
+  const candidates = metadataRecord?.candidateHashes
+    ?? { envelopeThreadId: null, innerSessionId: null, innerThreadId: null, innerTurnId: null };
+  // Ordered host turn observations for THIS thread: records that carry a
+  // thread hash (an actually observed turn) — when the driver knows the
+  // expected thread hash, only that thread's records may attribute the
+  // sample. The pre-read is the last observation before and the post-read the
+  // first observation after the durable entry sequence.
+  const turnObservations = records.filter((record) => record.kind === 'turn-state-observed'
+    && record.phase === phase
+    && typeof record.threadHash === 'string'
+    && (expectedThreadHash === null || record.threadHash === expectedThreadHash));
+  const preTurnRecord = [...turnObservations].filter((record) => record.sequence < entrySequence).pop() ?? null;
+  const postTurnRecord = turnObservations.find((record) => record.sequence > entrySequence) ?? null;
+  const classification = classifyDirectIdentitySample({
+    entryJoined: true,
+    entrySequence,
+    metadataCandidates: candidates,
+    expectedThreadHash,
+    expectedTurnHash,
+    preTurn: preTurnRecord,
+    postTurn: postTurnRecord,
+  });
+  const evidenceRefs = [];
+  for (const record of records) {
+    if (record.phase !== phase) continue;
+    const citesRequest = record.kind === 'request-sent' && record.probeLabel === probeLabel && record.state === 'sent';
+    const citesReadiness = record.kind === 'readiness-observed';
+    const citesServerStart = record.kind === 'server-started';
+    const citesEntry = record.kind === 'handler-entered' && record.probeLabel === probeLabel;
+    const citesMetadata = record.kind === 'metadata-observed' && record.callNonce === joined.callNonce;
+    const citesTurn = record.kind === 'turn-state-observed'
+      && typeof record.threadHash === 'string'
+      && (expectedThreadHash === null || record.threadHash === expectedThreadHash);
+    const citesRpc = record.kind === 'rpc-observed' && record.probeLabel === probeLabel;
+    if (citesRequest || citesReadiness || citesServerStart || citesEntry || citesMetadata || citesTurn || citesRpc) {
+      evidenceRefs.push(`${record.kind}@${record.sequence}`);
+    }
+  }
+  return {
+    classification,
+    entryJoined: true,
+    entrySequence,
+    preTurn: preTurnRecord,
+    postTurn: postTurnRecord,
+    candidateState: metadataRecord ? metadataRecord.state : 'not-observed',
+    requestState: request ? request.state : null,
+    readiness: readinessRecord ? readinessRecord.state : 'not-observed',
+    evidenceRefs,
+  };
+}
+
+/**
+ * The G2 gate decision for the identity campaign. `proven` requires ALL
+ * three demonstrated facts: (1) a live-turn identity binding from the
+ * ordered-turn rules, (2) a controlled active-turn hold observed on the
+ * tested host, and (3) a demonstrated trusted-caller authorization chain on
+ * that host. The synthetic authorization-bridge candidate can never satisfy
+ * (3): it proves the admission MECHANISM locally, not host authority — so a
+ * run whose metadata hashes all match still reports `not-proven` with
+ * `no-trusted-caller-path`. Missing prerequisites are never promoted, and
+ * reason precedence follows the deepest missing link (authorization, then
+ * the hold, then the identity binding).
+ * @param {{identity: string, activeTurnHold: {status: string, reasonCode: ?string}, authorization: {status: string, reasonCode: ?string}}} input
+ */
+export function classifyDirectGateG2({ identity, activeTurnHold, authorization }) {
+  if (!authorization || authorization.status !== 'demonstrated') {
+    return { status: 'not-proven', reasonCode: authorization?.reasonCode ?? 'no-trusted-caller-path', evidenceRefs: [] };
+  }
+  if (!activeTurnHold || activeTurnHold.status !== 'observed') {
+    return { status: 'not-proven', reasonCode: 'active-turn-not-proven', evidenceRefs: [] };
+  }
+  if (identity === 'binding-observed') {
+    return { status: 'proven', reasonCode: 'identity-binding-observed', evidenceRefs: [] };
+  }
+  return { status: 'not-proven', reasonCode: 'identity-not-authoritative', evidenceRefs: [] };
 }
 
 /**
@@ -657,30 +840,112 @@ function parseArguments(argv) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!flag.startsWith('--') || !value || value.startsWith('--')) {
-      throw directError('DIRECT_DRIVER_USAGE_INVALID', 'usage: driver.mjs --mode reachability --codex <path> --run-directory <dir> [--source-codex-home <dir>]');
+      throw directError('DIRECT_DRIVER_USAGE_INVALID', 'usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> [--source-codex-home <dir>]');
     }
     if (flag === '--mode') parsed.mode = value;
     else if (flag === '--codex') parsed.codex = value;
     else if (flag === '--run-directory') parsed.runDirectory = value;
     else if (flag === '--source-codex-home') parsed.sourceCodexHome = value;
-    else throw directError('DIRECT_DRIVER_USAGE_INVALID', `usage: driver.mjs --mode reachability --codex <path> --run-directory <dir> (unknown ${flag})`);
+    else throw directError('DIRECT_DRIVER_USAGE_INVALID', `usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> (unknown ${flag})`);
   }
   return parsed;
 }
 
 /**
- * The bounded reachability schedule. Hard failures throw; the honest
- * classification is derived only from the authenticated reduction of the
- * durable log. Every spawn re-pins the canonical binary (path, device/inode,
- * and content digest); cleanup never signals a process whose captured start
- * identity changed. The direct-call deadline and the single post-readiness
- * case ceiling default to the plan's bounded values and may be tightened by
- * the caller (injected-clock seams the suite uses to test the unanswered-call
- * and ceiling paths without waiting out the real budgets).
+ * ONE bounded direct `mcpServer/tool/call` with its durable event-position
+ * snapshots, the direct-call deadline, the durable handler-entry join, and
+ * the RPC observation (the shared observation primitive of every schedule).
+ * An expired case ceiling records the request as not-sent and the call as
+ * not-observed — never a pass. Returns whether the call was dispatched and
+ * the joined call nonce, if any.
+ * @param {object} ctx @param {string} probeLabel @param {string} toolName @param {string} [threadId]
+ * @returns {Promise<{sent: boolean, callNonce: string|undefined}>}
+ */
+async function runDirectCallOnce(ctx, probeLabel, toolName, threadId = ctx.threadId) {
+  const { runDirectory, runNonce, phaseCounters, session } = ctx;
+  if (ctx.budgetRemainingMs() <= 0) {
+    // The ceiling expired before dispatch: the request is recorded honestly
+    // as not-sent and the observation as not-observed — never a pass. The
+    // durable log is still read so any observed server startup reaches the
+    // cleanup verification.
+    await ctx.appendDriverEvent({ kind: 'request-sent', probeLabel, tool: toolName, state: 'not-sent' });
+    await ctx.appendDriverEvent({ kind: 'rpc-observed', probeLabel, outcome: 'not-observed' });
+    phaseCounters.rpcObservations += 1;
+    const records = await readDirectProbeEvents({ runDirectory, runNonce });
+    phaseCounters.handlerEntries = records.filter((record) => record.kind === 'handler-entered').length;
+    phaseCounters.serverStarts = records.filter((record) => record.kind === 'server-started').length;
+    phaseCounters.eventsAfter = records.length;
+    ctx.noteBudgetExhausted();
+    transcript(`phase-${ctx.phase}: the case ceiling expired before dispatch; the call is recorded not-sent`);
+    return { sent: false, callNonce: undefined };
+  }
+  await ctx.appendDriverEvent({ kind: 'request-sent', probeLabel, tool: toolName, state: 'sent' });
+  phaseCounters.requestsSent += 1;
+  phaseCounters.eventsBefore = (await readDirectProbeEvents({ runDirectory, runNonce })).length;
+
+  const callDeadlineMs = Math.max(1, Math.min(ctx.directCallDeadlineMs, ctx.budgetRemainingMs()));
+  let rpcOutcome = 'not-observed';
+  try {
+    const response = await session.request('mcpServer/tool/call', {
+      server: DIRECT_PROBE_SERVER_NAME,
+      threadId,
+      tool: toolName,
+      arguments: { probeLabel },
+    }, callDeadlineMs);
+    rpcOutcome = response?.isError === true ? 'error-result' : 'success-result';
+    transcript(`phase-${ctx.phase}: the direct call answered (${rpcOutcome})`);
+  } catch (callError) {
+    const code = errorCode(callError);
+    // An answered JSON-RPC rejection is an observation; a request that never
+    // received an answer stays honestly not-observed.
+    rpcOutcome = code === 'PROBE_APP_SERVER_REQUEST_FAILED' ? 'rpc-rejected' : 'not-observed';
+    transcript(`phase-${ctx.phase}: the direct call did not answer successfully (${code || 'error'})`);
+  }
+
+  // Durable handler-entry join: the driver may name a callNonce in its RPC
+  // observation only after the unique-label join against the durable log.
+  let callNonce;
+  for (let attempt = 0; attempt < DIRECT_ENTRY_JOIN_ATTEMPTS; attempt += 1) {
+    const records = await readDirectProbeEvents({ runDirectory, runNonce });
+    phaseCounters.handlerEntries = records.filter((record) => record.kind === 'handler-entered').length;
+    phaseCounters.serverStarts = records.filter((record) => record.kind === 'server-started').length;
+    const entry = records.find((record) => record.kind === 'handler-entered' && record.probeLabel === probeLabel) ?? null;
+    phaseCounters.eventsAfter = records.length;
+    if (entry || attempt === DIRECT_ENTRY_JOIN_ATTEMPTS - 1) {
+      callNonce = entry?.callNonce;
+      break;
+    }
+    if (ctx.budgetRemainingMs() <= 0) {
+      ctx.noteBudgetExhausted();
+      break;
+    }
+    await sleep(Math.min(DIRECT_ENTRY_JOIN_POLL_MS, ctx.budgetRemainingMs()));
+  }
+  await ctx.appendDriverEvent(callNonce === undefined
+    ? { kind: 'rpc-observed', probeLabel, outcome: rpcOutcome }
+    : { kind: 'rpc-observed', probeLabel, callNonce, outcome: rpcOutcome });
+  phaseCounters.rpcObservations += 1;
+  return { sent: true, callNonce };
+}
+
+/**
+ * The bounded direct-call case runner shared by every probe mode. Hard
+ * failures throw; the honest classification is derived only from the
+ * authenticated reduction of the durable log. Every spawn re-pins the
+ * canonical binary (path, device/inode, and content digest); cleanup never
+ * signals a process whose captured start identity changed. The direct-call
+ * deadline and the case ceiling default to the plan's bounded values and may
+ * be tightened by the caller (injected-clock seams the suite uses to test
+ * the unanswered-call and ceiling paths without waiting out the real
+ * budgets). The mode hooks own everything observation-bearing: the schedule
+ * after readiness, the per-case budget windows, and the final gate
+ * classification. `runDirectReachabilityProbe` and `runDirectIdentityProbe`
+ * are the two thin mode wrappers below.
  * @param {{codexPath: string, sourceCodexHome: string, runDirectory: string, directCallDeadlineMs?: number, caseBudgetMs?: number}} input
+ * @param {{mode: string, phase: string, createPhaseCounters: () => object, discoverServerBeforeSchedule: boolean, sessionOptions?: object, turnSetupBudgetMs?: number, runSchedule: (ctx: object) => Promise<void>, classify: (ctx: object, records: object[], reduced: object) => Promise<void>}} hooks
  * @returns {Promise<object>} the redacted phase/outcome counters
  */
-export async function runDirectReachabilityProbe(input) {
+async function runDirectProbeCase(input, hooks) {
   const codexPath = input.codexPath;
   const runDirectoryInput = input.runDirectory;
   const directCallDeadlineMs = input.directCallDeadlineMs ?? DIRECT_CALL_DEADLINE_MS;
@@ -809,26 +1074,11 @@ export async function runDirectReachabilityProbe(input) {
 
   const counters = {
     probe: PROBE_NAME,
-    mode: 'reachability',
+    mode: hooks.mode,
     codexVersion,
-    phases: {
-      [DIRECT_PROBE_PHASE]: {
-        readiness: 'not-observed',
-        requestsSent: 0,
-        rpcObservations: 0,
-        handlerEntries: 0,
-        serverStarts: 0,
-        classification: 'not-observed',
-        eventsBefore: 0,
-        eventsAfter: 0,
-        eventRecords: 0,
-        uncommittedCount: 0,
-        cleanup: 'not-observed',
-        postReadinessBudget: 'within-budget',
-      },
-    },
+    phases: { [hooks.phase]: hooks.createPhaseCounters() },
   };
-  const phaseCounters = counters.phases[DIRECT_PROBE_PHASE];
+  const phaseCounters = counters.phases[hooks.phase];
   // The disposable server executable this run installs and the host spawns:
   // its exact module path is the process-table signature for discovery and
   // for the cleanup-time verification.
@@ -954,13 +1204,13 @@ export async function runDirectReachabilityProbe(input) {
       ...hostEnv,
       ZCODE_DIRECT_MCP_PROBE_RUN: runDirectory,
       ZCODE_DIRECT_MCP_PROBE_NONCE: runNonce,
-      ZCODE_DIRECT_MCP_PROBE_PHASE: DIRECT_PROBE_PHASE,
+      ZCODE_DIRECT_MCP_PROBE_PHASE: hooks.phase,
       DIRECT_PROBE_OWNER_SECRET: ownerSecret,
     };
 
-    session = startAppServerSession({ command: await recheckCodex(), args: ['app-server'], env: probeEnv, cwd: runDirectory });
+    session = startAppServerSession({ command: await recheckCodex(), args: ['app-server'], env: probeEnv, cwd: runDirectory, ...(hooks.sessionOptions ?? {}) });
     trackedProcesses.set(session.pid, session.identity);
-    transcript('phase-reachability: app-server session started and tracked');
+    transcript(`phase-${hooks.phase}: app-server session started and tracked`);
     const initialize = await session.request('initialize', {
       clientInfo: { name: 'zcode-direct-mcp-probe-driver', title: 'ZCode Direct MCP Probe Driver', version: '0.1.0' },
       capabilities: null,
@@ -984,98 +1234,62 @@ export async function runDirectReachabilityProbe(input) {
       const entries = Array.isArray(status?.data) ? status.data : [];
       const entry = entries.find((candidate) => candidate && typeof candidate === 'object' && candidate.name === DIRECT_PROBE_SERVER_NAME) ?? null;
       readinessState = entry ? 'discovered' : 'missing';
-      transcript(`phase-reachability: mcpServerStatus/list ${readinessState === 'discovered' ? 'discovered the probe server' : 'did not list the probe server'}`);
+      transcript(`phase-${hooks.phase}: mcpServerStatus/list ${readinessState === 'discovered' ? 'discovered the probe server' : 'did not list the probe server'}`);
     } catch (statusError) {
       readinessState = 'failed';
-      transcript(`phase-reachability: mcpServerStatus/list failed (${errorCode(statusError) || 'error'})`);
+      transcript(`phase-${hooks.phase}: mcpServerStatus/list failed (${errorCode(statusError) || 'error'})`);
     }
     phaseCounters.readiness = readinessState;
     await appendDirectProbeEvent({
       runDirectory, runNonce, phase: DIRECT_PROBE_PHASE, ownerSecret,
       event: { kind: 'readiness-observed', state: readinessState, source: 'host' },
     });
-    // The post-readiness ceiling starts here: everything observation-bearing
-    // after this point — the direct call, the durable join, the disposal
-    // waits, and the bounded cleanup commands — shares this one deadline.
-    postReadinessDeadline = Date.now() + caseBudgetMs;
-
-    // The direct call on the SAME connection, with the durable event position
-    // snapshotted before and after the request.
-    const probeLabel = randomBytes(16).toString('hex');
-    if (budgetRemainingMs() <= 0) {
-      // The ceiling expired before dispatch: the request is recorded honestly
-      // as not-sent and the observation as not-observed — never a pass. The
-      // durable log is still read so any observed server startup reaches the
-      // cleanup verification.
-      await appendDirectProbeEvent({
-        runDirectory, runNonce, phase: DIRECT_PROBE_PHASE, ownerSecret,
-        event: { kind: 'request-sent', probeLabel, tool: DIRECT_PROBE_TOOL_NAME, state: 'not-sent' },
-      });
-      await appendDirectProbeEvent({
-        runDirectory, runNonce, phase: DIRECT_PROBE_PHASE, ownerSecret,
-        event: { kind: 'rpc-observed', probeLabel, outcome: 'not-observed' },
-      });
-      phaseCounters.rpcObservations = 1;
-      const records = await readDirectProbeEvents({ runDirectory, runNonce });
-      phaseCounters.handlerEntries = records.filter((record) => record.kind === 'handler-entered').length;
-      phaseCounters.serverStarts = records.filter((record) => record.kind === 'server-started').length;
-      phaseCounters.eventsAfter = records.length;
-      noteBudgetExhausted();
-      transcript('phase-reachability: the post-readiness ceiling expired before dispatch; the call is recorded not-sent');
-    } else {
-      await appendDirectProbeEvent({
-        runDirectory, runNonce, phase: DIRECT_PROBE_PHASE, ownerSecret,
-        event: { kind: 'request-sent', probeLabel, tool: DIRECT_PROBE_TOOL_NAME, state: 'sent' },
-      });
-      phaseCounters.requestsSent = 1;
-      phaseCounters.eventsBefore = (await readDirectProbeEvents({ runDirectory, runNonce })).length;
-
-      const callDeadlineMs = Math.max(1, Math.min(directCallDeadlineMs, budgetRemainingMs()));
-      let rpcOutcome = 'not-observed';
-      try {
-        const response = await session.request('mcpServer/tool/call', {
-          server: DIRECT_PROBE_SERVER_NAME,
-          threadId,
-          tool: DIRECT_PROBE_TOOL_NAME,
-          arguments: { probeLabel },
-        }, callDeadlineMs);
-        rpcOutcome = response?.isError === true ? 'error-result' : 'success-result';
-        transcript(`phase-reachability: the direct call answered (${rpcOutcome})`);
-      } catch (callError) {
-        const code = errorCode(callError);
-        // An answered JSON-RPC rejection is an observation; a request that never
-        // received an answer stays honestly not-observed.
-        rpcOutcome = code === 'PROBE_APP_SERVER_REQUEST_FAILED' ? 'rpc-rejected' : 'not-observed';
-        transcript(`phase-reachability: the direct call did not answer successfully (${code || 'error'})`);
-      }
-
-      // Durable handler-entry join: the driver may name a callNonce in its RPC
-      // observation only after the unique-label join against the durable log.
-      let callNonce;
-      for (let attempt = 0; attempt < DIRECT_ENTRY_JOIN_ATTEMPTS; attempt += 1) {
-        const records = await readDirectProbeEvents({ runDirectory, runNonce });
-        phaseCounters.handlerEntries = records.filter((record) => record.kind === 'handler-entered').length;
-        phaseCounters.serverStarts = records.filter((record) => record.kind === 'server-started').length;
-        const entry = records.find((record) => record.kind === 'handler-entered' && record.probeLabel === probeLabel) ?? null;
-        phaseCounters.eventsAfter = records.length;
-        if (entry || attempt === DIRECT_ENTRY_JOIN_ATTEMPTS - 1) {
-          callNonce = entry?.callNonce;
-          break;
+    // The schedule context: everything observation-bearing the mode's
+    // schedule needs, with the durable appends tracked so a mid-run
+    // authenticated reduction can anchor on the current journal head.
+    const scheduleContext = {
+      session,
+      threadId,
+      workspace,
+      runDirectory,
+      runNonce,
+      ownerSecret,
+      phase: hooks.phase,
+      phaseCounters,
+      directCallDeadlineMs,
+      caseBudgetMs,
+      turnSetupBudgetMs: hooks.turnSetupBudgetMs ?? null,
+      budgetRemainingMs,
+      beginCaseBudget: () => { postReadinessDeadline = Date.now() + caseBudgetMs; },
+      noteBudgetExhausted,
+      lastCommit: null,
+      appendDriverEvent: async (event) => {
+        const result = await appendDirectProbeEvent({ runDirectory, runNonce, phase: hooks.phase, ownerSecret, event });
+        scheduleContext.lastCommit = result.commit;
+        return result;
+      },
+      readEvents: () => readDirectProbeEvents({ runDirectory, runNonce }),
+      // Mid-run authenticated reduction: anchor on the CURRENT journal head
+      // (the disposable server commits between the driver's appends) and
+      // retry when the head moves between the head read and the reduction.
+      reduceNow: async () => {
+        let head = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          head = directProbeSealHead({ runDirectory, runNonce, ownerSecret });
+          try {
+            return await reduceDirectProbeLog({ runDirectory, runNonce, ownerSecret, ownerPid: serverPid, expectedFinalState: head });
+          } catch (error) {
+            const nextHead = directProbeSealHead({ runDirectory, runNonce, ownerSecret });
+            if (attempt < 2 && nextHead !== null && head !== null
+              && (nextHead.recordCount !== head.recordCount || nextHead.eventsDigest !== head.eventsDigest)) {
+              continue;
+            }
+            throw error;
+          }
         }
-        if (budgetRemainingMs() <= 0) {
-          noteBudgetExhausted();
-          break;
-        }
-        await sleep(Math.min(DIRECT_ENTRY_JOIN_POLL_MS, budgetRemainingMs()));
-      }
-      await appendDirectProbeEvent({
-        runDirectory, runNonce, phase: DIRECT_PROBE_PHASE, ownerSecret,
-        event: callNonce === undefined
-          ? { kind: 'rpc-observed', probeLabel, outcome: rpcOutcome }
-          : { kind: 'rpc-observed', probeLabel, callNonce, outcome: rpcOutcome },
-      });
-      phaseCounters.rpcObservations = 1;
-    }
+        throw directError('DIRECT_CASE_INVALID', 'The mid-run reduction could not anchor on a stable journal head.');
+      },
+    };
 
     // Server process discovery (while the host is alive): the spawned server
     // is the host's child, so exactly one process-table entry whose parent is
@@ -1083,23 +1297,33 @@ export async function runDirectReachabilityProbe(input) {
     // gates any cleanup signal. The inspection is bounded by the remaining
     // post-readiness case time and is skipped as unobserved when that ceiling
     // is exhausted (cleanup then fails closed on any durable server start).
-    if (budgetRemainingMs() <= 0) {
-      noteBudgetExhausted();
-      transcript('phase-reachability: the case ceiling is exhausted; server process discovery is skipped as unobserved');
-    } else {
+    const discoverServerProcess = async () => {
+      if (budgetRemainingMs() <= 0) {
+        noteBudgetExhausted();
+        transcript(`phase-${hooks.phase}: the case ceiling is exhausted; server process discovery is skipped as unobserved`);
+        return;
+      }
       const matches = listProbeServerProcesses(serverModulePath, Math.min(PS_INSPECTION_MS, budgetRemainingMs()));
       if (matches === null) {
-        transcript('phase-reachability: process inspection unavailable; the server pid stays unresolved');
-      } else {
-        const mine = matches.filter((entry) => entry.ppid === session.pid);
-        if (mine.length > 1) throw directError('PROBE_SERVER_PID_AMBIGUOUS', 'More than one probe server process belongs to this run; refusing to guess.');
-        if (mine.length === 1) {
-          serverPid = mine[0].pid;
-          serverIdentity = boundedCaptureIdentity(serverPid, budgetRemainingMs());
-        }
+        transcript(`phase-${hooks.phase}: process inspection unavailable; the server pid stays unresolved`);
+        return;
       }
-    }
-    transcript(`phase-reachability: server process ${serverPid === null ? 'not identified at discovery' : 'identified and tracked'}`);
+      const mine = matches.filter((entry) => entry.ppid === session.pid);
+      if (mine.length > 1) throw directError('PROBE_SERVER_PID_AMBIGUOUS', 'More than one probe server process belongs to this run; refusing to guess.');
+      if (mine.length === 1) {
+        serverPid = mine[0].pid;
+        serverIdentity = boundedCaptureIdentity(serverPid, budgetRemainingMs());
+      }
+      transcript(`phase-${hooks.phase}: server process ${serverPid === null ? 'not identified at discovery' : 'identified and tracked'}`);
+    };
+    // The identity schedule reduces mid-run, which requires the expected
+    // server pid: discover the disposable server BEFORE the schedule when the
+    // mode asks for it (the host starts the server during tool discovery).
+    if (hooks.discoverServerBeforeSchedule) await discoverServerProcess();
+
+    await hooks.runSchedule(scheduleContext);
+
+    await discoverServerProcess();
   } catch (error) {
     outcome = { failed: true, error };
   }
@@ -1238,14 +1462,11 @@ export async function runDirectReachabilityProbe(input) {
         runDirectory, runNonce, ownerSecret, ownerPid: serverPid, expectedFinalState: finalAppend.commit,
       });
       const records = await readDirectProbeEvents({ runDirectory, runNonce });
-      const probeLabelRecord = records.find((record) => record.kind === 'request-sent' && record.state === 'sent') ?? null;
-      if (probeLabelRecord) {
-        const reachability = directReachabilityCase({ records, reduced, probeLabel: probeLabelRecord.probeLabel });
-        phaseCounters.classification = reachability.classification;
-        phaseCounters.gateG1 = classifyDirectGateG1(reachability);
-      }
       phaseCounters.eventRecords = records.length;
       phaseCounters.uncommittedCount = reduced.uncommittedCount;
+      await hooks.classify({
+        phaseCounters, phase: hooks.phase, runNonce, runDirectory, ownerSecret,
+      }, records, reduced);
     } catch (reduceError) {
       outcome = outcome.failed ? outcome : { failed: true, error: reduceError };
     }
@@ -1296,18 +1517,509 @@ export async function runDirectReachabilityProbe(input) {
   return counters;
 }
 
+// ---------------------------------------------------------------------------
+// Mode wrappers and the identity schedule (plan Task 4). Reachability keeps
+// its exact schedule and counters; identity runs the bounded identity-matrix
+// cells over the same pin/auth/install/readiness/cleanup machinery.
+// ---------------------------------------------------------------------------
+
+/** The reachability mode's phase counters (unchanged Task 3 shape). */
+function createReachabilityPhaseCounters() {
+  return {
+    readiness: 'not-observed',
+    requestsSent: 0,
+    rpcObservations: 0,
+    handlerEntries: 0,
+    serverStarts: 0,
+    classification: 'not-observed',
+    eventsBefore: 0,
+    eventsAfter: 0,
+    eventRecords: 0,
+    uncommittedCount: 0,
+    cleanup: 'not-observed',
+    postReadinessBudget: 'within-budget',
+  };
+}
+
+/** The reachability schedule: one post-readiness ceiling, one direct call. */
+async function runReachabilitySchedule(ctx) {
+  // The post-readiness ceiling starts here: everything observation-bearing
+  // after this point — the direct call, the durable join, the disposal
+  // waits, and the bounded cleanup commands — shares this one deadline.
+  ctx.beginCaseBudget();
+  const probeLabel = randomBytes(16).toString('hex');
+  await runDirectCallOnce(ctx, probeLabel, DIRECT_PROBE_TOOL_NAME);
+}
+
+/** The reachability classification: the single label's case and the G1 gate. */
+async function classifyReachability(ctx, records, reduced) {
+  const probeLabelRecord = records.find((record) => record.kind === 'request-sent' && record.state === 'sent') ?? null;
+  if (probeLabelRecord) {
+    const reachability = directReachabilityCase({ records, reduced, probeLabel: probeLabelRecord.probeLabel });
+    ctx.phaseCounters.classification = reachability.classification;
+    ctx.phaseCounters.gateG1 = classifyDirectGateG1(reachability);
+  }
+}
+
+/**
+ * The bounded reachability probe (plan Task 3, unchanged behavior): pin,
+ * isolated homes, disposable marketplace, readiness, ONE direct call on the
+ * SAME connection, durable entry join, and fail-closed cleanup.
+ * @param {{codexPath: string, sourceCodexHome: string, runDirectory: string, directCallDeadlineMs?: number, caseBudgetMs?: number}} input
+ * @returns {Promise<object>} the redacted phase/outcome counters
+ */
+export async function runDirectReachabilityProbe(input) {
+  return runDirectProbeCase(input, {
+    mode: 'reachability',
+    phase: DIRECT_PROBE_PHASE,
+    createPhaseCounters: createReachabilityPhaseCounters,
+    discoverServerBeforeSchedule: false,
+    runSchedule: runReachabilitySchedule,
+    classify: classifyReachability,
+  });
+}
+
+const DIRECT_IDENTITY_PHASE = 'identity';
+// The model-turn setup budget: the plan bounds each model-turn setup to at
+// most 300 seconds; the hold attempt (turn/start to approval request or
+// observed turn end) shares this ceiling.
+const IDENTITY_TURN_SETUP_BUDGET_MS = 300_000;
+// The instruction driving the hold attempt: the model must attempt a command
+// execution so the untrusted approval policy routes an approval request —
+// the documented server->client request that carries the exact thread/turn
+// ids and keeps the turn in progress while unanswered. A model asked to
+// sleep is NOT accepted as proof of an active turn.
+const IDENTITY_HOLD_INSTRUCTION = 'Use the shell to run exactly this command: sleep 45. Do not do anything else.';
+// The controlled hold: a server->client approval request naming the turn.
+const IDENTITY_APPROVAL_REQUEST_PATTERN = /CommandExecutionRequestApproval/;
+// Retained notification ring: turn-lifecycle notifications only.
+const IDENTITY_TURN_NOTIFICATION_PATTERN = /(^|\W)turn(\W|$)/i;
+// Bounded wait for the turn's terminal notification after the hold is denied.
+const IDENTITY_SETTLE_WAIT_MS = 30_000;
+// Host TurnStatus values (generated schema) mapped to the closed evidence states.
+const IDENTITY_TURN_STATE_BY_HOST_STATUS = Object.freeze({
+  inProgress: 'active', completed: 'completed', interrupted: 'interrupted', failed: 'failed',
+});
+
+/** The identity mode's phase counters. */
+function createIdentityPhaseCounters() {
+  return {
+    readiness: 'not-observed',
+    requestsSent: 0,
+    rpcObservations: 0,
+    handlerEntries: 0,
+    serverStarts: 0,
+    cells: { idle: 'not-run', twoThreads: 'not-run', activeHold: 'not-run', completed: 'not-run' },
+    isolation: {
+      threads: { status: 'not-proven', reasonCode: 'not-run' },
+      children: { status: 'not-proven', reasonCode: 'child-identity-unestablishable' },
+    },
+    activeTurnHold: { status: 'not-proven', reasonCode: 'not-run' },
+    classification: 'not-observed',
+    gateG2: { status: 'not-proven', reasonCode: 'no-trusted-caller-path', evidenceRefs: [] },
+    eventsBefore: 0,
+    eventsAfter: 0,
+    eventRecords: 0,
+    uncommittedCount: 0,
+    cleanup: 'not-observed',
+    postReadinessBudget: 'within-budget',
+  };
+}
+
+/** The strongest recorded cell classification (closed precedence). */
+const IDENTITY_CELL_PRECEDENCE = Object.freeze([
+  'binding-observed', 'mismatch-observed', 'inconclusive', 'correlation-only',
+  'no-candidate-observed', 'not-observed', 'not-proven', 'not-run',
+]);
+
+/**
+ * Reduces one retained host notification to a closed turn-state fact with
+ * per-run salted hashes. Raw host ids are reduced here and never retained;
+ * an unparseable notification records no turn at all.
+ * @param {{method: string, params: object}} notification
+ * @param {string} runNonce
+ */
+function reduceTurnNotification(notification, runNonce) {
+  const params = notification.params && typeof notification.params === 'object' && !Array.isArray(notification.params)
+    ? notification.params
+    : {};
+  const turn = params.turn && typeof params.turn === 'object' && !Array.isArray(params.turn) ? params.turn : {};
+  const turnId = typeof turn.id === 'string' ? turn.id : (typeof params.turnId === 'string' ? params.turnId : null);
+  const threadId = typeof params.threadId === 'string' ? params.threadId : null;
+  const status = typeof turn.status === 'string' ? turn.status : (typeof params.status === 'string' ? params.status : null);
+  const state = status !== null ? IDENTITY_TURN_STATE_BY_HOST_STATUS[status] ?? 'unknown' : 'unknown';
+  return {
+    state,
+    threadHash: typeof threadId === 'string' && threadId ? hashProbeValue(runNonce, threadId) : null,
+    turnHash: typeof turnId === 'string' && turnId ? hashProbeValue(runNonce, turnId) : null,
+  };
+}
+
+/**
+ * Builds the closed turn-state-observed event for a driver-side observation.
+ * Per the frozen contract, 'not-observed' and 'unknown' record NO hashes
+ * (absence, never null); every observed state carries both salted hashes.
+ * @param {string} state @param {string|null} turnId @param {string} threadHash @param {string} runNonce
+ */
+function identityTurnStateEvent(state, turnId, threadHash, runNonce) {
+  if (state === 'not-observed' || state === 'unknown' || typeof turnId !== 'string' || !turnId) {
+    return { kind: 'turn-state-observed', state, source: 'host' };
+  }
+  return { kind: 'turn-state-observed', threadHash, turnHash: hashProbeValue(runNonce, turnId), state, source: 'host' };
+}
+
+/** Finds the completion of the exact turn among drained notifications. */
+function findTurnCompletion(drainedNotifications, runNonce, turnHash) {
+  return drainedNotifications
+    .map((notification) => reduceTurnNotification(notification, runNonce))
+    .find((turn) => turn.turnHash === turnHash && turn.state !== 'active' && turn.state !== 'unknown') ?? null;
+}
+
+/**
+ * The controlled active-turn hold attempt: turn/start under the untrusted
+ * approval policy with a read-only sandbox, then a bounded wait for the
+ * host's CommandExecutionRequestApproval naming the exact turn — the
+ * documented server->client request that keeps the turn in progress while
+ * unanswered. Every outcome is recorded honestly; a turn that ends on its
+ * own, a turn/start failure, or a budget expiry is `not-proven`, never
+ * inferred past.
+ * @param {object} ctx @param {string} threadHash @param {string} runNonce
+ */
+async function attemptIdentityHold(ctx, threadHash, runNonce) {
+  const { session } = ctx;
+  const setupDeadline = Date.now() + (ctx.turnSetupBudgetMs ?? IDENTITY_TURN_SETUP_BUDGET_MS);
+  let turnId = null;
+  try {
+    const turn = await session.request('turn/start', {
+      threadId: ctx.threadId,
+      input: [{ type: 'text', text: IDENTITY_HOLD_INSTRUCTION }],
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'readOnly' },
+    }, Math.max(1, Math.min(60_000, setupDeadline - Date.now())));
+    turnId = turn && typeof turn === 'object' && turn.turn && typeof turn.turn === 'object' && typeof turn.turn.id === 'string'
+      ? turn.turn.id
+      : null;
+  } catch (error) {
+    transcript(`phase-identity: turn/start failed (${errorCode(error) || 'error'}); no controlled hold exists`);
+    return { status: 'not-proven', reasonCode: 'turn-start-unavailable', turnId: null, turnHash: null, terminalState: 'unknown', terminalObserved: false };
+  }
+  if (turnId === null) {
+    transcript('phase-identity: turn/start returned no turn id; no controlled hold exists');
+    return { status: 'not-proven', reasonCode: 'turn-start-unavailable', turnId: null, turnHash: null, terminalState: 'unknown', terminalObserved: false };
+  }
+  const turnHash = hashProbeValue(runNonce, turnId);
+  while (Date.now() < setupDeadline) {
+    // PEEK, never remove: the held request stays in the outstanding queue so
+    // the active cell's pre/post reads can re-verify, at each moment, that
+    // the host-issued hold for the exact turn is still unanswered.
+    const approval = session.findHeldServerRequest((entry) => IDENTITY_APPROVAL_REQUEST_PATTERN.test(entry.method));
+    if (approval !== null) {
+      const approvalTurnId = approval.params && typeof approval.params.turnId === 'string' ? approval.params.turnId : null;
+      if (approvalTurnId === null || hashProbeValue(runNonce, approvalTurnId) !== turnHash) {
+        // An approval naming a different turn cannot hold ours: decline it
+        // (the turn continues) and record the hold as not established.
+        session.respondToServerRequest(approval.id, { decision: 'decline' });
+        session.dropHeldServerRequest(approval.id);
+        transcript('phase-identity: the approval request named a different turn; no controlled hold');
+        return { status: 'not-proven', reasonCode: 'no-controlled-hold', turnId, turnHash, terminalState: 'unknown', terminalObserved: false };
+      }
+      transcript('phase-identity: the approval request holds the exact turn; the active-turn cell proceeds');
+      return { status: 'observed', reasonCode: null, turnId, turnHash, approval, terminalState: 'unknown', terminalObserved: false };
+    }
+    const completion = findTurnCompletion(session.drainRetainedNotifications(), runNonce, turnHash);
+    if (completion !== null) {
+      transcript(`phase-identity: the turn ended on its own before any approval request (${completion.state}); no controlled hold`);
+      return { status: 'not-proven', reasonCode: 'no-controlled-hold', turnId, turnHash, terminalState: completion.state, terminalObserved: true };
+    }
+    const remaining = setupDeadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(500, remaining));
+  }
+  transcript('phase-identity: the model-turn setup budget expired without an approval request; no controlled hold');
+  return { status: 'not-proven', reasonCode: 'no-controlled-hold', turnId, turnHash, terminalState: 'unknown', terminalObserved: false };
+}
+
+/**
+ * Settles the held turn: denies the approval with 'cancel' (the host denies
+ * the command AND interrupts the exact turn), records ONLY what the
+ * settle window actually observed, and returns the observed terminal fact
+ * (or null when nothing was observed — the caller must then treat the
+ * terminal as unknown, never presume it). The wait is bounded by the settle
+ * window and scales down with the injected setup budget so tests stay fast.
+ */
+async function settleIdentityHold(ctx, hold, threadHash) {
+  const { session } = ctx;
+  try { session.respondToServerRequest(hold.approval.id, { decision: 'cancel' }); } catch { /* session ending */ }
+  session.dropHeldServerRequest(hold.approval.id);
+  const settleWaitMs = Math.min(IDENTITY_SETTLE_WAIT_MS, Math.max(1_000, Math.floor((ctx.turnSetupBudgetMs ?? IDENTITY_TURN_SETUP_BUDGET_MS) / 10)));
+  const deadline = Date.now() + settleWaitMs;
+  let terminal = null;
+  while (Date.now() < deadline) {
+    terminal = findTurnCompletion(session.drainRetainedNotifications(), ctx.runNonce, hold.turnHash);
+    if (terminal !== null) break;
+    await sleep(Math.min(500, Math.max(1, deadline - Date.now())));
+  }
+  await ctx.appendDriverEvent(identityTurnStateEvent(terminal ? terminal.state : 'unknown', terminal ? hold.turnId : null, threadHash, ctx.runNonce));
+  transcript(`phase-identity: the held turn settled (${terminal ? terminal.state : 'unobserved'})`);
+  return terminal;
+}
+
+/** The identity schedule: idle cell, hold attempt, active cell, completed cell. */
+async function runIdentitySchedule(ctx) {
+  const threadHash = hashProbeValue(ctx.runNonce, ctx.threadId);
+  const runNonce = ctx.runNonce;
+  // Each cell's sample is attributed ONLY by the durable records inside its
+  // own dispatch window (from the cell's first append onward): a stale turn
+  // observation from an earlier cell must never relabel a later sample.
+  const classifyCell = async (name, probeLabel, expectedTurnHash, startSequence, expectedThreadHash = threadHash) => {
+    try {
+      const reduced = await ctx.reduceNow();
+      const records = (await ctx.readEvents()).slice(startSequence);
+      const identity = directIdentityCase({
+        records,
+        reduced,
+        probeLabel,
+        phase: DIRECT_IDENTITY_PHASE,
+        expectedThreadHash,
+        expectedTurnHash,
+      });
+      return identity.classification;
+    } catch (error) {
+      transcript(`phase-identity: the ${name} cell could not be reduced (${errorCode(error) || 'error'}); the cell is recorded not-proven`);
+      return 'not-proven';
+    }
+  };
+  const runCell = async (name, { expectedTurnHash, preTurnEvent, postTurnEvent, observePostTurn, threadId }) => {
+    const probeLabel = randomBytes(16).toString('hex');
+    const startSequence = (await ctx.readEvents()).length;
+    if (preTurnEvent) await ctx.appendDriverEvent(preTurnEvent);
+    ctx.beginCaseBudget();
+    await runDirectCallOnce(ctx, probeLabel, DIRECT_PROBE_TOOL_NAME, threadId);
+    // The post-read event comes from the caller's OBSERVED fact when an
+    // observer is supplied — never from an authored assumption.
+    const postEvent = observePostTurn ? observePostTurn() : postTurnEvent;
+    if (postEvent) await ctx.appendDriverEvent(postEvent);
+    ctx.phaseCounters.cells[name] = await classifyCell(name, probeLabel, expectedTurnHash, startSequence);
+  };
+
+  // Cell 1 — idle: a direct call BEFORE any turn. A transport observation
+  // only; it can never establish user-turn authority.
+  await runCell('idle', {
+    expectedTurnHash: null,
+    preTurnEvent: identityTurnStateEvent('not-observed', null, threadHash, runNonce),
+    postTurnEvent: identityTurnStateEvent('not-observed', null, threadHash, runNonce),
+  });
+
+  // Cell 2 — two threads: a second independently created thread on the SAME
+  // owned connection, one direct call per thread. This transport-level
+  // isolation observation has NO hold prerequisite; Child isolation is
+  // recorded not-proven (the host exposes no independently learnable Child
+  // identity, and a caller-supplied Child id is never copied).
+  await runTwoThreadsCell(ctx, threadHash, runNonce);
+
+  // The controlled active-turn hold attempt (model-turn setup budget).
+  const hold = await attemptIdentityHold(ctx, threadHash, runNonce);
+  ctx.phaseCounters.activeTurnHold = hold.status === 'observed'
+    ? { status: 'observed', reasonCode: null }
+    : { status: 'not-proven', reasonCode: hold.reasonCode };
+  if (hold.status === 'observed') {
+    // Cell 3 — active turn A: the pre/post turn-state events are DERIVED from
+    // re-verified host evidence at each moment — the retained notification
+    // stream for an observed terminal, else the still-outstanding
+    // host-issued approval request naming the exact turn. No state is
+    // authored: when the hold is gone and nothing was observed, 'unknown'
+    // (no hashes) is what the evidence records.
+    const observeHeldTurnState = () => {
+      const drained = ctx.session.drainRetainedNotifications();
+      const completion = findTurnCompletion(drained, runNonce, hold.turnHash);
+      if (completion !== null) return completion.state;
+      const outstanding = ctx.session.findHeldServerRequest((entry) => IDENTITY_APPROVAL_REQUEST_PATTERN.test(entry.method)
+        && entry.params && typeof entry.params.turnId === 'string'
+        && hashProbeValue(runNonce, entry.params.turnId) === hold.turnHash);
+      return outstanding !== null ? 'active' : 'unknown';
+    };
+    await runCell('activeHold', {
+      expectedTurnHash: hold.turnHash,
+      preTurnEvent: identityTurnStateEvent(observeHeldTurnState(), hold.turnId, threadHash, runNonce),
+      observePostTurn: () => identityTurnStateEvent(observeHeldTurnState(), hold.turnId, threadHash, runNonce),
+    });
+    // Settle the held turn (deny + interrupt); carry what the settle window
+    // actually OBSERVED back into the hold for the completed cell.
+    const terminal = await settleIdentityHold(ctx, hold, threadHash);
+    hold.terminalState = terminal !== null ? terminal.state : 'unknown';
+    hold.terminalObserved = terminal !== null;
+  } else {
+    ctx.phaseCounters.cells.activeHold = 'not-proven';
+  }
+
+  // Cell 4 — completed: a call after the confirmed settlement, using ONLY the
+  // settle-OBSERVED terminal state. When the turn never became observable,
+  // the cell records not-proven instead.
+  if (hold.turnId === null) {
+    ctx.phaseCounters.cells.completed = 'not-proven';
+    transcript('phase-identity: no observable turn existed; the completed cell is recorded not-proven');
+  } else {
+    const terminalState = hold.terminalObserved ? hold.terminalState : 'unknown';
+    await runCell('completed', {
+      expectedTurnHash: hold.turnHash,
+      preTurnEvent: identityTurnStateEvent(terminalState, hold.turnId, threadHash, runNonce),
+      postTurnEvent: identityTurnStateEvent(terminalState, hold.turnId, threadHash, runNonce),
+    });
+  }
+}
+
+/**
+ * Cell 2 — two threads/Children: a SECOND independently created thread on
+ * the same owned connection, its own readiness observation, and a direct
+ * call on it. The cell is a transport-level isolation observation and has NO
+ * active-turn prerequisite. Isolation is recorded as observed only when the
+ * second thread's own sample correlates with its own identity AND
+ * contradicts the first thread's identity; Child isolation is never claimed
+ * (no independently learnable Child identity exists, and a caller-supplied
+ * Child id is never copied).
+ * @param {object} ctx @param {string} threadHash1 @param {string} runNonce
+ */
+async function runTwoThreadsCell(ctx, threadHash1, runNonce) {
+  const { session } = ctx;
+  let threadId2 = null;
+  try {
+    const started = await session.request('thread/start', { cwd: ctx.workspace }, 30_000);
+    threadId2 = started && typeof started === 'object' && started.thread && typeof started.thread === 'object' && typeof started.thread.id === 'string'
+      ? started.thread.id
+      : null;
+  } catch (error) {
+    transcript(`phase-identity: the second thread/start failed (${errorCode(error) || 'error'})`);
+  }
+  if (threadId2 === null || threadId2 === ctx.threadId) {
+    ctx.phaseCounters.cells.twoThreads = 'not-proven';
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'second-thread-unavailable' };
+    transcript('phase-identity: no second thread could be established; the two-thread cell is recorded not-proven');
+    return;
+  }
+  const threadHash2 = hashProbeValue(runNonce, threadId2);
+  // Readiness for the second thread, recorded before its dispatch.
+  let readiness2 = 'failed';
+  try {
+    const status = await session.request('mcpServerStatus/list', { threadId: threadId2, detail: 'full' }, 30_000);
+    const entries = Array.isArray(status?.data) ? status.data : [];
+    readiness2 = entries.some((candidate) => candidate && typeof candidate === 'object' && candidate.name === DIRECT_PROBE_SERVER_NAME)
+      ? 'discovered'
+      : 'missing';
+  } catch {
+    readiness2 = 'failed';
+  }
+  const startSequence = (await ctx.readEvents()).length;
+  await ctx.appendDriverEvent({ kind: 'readiness-observed', state: readiness2, source: 'host' });
+  const probeLabel = randomBytes(16).toString('hex');
+  ctx.beginCaseBudget();
+  await ctx.appendDriverEvent(identityTurnStateEvent('not-observed', null, threadHash2, runNonce));
+  await runDirectCallOnce(ctx, probeLabel, DIRECT_PROBE_TOOL_NAME, threadId2);
+  await ctx.appendDriverEvent(identityTurnStateEvent('not-observed', null, threadHash2, runNonce));
+  let own = null;
+  let cross = null;
+  try {
+    const reduced = await ctx.reduceNow();
+    const records = (await ctx.readEvents()).slice(startSequence);
+    // Own-identity sample: the thread-2 call against thread 2's learned
+    // identity. Cross-identity sample: the SAME call against thread 1's
+    // identity must contradict — that discrimination is the isolation fact.
+    own = directIdentityCase({
+      records, reduced, probeLabel, phase: DIRECT_IDENTITY_PHASE,
+      expectedThreadHash: threadHash2, expectedTurnHash: null,
+    });
+    cross = directIdentityCase({
+      records, reduced, probeLabel, phase: DIRECT_IDENTITY_PHASE,
+      expectedThreadHash: threadHash1, expectedTurnHash: null,
+    });
+  } catch (error) {
+    transcript(`phase-identity: the two-thread cell could not be reduced (${errorCode(error) || 'error'}); recorded not-proven`);
+  }
+  if (own === null || cross === null) {
+    ctx.phaseCounters.cells.twoThreads = 'not-proven';
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'own-thread-unresolved' };
+    return;
+  }
+  ctx.phaseCounters.cells.twoThreads = own.classification;
+  if (own.classification === 'correlation-only' && cross.classification === 'mismatch-observed') {
+    ctx.phaseCounters.isolation.threads = { status: 'observed', reasonCode: null };
+    transcript('phase-identity: the two-thread cell observed transport-level isolation');
+  } else if (own.classification === 'not-observed') {
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'call-not-observed' };
+  } else if (cross.classification !== 'mismatch-observed') {
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'cross-thread-correlation' };
+  } else if (own.classification === 'mismatch-observed') {
+    // The own thread WAS resolved: its sample genuinely contradicts the
+    // learned identity (the candidate matches NEITHER thread). Surface the
+    // contradiction instead of the generic unresolved code.
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'isolation-mismatch' };
+  } else {
+    ctx.phaseCounters.isolation.threads = { status: 'not-proven', reasonCode: 'own-thread-unresolved' };
+  }
+}
+
+/** The identity classification: strongest cell plus the G2 gate. */
+async function classifyIdentity(ctx) {
+  const phaseCounters = ctx.phaseCounters;
+  let classification = 'not-run';
+  for (const cell of Object.values(phaseCounters.cells)) {
+    if (IDENTITY_CELL_PRECEDENCE.indexOf(cell) < IDENTITY_CELL_PRECEDENCE.indexOf(classification)) classification = cell;
+  }
+  phaseCounters.classification = classification;
+  // The authorization bridge is a LOCAL candidate (identity.mjs): it
+  // demonstrates the admission mechanism in fixtures only. No tested host
+  // demonstrated a trusted-caller path into it, so the gate records that
+  // missing link whatever the identity cells observed.
+  phaseCounters.gateG2 = classifyDirectGateG2({
+    identity: phaseCounters.cells.activeHold,
+    activeTurnHold: phaseCounters.activeTurnHold,
+    authorization: { status: 'not-demonstrated', reasonCode: 'no-trusted-caller-path' },
+  });
+}
+
+/**
+ * The bounded identity probe (plan Task 4): the reachability machinery with
+ * the identity-matrix schedule. Per case ceiling 120s after each cell's
+ * readiness; the model-turn setup budget defaults to the plan's 300s.
+ * @param {{codexPath: string, sourceCodexHome: string, runDirectory: string, directCallDeadlineMs?: number, caseBudgetMs?: number, turnSetupBudgetMs?: number}} input
+ * @returns {Promise<object>} the redacted phase/outcome counters
+ */
+export async function runDirectIdentityProbe(input) {
+  const turnSetupBudgetMs = input.turnSetupBudgetMs ?? IDENTITY_TURN_SETUP_BUDGET_MS;
+  if (!Number.isSafeInteger(turnSetupBudgetMs) || turnSetupBudgetMs <= 0) {
+    throw directError('DIRECT_DRIVER_USAGE_INVALID', 'turnSetupBudgetMs must be a positive integer of milliseconds.');
+  }
+  return runDirectProbeCase(input, {
+    mode: 'identity',
+    phase: DIRECT_IDENTITY_PHASE,
+    createPhaseCounters: createIdentityPhaseCounters,
+    // The mid-run cell reductions require the expected server pid: the host
+    // starts the disposable server during tool discovery, before readiness.
+    discoverServerBeforeSchedule: true,
+    turnSetupBudgetMs,
+    sessionOptions: {
+      holdServerRequestPattern: IDENTITY_APPROVAL_REQUEST_PATTERN,
+      retainNotificationPattern: IDENTITY_TURN_NOTIFICATION_PATTERN,
+    },
+    runSchedule: runIdentitySchedule,
+    classify: classifyIdentity,
+  });
+}
+
 if (runningAsMain) {
   const args = parseArguments(process.argv.slice(2));
-  if (args.mode !== 'reachability') {
-    process.stderr.write('direct driver failed: DIRECT_DRIVER_USAGE_INVALID: usage: driver.mjs --mode reachability --codex <path> --run-directory <dir> [--source-codex-home <dir>]\n');
+  if (args.mode !== 'reachability' && args.mode !== 'identity') {
+    process.stderr.write('direct driver failed: DIRECT_DRIVER_USAGE_INVALID: usage: driver.mjs --mode reachability|identity --codex <path> --run-directory <dir> [--source-codex-home <dir>]\n');
     process.exit(1);
   }
   try {
-    const counters = await runDirectReachabilityProbe({
+    const probeInput = {
       codexPath: args.codex,
       sourceCodexHome: args.sourceCodexHome ?? join(homedir(), '.codex'),
       runDirectory: args.runDirectory,
-    });
+    };
+    const counters = args.mode === 'identity'
+      ? await runDirectIdentityProbe(probeInput)
+      : await runDirectReachabilityProbe(probeInput);
     process.stdout.write(`${JSON.stringify(counters, null, 2)}\n`);
     process.exitCode = 0;
   } catch (error) {
