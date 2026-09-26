@@ -91,6 +91,14 @@ export const DIRECT_OPTIONAL_PROVENANCE_FIELDS = Object.freeze(['model', 'effort
 /** The closed fixture modes recorded as provenance. */
 export const DIRECT_FIXTURE_MODES = Object.freeze(['reachability', 'identity', 'lifecycle', 'entry', 'campaign']);
 
+/**
+ * The closed validation scopes a result record may declare (gate review): a
+ * record names how its validated pass may be reported. `structural` marks a
+ * record whose accepted pass is shape/reason-code/evidence-reference
+ * validation only — never live qualification.
+ */
+export const DIRECT_VALIDATION_SCOPES = Object.freeze(['structural']);
+
 /** The disposable probe tools a driver may dispatch. */
 const DIRECT_TOOLS = Object.freeze(['capture_direct', 'hold_direct']);
 
@@ -706,19 +714,27 @@ function reduceAuthenticatedDirectProbeEvents(records, { runNonce }) {
 /**
  * Validates the closed decision record (the frozen result format): exact
  * provenance fields, evidence digest/count, and gates G1-G4, each with a
- * closed status, bounded reason code, and evidence references. Unknown
- * fields fail closed; a mismatched provenance run nonce fails closed.
+ * closed status, bounded reason code, and evidence references. An optional
+ * closed `validationScope` records how the record's validated pass may be
+ * reported (absent on driver-classified records; a frozen record declares
+ * it). Unknown fields fail closed; a mismatched provenance run nonce fails
+ * closed.
  * @param {unknown} body
  * @param {{runNonce?: string|null}} [options]
  */
 export function validateDirectResultRecord(body, { runNonce = null } = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw directError('PROBE_RESULT_INVALID', 'The direct probe result record must be an object.');
   const record = /** @type {Record<string, unknown>} */ (body);
-  const expectedKeys = ['evidence', 'gates', 'provenance', 'version'];
+  const requiredKeys = ['evidence', 'gates', 'provenance', 'version'];
+  const expectedKeys = [...requiredKeys, 'validationScope'];
   for (const key of Object.keys(record)) {
     if (!expectedKeys.includes(key)) throw directError('PROBE_RESULT_INVALID', `The result record rejects unknown field ${key}.`);
   }
-  if (expectedKeys.some((key) => !(key in record))) throw directError('PROBE_RESULT_INVALID', 'The result record requires version, provenance, evidence, and gates.');
+  if (requiredKeys.some((key) => !(key in record))) throw directError('PROBE_RESULT_INVALID', 'The result record requires version, provenance, evidence, and gates.');
+  if ('validationScope' in record
+    && (typeof record.validationScope !== 'string' || !DIRECT_VALIDATION_SCOPES.includes(record.validationScope))) {
+    throw directError('PROBE_RESULT_INVALID', 'The result record requires a closed validationScope when present.');
+  }
   if (record.version !== 1) throw directError('PROBE_RESULT_INVALID', 'The result record requires version 1.');
   const provenance = record.provenance;
   if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) throw directError('PROBE_RESULT_INVALID', 'The result record requires a provenance object.');

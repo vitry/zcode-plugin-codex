@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "validationScope": "structural",
+  "provenance": {
+    "runNonce": "8491c764dabe08ac7392b12f55fd238bfab600e7abe16173d5ccffb2e3010ff1",
+    "codexVersion": "codex-cli 0.155.1",
+    "codexBinaryDigest": "8eaf1ad12fe6bf89b1710330f58900014322c7c5af677e43be116d8ac5fc0a9e",
+    "platform": "darwin-arm64",
+    "sdkVersion": "1.30.0",
+    "sourceCommit": "04b2d23ae712f79ebf8660e412e4e8fad10d3ca4",
+    "schemaDigest": "0e8d8c9d679fee54544f595d779e37156ad413e3f253404412a9752cdec6e44a",
+    "fixtureMode": "campaign"
+  },
+  "evidence": {
+    "digest": "cd117b1fbb5de03656b93c3f6525ebda0438cc81bba8e9fe86b67a69d9fa8ab5",
+    "count": 12
+  },
+  "gates": {
+    "G1": {
+      "status": "not-proven",
+      "reasonCode": "confirmation-failed",
+      "evidenceRefs": [
+        "section-8@1",
+        "section-8@2",
+        "section-8@5",
+        "section-8@6"
+      ]
+    },
+    "G2": {
+      "status": "not-proven",
+      "reasonCode": "no-trusted-caller-path",
+      "evidenceRefs": [
+        "section-10@1",
+        "section-10@3"
+      ]
+    },
+    "G3": {
+      "status": "not-proven",
+      "reasonCode": "settlement-unproven",
+      "evidenceRefs": [
+        "section-12@2",
+        "section-13@0",
+        "section-13@2"
+      ]
+    },
+    "G4": {
+      "status": "not-proven",
+      "reasonCode": "no-supported-entry-candidate",
+      "evidenceRefs": [
+        "section-3@0",
+        "section-15@0",
+        "section-15@1"
+      ]
+    }
+  }
+}
