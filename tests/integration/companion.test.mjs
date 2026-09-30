@@ -16,6 +16,7 @@ import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
+import { formatDirectInvocationError, formatDirectInvocationSuccess } from '../../scripts/lib/direct-invocation-result.mjs';
 import { atomicWriteJson, withFileLock } from '../../scripts/lib/fs.mjs';
 import { spawnRescueRunner } from '../../scripts/lib/rescue-runner.mjs';
 import { createJobController, ownerIdForSession, resumableJobIndicator } from '../../scripts/lib/job-control.mjs';
@@ -35,6 +36,11 @@ import { deliverCompletionNotice, failBackgroundDelivery, runCompanion, runDirec
 import { hostLifecycleEpoch } from '../../scripts/lib/host-lifecycle.mjs';
 import { claimNotifications, finalizeNotifications, markForwarding, peekUnreadJobs, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
+
+// Session proofs are validated against the wall clock (identity rejects proofs
+// older than 31 days), so derive the fixture proof from the wall clock instead
+// of a hard-coded stamp that ages out of the window.
+const SESSION_STARTED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -1026,8 +1032,8 @@ async function recordParentSession(context, sessionId) {
   await recordSession(context.dataRoot, { cwd: context.workspace, session_id: sessionId, source: 'startup' });
 }
 
-/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input */
-async function prepareDirectRescueChild(context, input) {
+/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input @param {Record<string,unknown>} [envelope] Optional private preparation envelope override (defaults to the canonical split v4 fresh fixture). */
+async function prepareDirectRescueChild(context, input, envelope) {
   const parent = { sessionId: input.parentSessionId, turnId: input.parentTurnId, workspace: context.workspace, permissionMode: 'workspace-write', prompt: input.prompt };
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   // The REAL lifecycle order: SessionStart records the epoch anchor BEFORE the
@@ -1044,7 +1050,7 @@ async function prepareDirectRescueChild(context, input) {
     agent_type: 'zcode-rescue',
   }, active);
   context.env.FAKE_CODEX_THREAD_JSON = JSON.stringify(rawCodexChild({ id: input.childId, parentThreadId: input.parentSessionId, cwd: await realpath(context.workspace) }));
-  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 4, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`);
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify(envelope ?? { version: 4, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`);
   assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId }, input: preparation, dependencies: legacyPreparationDependencies }), legacyPreparedRoute);
   return { callerContext, parent };
 }
@@ -1085,7 +1091,7 @@ for (const scenario of ['explicit-resume']) test(`host-only ${scenario} fails cl
   await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-a', workspace, permissionMode: 'workspace-write',
-    prompt: '$zcode:rescue recover candidate', sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    prompt: '$zcode:rescue recover candidate', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
   const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
     cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
   const jobsBefore = await store.listJobs(workspace);
@@ -4999,6 +5005,59 @@ test('bound Rescue choice canonicalizes the persisted caller workspace before re
   assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
 });
 
+test('an mcp-adapter preparation refuses the shell transport before reservation, session send, or stop', async () => {
+  const context = await fixture(); const record = join(context.directory, 'adapter-mismatch.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'adapter-mismatch-parent'; const childId = 'adapter-mismatch-child'; const childTurnId = 'adapter-mismatch-child-turn';
+  // The v5 envelope binds the preparation to the private MCP adapter before
+  // any child exists; preparation itself stays transport-neutral.
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'adapter-mismatch-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait reject the shell transport',
+  }, {
+    version: 5, source: 'explicit', task: 'reject the shell transport',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'mcp', resume: 'fresh' },
+    continuationTarget: null,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: await realpath(context.workspace) });
+  const preparedDirectory = join(storage.directory, 'invocations', 'prepared');
+  const [preparedName] = await readdir(preparedDirectory);
+  const preparationPath = join(preparedDirectory, preparedName);
+  const before = await readFile(preparationPath);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+  }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(preparationPath), before, 'the adapter-mismatched preparation is never consumed');
+  assert.equal(await readFile(record, 'utf8'), '', 'no provider session send or stop is attempted');
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), [], 'no job is reserved');
+});
+
+test('v5 shell preparation keeps the canonical initial and choice replay path', async () => {
+  const context = await fixture(); const parentSessionId = 'v5-shell-choice-parent'; const childId = 'v5-shell-choice-child'; const childTurnId = 'v5-shell-choice-turn';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'v5-shell-choice-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish v5 shell session',
+  }, {
+    version: 5, source: 'explicit', task: 'establish v5 shell session',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' },
+    continuationTarget: null,
+  });
+  const initial = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(initial.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'v5-shell-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue v5 shell session' });
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 5, source: 'explicit', task: 'continue v5 shell session', options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell' }, continuationTarget: null })}\n`);
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation, dependencies: reactivationDependencies(childId) });
+  const undecided = await run(process.execPath, [rescueLauncher, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(undecided.code, 3); assert.equal(JSON.parse(undecided.stdout).type, 'needs-choice');
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(resumed.job.status, 'succeeded');
+  assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
+});
+
 test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json'); const workerProcess = join(context.directory, 'child-loss-worker.json');
   await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
@@ -7279,7 +7338,7 @@ const incident = Object.freeze({
   childPath: '/root/zcode_rescue_task',
   childTurn: 'prepare-reconcile-child-turn',
   zcodeSessionId: 'zs-prepare-reconcile',
-  sessionStartedAt: '2026-09-12T00:00:00.000Z',
+  sessionStartedAt: SESSION_STARTED_AT,
 });
 
 /** Build the terminated-child incident behind the REAL prepare entry: one
@@ -7665,4 +7724,36 @@ test('role-status stays read-only advisory over a stuck Rescue child', async (t)
   assert.equal(after.executor.active, true);
   assert.deepEqual(await preparedRecords(dataRoot, workspace), []);
   void session;
+});
+
+test('the shared result mapping renders the real CLI stdout bytes for every direct transport outcome', async () => {
+  const context = await fixture();
+  const review = await companion(context, ['review']);
+  assert.equal(review.code, 0, `${review.stderr}${review.stdout}`);
+  const reviewFormatted = formatDirectInvocationSuccess(JSON.parse(review.internal));
+  assert.equal(review.stdout, reviewFormatted.text);
+  assert.equal(reviewFormatted.outcome, 'terminal');
+  assert.equal(reviewFormatted.exitCode, 0);
+
+  const reserved = await companion(context, ['review', '--background']);
+  assert.equal(reserved.code, 0, reserved.stderr);
+  const queuedFormatted = formatDirectInvocationSuccess(JSON.parse(reserved.internal));
+  assert.equal(reserved.stdout, queuedFormatted.text);
+  assert.equal(queuedFormatted.outcome, 'terminal');
+
+  await companion(context, ['rescue', '--fresh', 'first task']);
+  const undecided = await companion(context, ['rescue', 'next task']);
+  const choiceFormatted = formatDirectInvocationSuccess(JSON.parse(undecided.stdout));
+  assert.equal(undecided.code, choiceFormatted.exitCode);
+  assert.equal(undecided.stdout, choiceFormatted.text);
+  assert.equal(choiceFormatted.outcome, 'needs-choice');
+  assert.equal(choiceFormatted.exitCode, 3);
+
+  const failed = await companion(context, ['unknown-command']);
+  const envelope = JSON.parse(failed.internal);
+  const errorFormatted = formatDirectInvocationError(new PluginError(envelope.error.code, envelope.error.message, { category: envelope.error.category, remedy: envelope.error.remedy }));
+  assert.equal(failed.code, errorFormatted.exitCode);
+  assert.equal(failed.stdout, errorFormatted.text);
+  assert.equal(errorFormatted.outcome, 'error');
+  assert.equal(errorFormatted.isError, true);
 });

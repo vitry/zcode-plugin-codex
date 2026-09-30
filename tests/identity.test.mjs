@@ -17,6 +17,17 @@ import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 const identityModuleUrl = new URL('../scripts/lib/identity.mjs', import.meta.url).href;
 const execFile = promisify(execFileCallback);
 
+// Session proofs must sit inside validateCallerInput's 31-day session-age
+// window, which is measured against the wall clock whenever a caller input
+// omits `now`. The previously hard-coded proof (2026-08-20T11:59:00.000Z) aged
+// out of that window on 2026-09-20 and rejected every wall-clock-proved begin,
+// so these fixtures are derived from the wall clock instead: 24h ago sits
+// comfortably inside the window and always satisfies `startedAt <= now`.
+const SESSION_STARTED_AT_MS = Date.now() - 24 * 60 * 60 * 1000;
+const SESSION_STARTED_AT = new Date(SESSION_STARTED_AT_MS).toISOString();
+/** A strictly newer proof for fixtures that resume or reopen an ended session. */
+const SESSION_RESUMED_AT = new Date(SESSION_STARTED_AT_MS + 2 * 60_000).toISOString();
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'zcode-identity-'));
   const dataRoot = join(root, 'plugin-data');
@@ -447,7 +458,7 @@ test('public caller creation fails closed without artifacts for every non-matchi
     const { origin, execution } = await linkedWorktreeFixture(root);
     const input = {
       sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'workspace-write',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
     };
     await identity.beginCallerTurn(input);
     await identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: execution, workspaceBinding: 'claim' });
@@ -461,7 +472,7 @@ test('protected caller publication is fenced from concurrent replacement and cle
   for (const operation of ['replacement', 'cleanup']) {
     await t.test(operation, async () => {
       const { dataRoot, workspaceA } = await fixture();
-      const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+      const proof = { sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup' };
       const input = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write' };
       const identity = createIdentityStore({ dataRoot });
       await identity.beginCallerTurn({ ...input, ...proof });
@@ -518,7 +529,7 @@ test('session proof fields are paired and strict before any authorization artifa
 test('linked worktree binding previews without mutation then claims once and requires the exact execution target', async () => {
   const { dataRoot, identity, root } = await fixture();
   const { origin, execution } = await linkedWorktreeFixture(root);
-  const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const proof = { sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup' };
   await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'workspace-write', prompt: 'work', ...proof });
   const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
   const beforeActive = await readFile(activePath, 'utf8');
@@ -843,7 +854,7 @@ test('competing linked worktree claims atomically bind one immutable target', as
   await execFile('git', ['worktree', 'add', '-q', '-b', 'execution-other', other], { cwd: origin });
   await identity.beginCallerTurn({
     sessionId: 'session-race', turnId: 'turn-race', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   const attempts = await Promise.allSettled([
     ...Array.from({ length: 8 }, () => identity.resolveActiveTurn({ sessionId: 'session-race', workspace: execution, workspaceBinding: 'claim' })),
@@ -861,14 +872,14 @@ test('competing linked worktree claims atomically bind one immutable target', as
 test('cleanup terminalizes global session state and only a strictly newer proof can reopen it', async () => {
   const { identity, root } = await fixture();
   const { origin, execution } = await linkedWorktreeFixture(root);
-  const base = { sessionId: 'session-a', workspace: origin, permissionMode: 'default', sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const base = { sessionId: 'session-a', workspace: origin, permissionMode: 'default', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup' };
   await identity.beginCallerTurn({ ...base, turnId: 'turn-a' });
   await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
   const cleanup = await identity.cleanupSession(origin, 'session-a');
   assert.deepEqual(cleanup, { knownWorkspaces: [await realpath(origin), await realpath(execution)] });
   await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'execution' }), { code: 'ACTIVE_TURN_NOT_FOUND' });
   await assert.rejects(identity.beginCallerTurn({ ...base, turnId: 'turn-b', sessionSource: 'resume' }), { code: 'IDENTITY_SESSION_ENDED' });
-  await identity.beginCallerTurn({ ...base, turnId: 'turn-c', sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume' });
+  await identity.beginCallerTurn({ ...base, turnId: 'turn-c', sessionStartedAt: SESSION_RESUMED_AT, sessionSource: 'resume' });
   assert.equal((await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: origin })).turnId, 'turn-c');
 });
 
@@ -877,7 +888,7 @@ test('v3 binding validates options and refuses unrelated or non-Git workspaces w
   const { origin } = await linkedWorktreeFixture(root);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   for (const workspaceBinding of ['unknown', 1, null, {}]) {
     await assert.rejects(identity.resolveActiveTurn(/** @type {any} */ ({ sessionId: 'session-a', workspace: origin, workspaceBinding })), { code: 'IDENTITY_INPUT_INVALID' });
@@ -896,7 +907,7 @@ test('malformed and duplicate-key global v3 records fail closed without legacy f
     await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'legacy-turn', workspace: workspaceA, permissionMode: 'default' });
     await identity.beginCallerTurn({
       sessionId: 'session-a', turnId: 'global-turn', workspace: workspaceA, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
     });
     const { activePath } = await globalIdentityArtifacts(dataRoot);
     if (corrupt === 'future') {
@@ -915,7 +926,7 @@ test('resolveOnlyActiveTurn includes canonical-origin v3 and fails closed on any
   const { origin } = await linkedWorktreeFixture(root);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   assert.equal((await identity.resolveOnlyActiveTurn({ workspace: origin })).turnId, 'turn-a');
   const { activePath } = await globalIdentityArtifacts(dataRoot);
@@ -929,7 +940,7 @@ test('ending an exact v3 turn returns validated binding metadata and cleanup ret
   const { origin, execution } = await linkedWorktreeFixture(root);
   const input = {
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   };
   await identity.beginCallerTurn(input);
   await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
@@ -948,7 +959,7 @@ test('ending the wrong v3 turn neither revokes nor discloses binding metadata', 
   const { origin, execution } = await linkedWorktreeFixture(root);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
   assert.equal(await identity.endCallerTurn({ sessionId: 'session-a', turnId: 'wrong-turn', workspace: execution }), undefined);
@@ -960,7 +971,7 @@ test('proved duplicate begin rotates caller token while retaining generation and
   const { origin, execution } = await linkedWorktreeFixture(root);
   const base = /** @type {any} */ ({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'workspace-write', prompt: 'same',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true,
   });
   const first = await identity.beginCallerTurn(base);
   assert.match(first.token, /^[A-Za-z0-9_-]{43}$/); assert.equal(first.replacedTurn, null);
@@ -983,7 +994,7 @@ test('proved duplicate begin rotates caller token while retaining generation and
 
 test('proved replacement from a new origin revokes prior-origin caller tokens', async () => {
   const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
-  const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const proof = { sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup' };
   const old = await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default', ...proof });
   await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-b', workspace: execution, permissionMode: 'default', ...proof });
   await assert.rejects(identity.consumeCallerContext(old, { workspace: origin }), { code: 'CALLER_CONTEXT_INVALID' });
@@ -996,7 +1007,7 @@ test('any lifecycle ledger state suppresses stale workspace-local v2 fallback', 
     await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'stale-v2', workspace: workspaceA, permissionMode: 'default' });
     await identity.beginCallerTurn({
       sessionId: 'session-a', turnId: 'v3-turn', workspace: workspaceA, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
     });
     const { activePath, sessionPath } = await globalIdentityArtifacts(dataRoot);
     if (state === 'pending') {
@@ -1025,7 +1036,7 @@ test('pending publication failures never authorize and exact retry repairs the g
     });
     const input = {
       sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
     };
     await assert.rejects(failing.beginCallerTurn(input), /injected/);
     await assert.rejects(createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: 'session-a', workspace: origin }), { code: 'ACTIVE_TURN_NOT_FOUND' });
@@ -1038,7 +1049,7 @@ test('resolveOnly follows its bounded origin index and ignores unrelated global 
   const { dataRoot, identity, root, workspaceA } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   const unrelatedKey = 'f'.repeat(64);
   await writeFile(join(await realpath(dataRoot), 'identity-lifecycle', 'active-turns', `${unrelatedKey}.json`), '{broken', { mode: 0o600 });
@@ -1050,7 +1061,7 @@ test('Git eligibility rejects a nested directory even when it belongs to the sam
   const { identity, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root); const nested = join(origin, 'nested'); await mkdir(nested);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: nested, workspaceBinding: 'preview' }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
 });
@@ -1067,7 +1078,7 @@ test('session workspace ledger retains at most sixteen origins and targets and r
   });
   const base = {
     sessionId: 'session-ledger', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   };
   for (let index = 0; index < 15; index += 1) {
     await identity.beginCallerTurn({ ...base, turnId: `turn-${index}` });
@@ -1132,7 +1143,7 @@ test('cleanup revokes exact-session caller tokens in every known workspace witho
   const siblingToken = await identity.createCallerContext({ sessionId: 'session-b', turnId: 'sibling-turn', workspace: execution, permissionMode: 'default' });
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
   await identity.cleanupSession(origin, 'session-a');
@@ -1144,7 +1155,7 @@ test('an ended session ledger revokes caller tokens before workspace cleanup com
   const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
   const input = {
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   };
   const token = await createIdentityStore({ dataRoot }).beginCallerTurn(input);
   const discovered = deferred(); const releaseConsume = deferred();
@@ -1180,7 +1191,7 @@ test('a newer proof from another origin cannot revive a token left behind by fai
   const identity = createIdentityStore({ dataRoot });
   const oldToken = await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   await assert.rejects(createIdentityStore({
     dataRoot,
@@ -1190,7 +1201,7 @@ test('a newer proof from another origin cannot revive a token left behind by fai
   }).cleanupSession(workspaceA, 'session-a'), /injected after tombstone/);
   const newToken = await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-b', workspace: workspaceB, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume',
+    sessionStartedAt: SESSION_RESUMED_AT, sessionSource: 'resume',
   });
   await assert.rejects(identity.consumeCallerContext(oldToken, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
   assert.equal((await identity.consumeCallerContext(newToken, { workspace: workspaceB })).turnId, 'turn-b');
@@ -1200,7 +1211,7 @@ test('a newer same-origin generation cannot authorize a restored old caller toke
   const { dataRoot, workspaceA } = await fixture(); const identity = createIdentityStore({ dataRoot });
   const base = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default' };
   const oldToken = await identity.beginCallerTurn({
-    ...base, sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    ...base, sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   const oldPath = await callerContextPath(dataRoot, workspaceA, oldToken);
   const oldRecord = await readFile(oldPath, 'utf8');
@@ -1211,7 +1222,7 @@ test('a newer same-origin generation cannot authorize a restored old caller toke
     },
   }).cleanupSession(workspaceA, 'session-a'), /injected after tombstone/);
   const newToken = await identity.beginCallerTurn({
-    ...base, sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume',
+    ...base, sessionStartedAt: SESSION_RESUMED_AT, sessionSource: 'resume',
   });
   await writeFile(oldPath, oldRecord, { mode: 0o600 });
   await assert.rejects(identity.consumeCallerContext(oldToken, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
@@ -1252,7 +1263,7 @@ test('revoking the global active turn invalidates its caller before token deleti
   const { dataRoot, workspaceA } = await fixture();
   const input = {
     sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   };
   const token = await createIdentityStore({ dataRoot }).beginCallerTurn(input);
   const ending = createIdentityStore({
@@ -1270,7 +1281,7 @@ test('proved begin fencing prevents a delayed loser from deleting a returned win
   const reached = deferred(); const release = deferred();
   const input = /** @type {any} */ ({
     sessionId: 'session-race', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true,
   });
   const delayed = createIdentityStore({
     dataRoot,
@@ -1295,7 +1306,7 @@ test('slow Git inspection for one session does not block another session', async
   const repoARoot = join(root, 'repo-a-root'); const repoBRoot = join(root, 'repo-b-root');
   await Promise.all([mkdir(repoARoot), mkdir(repoBRoot)]);
   const repoA = await linkedWorktreeFixture(repoARoot); const repoB = await linkedWorktreeFixture(repoBRoot);
-  const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const proof = { sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup' };
   const identity = createIdentityStore({ dataRoot });
   await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: repoA.origin, permissionMode: 'default', ...proof });
   await identity.beginCallerTurn({ sessionId: 'session-b', turnId: 'turn-b', workspace: repoB.origin, permissionMode: 'default', ...proof });
@@ -1322,7 +1333,7 @@ test('claim write failures are recoverable and cleanup retains the claimed targe
     const { dataRoot, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
     const input = {
       sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
     };
     await createIdentityStore({ dataRoot }).beginCallerTurn(input);
     let injected = false;
@@ -1347,7 +1358,7 @@ test('begin retry preserves a pending generation when ledger publication failed'
   const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
   const input = {
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   };
   let injected = false;
   const failing = createIdentityStore({
@@ -1367,9 +1378,9 @@ test('replacement retry repairs a pending recovery publication without restoring
   const identity = createIdentityStore({ dataRoot });
   const base = /** @type {any} */ ({
     sessionId: 'session-recovery-retry', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true,
   });
-  await identity.beginCallerTurn({ ...base, turnId: 'first-turn', prompt: 'first', now: '2026-08-20T12:00:00.000Z' });
+  await identity.beginCallerTurn({ ...base, turnId: 'first-turn', prompt: 'first', now: new Date(SESSION_STARTED_AT_MS + 60_000).toISOString() });
   await identity.resolveActiveTurn({ sessionId: base.sessionId, workspace: execution, workspaceBinding: 'claim' });
   const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, base.sessionId), 'utf8'));
   const replacement = { ...base, turnId: 'second-turn', prompt: 'second', now: new Date(Date.parse(ledger.updatedAt) + 1_000).toISOString() };
@@ -1571,7 +1582,7 @@ test('moved execution workspace does not prevent exact v3 turn revocation', asyn
   const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
   await identity.beginCallerTurn({
     sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
-    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup',
   });
   await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
   const canonicalExecution = await realpath(execution); await rename(execution, `${execution}-moved`);

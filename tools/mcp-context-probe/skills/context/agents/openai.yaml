@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode MCP Context Probe"
+  short_description: "Disposable MCP context qualification probe"
+  default_prompt: "Use $zcode-mcp-context-probe:context for the qualification conversation."

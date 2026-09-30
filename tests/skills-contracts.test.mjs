@@ -84,9 +84,9 @@ function assertRescuePlacementContract(source) {
   assert.match(source, /Host placement[^\n]+only[^\n]+`wait_agent`/i);
   assert.match(source, /Companion execution[^\n]+only[^\n]+detached runner/i);
   assert.doesNotMatch(source, /private `execution` enum/);
-  assert.match(source, /"version":4[^\n]+"hostPlacement":"foreground"[^\n]+"companionExecution":"background"/);
-  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
-  assert.match(source, /version 3[^\n]+only[^\n]+read-compatible/i);
+  assert.match(source, /"version":5[^\n]+"hostPlacement":"foreground"[^\n]+"companionExecution":"background"[^\n]+"foregroundAdapter":"shell"/);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`foregroundAdapter`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
+  assert.match(source, /versions? 3 and 4[^\n]+only[^\n]+read-compatible/i);
   assert.match(source, /[Vv]ersions? 1 and 2[^\n]+removed/i);
   assert.match(source, /[Vv]ersions? 1 and 2[^\n]+rejected/i);
 }
@@ -322,9 +322,9 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
-  assert.match(source, /exact version-4 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
-  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 4/i);
-  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
+  assert.match(source, /exact version-5 envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`[\s\S]+`continuationTarget`/i);
+  assert.match(source, /new (?:flows|preparations)[^\n]+(?:always )?emit version 5/i);
+  assert.match(source, /`options`[^\n]+`hostPlacement`[^\n]+`companionExecution`[^\n]+`foregroundAdapter`[^\n]+`resume`[^\n]+`model`[^\n]+`effort`/i);
   assert.match(source, /omit[^\n]+absent[^\n]+(?:never|not)[^\n]+null/i);
 });
 
@@ -504,10 +504,10 @@ test('named and generic Rescue forwarders supervise the original handle with lon
     assert.match(forwarder, /Detailed progress is owned by the companion's stderr and durable status\/log pipeline; do not interpret or summarize it\./);
     assert.match(forwarder, /The native child completion mechanism delivers your terminal result to the parent\./);
     assert.match(forwarder, /Observe only the original running process handle\./);
-    assert.match(forwarder, /For empty-input write_stdin calls request yield_time_ms: 300000 when supported/);
-    assert.match(forwarder, /otherwise use the longest wait allowed by the active tool bounds and higher-priority instructions\./);
-    assert.match(forwarder, /For the initial exec_command request the longest permitted yield up to 30000 ms\./);
-    assert.match(forwarder, /Never replace waiting with sleep, periodic status, or another execution\./);
+    assert.match(forwarder, /Start the constant command once with the longest initial exec_command yield, up to 30000 ms\./);
+    assert.match(forwarder, /If it returns a live process handle, observe only that handle with empty-input write_stdin calls using yield_time_ms: 60000\./);
+    assert.match(forwarder, /Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep\./);
+    assert.match(forwarder, /This applies identically to Rescue's named and generic Role assignments; the initial launcher yield is 30000, subsequent same-handle observations are 60000\./);
     assert.match(forwarder, /If an outer code cell yields while an inner observation is pending, continue only that outer cell with its continuation tool and the longest permitted wait\./);
     assert.match(forwarder, /Do not issue another inner poll until the pending call finishes\./);
     assert.match(forwarder, /A completed outer cell alone is not proof that the companion exited\./);
@@ -538,6 +538,25 @@ test('named and generic Rescue forwarders supervise the original handle with lon
   assert.match(source, /Companion `?background`? acknowledgement ends runner supervision as specified above\./);
   assert.match(source, /update from the exact `rescueChildPath`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
   assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
+});
+
+test('review Skills observe one companion process with a 30000 ms launch and 60000 ms same-handle empty waits', () => {
+  for (const name of ['review', 'adversarial-review', 'status']) {
+    const source = skill(name);
+    assert.match(source, /initial `exec_command`[^\n]+30000/);
+    assert.match(source, /empty-input `write_stdin`[^\n]+60000/);
+    assert.match(source, /same (?:process )?handle/i);
+    assert.doesNotMatch(source, /write_stdin[^\n]+chars[^\n]+[^"'`\s]/i);
+  }
+});
+
+test('Rescue Skill and Role assignments request a 30000 ms launch then 60000 ms empty-input waits', () => {
+  const roleTemplate = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  for (const source of [skill('rescue'), roleTemplate]) {
+    assert.match(source, /initial[^\n]+30000/);
+    assert.match(source, /empty-input[^\n]+60000/);
+    assert.doesNotMatch(source, /yield_time_ms:\s*300000/);
+  }
 });
 
 test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {

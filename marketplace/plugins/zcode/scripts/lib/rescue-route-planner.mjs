@@ -14,10 +14,10 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 const BASE_TASK_NAME = 'zcode_rescue_task';
 const BASE_AGENT_PATH = `/root/${BASE_TASK_NAME}`;
 // The private preparation envelope versions whose continuation targets this
-// planner admits: the current version and the only legacy read-compatibility
-// version. Both select exact continuations by canonical path alone.
-const RESCUE_ENVELOPE_VERSION = 4;
-const LEGACY_RESCUE_ENVELOPE_VERSION = 3;
+// planner admits: the current version and the legacy read-compatibility
+// versions. All select exact continuations by canonical path alone.
+const RESCUE_ENVELOPE_VERSION = 5;
+const LEGACY_RESCUE_ENVELOPE_VERSIONS = new Set([3, 4]);
 export const MAX_RESCUE_CHILDREN = 1024;
 const MAX_ORDINAL = 9999;
 const MAX_DIRECTIVE_BYTES = 2048;
@@ -223,8 +223,8 @@ export function validateRescueRouteDirective(value) {
  * The shared caller-and-envelope validity core for the Rescue selection seams
  * (the read-only planner and the recovery coordinator): one exact caller
  * identity, one private envelope whose version, continuation target, and
- * resume coupling agree. Only envelope versions 3 and 4 are admitted, and
- * both select continuations by canonical path alone. The planner adds its own
+ * resume coupling agree. Only envelope versions 3, 4, and 5 are admitted, and
+ * all select continuations by canonical path alone. The planner adds its own
  * read-only seam checks on top; the coordinator adds its recovery seams.
  * @param {any} input
  * @returns {boolean}
@@ -234,7 +234,8 @@ export function validRescueSelectionRequest(input) {
   const continuationTarget = input?.envelope?.continuationTarget;
   const hasContinuationTarget = plain(input?.envelope)
     && Object.hasOwn(input.envelope, 'continuationTarget');
-  const validTarget = [LEGACY_RESCUE_ENVELOPE_VERSION, RESCUE_ENVELOPE_VERSION].includes(input?.envelope?.version)
+  const validTarget = (input?.envelope?.version === RESCUE_ENVELOPE_VERSION
+    || LEGACY_RESCUE_ENVELOPE_VERSIONS.has(input?.envelope?.version))
     ? hasContinuationTarget && (continuationTarget === null || validPathContinuationTarget(continuationTarget))
     : false;
   return plain(input) && typeof input.dataRoot === 'string' && input.dataRoot.length > 0 && plain(caller)

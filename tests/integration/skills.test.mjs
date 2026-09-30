@@ -26,6 +26,11 @@ import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from 
 import { runChild } from '../helpers/run-child.mjs';
 import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
+// Session proofs are validated against the wall clock (identity rejects proofs
+// older than 31 days), so derive the fixture proof from the wall clock instead
+// of a hard-coded stamp that ages out of the window.
+const SESSION_STARTED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -374,7 +379,7 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
   const record = join(ctx.directory, 'linked-execution.jsonl'); await writeFile(record, '');
   await identity.beginCallerTurn({
     sessionId: 'linked-parent', turnId: 'linked-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
-    prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+    prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true,
   });
   // The real SessionStart hook runs in the ORIGIN workspace and records the
   // epoch start there; the child later executes in the linked worktree.
@@ -405,7 +410,7 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   const target = join(ctx.directory, 'status-linked-execution');
   await run('git', ['worktree', 'add', '-q', '-b', 'status-linked-execution', target], ctx.workspace);
   const canonicalTarget = await realpath(target);
-  await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
   await prepareRescue({ ...ctx, workspace: canonicalTarget }, 'route-status-parent', { version: 4, source: 'explicit', task: 'repair route status', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
   await startRescueChild(ctx, 'route-status-parent', 'route-status-child', 'route-status-child-turn');
   const targetReservation = { workspace: canonicalTarget, ownerSessionId: 'route-status-parent', ownerTurnId: 'route-status-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
@@ -436,14 +441,14 @@ test('origin cwd choice resume consumes and executes only in the linked worktree
     await run('git', ['worktree', 'add', '-q', '-b', `choice-${choice}-linked-execution`, target], ctx.workspace);
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `choice-${choice}.jsonl`); await writeFile(record, '');
     const parentId = `route-choice-${choice}-parent`; const childId = `route-choice-${choice}-child`; const childTurnId = `route-choice-${choice}-child-turn`;
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} seed`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId);
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${choice} later`, options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null }, childId);
     const pending = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(pending.code, 3, pending.stderr || pending.stdout); assert.match(pending.stdout, /needs-choice/);
@@ -469,14 +474,14 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     await run('git', ['worktree', 'add', '-q', '-b', `${routeName}-stopped-linked-execution`, target], ctx.workspace);
     const canonicalTarget = await realpath(target); const record = join(ctx.directory, `${routeName}-stopped.jsonl`); await writeFile(record, '');
     const parentId = `${routeName}-stopped-parent`; const childId = `${routeName}-stopped-child`; const childTurnId = `${routeName}-stopped-child-turn`;
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await recordParentSession(ctx, parentId);
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} first`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null });
     await startRescueChild(ctx, parentId, childId, childTurnId, agentType);
     const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId, agentType);
-    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: SESSION_STARTED_AT, sessionSource: 'startup', lifecycleResult: true });
     await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 4, source: 'explicit', task: `${routeName} continue`, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'resume' }, continuationTarget: null }, childId);
 
     const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
@@ -864,7 +869,11 @@ test('pending fresh replan spawns a new child that creates exactly one new sessi
   const oldBindingBytes = new Map(bindingBeforeReplan.records.map((binding) => [binding.key, Buffer.from(JSON.stringify(binding))]));
 
   const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
-  const envelope = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null };
+  // The consumed pending-fresh tombstone spoke the legacy v4 dialect, so the
+  // tombstone carries its v5 shell translation: the Root re-prepare must send
+  // that exact v5 envelope plus the fresh marker — a legacy envelope could
+  // never match a v5 tombstone.
+  const envelope = { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' }, continuationTarget: null };
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'cross-turn-parent' }, input: Readable.from([`${JSON.stringify(envelope)}\n`]),
     dependencies: { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) },
@@ -897,7 +906,7 @@ for (const [index, pair] of [
   { label: 'explicit Host background', hostPlacement: 'background', companionExecution: 'foreground' },
   { label: 'Companion background', hostPlacement: 'foreground', companionExecution: 'background' },
   { label: 'attached foreground', hostPlacement: 'foreground', companionExecution: 'foreground' },
-].entries()) test(`pending fresh replan keeps the faithful split v4 tombstone for ${pair.label}`, async (t) => {
+].entries()) test(`pending fresh replan keeps the faithful split pair in the v5 shell tombstone for ${pair.label}`, async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const record = join(ctx.directory, `cross-turn-replan-${index}.jsonl`); await writeFile(record, '');
   await identity.beginCallerTurn({ sessionId: `replan-${index}-parent`, turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
@@ -916,14 +925,16 @@ for (const [index, pair] of [
   assert.equal(choice.code, 0, choice.stderr || choice.stdout); assert.deepEqual(JSON.parse(choice.stdout), { type: 'parent-replan', command: 'rescue' });
 
   // The consumed pending-fresh tombstone carries the true prepared envelope,
-  // not an argv reconstruction: the Host placement dimension never crosses argv.
+  // not an argv reconstruction: the Host placement dimension never crosses
+  // argv. The legacy v4 receipt is translated to its v5 shell form, so the
+  // post-upgrade Root re-prepare matches the tombstone it must replace.
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   const tombstoneKey = createHash('sha256').update(JSON.stringify([`replan-${index}-parent`, 'answer-turn', storage.workspacePath, 'rescue'])).digest('hex');
   const tombstone = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', `${tombstoneKey}.json`), 'utf8'));
-  assert.deepEqual(tombstone.envelope, { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution }, continuationTarget: null });
+  assert.deepEqual(tombstone.envelope, { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution, foregroundAdapter: 'shell' }, continuationTarget: null });
 
   const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
-  const replanned = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution, resume: 'fresh' }, continuationTarget: null };
+  const replanned = { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: pair.hostPlacement, companionExecution: pair.companionExecution, foregroundAdapter: 'shell', resume: 'fresh' }, continuationTarget: null };
   const plan = { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) };
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: `replan-${index}-parent` }, input: Readable.from([`${JSON.stringify(replanned)}\n`]),
@@ -936,7 +947,7 @@ for (const [index, pair] of [
   }), { code: 'RESCUE_PREPARATION_EXISTS' });
 });
 
-test('pending fresh replan translates a pre-split v3 receipt tombstone to the split v4 pair', async (t) => {
+test('pending fresh replan translates a pre-split v3 receipt tombstone to the v5 split pair', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const record = join(ctx.directory, 'cross-turn-v3-replan.jsonl'); await writeFile(record, '');
   await identity.beginCallerTurn({ sessionId: 'v3-replan-parent', turnId: 'seed-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed' });
@@ -945,8 +956,9 @@ test('pending fresh replan translates a pre-split v3 receipt tombstone to the sp
   await stopRescueChild(ctx, 'v3-replan-parent', 'old-child', 'old-child-start');
 
   // A pre-split-style needs-choice receipt survives within expiry across the
-  // upgrade: its coupled v3 execution enum must become the split v4 pair the
-  // post-upgrade Root re-prepares with, never a v3 tombstone that cannot match.
+  // upgrade: its coupled v3 execution enum must become the split v5 pair the
+  // post-upgrade Root re-prepares with — beside the implied canonical shell
+  // adapter — never a legacy tombstone that cannot match a v5 re-prepare.
   const binding = await createStateStore({ dataRoot: ctx.dataRoot }).resolveRescueBinding({ workspace: ctx.workspace, parentSessionId: 'v3-replan-parent', executorAgentId: 'old-child' });
   assert.equal(binding.kind, 'bound');
   await createInvocationStore({ dataRoot: ctx.dataRoot }).savePending({
@@ -964,10 +976,10 @@ test('pending fresh replan translates a pre-split v3 receipt tombstone to the sp
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   const tombstoneKey = createHash('sha256').update(JSON.stringify(['v3-replan-parent', 'answer-turn', storage.workspacePath, 'rescue'])).digest('hex');
   const tombstone = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', `${tombstoneKey}.json`), 'utf8'));
-  assert.deepEqual(tombstone.envelope, { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background' }, continuationTarget: null });
+  assert.deepEqual(tombstone.envelope, { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background', foregroundAdapter: 'shell' }, continuationTarget: null });
 
   const taskName = 'zcode_rescue_task_2'; const agentPathDigest = createHash('sha256').update(`/root/${taskName}`).digest('hex');
-  const replanned = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background', resume: 'fresh' }, continuationTarget: null };
+  const replanned = { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'background', foregroundAdapter: 'shell', resume: 'fresh' }, continuationTarget: null };
   const plan = { planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName, agentPathDigest }, directive: { version: 1, action: 'spawn', taskName } }) };
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'v3-replan-parent' }, input: Readable.from([`${JSON.stringify(replanned)}\n`]),

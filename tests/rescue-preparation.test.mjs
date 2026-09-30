@@ -63,7 +63,7 @@ function errorChainText(error) {
 }
 
 test('exports the versioned Rescue preparation byte bounds', () => {
-  assert.equal(RESCUE_PREPARATION_VERSION, 4);
+  assert.equal(RESCUE_PREPARATION_VERSION, 5);
   assert.equal(RESCUE_TASK_MAX_BYTES, 64 * 1024);
   assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 * 6 + 4096);
 });
@@ -171,6 +171,113 @@ test('v3 rejects the v4 split placement keys and keeps its coupled execution enu
       options: { [key]: 'foreground', resume: 'fresh' }, continuationTarget: null,
     }), { code: 'RESCUE_PREPARATION_INVALID' });
   }
+});
+
+test('v5 requires the exact foreground adapter and keeps the split placement pairs', () => {
+  /** @param {string|undefined} foregroundAdapter */
+  const v5 = (foregroundAdapter) => ({
+    version: 5,
+    source: 'explicit',
+    task: 'repair the parser',
+    options: {
+      hostPlacement: 'foreground',
+      companionExecution: 'foreground',
+      foregroundAdapter,
+      resume: 'fresh',
+    },
+    continuationTarget: null,
+  });
+
+  for (const adapter of ['shell', 'mcp']) {
+    assert.deepEqual(validateRescuePreparation(v5(adapter)), v5(adapter));
+  }
+  for (const adapter of [undefined, 'auto', 'MCP']) {
+    assert.throws(() => validateRescuePreparation(v5(adapter)), { code: 'RESCUE_PREPARATION_INVALID' });
+  }
+  for (const pair of [['background', 'background'], ['sideways', 'foreground'], ['foreground', 'sideways']]) {
+    assert.throws(() => validateRescuePreparation({
+      ...v5('shell'), options: { ...v5('shell').options, hostPlacement: pair[0], companionExecution: pair[1] },
+    }), { code: 'RESCUE_PREPARATION_INVALID' });
+  }
+});
+
+test('the adapter option is a closed v5 key that legacy versions never carry', () => {
+  /** @param {string} foregroundAdapter */
+  const v5 = (foregroundAdapter) => ({
+    version: 5,
+    source: 'explicit',
+    task: 'repair the parser',
+    options: {
+      hostPlacement: 'foreground',
+      companionExecution: 'foreground',
+      foregroundAdapter,
+      resume: 'fresh',
+    },
+    continuationTarget: null,
+  });
+  // v5 never carries the coupled execution enum.
+  assert.throws(() => validateRescuePreparation({
+    ...v5('shell'), options: { ...v5('shell').options, execution: 'background' },
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  // v4 keeps its exact split schema and never carries the adapter key.
+  assert.throws(() => validateRescuePreparation({
+    ...v5('shell'), version: 4,
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' },
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.deepEqual(validateRescuePreparation({
+    ...v5('shell'), version: 4,
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' },
+  }), {
+    version: 4, source: 'explicit', task: 'repair the parser',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' },
+    continuationTarget: null,
+  });
+});
+
+test('v5 envelopes round trip through the bounded preparation transport', async () => {
+  const accepted = {
+    version: 5, source: 'proactive', task: 'continue the exact operation',
+    options: { hostPlacement: 'background', companionExecution: 'foreground', foregroundAdapter: 'mcp', resume: 'resume' },
+    continuationTarget: { agentPath: '/root/zcode_rescue_task_2' },
+  };
+  const decoded = await readRescuePreparation(input(`${JSON.stringify(accepted)}\n`));
+  assert.deepEqual(decoded, accepted);
+  assert.notEqual(decoded, accepted);
+  assert.notEqual(decoded.options, accepted.options);
+  assert.notEqual(decoded.continuationTarget, accepted.continuationTarget);
+  await rejectsPreparation(`${JSON.stringify({
+    ...accepted, options: { ...accepted.options, foregroundAdapter: 'auto' },
+  })}\n`);
+});
+
+test('adapter expectation derives from the envelope version: v5 exact, every legacy version implies shell', async () => {
+  const module = await import('../scripts/lib/rescue-preparation.mjs');
+  assert.equal(typeof module.rescuePreparationForegroundAdapter, 'function');
+  assert.equal(module.rescuePreparationForegroundAdapter({
+    version: 5, source: 'explicit', task: 'x',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'mcp', resume: 'fresh' },
+    continuationTarget: null,
+  }), 'mcp');
+  assert.equal(module.rescuePreparationForegroundAdapter({
+    version: 5, source: 'explicit', task: 'x',
+    options: { hostPlacement: 'foreground', companionExecution: 'background', foregroundAdapter: 'shell' },
+    continuationTarget: null,
+  }), 'shell');
+  assert.equal(module.rescuePreparationForegroundAdapter({
+    version: 4, source: 'explicit', task: 'legacy',
+    options: { hostPlacement: 'background', companionExecution: 'foreground', resume: 'resume' },
+    continuationTarget: null,
+  }), 'shell');
+  assert.equal(module.rescuePreparationForegroundAdapter({
+    version: 3, source: 'proactive', task: 'legacy', options: { execution: 'background' }, continuationTarget: null,
+  }), 'shell');
+  // Unvalidated or unknown-version input never silently derives an adapter.
+  assert.throws(() => module.rescuePreparationForegroundAdapter({
+    version: 5, source: 'explicit', task: 'x', options: {}, continuationTarget: null,
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.throws(() => module.rescuePreparationForegroundAdapter({
+    version: 6, source: 'explicit', task: 'x', options: {}, continuationTarget: null,
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
 });
 
 test('v4 accepts a path-only continuation target only under resume and rejects it under fresh', async () => {
@@ -329,6 +436,58 @@ test('v4 envelopes round trip through the unchanged preparation record protocol'
   assert.equal(second.generation, 2);
   assert.equal(second.requiredExecutorAgentId, 'spawned-child');
   assert.deepEqual(second.envelope, replacement);
+});
+
+test('locked consume revalidates the expected foreground adapter before releasing a v5 receipt', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-09-19T00:00:00.000Z');
+  const base = { sessionId: 'adapter-parent', turnId: 'adapter-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue repair the parser', now };
+  const v5mcp = { version: 5, source: 'explicit', task: 'repair the parser',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'mcp', resume: 'fresh' },
+    continuationTarget: null };
+  await store.save({ ...base, envelope: v5mcp, activation: spawnActivation });
+  const path = await preparedPath(dataRoot, workspaceA, base.sessionId, base.turnId);
+  const before = await readFile(path);
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: spawnActivationProof,
+    expectedForegroundAdapter: 'shell' }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(path), before, 'an adapter-mismatched consume never mutates the preparation');
+  const consumed = await store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: spawnActivationProof,
+    expectedForegroundAdapter: 'mcp' });
+  assert.deepEqual(consumed.envelope, v5mcp);
+});
+
+test('locked consume derives shell for legacy v3 and v4 preparations and validates the expectation input', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-09-19T00:00:00.000Z');
+  const base = { sessionId: 'legacy-adapter-parent', turnId: 'legacy-adapter-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue repair the parser', now };
+  const v4 = { version: 4, source: 'explicit', task: 'repair the parser',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null };
+  await store.save({ ...base, envelope: v4, activation: spawnActivation });
+  const path = await preparedPath(dataRoot, workspaceA, base.sessionId, base.turnId);
+  const before = await readFile(path);
+  // A legacy preparation predates adapters and can only ever serve the shell.
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: spawnActivationProof,
+    expectedForegroundAdapter: 'mcp' }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(path), before);
+  const consumed = await store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: spawnActivationProof,
+    expectedForegroundAdapter: 'shell' });
+  assert.deepEqual(consumed.envelope, v4);
+
+  const v3Base = { sessionId: 'v3-adapter-parent', turnId: 'v3-adapter-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue repair the parser', now };
+  const v3 = { version: 3, source: 'explicit', task: 'repair the parser',
+    options: { execution: 'foreground', resume: 'fresh' }, continuationTarget: null };
+  await store.save({ ...v3Base, envelope: v3 });
+  await assert.rejects(store.consume({ ...v3Base, executorAgentId: 'spawned-child',
+    expectedForegroundAdapter: 'mcp' }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  await store.consume({ ...v3Base, executorAgentId: 'spawned-child', expectedForegroundAdapter: 'shell' });
+
+  // A malformed expectation is invalid input, refused before any record read.
+  await assert.rejects(store.consume({ sessionId: 'no-such-parent', turnId: 'no-such-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', executorAgentId: 'spawned-child', expectedForegroundAdapter: 'auto' }),
+  { code: 'RESCUE_PREPARATION_INVALID' });
 });
 
 test('stream errors are always converted to a new task-free preparation error', async () => {

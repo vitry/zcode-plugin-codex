@@ -88,6 +88,46 @@ test('v3 pending rejects authority and binding mutations without consuming the r
   }
 });
 
+test('pending Rescue choice records persist the v5 envelope and reject a mismatched transport adapter', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-v5-')); const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace'); await mkdir(workspace);
+  const pending = createInvocationStore({ dataRoot });
+  const v5mcp = { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'mcp' }, continuationTarget: null };
+  await pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
+    spec: { argv: ['rescue', 'task'] }, routeKind: 'legacy', candidateJobId: JOB_ID, envelope: v5mcp });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: await realpath(workspace) });
+  const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const persisted = JSON.parse(await readFile(join(directory, name), 'utf8'));
+  assert.deepEqual(persisted.envelope, v5mcp, 'the pending record stores the exact v5 envelope');
+  const before = await readFile(join(directory, name));
+  await assert.rejects(pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'resume', executorAgentId: 'child',
+    expectedForegroundAdapter: 'shell' }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(join(directory, name)), before, 'an adapter-mismatched choice never consumes the pending record');
+  const replayed = await pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'resume', executorAgentId: 'child',
+    expectedForegroundAdapter: 'mcp' });
+  assert.deepEqual(replayed.envelope, v5mcp);
+  assert.deepEqual(replayed.route, { routeKind: 'legacy', candidateJobId: JOB_ID });
+});
+
+test('pending choices derive shell for legacy receipt envelopes and validate the expectation input', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-v5-legacy-')); const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace'); await mkdir(workspace);
+  const pending = createInvocationStore({ dataRoot });
+  const v4 = { version: 4, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null };
+  await pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
+    spec: { argv: ['rescue', 'task'] }, routeKind: 'legacy', candidateJobId: JOB_ID, envelope: v4 });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: await realpath(workspace) });
+  const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const path = join(directory, name); const before = await readFile(path);
+  await assert.rejects(pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'resume', executorAgentId: 'child',
+    expectedForegroundAdapter: 'mcp' }), { code: 'RESCUE_FOREGROUND_ADAPTER_MISMATCH' });
+  assert.deepEqual(await readFile(path), before);
+  await assert.rejects(pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'resume', executorAgentId: 'child',
+    expectedForegroundAdapter: 'auto' }), { code: 'INVOCATION_CHOICE_INVALID' });
+  assert.deepEqual(await readFile(path), before, 'a malformed expectation is refused as input before any record read');
+  const replayed = await pending.consumePending({ sessionId: 'parent', workspace, command: 'rescue', choice: 'resume', executorAgentId: 'child',
+    expectedForegroundAdapter: 'shell' });
+  assert.deepEqual(replayed.envelope, v4);
+});
+
 test('v2 exact route pending remains compatible beside the private v3 authority variant', async () => {
   const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-v2-')); const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace'); await mkdir(workspace);
   const pending = createInvocationStore({ dataRoot });
@@ -117,7 +157,7 @@ test('receipt envelopes are rescue-only and fail closed before publication', asy
   { code: 'PENDING_INVOCATION_INVALID' });
   // (ii) Wrong-version and malformed envelopes are rejected before any write.
   await assert.rejects(pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
-    spec: { argv: ['rescue', 'task'] }, envelope: { version: 5, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } }),
+    spec: { argv: ['rescue', 'task'] }, envelope: { version: 6, source: 'explicit', task: 'continue', options: { hostPlacement: 'foreground', companionExecution: 'foreground' }, continuationTarget: null } }),
   { code: 'PENDING_INVOCATION_INVALID' });
   await assert.rejects(pending.savePending({ sessionId: 'parent', turnId: 'turn', workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'child',
     spec: { argv: ['rescue', 'task'] }, envelope: { version: 4, source: 'explicit', task: 'continue', options: {} } }),

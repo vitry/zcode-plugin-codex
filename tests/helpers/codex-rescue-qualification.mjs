@@ -1148,7 +1148,7 @@ function validateStatusSidecars({ child, statusCalls, statusOutputs, execution, 
   return true;
 }
 
-const QUIET_POLL_YIELD_MS = 300_000;
+const QUIET_POLL_YIELD_MS = 60_000;
 const QUIET_ROOT_WAIT_MS = 600_000;
 const QUIET_INITIAL_YIELD_MS = 30_000;
 // The host outer-cell continuation tool (`wait`) documents a 10000 ms default
@@ -1161,9 +1161,11 @@ function quietSupervisionBounds(options) {
   const initial = options.permittedInitialYieldMs;
   const outer = options.permittedOuterContinuationYieldMs;
   // Bound evidence must represent a documented host clamp; arbitrary sub-second
-  // intervals are implausible as poll bounds and stay rejected.
-  if (poll !== undefined && (!Number.isSafeInteger(poll) || poll < 1_000 || poll > 300_000)) {
-    mismatch('quiet-supervision-bounds', 'The fixture tool-bound poll yield evidence is outside the plausible documented host clamp range (at least one second).');
+  // intervals are implausible as poll bounds and stay rejected. The shell wait
+  // contract fixes the same-handle observation at 60000 ms, so a documented
+  // clamp can only shorten that wait, never lengthen it.
+  if (poll !== undefined && (!Number.isSafeInteger(poll) || poll < 1_000 || poll > 60_000)) {
+    mismatch('quiet-supervision-bounds', 'The fixture tool-bound poll yield evidence is outside the plausible documented host clamp range (at least one second, at most the fixed 60-second contract wait).');
   }
   if (root !== undefined && (!Number.isSafeInteger(root) || root < 1_000 || root > 3_600_000)) {
     mismatch('quiet-supervision-bounds', 'The fixture tool-bound Root wait evidence is outside the safe wait bound.');

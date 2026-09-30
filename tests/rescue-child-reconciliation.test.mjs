@@ -21,7 +21,10 @@ const RETRY_TURN = 'reconcile-parent-turn-2';
 const AGENT = 'reconcile-child';
 const AGENT_PATH = '/root/zcode_rescue_task';
 const CHILD_TURN = 'reconcile-child-turn';
-const SESSION_STARTED_AT = '2026-09-12T00:00:00.000Z';
+// Identity validates session proofs against the wall clock (proofs older than
+// 31 days are rejected), so derive the fixture proof from the wall clock
+// instead of a hard-coded stamp that ages out of the window.
+const SESSION_STARTED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
 /**
  * The incident fixture: one Host-owned writable Rescue whose Rescue child died

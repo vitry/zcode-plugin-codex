@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
-import { validateRescuePreparation } from './rescue-preparation.mjs';
+import { rescuePreparationForegroundAdapter, validateRescuePreparation } from './rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel']);
@@ -16,6 +16,7 @@ const LEGACY_PENDING_INVOCATION_VERSION = 1;
 const RESCUE_SOURCES = new Set(['explicit', 'proactive']);
 const RESCUE_PLACEMENT_EXPLICIT_CHOICES = new Set(['wait', 'background']);
 const RESCUE_PLACEMENT_COMPLEXITIES = new Set(['low', 'high', 'open-ended']);
+const FOREGROUND_ADAPTERS = new Set(['shell', 'mcp']);
 const LEGACY_CONTINUATION_KEYS = Object.freeze([
   'agentPathDigest', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
   'bindingKey', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace', 'preparationAuthorityId',
@@ -70,7 +71,7 @@ export function createInvocationStore({ dataRoot }) {
       const exactRoute = input.command === 'rescue' && input.routeKind !== undefined;
       await withFileLock(storage.lockPath, () => atomicWriteJson(join(storage.directory, `${key}.json`), { version: input.command !== 'rescue' || exactRoute ? PENDING_INVOCATION_VERSION : LEGACY_PENDING_INVOCATION_VERSION, key, sessionId: input.sessionId, originatingTurnId: input.turnId, workspace: storage.workspacePath, permissionMode: input.permissionMode, command: input.command, spec: normalizeSpec(input.spec), ...(input.command === 'rescue' ? { source: input.source ?? 'explicit' } : {}), ...(input.executorAgentId === undefined ? {} : { executorAgentId: input.executorAgentId }), ...(exactRoute ? { routeKind: input.routeKind, candidateJobId: input.candidateJobId, ...(input.routeKind === 'bound' ? { expectedOperationId: input.expectedOperationId, expectedCurrentJobId: input.expectedCurrentJobId } : {}) } : {}), ...(envelope === undefined ? {} : { envelope }), createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + PENDING_LIFETIME_MS).toISOString() }));
     },
-    /** @param {{sessionId:string,workspace:string,command:string,choice:string,executorAgentId?:string,turnId?:string,permissionMode?:string,parentGenerationId?:string,originWorkspace?:string,executionWorkspace?:string,requireLegacyAuthority?:boolean,now?:Date|number|string}} input */
+    /** @param {{sessionId:string,workspace:string,command:string,choice:string,executorAgentId?:string,turnId?:string,permissionMode?:string,parentGenerationId?:string,originWorkspace?:string,executionWorkspace?:string,requireLegacyAuthority?:boolean,expectedForegroundAdapter?:string,now?:Date|number|string}} input */
     async consumePending(input) {
       validateChoiceInput(input); const storage = await pendingStorage(dataRoot, input.workspace); const key = pendingKey(input.sessionId, storage.workspacePath, input.command); const path = join(storage.directory, `${key}.json`);
       return withFileLock(storage.lockPath, async () => {
@@ -82,6 +83,19 @@ export function createInvocationStore({ dataRoot }) {
         const legacyVersioned = input.command === 'rescue' && validVersionedLegacyRescuePending(record);
         if (!(validPending(record) || authorityPending || legacyVersioned || legacyExecutorBound) || record.key !== key || record.sessionId !== input.sessionId || record.workspace !== storage.workspacePath || record.command !== input.command || record.command === 'rescue' && record.executorAgentId !== input.executorAgentId) throw pendingNotFound();
         if (input.requireLegacyAuthority === true) throw pendingNotFound();
+        // Transport revalidation inside the lock: a Rescue choice whose
+        // expected wait adapter differs from the receipt envelope's bound
+        // adapter (exact for v5, implied shell for legacy receipts and
+        // envelope-less pending records) is refused without consuming the
+        // record — before any reservation, binding mutation, or provider call.
+        if (input.command === 'rescue' && input.expectedForegroundAdapter !== undefined) {
+          const recordAdapter = record.envelope === undefined
+            ? 'shell' : rescuePreparationForegroundAdapter(record.envelope);
+          if (input.expectedForegroundAdapter !== recordAdapter) throw invocationError(
+            'RESCUE_FOREGROUND_ADAPTER_MISMATCH',
+            'The pending Rescue choice foreground adapter does not match this transport.',
+          );
+        }
         if (timestamp(input.now) >= Date.parse(record.expiresAt)) { await unlink(path).catch(() => {}); throw invocationError('PENDING_INVOCATION_EXPIRED', 'The pending invocation has expired.'); }
         if ((legacyVersioned || legacyExecutorBound) && input.choice === 'resume') { await unlink(path); throw new PluginError('PENDING_INVOCATION_INCOMPATIBLE', 'This pending Rescue lacks an exact candidate and cannot be resumed safely.', { category: 'authorization', remedy: 'Repeat the original Rescue command to create a new exact choice.' }); }
         await unlink(path);
@@ -137,7 +151,7 @@ function pendingKey(sessionId, workspace, command) { return createHash('sha256')
 /** @param {any} input */
 function validatePendingInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId) || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode) || !PUBLIC_COMMANDS.has(input.command) || input.command === 'rescue' && (!nonempty(input.executorAgentId) || input.source !== undefined && !RESCUE_SOURCES.has(input.source) || !validRouteInput(input)) || input.command !== 'rescue' && (input.executorAgentId !== undefined || input.source !== undefined || input.routeKind !== undefined || input.candidateJobId !== undefined || input.expectedOperationId !== undefined || input.expectedCurrentJobId !== undefined || input.legacyAuthority !== undefined)) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); normalizeSpec(input.spec); }
 /** @param {any} input */
-function validateChoiceInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace) || !PUBLIC_COMMANDS.has(input.command) || !allowedChoice(input.command, input.choice) || input.command === 'rescue' && (!nonempty(input.executorAgentId) || input.requireLegacyAuthority !== undefined && typeof input.requireLegacyAuthority !== 'boolean') || input.command !== 'rescue' && (input.executorAgentId !== undefined || input.requireLegacyAuthority !== undefined)) throw invocationError('INVOCATION_CHOICE_INVALID', 'The invocation choice is invalid.'); }
+function validateChoiceInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace) || !PUBLIC_COMMANDS.has(input.command) || !allowedChoice(input.command, input.choice) || input.command === 'rescue' && (!nonempty(input.executorAgentId) || input.requireLegacyAuthority !== undefined && typeof input.requireLegacyAuthority !== 'boolean' || input.expectedForegroundAdapter !== undefined && !FOREGROUND_ADAPTERS.has(input.expectedForegroundAdapter)) || input.command !== 'rescue' && (input.executorAgentId !== undefined || input.requireLegacyAuthority !== undefined)) throw invocationError('INVOCATION_CHOICE_INVALID', 'The invocation choice is invalid.'); }
 /** @param {string} command @param {string} choice */
 function allowedChoice(command, choice) { return command === 'rescue' ? ['resume', 'fresh'].includes(choice) : ['review', 'adversarial-review'].includes(command) && ['wait', 'background'].includes(choice); }
 /** @param {any} spec */

@@ -9,8 +9,8 @@ const markers = [
   ['terminal exit', 'A companion result containing an exit code is terminal.'],
   ['quiet supervision', 'Do not send routine progress, heartbeat, or phase messages to Root.'],
   ['original handle', 'Observe only the original running process handle.'],
-  ['long wait', 'request yield_time_ms: 300000 when supported'],
-  ['initial exec wait', 'For the initial exec_command request the longest permitted yield up to 30000 ms.'],
+  ['initial exec wait', 'the longest initial exec_command yield, up to 30000 ms'],
+  ['long wait', 'observe only that handle with empty-input write_stdin calls using yield_time_ms: 60000'],
   ['outer cell continuation', 'If an outer code cell yields while an inner observation is pending'],
   ['raw progress prohibition', 'Never relay detailed `[zcode]` lines, arbitrary stderr'],
   ['status boundary', 'While the original foreground handle is live and only between polls'],
@@ -33,7 +33,7 @@ const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
 // Independent byte contract for the current source template after replacing
 // every launcher command with the canonical placeholder.
-const canonicalNamedRoleDigest = '18c45245e586614cbd06cd160a371abee72b7a768222feee0ae7a04f81385ecc';
+const canonicalNamedRoleDigest = 'f2e3f47b6800fe84bdf37ab40ac32669aa45a8b8f63062bccdc7e2ce61c01d75';
 const launcherCommandLine = /^(?<launcher>\{\{RESCUE_LAUNCHER_COMMAND\}\}|<rescue-launcher-command>|node "(?<path>[^"\r\n]{1,2048})") (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
@@ -106,7 +106,7 @@ export function installedLifecycleContractMutations(source, route, expectedLaunc
   const rawMarker = markers.find(([label]) => label === 'raw progress prohibition')[1];
   const rawAllowance = replaceLastInstalledLifecycleMarker(source, rawMarker, 'Relay detailed `[zcode]` lines and arbitrary stderr');
   const relocated = moveInstalledSupervisionAfterTerminal(source, route, expectedLauncherCommand);
-  const shortenedWait = source.replace('request yield_time_ms: 300000 when supported', 'request yield_time_ms: 1000 when supported');
+  const shortenedWait = source.replace('yield_time_ms: 60000', 'yield_time_ms: 1000');
   const quietAllowance = source.replace(quietMarker, 'Routine progress, heartbeat, or phase messages to Root may continue when useful.');
   const lifecycleStart = source.indexOf(markers[0][1]);
   const lifecycleEndMarker = markers.at(-1)[1];

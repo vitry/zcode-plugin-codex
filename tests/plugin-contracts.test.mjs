@@ -207,8 +207,9 @@ test('package metadata exposes Node 22.13 and the native lock dependency', () =>
   assert.equal(packageJson.type, 'module');
   assert.equal(packageJson.engines?.node, '>=22.13.0');
   assert.deepEqual(packageJson.dependencies ?? {}, {
+    '@modelcontextprotocol/sdk': '1.30.0',
     'fs-native-extensions': '1.5.0',
-  }, 'no runtime dependency other than the exact native lock pin is allowed');
+  }, 'only the exact native lock pin and the exact MCP SDK pin are allowed as runtime dependencies');
   assert.deepEqual(packageJson.overrides ?? {}, {}, 'no legacy resolver override is allowed');
   assert.deepEqual(packageJson.bundleDependencies ?? [], [
     'fs-native-extensions',

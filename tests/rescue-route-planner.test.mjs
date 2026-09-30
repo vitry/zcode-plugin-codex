@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { planRescueActivation, resolveStoppedRescueChild, validateRescueRouteDirective } from '../scripts/lib/rescue-route-planner.mjs';
+import { planRescueActivation, resolveStoppedRescueChild, validateRescueRouteDirective, validRescueSelectionRequest } from '../scripts/lib/rescue-route-planner.mjs';
 import { rescueBindingKey } from '../scripts/lib/rescue-binding.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 
@@ -739,6 +739,68 @@ test('target validation and global duplicate ambiguity happen before candidate a
   }
 });
 
+test('v5 selection requests admit the same fresh and continuation routes as equivalent v4', async (t) => {
+  const selection = await context();
+  const v5 = (foregroundAdapter, options = {}, continuationTarget = null) => ({
+    version: 5, source: 'explicit', task: 'private task',
+    options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter, ...options },
+    continuationTarget,
+  });
+
+  await t.test('shared selection request admits v5 and keeps the continuation coupling', () => {
+    assert.equal(validRescueSelectionRequest({ ...selection, envelope: v5('shell', { resume: 'fresh' }) }), true);
+    assert.equal(validRescueSelectionRequest({ ...selection, envelope: v5('mcp', { resume: 'resume' }) }), true);
+    assert.equal(validRescueSelectionRequest({ ...selection, envelope: v5('mcp', { resume: 'resume' }, { agentPath: '/root/zcode_rescue_task' }) }), true);
+    for (const invalid of [
+      // A shaped continuation target still requires the resume coupling.
+      { ...selection, envelope: v5('shell', { resume: 'fresh' }, { agentPath: '/root/zcode_rescue_task' }) },
+      // The exact continuationTarget field remains required at every version.
+      { ...selection, envelope: { version: 5, source: 'explicit', task: 'private task', options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'resume' } } },
+      { ...selection, envelope: { version: 6, source: 'explicit', task: 'private task', options: { resume: 'fresh' }, continuationTarget: null } },
+      { ...selection, envelope: { version: 2, source: 'explicit', task: 'private task', options: { resume: 'fresh' }, continuationTarget: null } },
+    ]) assert.equal(validRescueSelectionRequest(invalid), false);
+  });
+
+  await t.test('fresh v5 plans the identical spawn directive as v4', async () => {
+    const v4Input = await context();
+    const v5Input = await context();
+    v5Input.envelope = { ...v4Input.envelope, version: 5, options: { ...v4Input.envelope.options, foregroundAdapter: 'shell' } };
+    const shared = () => ({
+      listChildren: async () => [child(v4Input.caller.workspace, { createdAt: 50 })],
+      resolveStoppedExecutor: async () => { throw new Error('fresh must not inspect stopped executors'); },
+      resolveBinding: async () => { throw new Error('fresh must not inspect bindings'); },
+    });
+    const v4Plan = await planRescueActivation({ ...v4Input, ...shared() });
+    const v5Plan = await planRescueActivation({ ...v5Input, ...shared() });
+    assert.deepEqual(v5Plan, v4Plan);
+    assert.deepEqual(v5Plan, {
+      activation: { kind: 'spawn', taskName: 'zcode_rescue_task_2', agentPathDigest: digest('/root/zcode_rescue_task_2') },
+      directive: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task_2' },
+    });
+  });
+
+  await t.test('continuation v5 plans the identical followup directive as v4', async () => {
+    const plan = async (version) => {
+      const input = await context();
+      const host = child(input.caller.workspace, { createdAt: 50 });
+      input.envelope = {
+        version, source: 'explicit', task: 'continue exact operation',
+        options: { hostPlacement: 'foreground', companionExecution: 'foreground',
+          ...(version === 5 ? { foregroundAdapter: 'shell' } : {}), resume: 'resume' },
+        continuationTarget: { agentPath: host.agentPath },
+      };
+      return planRescueActivation({ ...input, ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding: modernBinding(input, host) }]])) });
+    };
+    const v4Plan = await plan(4);
+    const v5Plan = await plan(5);
+    assert.deepEqual(v5Plan, v4Plan);
+    assert.deepEqual(v5Plan, {
+      activation: { kind: 'reactivate', executorAgentId: 'child-1', agentPathDigest: digest('/root/zcode_rescue_task') },
+      directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
+    });
+  });
+});
+
 test('planner envelope versions require their exact continuation target field before child discovery', async (t) => {
   const cases = [
     ['v1 fails closed with an absent field', { version: 1 }],
@@ -749,6 +811,7 @@ test('planner envelope versions require their exact continuation target field be
     ['v2 fails closed with a pair field', { version: 2, continuationTarget: { childId: 'child-1', agentPath: '/root/zcode_rescue_task' } }],
     ['v3 rejects an absent field', { version: 3 }],
     ['v4 rejects an absent field', { version: 4 }],
+    ['v5 rejects an absent field', { version: 5 }],
     ['unknown version rejects an absent field', { version: 99 }],
     ['unknown version rejects a null field', { version: 99, continuationTarget: null }],
     ['unknown version rejects a shaped field', { version: 99, continuationTarget: { agentPath: '/root/zcode_rescue_task' } }],

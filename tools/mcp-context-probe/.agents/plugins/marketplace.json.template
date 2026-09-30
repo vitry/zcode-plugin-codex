@@ -1,0 +1,20 @@
+{
+  "name": "zcode-mcp-probe",
+  "interface": {
+    "displayName": "ZCode MCP Probe Plugins"
+  },
+  "plugins": [
+    {
+      "name": "zcode-mcp-context-probe",
+      "source": {
+        "source": "local",
+        "path": "./plugins/zcode-mcp-context-probe"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

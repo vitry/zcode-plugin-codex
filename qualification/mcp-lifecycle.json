@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "status": "characterized",
+  "codexVersion": "codex-cli 0.155.1",
+  "cases": {
+    "appServerTurnInterrupt": {
+      "hostProcess": "running",
+      "turnTerminalStatus": "completed",
+      "toolCallOutcome": "not-observed",
+      "handlerSettlement": "not-observed",
+      "transportState": "open",
+      "hookEvent": "stop",
+      "unknownReason": "host-omitted-event"
+    },
+    "cliSigint": {
+      "hostProcess": "exited-clean",
+      "turnTerminalStatus": "not-observed",
+      "toolCallOutcome": "pending",
+      "handlerSettlement": "not-observed",
+      "transportState": "server-exited",
+      "hookEvent": "session-end",
+      "unknownReason": "process-exited-first"
+    },
+    "cliSigkill": {
+      "hostProcess": "exited-signal",
+      "turnTerminalStatus": "not-observed",
+      "toolCallOutcome": "pending",
+      "handlerSettlement": "transport-close",
+      "transportState": "stdin-eof",
+      "hookEvent": "not-observed",
+      "unknownReason": "none"
+    },
+    "directConfigToolTimeout": {
+      "hostProcess": "exited-clean",
+      "turnTerminalStatus": "not-observed",
+      "toolCallOutcome": "failed",
+      "handlerSettlement": "not-observed",
+      "transportState": "server-exited",
+      "hookEvent": "stop",
+      "unknownReason": "process-exited-first"
+    },
+    "pluginToolTimeout": {
+      "hostProcess": "exited-clean",
+      "turnTerminalStatus": "not-observed",
+      "toolCallOutcome": "failed",
+      "handlerSettlement": "not-observed",
+      "transportState": "server-exited",
+      "hookEvent": "stop",
+      "unknownReason": "process-exited-first"
+    }
+  },
+  "candidateStrategies": {
+    "explicitInterrupt": [
+      "release-blocked"
+    ],
+    "hostLoss": [
+      "durable-supervision",
+      "release-blocked"
+    ],
+    "hostTimeout": [
+      "server-deadline",
+      "durable-supervision",
+      "release-blocked"
+    ]
+  },
+  "selectedStrategies": {
+    "explicitInterrupt": "release-blocked",
+    "hostLoss": "durable-supervision",
+    "hostTimeout": "server-deadline"
+  }
+}
