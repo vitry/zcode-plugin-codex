@@ -7594,10 +7594,19 @@ test('the direct driver refuses a run directory that is missing, foreign in mode
  * tool-call scenarios spawn the REAL disposable probe server executable the
  * same way the real host would, so handler evidence comes from the genuine
  * handler writer.
+ *
+ * The shebang names the running node binary DIRECTLY (no `#!/usr/bin/env`
+ * interpreter chain): the driver captures the spawn identity (`ps -o
+ * lstart=,ppid=,comm=`) immediately after spawn, and an env intermediate
+ * presents a transient `comm=env` image that the capture can catch under
+ * suite load — the later identity verification then sees `comm=node` and
+ * mismatches, misclassifying surviving hosts as `not-survived` (the flaky
+ * disconnect cases). With node as the first AND final process image the
+ * captured identity is stable from spawn to verification.
  * @param {string} scenario @param {string} serverModulePath @param {string} intermediatePath
  */
 function directFakeAppServerScript(scenario, serverModulePath, intermediatePath) {
-  return `#!/usr/bin/env node
+  return `#!${process.execPath}
 // Generated fake app-server fixture (tests/direct-mcp-probe.test.mjs) — disposable, never committed.
 import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
