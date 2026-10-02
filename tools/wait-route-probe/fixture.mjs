@@ -24,7 +24,23 @@ export const HOLD_TOOL_NAME = 'hold_open';
 export const DEPENDENCY_TOOL_NAME = 'prepare_dependency';
 /** The fixed completion marker printed by the harmless fixture worker. */
 export const COMPLETION_MARKER = 'WAIT_ROUTE_PROBE_WORKER_DONE';
+/**
+ * The distinct line prefix the worker prints when a signal ends it: an
+ * interrupted run must never be mistakable for a terminal completion, so the
+ * signal line NEVER contains COMPLETION_MARKER.
+ */
+export const WORKER_SIGNALLED_MARKER_PREFIX = 'WAIT_ROUTE_PROBE_WORKER_SIGNALLED';
 export const WORKER_FILE_NAME = 'wait-route-worker.mjs';
+/**
+ * The clearly labeled SYNTHETIC role control: a probe-only agent role whose
+ * fixture role file declares `background_terminal_max_timeout = 3600000`.
+ * It is a shape-level proxy for the managed `zcode-rescue` registration seam
+ * (`agents.<name>` with a `config_file`), never the production Role.
+ */
+export const SYNTHETIC_ROLE_NAME = 'wait-probe-synthetic';
+export const SYNTHETIC_ROLE_DESCRIPTION = 'SYNTHETIC PROBE-ONLY role control for the disposable wait-route fixture; never a production Role.';
+/** The empty-poll ceiling the Task 3 profiles exercise (the source-pinned awaiter value). */
+export const TASK3_RAISED_CAP_MS = 3_600_000;
 /** The short injected hold inside capture_entry; fixture-only, never a timeout policy. */
 export const CAPTURE_HOLD_MS = 2_000;
 export const HOOK_TIMEOUT_SEC = 15;
@@ -234,7 +250,9 @@ export async function buildWaitRouteFixture(input) {
   // never writes outside its own directory, and never starts other processes.
   // Its launch record carries its pid, process group, session, and captured
   // startup identity (the real macOS shell runs the command in its OWN
-  // group/session), so the driver can own and settle that separate group.
+  // group/session), plus an epoch-ms `at` stamp and its requested profile, so
+  // the driver can own and settle that separate group and the report can
+  // correlate process lifetime with the host's poll timing.
   const workerPath = join(pluginRoot, 'workers', WORKER_FILE_NAME);
   const worker = [
     `#!${process.execPath}`,
@@ -247,6 +265,7 @@ export async function buildWaitRouteFixture(input) {
     "import { fileURLToPath } from 'node:url';",
     '',
     `const MARKER = ${JSON.stringify(COMPLETION_MARKER)};`,
+    `const SIGNALLED_PREFIX = ${JSON.stringify(WORKER_SIGNALLED_MARKER_PREFIX)};`,
     'const here = dirname(fileURLToPath(import.meta.url));',
     '// Parses one `ps -o lstart=,ppid=,comm=` line into its three fields:',
     '// comm may be the executable PATH and contain spaces, so the line is',
@@ -306,13 +325,100 @@ export async function buildWaitRouteFixture(input) {
     '    return null;',
     '  }',
     '}',
+    '// Task 3 profile arguments: an exact duration before the marker and an',
+    '// optional noise cadence. Invalid arguments fail closed with exit 2 —',
+    '// never a silently shortened hold. Noise lines NEVER contain the marker.',
+    'const workerArguments = process.argv.slice(2);',
+    'let durationMs = 0;',
+    'let noiseIntervalMs = 0;',
+    'const seenFlags = new Set();',
+    'for (let index = 0; index < workerArguments.length; index += 2) {',
+    '  const flag = workerArguments[index];',
+    "  if (flag !== '--duration-ms' && flag !== '--noise-interval-ms') {",
+    "    process.stderr.write('unknown fixture worker flag: ' + flag + '\\n');",
+    '    process.exit(2);',
+    '  }',
+    '  if (seenFlags.has(flag)) {',
+    "    process.stderr.write('duplicate fixture worker flag: ' + flag + '\\n');",
+    '    process.exit(2);',
+    '  }',
+    '  seenFlags.add(flag);',
+    '  if (index + 1 >= workerArguments.length) {',
+    "    process.stderr.write('missing value for fixture worker flag: ' + flag + '\\n');",
+    '    process.exit(2);',
+    '  }',
+    '  const value = Number(workerArguments[index + 1]);',
+    '  if (!Number.isSafeInteger(value) || value < 0) {',
+    "    process.stderr.write('invalid fixture worker value for ' + flag + '\\n');",
+    '    process.exit(2);',
+    '  }',
+    "  if (flag === '--duration-ms') durationMs = value; else noiseIntervalMs = value;",
+    '}',
+    'const validWorkerNumber = (value, minimum, maximum) => Number.isSafeInteger(value) && value >= minimum && value <= maximum;',
+    'if (!validWorkerNumber(durationMs, 0, 3600000) || !validWorkerNumber(noiseIntervalMs, 0, 60000) || (noiseIntervalMs > 0 && durationMs === 0)) {',
+    "  process.stderr.write('invalid fixture worker profile arguments\\n');",
+    '  process.exit(2);',
+    '}',
     'try {',
     '  const fields = psFields();',
-    "  await appendFile(join(here, 'worker-launches.jsonl'), JSON.stringify({ event: 'worker-launched', pid: process.pid, pgid: fields.pgid, sid: fields.sid, identity: fields.identity, starttime: linuxStarttime() }) + '\\n', { encoding: 'utf8', mode: 0o600 });",
+    "  await appendFile(join(here, 'worker-launches.jsonl'), JSON.stringify({ event: 'worker-launched', at: Date.now(), pid: process.pid, pgid: fields.pgid, sid: fields.sid, identity: fields.identity, starttime: linuxStarttime(), durationMs, noiseIntervalMs }) + '\\n', { encoding: 'utf8', mode: 0o600 });",
     '} catch {',
     '  // A missing launch record must never fail the harmless worker.',
     '}',
-    'process.stdout.write(`${MARKER}\\n`);',
+    'let finished = false;',
+    'let noiseTimer = null;',
+    'function finish() {',
+    '  if (finished) return;',
+    '  finished = true;',
+    '  // The terminal marker is the LAST output: noise emission stops before',
+    '  // the marker is queued (a noisy profile must never write past the',
+    "  // marker — the command's final output line is the marker).",
+    '  if (noiseTimer !== null) clearInterval(noiseTimer);',
+    '  // FLUSH before exit: process.stdout.write queues asynchronously, and an',
+    '  // immediate process.exit discards queued bytes when the host pipe is',
+    '  // full of noise — the terminal marker would be lost. Exit in the write',
+    '  // callback.',
+    '  process.stdout.write(`${MARKER}\\n`, (flushError) => {',
+    '    process.exit(flushError ? 1 : 0);',
+    '  });',
+    '}',
+    '// Graceful signal handling: a distinct signal line (NEVER the completion',
+    '// marker) and exit code 128+signum, promptly — an interrupted run can',
+    '// never be mistaken for a terminal completion.',
+    "for (const handledSignal of ['SIGTERM', 'SIGINT']) {",
+    '  process.on(handledSignal, () => {',
+    '    // A signal arriving while the COMPLETION flush is pending (finished',
+    "    // set, marker write queued behind a full pipe) still terminates:",
+    '    // pending completion is not an exit, and interruption wins.',
+    '    if (finished) {',
+    "      process.exit(128 + (handledSignal === 'SIGTERM' ? 15 : 2));",
+    '    }',
+    '    finished = true;',
+    '    if (noiseTimer !== null) clearInterval(noiseTimer);',
+    "    const signalExitCode = 128 + (handledSignal === 'SIGTERM' ? 15 : 2);",
+    "    process.stdout.write(`${SIGNALLED_PREFIX} ${handledSignal}\\n`, () => {",
+    '      process.exit(signalExitCode);',
+    '    });',
+    '    // BOUNDED fallback: under stdout backpressure the flush callback may',
+    '    // never fire (a full pipe with no reader); interruption stays prompt',
+    '    // even when the signal line cannot flush.',
+    '    setTimeout(() => process.exit(signalExitCode), 1000).unref?.();',
+    '  });',
+    '}',
+    "if (noiseIntervalMs > 0) {",
+    '  let noiseLines = 0;',
+    '  noiseTimer = setInterval(() => {',
+    '    if (finished) return;',
+    '    noiseLines += 1;',
+    '    process.stdout.write(`noise ${noiseLines} ${Date.now()}\\n`);',
+    '  }, noiseIntervalMs);',
+    '  noiseTimer.unref?.();',
+    '}',
+    'if (durationMs > 0) {',
+    '  setTimeout(finish, durationMs);',
+    '} else {',
+    '  finish();',
+    '}',
     '',
   ].join('\n');
   await writeFile(workerPath, worker, { encoding: 'utf8', mode: 0o755 });
@@ -332,15 +438,37 @@ export async function buildWaitRouteFixture(input) {
 /**
  * Writes the fixture-only config.toml into an isolated Codex home. It enables
  * the hooks feature (the fixture-local equivalent of the host's plugin-hook
- * discovery switch) and carries nothing else: no user projects, providers, or
- * servers. Refuses to overwrite an existing config so a real user config can
- * never be touched through this seam.
- * @param {{codexHome: string}} input
- * @returns {Promise<{configPath: string}>}
+ * discovery switch) and carries nothing else by default: no user projects,
+ * providers, or servers. Optional Task 3 options — all fixture-only:
+ *
+ * - `backgroundTerminalMaxTimeoutMs`: the raised empty-poll ceiling (the
+ *   source-pinned config key `background_terminal_max_timeout`; the runtime
+ *   applies a 5000 ms floor, so 5000-3600000 is the accepted range).
+ * - `multiAgentFeature`: enables the `multi_agent` feature so the synthetic
+ *   role control can exercise the collab spawn path.
+ * - `agentRoles`: synthetic role registrations shaped exactly like the
+ *   managed registration seam (`agents.<name>` = `{description, config_file}`).
+ *
+ * Refuses to overwrite an existing config so a real user config can never be
+ * touched through this seam.
+ * @param {{codexHome: string, backgroundTerminalMaxTimeoutMs?: number, multiAgentFeature?: boolean, agentRoles?: {name: string, description: string, configPath: string}[]}} input
+ * @returns {Promise<{configPath: string, backgroundTerminalMaxTimeoutMs: number|null, multiAgentFeature: boolean, agentRoles: string[]}>}
  */
 export async function writeFixtureConfig(input) {
   const { codexHome } = input;
   if (!isAbsolute(codexHome)) throw fixtureError('WAIT_ROUTE_FIXTURE_CONFIG_RELATIVE', 'The fixture Codex home must be an absolute path.');
+  const cap = input.backgroundTerminalMaxTimeoutMs ?? null;
+  if (cap !== null && (!Number.isSafeInteger(cap) || cap < 5_000 || cap > TASK3_RAISED_CAP_MS)) {
+    throw fixtureError('WAIT_ROUTE_FIXTURE_CONFIG_CAP_INVALID', `backgroundTerminalMaxTimeoutMs must be an integer of 5000 to ${TASK3_RAISED_CAP_MS} ms.`);
+  }
+  const roles = input.agentRoles ?? [];
+  for (const role of roles) {
+    if (!role || typeof role.name !== 'string' || !/^[a-z0-9-]+$/.test(role.name)
+      || typeof role.description !== 'string' || role.description.trim().length === 0
+      || typeof role.configPath !== 'string' || !isAbsolute(role.configPath)) {
+      throw fixtureError('WAIT_ROUTE_FIXTURE_CONFIG_ROLE_INVALID', 'Each synthetic agent role needs a name, a non-empty description, and an absolute config file path.');
+    }
+  }
   const configPath = join(codexHome, 'config.toml');
   const existing = await lstat(configPath).catch((error) => {
     if (errorCode(error) === 'ENOENT') return null;
@@ -350,13 +478,57 @@ export async function writeFixtureConfig(input) {
   const body = [
     '# Fixture-only configuration for the disposable wait-route probe marketplace.',
     '# Written inside the private probe run directory; never merged into any user',
-    '# configuration. This enables the host feature that discovers plugin hooks.',
+    '# configuration.',
+    // TOML: top-level keys must precede every table header, so the raised cap
+    // is written before the [features] and [agents.*] tables.
+    ...(cap !== null ? ['# Raised empty-poll ceiling (fixture-only; the runtime floor is 5000 ms).', `background_terminal_max_timeout = ${cap}`] : []),
+    '',
+    '# This enables the host feature that discovers plugin hooks.',
     '[features]',
     'hooks = true',
+    ...(input.multiAgentFeature ? ['multi_agent = true'] : []),
+    ...roles.flatMap((role) => [
+      '',
+      '# Synthetic probe-only role registration (fixture-only; never a production Role).',
+      `[agents.${role.name}]`,
+      `description = ${JSON.stringify(role.description)}`,
+      `config_file = ${JSON.stringify(role.configPath)}`,
+    ]),
     '',
   ].join('\n');
   await writeFile(configPath, body, { encoding: 'utf8', mode: 0o600 });
-  return { configPath };
+  return { configPath, backgroundTerminalMaxTimeoutMs: cap, multiAgentFeature: input.multiAgentFeature === true, agentRoles: roles.map((role) => role.name) };
+}
+
+/**
+ * Writes the clearly labeled SYNTHETIC role control file: a probe-only agent
+ * role whose config layer declares the raised empty-poll ceiling. The managed
+ * `zcode-rescue` Role itself is production and cannot be changed inside a
+ * disposable fixture; this file exists so a session spawned under the
+ * synthetic role can MEASURE whether a role-declared cap propagates at all.
+ * @param {{outputDir: string}} input
+ * @returns {Promise<{roleName: string, rolePath: string, roleDirectory: string, description: string}>}
+ */
+export async function buildWaitRouteSyntheticRole(input) {
+  const { outputDir } = input;
+  if (!isAbsolute(outputDir)) throw fixtureError('WAIT_ROUTE_FIXTURE_ROLE_RELATIVE', 'The synthetic role output directory must be an absolute path.');
+  const roleDirectory = join(outputDir, 'role');
+  await mkdir(roleDirectory, { recursive: true, mode: 0o700 });
+  const rolePath = join(roleDirectory, `${SYNTHETIC_ROLE_NAME}.toml`);
+  const body = [
+    `# SYNTHETIC PROBE-ONLY role control generated by tools/wait-route-probe/fixture.mjs.`,
+    `# Disposable fixture artifact; never a production Role template.`,
+    `name = "${SYNTHETIC_ROLE_NAME}"`,
+    `description = "${SYNTHETIC_ROLE_DESCRIPTION}"`,
+    ``,
+    `# The hypothesis under test: a role-declared empty-poll ceiling. The`,
+    `# source-pinned role overlay whitelist does NOT include this key, so the`,
+    `# measured expectation is NO propagation (the default cap still applies).`,
+    `background_terminal_max_timeout = ${TASK3_RAISED_CAP_MS}`,
+    '',
+  ].join('\n');
+  await writeFile(rolePath, body, { encoding: 'utf8', mode: 0o600 });
+  return { roleName: SYNTHETIC_ROLE_NAME, rolePath, roleDirectory, description: SYNTHETIC_ROLE_DESCRIPTION };
 }
 
 /**

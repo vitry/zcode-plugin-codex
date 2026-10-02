@@ -17,7 +17,7 @@ import { constants as fsConstants, open, stat } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, opendir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,8 +26,10 @@ import {
   COMPLETION_MARKER,
   MARKETPLACE_NAME,
   PLUGIN_SELECTOR,
+  SYNTHETIC_ROLE_NAME,
   WORKER_FILE_NAME,
   buildWaitRouteFixture,
+  buildWaitRouteSyntheticRole,
   errorCode,
   fixtureError,
   readFixtureWorker,
@@ -42,11 +44,36 @@ import {
 } from './server.mjs';
 
 /** The documented case labels; the runner accepts exactly these. */
-export const CASE_LABELS = Object.freeze(['shell-window', 'hook-entry', 'authority', 'lifecycle']);
+export const CASE_LABELS = Object.freeze(['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control']);
+/** The custom-tool wrappers whose DSL input is EXECUTED as code (the observed installed shapes); other custom tools' input is data. */
+export const WRAPPER_TOOL_NAMES = Object.freeze(['exec', 'shell']);
 export const BUDGET_MIN_MS = 1_000;
 export const BUDGET_MAX_MS = 3_600_000;
 /** Cleanup always keeps at least this floor so a case never leaks owned state. */
 export const CLEANUP_FLOOR_MS = 5_000;
+/**
+ * Task 3 shell-profile bounds. The yield ranges mirror the source-pinned
+ * runtime clamps (initial exec [250, 30000]; empty polls [5000, configured
+ * cap]) — a requested yield OUTSIDE the runtime clamp is exactly what the
+ * requested-versus-actual comparison observes, so the ranges here only guard
+ * instrument sanity up to the demonstrated 3600000 ceiling.
+ */
+export const PROFILE_WORKER_DURATION_MAX_MS = 3_600_000;
+export const PROFILE_NOISE_INTERVAL_MAX_MS = 60_000;
+export const PROFILE_EXEC_YIELD_MIN_MS = 250;
+export const PROFILE_POLL_YIELD_MIN_MS = 5_000;
+export const PROFILE_CAP_MIN_MS = 5_000;
+export const PROFILE_CAP_MAX_MS = 3_600_000;
+/** Session-rollout summarizer bounds (bounded counting, never full retention). */
+export const SESSION_MAX_FILES = 16;
+export const SESSION_MAX_RECORDS_PER_FILE = 20_000;
+export const SESSION_MAX_LINE_BYTES = 1024 * 1024;
+export const SESSION_MAX_FILE_BYTES = 64 * 1024 * 1024;
+export const SESSION_MAX_YIELD_SAMPLES = 64;
+/** Discovery-entry cap for the model-writable sessions tree (files+dirs the walk may inspect). */
+export const SESSION_MAX_DISCOVERY_ENTRIES = 512;
+/** Per-call operation-site cap: hostile scripts with thousands of awaited polls would make per-pair serialization scans quadratic; beyond the cap the scan reports truncation (fail closed). */
+export const SESSION_MAX_SITES_PER_CALL = 512;
 const SUBPROCESS_DEADLINE_MS = 15_000;
 /** Bounded grace for verifying and settling recorded shell workers. */
 const WORKER_EXIT_GRACE_MS = 2_000;
@@ -61,8 +88,26 @@ const MAXIMUM_WORKER_LAUNCH_RECORDS = 64;
 const WORKER_LAUNCH_MAX_RECORD_BYTES = 64 * 1024;
 /** Total byte budget for one launch-log read. */
 const WORKER_LAUNCH_MAX_TOTAL_BYTES = 1024 * 1024;
-const EXEC_BASE_FLAGS = Object.freeze(['exec', '--json', '--color', 'never', '-s', 'workspace-write', '--skip-git-repo-check', '--ephemeral']);
+const EXEC_BASE_FLAGS = Object.freeze(['exec', '--json', '--color', 'never', '--skip-git-repo-check']);
+const EPHEMERAL_FLAG = Object.freeze(['--ephemeral']);
 const HOOK_ONLY_FLAGS = Object.freeze(['--dangerously-bypass-hook-trust']);
+/**
+ * Per-case sandbox/approval flag selections, exported as a pinned seam.
+ *
+ * The shell cases (`shell-window`, `role-control`) run with
+ * `--dangerously-bypass-approvals-and-sandbox` INSTEAD of
+ * `-s workspace-write`: the installed 0.160.0 workspace-write sandbox denies
+ * `/bin/ps` (exit 126), which structurally removes the fixture worker's
+ * process-identity evidence and therefore the instrument's owned-cleanup
+ * guarantee. The measured variable is the host's configured observation
+ * window (a process-manager clamp), which does not depend on the sandbox.
+ * This choice is recorded in the qualification report as a provenance note.
+ * The hook-entry case keeps its exact Task 2 flag set.
+ */
+export const EXEC_FLAG_SELECTIONS = Object.freeze({
+  shell: Object.freeze(['--dangerously-bypass-approvals-and-sandbox']),
+  hookEntry: Object.freeze(['-s', 'workspace-write']),
+});
 const HOOK_ENTRY_PROMPT = 'Reply with exactly: ok';
 
 /**
@@ -75,7 +120,10 @@ const HOOK_ENTRY_PROMPT = 'Reply with exactly: ok';
  * @property {string} stage
  * @property {{state: string, code: number|null}} hostExit
  * @property {string[]} hostFlags
- * @property {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, markerObserved: boolean|null, workerLaunches: number|null, possibleDuplicateLaunch: boolean|null, events: number, truncated: boolean}} trace
+ * @property {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, markerObserved: boolean|null, workerLaunches: number|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}} trace
+ * @property {{backgroundTerminalMaxTimeoutMs: number|null, multiAgentFeature: boolean, agentRoles: string[]}} fixture
+ * @property {{workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}} requestedProfile
+ * @property {SessionSummary|null} session
  * @property {{marketplaceRemoved: boolean, isolatedHomeRemoved: boolean, serverExit: string, workerExit: string, failures: string[]}} cleanup
  * @property {number} budgetMs
  */
@@ -91,26 +139,74 @@ function usageError(message) {
 }
 
 /**
- * Parses the driver arguments. Exactly the four documented flags are
- * accepted, all required, with closed validation codes.
+ * Validates the Task 3 shell-profile inputs (worker duration/noise, requested
+ * shell-tool yields, fixture-only cap) with closed codes. Absent flags stay 0
+ * (= the current behavior); the case labels that cannot carry a profile
+ * reject any nonzero profile value.
+ * @param {{workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number}} profile
+ * @param {string} caseLabel
+ * @returns {{workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number}}
+ */
+export function validateShellProfile(profile, caseLabel) {
+  /** @param {number|undefined} value @param {number} minimum @param {number} maximum @param {string} name */
+  const bounded = (value, minimum, maximum, name) => {
+    const raw = value ?? 0;
+    if (!Number.isSafeInteger(raw) || raw < minimum || raw > maximum) {
+      throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', `${name} must be an integer of ${minimum} to ${maximum} ms.`);
+    }
+    return raw;
+  };
+  const normalized = {
+    workerDurationMs: bounded(profile.workerDurationMs, 0, PROFILE_WORKER_DURATION_MAX_MS, '--worker-duration-ms'),
+    workerNoiseIntervalMs: bounded(profile.workerNoiseIntervalMs, 0, PROFILE_NOISE_INTERVAL_MAX_MS, '--worker-noise-interval-ms'),
+    execYieldMs: bounded(profile.execYieldMs, 0, PROFILE_CAP_MAX_MS, '--exec-yield-ms'),
+    pollYieldMs: bounded(profile.pollYieldMs, 0, PROFILE_CAP_MAX_MS, '--poll-yield-ms'),
+    backgroundTerminalMaxTimeoutMs: bounded(profile.backgroundTerminalMaxTimeoutMs, 0, PROFILE_CAP_MAX_MS, '--background-terminal-max-timeout-ms'),
+  };
+  if (normalized.execYieldMs !== 0 && normalized.execYieldMs < PROFILE_EXEC_YIELD_MIN_MS) {
+    throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', `--exec-yield-ms must be 0 or at least ${PROFILE_EXEC_YIELD_MIN_MS} ms.`);
+  }
+  if (normalized.pollYieldMs !== 0 && normalized.pollYieldMs < PROFILE_POLL_YIELD_MIN_MS) {
+    throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', `--poll-yield-ms must be 0 or at least ${PROFILE_POLL_YIELD_MIN_MS} ms.`);
+  }
+  if (normalized.backgroundTerminalMaxTimeoutMs !== 0 && normalized.backgroundTerminalMaxTimeoutMs < PROFILE_CAP_MIN_MS) {
+    throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', `--background-terminal-max-timeout-ms must be 0 or at least ${PROFILE_CAP_MIN_MS} ms.`);
+  }
+  if (normalized.workerNoiseIntervalMs > 0 && normalized.workerDurationMs === 0) {
+    throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', '--worker-noise-interval-ms requires a positive --worker-duration-ms.');
+  }
+  if ((normalized.workerDurationMs !== 0 || normalized.workerNoiseIntervalMs !== 0 || normalized.execYieldMs !== 0 || normalized.pollYieldMs !== 0 || normalized.backgroundTerminalMaxTimeoutMs !== 0)
+    && caseLabel !== 'shell-window' && caseLabel !== 'role-control') {
+    throw driverError('WAIT_ROUTE_DRIVER_PROFILE_INVALID', 'profile flags apply only to the shell-window and role-control cases.');
+  }
+  return normalized;
+}
+
+/**
+ * Parses the driver arguments. The four documented flags are required; the
+ * Task 3 profile flags are optional and validated with closed codes.
  * @param {string[]} argv
- * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number}}
+ * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number}}
  */
 export function parseDriverArguments(argv) {
   /** @type {Record<string, string>} */
   const parsed = {};
+  const valueFlags = new Set([
+    '--case', '--codex', '--output-dir', '--budget-ms',
+    '--worker-duration-ms', '--worker-noise-interval-ms', '--exec-yield-ms', '--poll-yield-ms', '--background-terminal-max-timeout-ms',
+  ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!flag || !flag.startsWith('--') || !value || value.startsWith('--')) {
-      throw usageError('usage: driver.mjs --case <shell-window|hook-entry|authority|lifecycle> --codex <path> --output-dir <dir> --budget-ms <ms>');
+      throw usageError('usage: driver.mjs --case <shell-window|hook-entry|authority|lifecycle|role-control> --codex <path> --output-dir <dir> --budget-ms <ms> [--worker-duration-ms ms] [--worker-noise-interval-ms ms] [--exec-yield-ms ms] [--poll-yield-ms ms] [--background-terminal-max-timeout-ms ms]');
     }
     if (flag in parsed) throw usageError(`duplicate ${flag}`);
-    if (flag === '--case' || flag === '--codex' || flag === '--output-dir' || flag === '--budget-ms') parsed[flag] = value;
-    else throw usageError(`unknown ${flag}`);
+    if (!valueFlags.has(flag)) throw usageError(`unknown ${flag}`);
+    parsed[flag] = value;
   }
   if (!parsed['--case'] || !parsed['--codex'] || !parsed['--output-dir'] || !parsed['--budget-ms']) {
-    throw usageError('usage: driver.mjs --case <shell-window|hook-entry|authority|lifecycle> --codex <path> --output-dir <dir> --budget-ms <ms>');
+    throw usageError('usage: driver.mjs --case <shell-window|hook-entry|authority|lifecycle|role-control> --codex <path> --output-dir <dir> --budget-ms <ms>');
   }
   if (!CASE_LABELS.includes(parsed['--case'])) throw usageError(`--case must be one of: ${CASE_LABELS.join(', ')}`);
   if (!isAbsolute(parsed['--codex'])) throw driverError('WAIT_ROUTE_DRIVER_CODEX_RELATIVE', '--codex must be an absolute path.');
@@ -119,7 +215,14 @@ export function parseDriverArguments(argv) {
   if (!Number.isSafeInteger(budgetMs) || budgetMs < BUDGET_MIN_MS || budgetMs > BUDGET_MAX_MS) {
     throw driverError('WAIT_ROUTE_DRIVER_BUDGET_INVALID', `--budget-ms must be an integer of ${BUDGET_MIN_MS} to ${BUDGET_MAX_MS}.`);
   }
-  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs };
+  const profile = validateShellProfile({
+    workerDurationMs: parsed['--worker-duration-ms'] === undefined ? 0 : Number(parsed['--worker-duration-ms']),
+    workerNoiseIntervalMs: parsed['--worker-noise-interval-ms'] === undefined ? 0 : Number(parsed['--worker-noise-interval-ms']),
+    execYieldMs: parsed['--exec-yield-ms'] === undefined ? 0 : Number(parsed['--exec-yield-ms']),
+    pollYieldMs: parsed['--poll-yield-ms'] === undefined ? 0 : Number(parsed['--poll-yield-ms']),
+    backgroundTerminalMaxTimeoutMs: parsed['--background-terminal-max-timeout-ms'] === undefined ? 0 : Number(parsed['--background-terminal-max-timeout-ms']),
+  }, parsed['--case']);
+  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs, ...profile };
 }
 
 /**
@@ -1381,6 +1484,12 @@ export async function ensureServerExitByTrace(input) {
  * @param {number} pid
  * @returns {Promise<boolean>}
  */
+/**
+ * Whether one process has settled: gone (kill(0) fails) or in the zombie
+ * state (ps stat begins with Z). A live process is NOT settled.
+ * @param {number} pid
+ * @returns {Promise<boolean>}
+ */
 async function isProcessSettled(pid) {
   if (inspectionBudgetExpired()) return false;
   try {
@@ -1500,6 +1609,2334 @@ function claimedParentDescendsFromHost(record, hostPid) {
  */
 function openNonBlockingFlags() {
   return fsConstants.O_RDONLY | fsConstants.O_NONBLOCK;
+}
+
+/**
+ * @typedef {Object} SessionSummary
+ * @property {boolean} present
+ * @property {number} files
+ * @property {boolean} truncated
+ * @property {number} assistantMessages
+ * @property {number} reasoningItems
+ * @property {number} functionCalls
+ * @property {number} functionCallOutputs
+ * @property {number} initialExecCalls
+ * @property {number} emptyPolls
+ * @property {number} otherFunctionCalls
+ * @property {Record<string, number>} toolNames
+ * @property {number[]} requestedYieldsMs
+ * @property {number} requestedYieldCount
+ * @property {number} parallelToolCallViolations
+ * @property {number|null} firstFunctionCallAtMs
+ * @property {number|null} firstEmptyPollAtMs
+ * @property {number|null} lastFunctionCallOutputAtMs
+ * @property {{atMs: number|null, kind: 'initial-exec'|'empty-poll'|'other', name: string, yieldTimeMs: number|null, }[]} calls
+ * @property {boolean} callsTruncated
+ * @property {{records: number, functionCalls: number, initialExecCalls: number, emptyPolls: number}[]} perFile
+ */
+
+/**
+ * Whether a role-control summary CORROBORATES the managed-child lifecycle.
+ * Every fact is bounded and content-free; ALL are required:
+ * - EXACTLY ONE spawn_agent call (a second spawn makes the executed
+ *   child's identity ambiguous — fail closed);
+ * - the spawn ARGUMENTS name the synthetic role (the `spawnedSyntheticRole`
+ *   fact — role fields only, never other argument content);
+ * - the synthetic spawn's own OUTPUT was observed
+ *   (`syntheticSpawnAnswered` — a spawn attempt without an output proves
+ *   no successful child);
+ * - the initial-exec evidence comes from a NON-Root rollout PARENT-LINKED
+ *   to the Root session (`linkedChildExecSeen` — the child rollout's
+ *   session_meta parent_thread_id equals the Root rollout's session_meta
+ *   id, the source-pinned spawn edge; an unlinked or unrelated child exec
+ *   proves nothing).
+ * The facts are attached non-enumerably by summarizeCodexSessions so they
+ * never reach the printed summary.
+ * @param {WaitRouteSummary} summary
+ * @returns {boolean}
+ */
+export function roleChildProven(summary) {
+  if (summary.session === null || !summary.session.present) return false;
+  // An incomplete SCAN cannot establish the spawn count or any other fact:
+  // fail closed on scan truncation. The `calls` array is a bounded
+  // DIAGNOSTIC sample — its truncation hides nothing the grant relies on
+  // (the spawn count is a full-scan counter; the linked-exec facts are
+  // per-file), so a long run with repeated waits is not rejected for it.
+  if (summary.session.truncated === true) return false;
+  const sessionRecord = /** @type {{spawnedSyntheticRole?: boolean, syntheticSpawnAnswered?: boolean, linkedChildExecSeen?: boolean, spawnAgentCallCount?: number}} */ (summary.session);
+  // The FULL-scan count (not the sampled calls array) must establish
+  // exactly one spawn_agent call.
+  if (sessionRecord.spawnAgentCallCount !== 1) return false;
+  return sessionRecord.spawnedSyntheticRole === true
+    && sessionRecord.syntheticSpawnAnswered === true
+    && sessionRecord.linkedChildExecSeen === true;
+}
+
+/**
+ * The STRING-STRIPPED scanning view of a call text: quoted string VALUES
+ * (and template-literal contents) are collapsed to empty quotes so
+ * parameter-position scans cannot match their contents, while QUOTED
+ * PROPERTY KEYS (a quoted string whose next non-whitespace character is
+ * `:`) keep their names. Ordinary comments are EXCLUDED — a commented
+ * `{yield_time_ms: N}` is an example, not a request — with ONE exception:
+ * the documented wrapper directive `// @exec: {...}` is itself a comment,
+ * so its directive head is kept (and its quoted key with it); erasing it
+ * would silently drop the wrapper bound from the requested-versus-observed
+ * analysis.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripStringValuesKeepKeys(text) {
+  let out = '';
+  let inQuote = null;
+  let start = -1;
+  for (let pos = 0; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) {
+        let probe = pos + 1;
+        while (probe < text.length && /\s/.test(text[probe])) probe += 1;
+        if (text[probe] === ':') out += text.slice(start, pos + 1);
+        else out += inQuote === '`' ? '``' : `${inQuote}${inQuote}`;
+        inQuote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      start = pos;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      // Block-comment contents are examples, not requests: excluded like
+      // ordinary line comments (the documented directive is `//`-form).
+      const end = text.indexOf('*/', pos + 2);
+      if (end === -1) break;
+      pos = end + 1;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '/') {
+      const newline = text.indexOf('\n', pos);
+      const lineEnd = newline === -1 ? text.length : newline;
+      const directive = /^\/\/\s*@exec\s*:/.exec(text.slice(pos, lineEnd));
+      if (directive !== null) {
+        // The documented directive form: keep the directive head (its
+        // payload — including the quoted key — is scanned normally).
+        out += '@exec:';
+        pos += directive[0].length - 1;
+      } else {
+        pos = lineEnd - 1;
+        if (newline === -1) break;
+      }
+      continue;
+    }
+    out += ch;
+  }
+  // An unterminated quoted tail is kept raw: the caller's scans treat the
+  // unmatched tail conservatively (no boundary, no classification).
+  if (inQuote !== null) out += text.slice(start);
+  return out;
+}
+
+/**
+ * Whether the `/` at `pos` STARTS a regex literal (value position: not
+ * preceded by an identifier, `)`, `]`, or quote — otherwise it is division),
+ * and is not a comment opener.
+ * @param {string} text
+ * @param {number} pos
+ * @returns {boolean}
+ */
+function isRegexLiteralStart(text, pos) {
+  if (text[pos] !== '/') return false;
+  if (text[pos + 1] === '/' || text[pos + 1] === '*') return false;
+  let i = pos - 1;
+  while (i >= 0 && /\s/.test(text[i])) i -= 1;
+  if (i < 0) return true;
+  return !/[\w$)\]]/.test(text[i]);
+}
+
+/**
+ * The last index of the regex literal starting at the `/` in `pos`
+ * (including flags), or -1 when unterminated on the same line.
+ * @param {string} text
+ * @param {number} pos
+ * @returns {number}
+ */
+function regexLiteralEnd(text, pos) {
+  // Inside a character class `[...]` neither `/` nor `"` ends the literal —
+  // the class closes at `]` and the literal at the following `/`.
+  let inClass = false;
+  for (let i = pos + 1; i < text.length; i += 1) {
+    if (text[i] === '\\') {
+      i += 1;
+      continue;
+    }
+    if (text[i] === '\n') return -1;
+    if (inClass) {
+      if (text[i] === ']') inClass = false;
+      continue;
+    }
+    if (text[i] === '[') {
+      inClass = true;
+      continue;
+    }
+    if (text[i] === '/') {
+      let j = i + 1;
+      while (j < text.length && /[a-z]/i.test(text[j])) j += 1;
+      return j - 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Lexical call-site scan of a custom tool-DSL script: the open-paren indexes
+ * of every REAL call position for `callName` — occurrences outside quoted
+ * strings, outside template-literal TEXT, and outside `#`/`//` line or
+ * `/*` block comments. Template INTERPOLATIONS (`${...}`) are executable
+ * code: operations inside them ARE detected (only the literal text is
+ * skipped). A script that merely PRINTS or comments a shell operation
+ * mention must not be classified as that operation and must never supply
+ * child-execution evidence.
+ * @param {string} text
+ * @param {string} callName
+ * @returns {number[]}
+ */
+function callSitesForOperation(text, callName) {
+  const sites = [];
+  let inQuote = null;
+  let interpDepth = 0;
+  for (let pos = 0; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (inQuote === '`' && ch === '$' && text[pos + 1] === '{') {
+        // Template interpolation: the enclosed expression is CODE — leave
+        // the literal-text mode (the matching `}` re-enters it).
+        interpDepth += 1;
+        inQuote = null;
+        pos += 1;
+      } else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (interpDepth > 0) {
+      // Interpolation code still has STRINGS: a printed string inside an
+      // interpolation (`${"exec_command({})"}`) stays opaque.
+      if (ch === '"' || ch === "'" || ch === '`') {
+        inQuote = ch;
+        continue;
+      }
+      if (ch === '{') interpDepth += 1;
+      else if (ch === '}') {
+        interpDepth -= 1;
+        if (interpDepth === 0) {
+          inQuote = '`';
+          continue;
+        }
+      }
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      const end = text.indexOf('*/', pos + 2);
+      if (end === -1) break;
+      pos = end + 1;
+      continue;
+    }
+    if (ch === '#' || (ch === '/' && text[pos + 1] === '/')) {
+      const newline = text.indexOf('\n', pos);
+      if (newline === -1) break;
+      pos = newline;
+      continue;
+    }
+    if (ch === '/' && isRegexLiteralStart(text, pos)) {
+      const regexEnd = regexLiteralEnd(text, pos);
+      if (regexEnd === -1) break;
+      pos = regexEnd;
+      continue;
+    }
+    if (text.startsWith(callName, pos)) {
+      // IDENTIFIER BOUNDARY: a helper named `my_exec_command` contains the
+      // operation name as a suffix — only a name NOT preceded by an
+      // identifier character is the host operation.
+      const boundaryOk = pos === 0 || !/[\w$]/.test(text[pos - 1]);
+      let probe = pos + callName.length;
+      while (probe < text.length && /\s/.test(text[probe])) probe += 1;
+      if (boundaryOk && text[probe] === '(') {
+        sites.push(probe);
+        pos = probe;
+      }
+    }
+  }
+  return sites;
+}
+
+/**
+ * The index where the call NAME that directly precedes an open paren at
+ * `openParenIndex` STARTS (whitespace between name and paren is allowed —
+ * the start index accounts for it, so a name lookup at that index is the
+ * name itself).
+ * @param {string} text
+ * @param {number} openParenIndex
+ * @returns {number}
+ */
+function callNameStartBefore(text, openParenIndex) {
+  let pos = openParenIndex - 1;
+  while (pos >= 0 && /\s/.test(text[pos])) pos -= 1;
+  while (pos >= 0 && /[\w$]/.test(text[pos])) pos -= 1;
+  return pos + 1;
+}
+
+/**
+ * Strips block and line comments from a text segment with the standard
+ * lexical model (strings survive intact; comment contents are removed), so
+ * a property regex cannot read a commented-out property as the effective
+ * one.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripSegmentComments(text) {
+  let out = '';
+  let inQuote = null;
+  for (let pos = 0; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') {
+        out += ch;
+        pos += 1;
+        if (pos < text.length) out += text[pos];
+        continue;
+      }
+      if (ch === inQuote) inQuote = null;
+      out += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      const end = text.indexOf('*/', pos + 2);
+      if (end === -1) break;
+      pos = end + 1;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '/') {
+      const newline = text.indexOf('\n', pos);
+      if (newline === -1) break;
+      pos = newline;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Decodes the EFFECTIVE `cmd` VALUE of an exec_command argument segment:
+ * comments are stripped first (a commented-out cmd is not a command),
+ * exactly ONE cmd property must exist (duplicates — literal or not — are
+ * ambiguous and rejected), the value must be a COMPLETE double-quoted
+ * literal (a concatenation like `cmd: "<x>" + suffix` has a different
+ * effective command), and the literal is JSON-decoded. Anything else
+ * yields null (fail closed).
+ * @param {string} segment
+ * @returns {string|null}
+ */
+function decodeDslCmdValue(segment) {
+  // THREE views, each with a job: the COMMENT-STRIPPED text (strings
+  // intact) is where the literal is DECODED — a commented-out cmd must not
+  // satisfy correlation, and a comment between the key and its colon must
+  // not break it; the STRING-STRIPPED view is where the syntax checks run —
+  // `...` or `cmd:` inside the quoted command VALUE (a filesystem path can
+  // contain either) is content, never executable syntax. The actual
+  // property is located LEXICALLY on the depth-tracked value-stripped view
+  // (string contents and nested objects cannot fake a top-level cmd key —
+  // `justification: 'cmd: "..."'` is a value), and only the literal
+  // following THAT key is decoded.
+  const commentStripped = stripSegmentComments(segment);
+  const valueStripped = stripStringValuesKeepKeys(commentStripped);
+  // A spread can OVERRIDE the literal from runtime data: `{cmd: expected,
+  // ...opts}` has a different effective command. Fail closed.
+  if (valueStripped.includes('...')) return null;
+  // A COMPUTED property (`["cmd"]: replacement`) executes with a value the
+  // rollout text cannot prove — any computed property in the segment voids
+  // the decode (fail closed).
+  if (/(?:^|[{,])\s*\[[^\][]*\]\s*:/.test(commentStripped)) return null;
+  // LINEAR key counting: a per-boundary matchAll with `\s*` rescans the
+  // whole whitespace run at every boundary (quadratic on padded arguments).
+  let cmdKeyCount = 0;
+  for (let scanPos = 0; scanPos < valueStripped.length; scanPos += 1) {
+    const boundaryChar = valueStripped[scanPos];
+    if (boundaryChar !== '{' && boundaryChar !== ',') continue;
+    let probe = scanPos + 1;
+    while (probe < valueStripped.length && /\s/.test(valueStripped[probe])) probe += 1;
+    let colon = probe;
+    if (valueStripped.startsWith('cmd', probe)) colon = probe + 3;
+    else if (valueStripped.startsWith('"cmd"', probe) || valueStripped.startsWith("'cmd'", probe)) colon = probe + 5;
+    else continue;
+    while (colon < valueStripped.length && /\s/.test(valueStripped[colon])) colon += 1;
+    if (valueStripped[colon] === ':') cmdKeyCount += 1;
+  }
+  if (cmdKeyCount !== 1) return null;
+  // Locate the top-level cmd key LEXICALLY on the COMMENT-STRIPPED text
+  // itself (depth-tracked, quotes handled): a command-shaped STRING VALUE
+  // (`justification: '{cmd: "expected"}'`) is skipped as content, so the
+  // decode can never select a value's interior.
+  let depth = 0;
+  let inQuote = null;
+  let topCmdColon = -1;
+  for (let pos = 0; pos < commentStripped.length; pos += 1) {
+    const ch = commentStripped[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    else if (ch === '}' || ch === ']' || ch === ')') depth -= 1;
+    else if (depth === 1) {
+      // Quoted keys (`{"cmd": ...}`) are detected BEFORE quote handling so
+      // the opening quote never swallows the key as string content.
+      if (/\s/.test(ch)) {
+        // Skip the whole whitespace run in one step (linear scanning —
+        // testing the key regex at every space made decoding quadratic).
+        let probe = pos;
+        while (probe < commentStripped.length && /\s/.test(commentStripped[probe])) probe += 1;
+        const keyMatch = /^["']?cmd["']?\s*:/.exec(commentStripped.slice(probe));
+        const boundaryOk = pos === 1 || '[{,'.includes(commentStripped[pos - 1]);
+        if (keyMatch !== null && boundaryOk) {
+          topCmdColon = probe + keyMatch[0].length;
+          break;
+        }
+        pos = probe - 1;
+        continue;
+      }
+      // Quoted keys (`{"cmd": ...}`) are detected BEFORE quote handling so
+      // the opening quote never swallows the key as string content.
+      const keyMatch = /^["']?cmd["']?\s*:/.exec(commentStripped.slice(pos));
+      const boundaryOk = pos === 1 || '[{,'.includes(commentStripped[pos - 1]);
+      if (keyMatch !== null && boundaryOk) {
+        topCmdColon = pos + keyMatch[0].length;
+        break;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') {
+        inQuote = ch;
+        continue;
+      }
+    }
+  }
+  if (topCmdColon === -1) return null;
+  // Decode the literal ANCHORED at that colon: the ENTIRE value must be the
+  // supported literal —
+  // an expression tail (`"other" || "<expected>"`) passes `other`, never
+  // the second operand.
+  const literal = /^\s*("(?:\\.|[^"\\])*")\s*(?=[,}\n]|$)/.exec(commentStripped.slice(topCmdColon));
+  if (literal === null) return null;
+  try {
+    const decoded = JSON.parse(literal[1]);
+    return typeof decoded === 'string' ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts the LIVE observation handle from a running output: both the
+ * human-readable shape (`Script running with cell ID 7` / `Process running
+ * with session ID s1`) and the STRUCTURED JSON shape (a result object
+ * carrying `session_id` / `cell_id`) are decoded; anything else yields
+ * null.
+ * @param {string} outputText
+ * @returns {{kind: string, value: string}|null}
+ */
+function extractLiveHandle(outputText) {
+  const human = /(cell|session) ID ([^\s\n",}]+)/.exec(outputText);
+  if (human !== null) return { kind: human[1], value: human[2] };
+  const structured = /["']?(session_id|cell_id)["']?\s*:\s*"?([\w.-]+)"?/.exec(outputText);
+  if (structured !== null) return { kind: structured[1] === 'cell_id' ? 'cell' : 'session', value: structured[2] };
+  return null;
+}
+
+/**
+ * Whether an observation output describes a LIVE process: an explicit
+ * `running` text, or a STRUCTURED result carrying a handle WITHOUT a
+ * completed/exited/finished status (a bare structured yield return like
+ * `{"session_id":17,"output":"","wall_time_seconds":30}` is a live
+ * process's re-entry). The OUTER wrapper's `Script completed` header does
+ * not decide inner-process liveness: the inner result after the header
+ * does.
+ * @param {string} outputText
+ * @returns {boolean}
+ */
+function isLiveObservationOutput(outputText) {
+  // Explicit running text is liveness wherever it appears (the human
+  // `Script running with cell ID N` header is itself the liveness fact).
+  if (/running/i.test(outputText)) return true;
+  // A completed wrapper can still carry a LIVE inner result after its
+  // completion header (`Script completed\n{"session_id":17,...}`): the
+  // header is stripped before the structured test so the inner result
+  // decides.
+  const innerText = outputText.replace(/^\s*Script (?:completed|running)[^\n]*\n/i, '');
+  const hasStructuredHandle = /["']?(?:session_id|cell_id)["']?\s*:/.test(innerText);
+  return hasStructuredHandle && !/completed|exited|finished/i.test(innerText);
+}
+
+/**
+ * The effective TEXT of a tool output: a string as-is, or — the pinned
+ * code-mode rollout shape — an array of content items whose `text` fields
+ * concatenate. Anything else is empty.
+ * @param {{output?: unknown}} payload
+ * @returns {string}
+ */
+function outputTextOf(payload) {
+  if (typeof payload.output === 'string') return payload.output;
+  if (Array.isArray(payload.output)) {
+    return payload.output
+      .map((item) => (item !== null && typeof item === 'object' && typeof item.text === 'string' ? item.text : ''))
+      .join('');
+  }
+  return '';
+}
+
+/**
+ * The EFFECTIVE `yield_time_ms` value of an argument text: only keys of the
+ * OUTER argument object count (NESTED object keys —
+ * `60000 + ({yield_time_ms:5000}).x` — never overwrite the measurement),
+ * the LAST top-level key wins (JavaScript duplicate-key semantics), and its
+ * value must be a complete numeric literal followed by a value delimiter —
+ * an unsupported expression or a trailing spread leaves the request
+ * unclassified (null). Quoted keys (`{"yield_time_ms": N}`) are detected
+ * before quote handling so the key is never swallowed as string content.
+ * @param {string} text
+ * @returns {number|null}
+ */
+function effectiveYieldValue(text) {
+  const trimmed = text.trim();
+  const baseDepth = trimmed.startsWith('{') ? 1 : 0;
+  let depth = 0;
+  let inQuote = null;
+  let lastResult = null;
+  let lastKeyEnd = -1;
+  // The previous NON-WHITESPACE character, tracked INCREMENTALLY: a rescan
+  // of the whole prefix per character made extraction quadratic, and the
+  // 1 MiB line limit permits pathological padding that delayed cleanup past
+  // the observation budget. The initial `{` opens the argument object, so
+  // the first property already sits at a property boundary.
+  let prevNonSpace = '{';
+  for (let pos = 0; pos < trimmed.length; pos += 1) {
+    const ch = trimmed[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      else if (!/\s/.test(ch)) prevNonSpace = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) continue;
+    const isQuote = ch === '"' || ch === "'";
+    const atPropertyStart = prevNonSpace === '{' || prevNonSpace === ',';
+    // An ACCESSOR override (`get yield_time_ms(){...}`) can replace the
+    // literal's value at runtime — fail closed (top-level property
+    // positions only, checked against the CURRENT boundary — never a
+    // suffix rescan).
+    if (depth === baseDepth && atPropertyStart && /\bget\s+["']?yield_time_ms["']?/.test(trimmed.slice(pos, pos + 32))) return null;
+    if (isQuote && !atPropertyStart) {
+      // A string VALUE (not a quoted key): skip its contents.
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '[' && atPropertyStart && depth === baseDepth) {
+      // A COMPUTED key in property position: only a QUOTED string literal
+      // is the supported form (`["yield_time_ms"]`); an unresolved
+      // identifier can evaluate to anything — fail closed. Participates in
+      // LAST-PROPERTY-WINS like a bare key.
+      const closeBracket = trimmed.indexOf(']', pos + 1);
+      if (closeBracket === -1) return null;
+      const rawContent = trimmed.slice(pos + 1, closeBracket).trim();
+      if (!/^["']/.test(rawContent)) return null;
+      const content = rawContent.replaceAll(/^["']|["']$/g, '');
+      if (content !== 'yield_time_ms') return null;
+      let valueCursor = closeBracket + 1;
+      while (valueCursor < trimmed.length && /[\s:]/.test(trimmed[valueCursor])) valueCursor += 1;
+      const computedLiteral = /^([\d_]+)(?=\s*[,})]|$)/.exec(trimmed.slice(valueCursor));
+      lastResult = computedLiteral === null ? null : Number(computedLiteral[1].replaceAll('_', ''));
+      lastKeyEnd = valueCursor;
+      pos = valueCursor;
+      prevNonSpace = ')';
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') {
+      depth += 1;
+      prevNonSpace = ch;
+      continue;
+    }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth -= 1;
+      prevNonSpace = ch;
+      continue;
+    }
+    const bareKey = !isQuote && trimmed.startsWith('yield_time_ms', pos);
+    const quotedKey = isQuote && trimmed.startsWith('yield_time_ms', pos + 1);
+    // NESTED object keys never count: only the OUTER argument object's
+    // properties are requests.
+    if (depth !== baseDepth || !atPropertyStart || (!bareKey && !quotedKey)) {
+      if (isQuote) inQuote = ch;
+      else prevNonSpace = ch;
+      continue;
+    }
+    // A COMPLETE literal followed by an actual VALUE DELIMITER: operator
+    // tails (`60000 % 7000`, `60000 ? 5000 : 1000`) and expressions are
+    // unsupported — unclassified.
+    let cursor = pos + (quotedKey ? 'yield_time_ms'.length + 2 : 'yield_time_ms'.length);
+    if (quotedKey && (trimmed[cursor] === '"' || trimmed[cursor] === "'")) cursor += 1;
+    while (cursor < trimmed.length && /[\s:]/.test(trimmed[cursor])) cursor += 1;
+    const literal = /^([\d_]+)(?=\s*[,})]|$)/.exec(trimmed.slice(cursor));
+    lastResult = literal === null ? null : Number(literal[1].replaceAll('_', ''));
+    lastKeyEnd = cursor;
+    pos = cursor;
+    prevNonSpace = ')';
+  }
+  if (lastResult === null) return null;
+  if (trimmed.slice(lastKeyEnd).includes('...')) return null;
+  return lastResult;
+}
+
+/**
+ * The end index of the statement starting at `start`: bracket-depth aware
+ * (strings skipped), terminating at the first top-level `;` or newline.
+ * Used to bound an async helper's DECLARATION+BODY region so an operation
+ * site in a LATER statement is never attributed to the helper.
+ * @param {string} text
+ * @param {number} start
+ * @returns {number}
+ */
+function statementEndIndex(text, start) {
+  let depth = 0;
+  let inQuote = null;
+  for (let pos = start; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '(' || ch === '{' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === '}' || ch === ']') depth -= 1;
+    else if (depth === 0 && (ch === ';' || ch === '\n')) return pos;
+  }
+  return text.length;
+}
+
+/**
+ * The end of a helper DECLARATION for the invocation scans: an arrow-form
+ * declaration (`const f = ...`) ends at its statement end, but a
+ * `function`-form declaration ENDS AT ITS BODY'S CLOSING BRACE — an
+ * invocation sharing the line after the body (`function poll(){...}
+ * poll();`) is NOT part of the declaration.
+ * @param {string} text
+ * @param {number} declarationIndex
+ * @returns {number}
+ */
+function helperDeclarationEndIndex(text, declarationIndex) {
+  const head = text.slice(declarationIndex, declarationIndex + 32);
+  if (!/^\s*(?:async\s+)?function\b/.test(head)) return statementEndIndex(text, declarationIndex);
+  // The body brace is the first `{` outside quotes and outside the
+  // parameter list.
+  let parenDepth = 0;
+  let inQuote = null;
+  for (let pos = declarationIndex; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '(' || ch === '[') parenDepth += 1;
+    else if (ch === ')' || ch === ']') parenDepth -= 1;
+    else if (ch === '{' && parenDepth === 0) {
+      const bodyEnd = balancedBraceEnd(text, pos);
+      return bodyEnd === -1 ? statementEndIndex(text, declarationIndex) : bodyEnd + 1;
+    }
+  }
+  return statementEndIndex(text, declarationIndex);
+}
+
+/**
+ * The number of INDEPENDENTLY DISPATCHED polling branches inside one
+ * dispatch range: a shell operation inside a NESTED FUNCTION body of the
+ * range is a callback branch (invoked with the dispatch, possibly N times
+ * through .map/.forEach/.filter/.flatMap), and TWO such branches run
+ * concurrently with each other. A shell operation DIRECTLY in the range
+ * arguments (no nested function) executes exactly once, and multiple
+ * awaited operations inside ONE callback are sequential — neither overlaps.
+ * @param {string} text
+ * @param {number} rangeStart
+ * @param {number} rangeEnd
+ * @param {number[]} siteStarts
+ * @returns {number}
+ */
+function rangePollingBranches(text, rangeStart, rangeEnd, siteStarts) {
+  const sitesInRange = siteStarts.filter((site) => site > rangeStart && site < rangeEnd);
+  if (sitesInRange.length === 0) return 0;
+  const bodies = [];
+  const functionPattern = /=>|\bfunction\b/g;
+  functionPattern.lastIndex = rangeStart;
+  let match;
+  while ((match = functionPattern.exec(text)) !== null && match.index < rangeEnd) {
+    const bodyStart = match.index + match[0].length;
+    const bodyEnd = Math.min(statementEndIndex(text, match.index), rangeEnd);
+    if (sitesInRange.some((site) => site > bodyStart && site < bodyEnd)) bodies.push(bodyStart);
+  }
+  if (bodies.length >= 2) return bodies.length;
+  if (bodies.length === 1) {
+    const rangeText = text.slice(rangeStart, rangeEnd);
+    const methodMatch = /\.(map|forEach|filter|flatMap)\s*\(/.exec(rangeText);
+    if (methodMatch !== null) {
+      // Receiver cardinality decides: one element (or none) runs the
+      // callback at most once — never an overlap.
+      const elements = receiverElementCount(text, rangeStart + methodMatch.index + 1);
+      if (elements === null || elements >= 2) return 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * The close-paren index of the call whose `(` sits at `openParenIndex`, or
+ * -1 when unbalanced (strings skipped, same lexical model).
+ * @param {string} text
+ * @param {number} openParenIndex
+ * @returns {number}
+ */
+function balancedRangeEnd(text, openParenIndex) {
+  let depth = 0;
+  let inQuote = null;
+  for (let pos = openParenIndex; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return pos;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The element count of the array-literal receiver directly before an array
+ * method (`[1,2].map` → 2), or null when the receiver is not a literal
+ * (unproven).
+ * @param {string} text
+ * @param {number} methodNameStart
+ * @returns {number|null}
+ */
+function receiverElementCount(text, methodNameStart) {
+  const receiverMatch = /\[\s*([^\][]*)\]\s*\.\s*$/.exec(text.slice(0, methodNameStart));
+  if (receiverMatch === null) return null;
+  const inner = receiverMatch[1].trim();
+  return inner.length === 0 ? 0 : inner.split(',').length;
+}
+
+/**
+ * The number of polling branches launched by REPEATED callback dispatches
+ * OUTSIDE Promise combinators — `[1,2].forEach(async () => await
+ * tools.write_stdin(...))` runs one lexical site N times. An array-literal
+ * receiver with fewer than two elements cannot overlap and is skipped; a
+ * non-literal receiver's element count is unproven (flagged).
+ * @param {string} text
+ * @param {number[]} siteStarts
+ * @param {number[][]} dispatchRanges
+ * @param {string[]} pollingHelperNames
+ * @returns {number}
+ */
+function repeatedCallbackDispatchBranches(text, siteStarts, dispatchRanges, pollingHelperNames) {
+  let branches = 0;
+  for (const methodName of ['forEach', 'map', 'filter', 'flatMap']) {
+    for (const openParen of callSitesForOperation(text, methodName)) {
+      const closeParen = balancedRangeEnd(text, openParen);
+      if (closeParen === -1) continue;
+      // Combinator-internal iterations are the DISPATCH RANGES' business
+      // (rangePollingBranches): never double-count them here.
+      if (dispatchRanges.some(([rangeStart, rangeEnd]) => openParen > rangeStart && openParen < rangeEnd)) continue;
+      // A NAMED polling callback (`[1,2].forEach(poll)`) dispatches with
+      // the receiver's multiplicity, exactly like an inline body.
+      const namedReference = new RegExp(`(?:${methodName})\\s*\\(\\s*([\\w$]+)\\s*\\)`).exec(text.slice(openParen - methodName.length, closeParen + 1));
+      if (namedReference !== null && pollingHelperNames.includes(namedReference[1])) {
+        const elements = receiverElementCount(text, openParen - methodName.length);
+        if (elements === null || elements >= 2) {
+          branches += 2;
+          break;
+        }
+        continue;
+      }
+      // The callback must contain a POLLING operation before anything is
+      // flagged: an unrelated `.map(line => line.trim())` formatter near a
+      // sequential poll is not a repeated dispatch.
+      const functionPattern = /=>|\bfunction\b/g;
+      functionPattern.lastIndex = openParen;
+      let match;
+      let bodyHasOperation = false;
+      while ((match = functionPattern.exec(text)) !== null && match.index < closeParen) {
+        const bodyStart = match.index + match[0].length;
+        const bodyEnd = Math.min(statementEndIndex(text, match.index), closeParen);
+        if (siteStarts.some((site) => site > bodyStart && site < bodyEnd)) {
+          bodyHasOperation = true;
+          break;
+        }
+      }
+      if (!bodyHasOperation) continue;
+      const elements = receiverElementCount(text, openParen - methodName.length);
+      if (elements === null) return Math.max(branches, 2);
+      if (elements < 2) continue;
+      branches += 2;
+    }
+  }
+  return branches;
+}
+
+/**
+ * The close-brace index of the `{` at `openBraceIndex`, or -1 when
+ * unbalanced (strings skipped, same lexical model).
+ * @param {string} text
+ * @param {number} openBraceIndex
+ * @returns {number}
+ */
+function balancedBraceEnd(text, openBraceIndex) {
+  let depth = 0;
+  let inQuote = null;
+  for (let pos = openBraceIndex; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return pos;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether a `for`/`while` loop body contains a shell operation: a loop
+ * re-executes its body site N times — overlapping observations.
+ * @param {string} text
+ * @param {number[]} siteStarts
+ * @returns {boolean}
+ */
+function loopBodyContainsOperation(text, siteStarts) {
+  for (const keyword of ['for', 'while']) {
+    for (const openParen of callSitesForOperation(text, keyword)) {
+      const closeParen = balancedRangeEnd(text, openParen);
+      if (closeParen === -1) continue;
+      let bodyStart = closeParen + 1;
+      while (bodyStart < text.length && /\s/.test(text[bodyStart])) bodyStart += 1;
+      let bodyEnd;
+      if (text[bodyStart] === '{') {
+        const closeBrace = balancedBraceEnd(text, bodyStart);
+        bodyEnd = closeBrace === -1 ? text.length : closeBrace;
+      } else {
+        bodyEnd = statementEndIndex(text, bodyStart);
+      }
+      for (const site of siteStarts) {
+        if (site <= bodyStart || site >= bodyEnd) continue;
+        // An AWAITED body poll serializes iterations (one active
+        // observation at a time) — directly, or through a stored-promise
+        // variable awaited later in the same body
+        // (`for (...) { const p = tools.write_stdin(...); await p; }`).
+        if (isDirectlyAwaited(text, site)) continue;
+        const assignMatch = new RegExp(`([\\w$]+)\\s*=\\s*(?:[\\w$]+\\s*\\.\\s*)*\\s*$`).exec(text.slice(0, site));
+        if (assignMatch !== null) {
+          const varName = assignMatch[1].replaceAll('$', '\\$&');
+          const bodyTail = stripStringValuesKeepKeys(stripSegmentComments(text.slice(site, bodyEnd)));
+          // An UNCONDITIONAL await of the stored promise settles the
+          // observation: it must START A STATEMENT in the body tail — a
+          // conditional await (`if (false) await p;`) settles nothing.
+          if (new RegExp(`(?:^|[;}]\\s*)await\\s+${varName}\\b`).test(bodyTail)) continue;
+        }
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The number of polling-helper INVOCATIONS inside concurrent dispatches:
+ * an async helper whose OWN statement contains a shell operation (`async
+ * function poll() { await tools.write_stdin(...) }`) contributes one
+ * observation per dispatch invocation — two or more overlap. BOTH
+ * declaration forms count (variable-declared arrows and `async function`
+ * declarations); the operation must sit inside the helper's statement
+ * (bracket-depth bounded), so an operation in a LATER statement — or a
+ * dispatched helper with no shell operation at all (`const f = async ()
+ * => 1`) — is never attributed to it.
+ * @param {string} callText
+ * @param {number[]} siteStarts
+ * @param {number[][]} dispatchRanges
+ * @returns {number}
+ */
+function dispatchedPollingHelperInvocations(callText, siteStarts, dispatchRanges) {
+  // Promise-returning helpers WITHOUT an `async` keyword (`function
+  // poll() { return tools.write_stdin(...) }`) dispatch the same way —
+  // all declaration forms join, deduplicated by name.
+  // Ordinary promise-returning arrows (`const poll = () =>
+  // tools.write_stdin(...)`) dispatch the same way — omitting the
+  // `async` keyword must not bypass detection.
+  const helpers = [
+    ...[...callText.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\b)?\s*(?:\([^)]*\)|[\w$]+)\s*=>/g)].map((match) => ({ name: match[1], declStart: match.index })),
+    ...[...callText.matchAll(/\b(?:async\s+)?function\s+([\w$]+)/g)].map((match) => ({ name: match[1], declStart: match.index })),
+  ].filter((helper, index, all) => all.findIndex((other) => other.name === helper.name) === index);
+  // Counts are evaluated PER DISPATCH RANGE and the maximum wins:
+  // sequential awaited dispatches (`await Promise.all([poll()]);
+  // await Promise.all([poll()]);`) never overlap — only two or more
+  // invocations inside ONE dispatch do. Named callback references
+  // (`[1,2].map(poll)`) are dispatches too, counted with their array's
+  // multiplicity.
+  let maxInvocations = 0;
+  for (const [rangeStart, rangeEnd] of dispatchRanges) {
+    const rangeText = callText.slice(rangeStart + 1, rangeEnd);
+    let rangeCount = 0;
+    for (const { name, declStart } of helpers) {
+      const statementEnd = statementEndIndex(callText, declStart);
+      const statementHasOperation = siteStarts.some((start) => start > declStart && start < statementEnd);
+      if (!statementHasOperation) continue;
+      rangeCount += callSitesForOperation(stripSegmentComments(rangeText), name).length;
+      // A NAMED callback reference (`[1,2].map(poll)`) dispatches with the
+      // RECEIVER's multiplicity — one element runs it once, none runs it
+      // never; an unknown receiver is unproven (two branches).
+      const methodReference = new RegExp(`\\.(?:map|forEach|filter|flatMap)\\s*\\(\\s*${name}\\s*\\)`).exec(rangeText);
+      if (methodReference !== null) {
+        const elements = receiverElementCount(callText, rangeStart + 1 + methodReference.index + 1);
+        rangeCount += elements === null ? 2 : elements;
+      } else if (new RegExp(`\\b${name}\\b(?!\\s*\\()`).test(rangeText)) {
+        rangeCount += 1;
+      }
+    }
+    maxInvocations = Math.max(maxInvocations, rangeCount);
+  }
+  return maxInvocations;
+}
+
+/**
+ * Whether a call REFERENCES the worker chain's returned handle. The handle
+ * KIND is preserved: a CELL handle (a suspended script's `cell ID N`) is
+ * referenced only through `cell_id`, and a SESSION handle (a live
+ * process's `session ID S`) only through `session_id`/`id` — a marker
+ * from an observation of the OTHER namespace never credits. References
+ * come from structured arguments or the ACTUAL argument segment of a
+ * wait/write_stdin call site (comment-stripped; quoted text and comments
+ * elsewhere never establish a reference). The comparison requires an
+ * EXACT, COMPLETE literal value — `17 + 1` or `"s1" + suffix` poll a
+ * different effective handle and never match.
+ * @param {string} callText
+ * @param {{cell_id?: unknown, session_id?: unknown, id?: unknown}|null} args
+ * @param {{kind: string, value: string}} handle
+ * @param {string} operation the observing tool name (`wait` observes CELL handles; `write_stdin` observes SESSION handles)
+ * @returns {boolean}
+ */
+function referencesChainHandle(callText, args, handle, operation) {
+  // The KIND and the OBSERVING OPERATION must agree: a CELL handle is
+  // observed by a structured `wait` call or a wait(...) site; a SESSION
+  // handle by a `write_stdin` — `write_stdin({session_id:999, cell_id:7})`
+  // observes session 999, and its cell_id field is inert.
+  // STRUCTURED calls carry the operation in their tool name: a cell handle
+  // is only observed by `wait`, a session handle only by `write_stdin` —
+  // `write_stdin({session_id:999, cell_id:7})` observes session 999 and its
+  // cell_id field is inert. DSL scripts (no structured args) are governed
+  // by the site loop below, which scopes cell handles to wait(...) sites
+  // and session handles to write_stdin(...) sites.
+  if (args !== null) {
+    const kindMatchesOperation = handle.kind === 'cell' ? operation === 'wait' : operation === 'write_stdin';
+    if (!kindMatchesOperation) return false;
+    // CONFLICTING handle aliases (`{session_id:999, id:17}`) leave the
+    // effective handle host-defined — unproven, never matched.
+    const aliases = handle.kind === 'cell'
+      ? [args.cell_id].filter((v) => v !== undefined)
+      : [args.session_id, args.id].filter((v) => v !== undefined);
+    const stringAliases = aliases.map((v) => String(v));
+    if (new Set(stringAliases).size > 1) return false;
+    return stringAliases.length === 1 && stringAliases[0] === handle.value;
+  }
+  const effectiveScript = stripSegmentComments(callText);
+  const escaped = handle.value.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const keyAlternation = handle.kind === 'cell' ? 'cell_id' : '(?:session_id|id)';
+  // COMPLETE literal only: the value must end at a delimiter (an optional
+  // closing quote for string-passed handles — `{id:"17"}` polls 17), so
+  // `17 + 1` (which polls 18) and `"s1" + suffix` never match their
+  // prefixes.
+  const literalPattern = new RegExp(`(?:^|[{,(])\\s*["']?(?:${keyAlternation})["']?\\s*:\\s*["']?${escaped}["']?\\s*(?=[,})\\n]|$)`);
+  for (const operationName of handle.kind === 'cell' ? ['wait'] : ['write_stdin']) {
+    for (const site of callSitesForOperation(effectiveScript, operationName)) {
+      const segment = balancedCallSegment(effectiveScript, site);
+      if (segment === null) continue;
+      // AMBIGUOUS handles never match: a spread or a duplicate handle key
+      // (`{session_id:17,session_id:999}` polls 999) means the EFFECTIVE
+      // handle differs from any literal in the text. A COMPUTED property
+      // (`["session_id"]:999`) executes unresolvably — same rule.
+      if (segment.includes('...')) continue;
+      if (/(?:^|[{,])\s*\[[^\][]*\]\s*:/.test(stripSegmentComments(segment))) continue;
+      const handleKeyCount = [...segment.matchAll(new RegExp(`["']?(?:${keyAlternation})["']?\\s*:`, 'g'))].length;
+      if (handleKeyCount !== 1) continue;
+      if (literalPattern.test(segment)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The [start, end] ranges of Promise.all/allSettled/race/any dispatches —
+ * detected ONLY at executable lexical positions (quoted strings and
+ * comments are skipped, so a printed or commented `Promise.all(...)` is
+ * never a dispatch). Operation sites inside any range belong to a
+ * CONCURRENT dispatch even when each is awaited locally — a local `await`
+ * orders statements within one callback, never across independently
+ * scheduled callbacks.
+ * @param {string} text
+ * @returns {number[][]}
+ */
+function concurrentDispatchRanges(text) {
+  const ranges = [];
+  let inQuote = null;
+  for (let pos = 0; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      const end = text.indexOf('*/', pos + 2);
+      if (end === -1) break;
+      pos = end + 1;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '/') {
+      const newline = text.indexOf('\n', pos);
+      if (newline === -1) break;
+      pos = newline;
+      continue;
+    }
+    if (ch === '/' && isRegexLiteralStart(text, pos)) {
+      const regexEnd = regexLiteralEnd(text, pos);
+      if (regexEnd === -1) break;
+      pos = regexEnd;
+      continue;
+    }
+    if (text.startsWith('Promise', pos)) {
+      let probe = pos + 'Promise'.length;
+      while (probe < text.length && /\s/.test(text[probe])) probe += 1;
+      if (text[probe] !== '.') continue;
+      probe += 1;
+      while (probe < text.length && /\s/.test(text[probe])) probe += 1;
+      const keyword = /^(allSettled|all|race|any)/.exec(text.slice(probe));
+      if (keyword === null) continue;
+      probe += keyword[1].length;
+      while (probe < text.length && /\s/.test(text[probe])) probe += 1;
+      if (text[probe] !== '(') continue;
+      const openParen = probe;
+      let depth = 0;
+      let innerQuote = null;
+      let closed = false;
+      for (let scan = openParen; scan < text.length; scan += 1) {
+        const inner = text[scan];
+        if (innerQuote !== null) {
+          if (inner === '\\') scan += 1;
+          else if (inner === innerQuote) innerQuote = null;
+          continue;
+        }
+        if (inner === '"' || inner === "'" || inner === '`') {
+          innerQuote = inner;
+          continue;
+        }
+        if (inner === '/' && text[scan + 1] === '*') {
+          const end = text.indexOf('*/', scan + 2);
+          if (end === -1) break;
+          scan = end + 1;
+          continue;
+        }
+        if (inner === '/' && text[scan + 1] === '/') {
+          const newline = text.indexOf('\n', scan);
+          if (newline === -1) break;
+          scan = newline;
+          continue;
+        }
+        if (inner === '(') depth += 1;
+        else if (inner === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            ranges.push([openParen, scan]);
+            closed = true;
+            break;
+          }
+        }
+      }
+      if (closed) pos = probe;
+    }
+  }
+  return ranges;
+}
+
+/**
+ * Whether the call whose name starts at `callNameStart` is DIRECTLY
+ * awaited — an `await` keyword (optionally followed by the receiver chain)
+ * immediately precedes it, making it a SEQUENTIAL observation rather than
+ * a concurrent dispatch.
+ * @param {string} text
+ * @param {number} callNameStart
+ * @returns {boolean}
+ */
+function isDirectlyAwaited(text, callNameStart) {
+  // Comments and one level of parens between `await` and the receiver are
+  // valid syntax (`await /* observation */ tools.x(...)`,
+  // `await (tools.x(...))`): the prefix is comment-stripped before the
+  // await-tail test.
+  const prefix = text.slice(0, callNameStart)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ');
+  return /\bawait\s*\(?\s*(?:[\w$]+\s*\.\s*)*$/.test(prefix);
+}
+
+/**
+ * The balanced-paren argument segment of a call whose `(` sits at
+ * `openParenIndex`, using the SAME lexical model as callSitesForOperation
+ * (strings, template literals, and comments are skipped, so a `)` inside
+ * any of them cannot terminate the segment early). Unbalanced text yields
+ * null — the caller treats that as UNCLASSIFIED, never as an empty
+ * observation.
+ * @param {string} text
+ * @param {number} openParenIndex
+ * @returns {string|null}
+ */
+function balancedCallSegment(text, openParenIndex) {
+  let depthParens = 0;
+  let inQuote = null;
+  for (let pos = openParenIndex; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (inQuote !== null) {
+      if (ch === '\\') pos += 1;
+      else if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      const end = text.indexOf('*/', pos + 2);
+      if (end === -1) return null;
+      pos = end + 1;
+      continue;
+    }
+    if (ch === '#' || (ch === '/' && text[pos + 1] === '/')) {
+      const newline = text.indexOf('\n', pos);
+      if (newline === -1) return null;
+      pos = newline;
+      continue;
+    }
+    if (ch === '/' && isRegexLiteralStart(text, pos)) {
+      const regexEnd = regexLiteralEnd(text, pos);
+      if (regexEnd === -1) return null;
+      pos = regexEnd;
+      continue;
+    }
+    if (ch === '(') depthParens += 1;
+    else if (ch === ')') {
+      depthParens -= 1;
+      if (depthParens === 0) return text.slice(openParenIndex + 1, pos);
+    }
+  }
+  return null;
+}
+
+/**
+ * Bounded model-decision summarizer over the session rollouts the host wrote
+ * into the isolated Codex home. Counts only closed, non-content facts:
+ * assistant-message/reasoning/function-call counts, per-tool-name counts,
+ * the yields the model actually requested per call, a strict call/output
+ * alternation check (a second call while the first is still pending is the
+ * parallel-poll violation the plan forbids), and epoch-ms timestamps parsed
+ * from the rollout `timestamp` fields. No rollout text is retained — the
+ * summary contains counts, tool names, integers, and timestamps only.
+ *
+ * The shell-tool classification follows the source-pinned unified-exec
+ * argument shapes: `cmd` = an initial exec_command call; a string `input` is
+ * a write_stdin poll (empty string = the empty poll whose configured window
+ * Task 3 measures). Any other tool call counts under its own name.
+ *
+ * @param {{sessionsDirectory: string, maxFiles?: number, maxRecordsPerFile?: number, maxLineBytes?: number, maxFileBytes?: number, workerEvidenceToken?: string}} input
+ * @returns {Promise<SessionSummary>}
+ */
+export async function summarizeCodexSessions(input) {
+  const sessionsDirectory = input.sessionsDirectory;
+  if (!isAbsolute(sessionsDirectory)) throw driverError('WAIT_ROUTE_DRIVER_SESSION_RELATIVE', 'The sessions directory must be an absolute path.');
+  const maxFiles = input.maxFiles ?? SESSION_MAX_FILES;
+  const maxRecordsPerFile = input.maxRecordsPerFile ?? SESSION_MAX_RECORDS_PER_FILE;
+  const maxLineBytes = input.maxLineBytes ?? SESSION_MAX_LINE_BYTES;
+  const maxFileBytes = input.maxFileBytes ?? SESSION_MAX_FILE_BYTES;
+  /** @type {{records: number, functionCalls: number, initialExecCalls: number, emptyPolls: number}[]} */
+  const perFile = [];
+  /** @type {Record<string, number>} */
+  const toolNames = {};
+  /** @type {number[]} */
+  const requestedYieldsMs = [];
+  /** @type {SessionSummary} */
+  const summary = {
+    present: false,
+    files: 0,
+    truncated: false,
+    assistantMessages: 0,
+    reasoningItems: 0,
+    functionCalls: 0,
+    functionCallOutputs: 0,
+    initialExecCalls: 0,
+    emptyPolls: 0,
+    otherFunctionCalls: 0,
+    toolNames,
+    requestedYieldsMs,
+    requestedYieldCount: 0,
+    parallelToolCallViolations: 0,
+    firstFunctionCallAtMs: null,
+    firstEmptyPollAtMs: null,
+    lastFunctionCallOutputAtMs: null,
+    /** Bounded per-call samples for the report's clamp analysis (atMs from the rollout timestamp). @type {SessionSummary['calls']} */
+    calls: [],
+    callsTruncated: false,
+    perFile,
+  };
+  const directoryStats = await stat(sessionsDirectory).catch((error) => {
+    if (errorCode(error) === 'ENOENT') return null;
+    throw error;
+  });
+  if (directoryStats === null || !directoryStats.isDirectory()) return summary;
+  summary.present = true;
+  // WALL-CLOCK bound: a hostile script (thousands of awaited polls) makes
+  // per-site serialization scans slow, and summarization runs BEFORE worker
+  // settlement — unbounded analysis would delay cleanup and signal
+  // handling. When the budget expires the scan stops and reports
+  // truncation (failing the exactly-one-spawn grant closed).
+  const analysisDeadline = Date.now() + 10_000;
+  // DISCOVERY itself is bounded: the sessions tree is model-writable, so a
+  // hostile or runaway tree (deep nesting, many files) must not let the
+  // recursive walk materialize unbounded entries or stat unbounded files.
+  // The walk stops at the discovery-entry cap and reports truncation —
+  // an incomplete scan fails closed downstream (the role-control grant
+  // requires an untruncated scan).
+  const listed = [];
+  /** Directories still to visit. @type {string[]} */
+  const pendingDirectories = [sessionsDirectory];
+  let visitedEntries = 0;
+  while (pendingDirectories.length > 0 && visitedEntries <= SESSION_MAX_DISCOVERY_ENTRIES) {
+    const directory = pendingDirectories.shift();
+    if (directory === undefined) break;
+    // INCREMENTAL enumeration: opendir/read never materializes a whole
+    // directory's Dirent array, so one huge model-writable directory
+    // cannot exhaust memory before the entry budget is checked. An
+    // UNREADABLE directory or entry is a DISCOVERY ERROR — the scan
+    // cannot claim completeness over a subtree it never saw, so it
+    // reports truncation (the role-control grant fails closed on it)
+    // instead of silently skipping.
+    const opened = await opendir(directory).then((handle) => handle, () => null);
+    if (opened === null) {
+      summary.truncated = true;
+      continue;
+    }
+    for (;;) {
+      /** @type {import('node:fs').Dirent|null} */
+      let entry = null;
+      try {
+        entry = await opened.read();
+      } catch {
+        summary.truncated = true;
+        await opened.close().catch(() => { /* best-effort close */ });
+        break;
+      }
+      if (entry === null) {
+        await opened.close().catch(() => { /* best-effort close */ });
+        break;
+      }
+      visitedEntries += 1;
+      if (visitedEntries > SESSION_MAX_DISCOVERY_ENTRIES) {
+        summary.truncated = true;
+        await opened.close().catch(() => { /* best-effort close */ });
+        break;
+      }
+      if (entry.isDirectory()) pendingDirectories.push(join(directory, entry.name));
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) listed.push(join(directory, entry.name));
+    }
+  }
+  const rolloutFiles = listed;
+  // Newest first: a kill-interrupted run may leave a partially flushed
+  // rollout, and the newest files are the ones this run wrote. Metadata
+  // inspection is bounded by the same cap (the entry cap bounds the file
+  // count before any stat).
+  /** @type {{path: string, mtimeMs: number}[]} */
+  const stamped = [];
+  for (const path of rolloutFiles) {
+    const stats = await stat(path).catch(() => null);
+    // A discovered rollout whose metadata cannot be read is a MISSING
+    // observation: the scan is incomplete (the exactly-one-spawn grant
+    // fails closed on it), never silently complete.
+    if (stats === null) summary.truncated = true;
+    else stamped.push({ path, mtimeMs: stats.mtimeMs });
+  }
+  stamped.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  if (stamped.length > maxFiles) {
+    summary.truncated = true;
+    stamped.length = maxFiles;
+  }
+  summary.files = stamped.length;
+  // Root/Child identification is CONTENT-BASED, decided DURING the bounded
+  // per-line scan: a rollout containing a spawn_agent call is the Root
+  // session (the host spawns the managed child from Root); every other
+  // rollout is a child. No unbounded pre-read of model-writable files.
+  /** @type {string|null} */
+  let rootRolloutPath = null;
+  let childExecSeen = false;
+  // BOUNDED synthetic-role fact: whether a spawn_agent call's ARGUMENTS name
+  // the synthetic role. Only the boolean survives the scan (privacy) — the
+  // role-control grant requires it so a spawn for a default/other role
+  // cannot corroborate the managed-child lifecycle.
+  let spawnedSyntheticRole = false;
+  // Bounded spawn/answer facts: how many spawn_agent calls were made IN
+  // FULL (not sampled — the grant requires exactly one), the call id of
+  // THE synthetic-role spawn, and whether that spawn's output was
+  // observed. Only the count, the boolean, and the single call id survive
+  // the scan.
+  /** @type {number} */
+  let spawnCallCount = 0;
+  /** @type {string|null} */
+  let syntheticSpawnCallId = null;
+  let syntheticSpawnAnswered = false;
+  /** Per-rollout initial-exec facts, resolved after Root identification. @type {Map<string, boolean>} */
+  const fileHadInitialExecByPath = new Map();
+  /** Per-file session-meta facts: own thread id and parent thread id. @type {Map<string, {id: unknown, parentThreadId: unknown}>} */
+  const fileMetaByPath = new Map();
+  /** Per-file fact: an exec there referenced the caller's worker evidence token. @type {Map<string, boolean>} */
+  const fileExecMatchedWorker = new Map();
+  for (const { path } of stamped) {
+    // The pending-call set is PER-SESSION-ROLLOUT: call ids are only
+    // unique within their owning session, and cross-session concurrency
+    // would require a chronological merge of all rollouts — out of scope
+    // for this bounded counter.
+    const pendingCallIds = new Set();
+  /** Yielded-script call ids: the outer output does not prove the inner write_stdin finished. @type {Set<string>} */
+  const pendingYieldedScriptIds = new Set();
+  /** The cell id being awaited across continuation calls. @type {number|null} */
+  let pendingCellForAwait = null;
+  /** Per-cell pending call ids: completion clears ONLY the finished cell's calls. @type {Map<number, Set<string>>} */
+  const pendingCellCalls = new Map();
+  /** Wrapped-wait chains: a wrapper cell settles its predecessor cell too. @type {Map<number, number>} */
+  const cellPredecessorByCell = new Map();
+  /** Per-call cell association: which cell EACH call yielded (call id → cell). @type {Map<string, number>} */
+  const callIdToCell = new Map();
+  /** Per-continuation cell association: which cell EACH wait call references. @type {Map<string, number>} */
+  const waitCellByCallId = new Map();
+  /** Pending worker-invocation matches: the matched exec call's id → its rollout. @type {Map<string, string>} */
+  const workerExecCallOwner = new Map();
+  /** Active observation chains: rollout → the matched exec returned a LIVE handle being observed through polls. @type {Map<string, boolean>} */
+  const workerChainActiveByPath = new Map();
+  /** The live handle (kind + id) each active chain observes: rollout → handle. @type {Map<string, {kind: string, value: string}>} */
+  const workerChainHandleByPath = new Map();
+  /** Chain calls (wait/write_stdin after the matched exec): call id → rollout. @type {Map<string, string>} */
+  const workerChainCallOwner = new Map();
+    const fileSummary = { records: 0, functionCalls: 0, initialExecCalls: 0, emptyPolls: 0 };
+    perFile.push(fileSummary);
+    const handle = await open(path, openNonBlockingFlags()).catch(() => {
+      // A discovered rollout that cannot be OPENED — permissions OR vanished
+      // between stat and open (ENOENT) — is a missing observation: the scan
+      // is incomplete (the exactly-one-spawn grant fails closed on it),
+      // never silently complete.
+      summary.truncated = true;
+      return null;
+    });
+    if (handle === null) continue;
+    const decoder = new StringDecoder('utf8');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let carry = '';
+    let fileBytes = 0;
+    try {
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) {
+          carry += decoder.end();
+          if (carry.trim().length > 0) consumeRolloutLine(carry);
+          break;
+        }
+        fileBytes += bytesRead;
+        if (fileBytes > maxFileBytes) {
+          summary.truncated = true;
+          break;
+        }
+        carry += decoder.write(buffer.subarray(0, bytesRead));
+        let newline = carry.indexOf('\n');
+        let stopFile = false;
+        while (newline >= 0) {
+          const line = carry.slice(0, newline);
+          carry = carry.slice(newline + 1);
+          if (consumeRolloutLine(line)) { stopFile = true; break; }
+          newline = carry.indexOf('\n');
+        }
+        if (stopFile) {
+          summary.truncated = true;
+          break;
+        }
+        if (carry.trim().length > 0 && Buffer.byteLength(carry, 'utf8') > maxLineBytes) {
+          summary.truncated = true;
+          break;
+        }
+      }
+    } finally {
+      await handle.close().catch(() => {});
+    }
+
+    /**
+     * Consumes one rollout line against the bounds. Returns true when the
+     * caller must stop reading (a bound was hit).
+     * @param {string} line @returns {boolean}
+     */
+    function consumeRolloutLine(line) {
+      if (line.trim().length === 0) return false;
+      if (Date.now() > analysisDeadline) {
+        summary.truncated = true;
+        return true;
+      }
+      if (Buffer.byteLength(line, 'utf8') > maxLineBytes) {
+        summary.truncated = true;
+        return true;
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        // A torn line (a killed host's last write) is a bound event, not
+        // content: it reports truncation and is never parsed further.
+        summary.truncated = true;
+        return true;
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+      fileSummary.records += 1;
+      if (fileSummary.records > maxRecordsPerFile) {
+        summary.truncated = true;
+        return true;
+      }
+      // The session-meta line carries the rollout's OWN thread id and (for
+      // a spawned child) its PARENT thread id — the source-pinned spawn
+      // edge used to correlate a child rollout with the Root session.
+      // Retained only in this in-memory map; never reaches the summary.
+      if (parsed.type === 'session_meta' && parsed.payload !== null && typeof parsed.payload === 'object') {
+        fileMetaByPath.set(path, { id: parsed.payload.id, parentThreadId: parsed.payload.parent_thread_id });
+        return false;
+      }
+      if (parsed.type !== 'response_item' || parsed.payload === null || typeof parsed.payload !== 'object') return false;
+      const payload = parsed.payload;
+      const atMs = typeof parsed.timestamp === 'string' ? Date.parse(parsed.timestamp) : Number.NaN;
+      if (payload.type === 'message' && payload.role === 'assistant') summary.assistantMessages += 1;
+      else if (payload.type === 'reasoning') summary.reasoningItems += 1;
+      else if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+        summary.functionCallOutputs += 1;
+        // The synthetic spawn's output was observed: the call/output
+        // alternation for THE synthetic-role spawn's call id is part of the
+        // role-control grant (a spawn attempt without an output proves
+        // nothing about a successful child).
+        if (typeof payload.call_id === 'string' && payload.call_id === syntheticSpawnCallId) syntheticSpawnAnswered = true;
+        // A matched worker invocation is credited only through ITS OWN
+        // observation chain: the matched exec's result — or, while that
+        // observation is still running, a wait/write_stdin poll of it —
+        // carrying the worker's terminal marker. A marker in any OTHER
+        // call's output (an `echo` of the marker after a failed exec) or
+        // after the observation ended never credits.
+        if (typeof payload.call_id === 'string') {
+          const workerOutputText = outputTextOf(payload);
+          if (workerExecCallOwner.get(payload.call_id) === path) {
+            workerExecCallOwner.delete(payload.call_id);
+            if (workerOutputText.includes(COMPLETION_MARKER)) {
+              fileExecMatchedWorker.set(path, true);
+              workerChainActiveByPath.set(path, false);
+            } else {
+              // ALL live-handle shapes keep the chain alive — the script's
+              // `Script running with cell ID N`, the process handle's
+              // `Process running with session ID S`, and the STRUCTURED
+              // result `{"session_id":17,...}` (whose liveness comes from
+              // the fields: a handle without a completed/exited status is
+              // a live yield return). The chain is only trackable when the
+              // output names the handle.
+              const handleMatch = extractLiveHandle(workerOutputText);
+              if (handleMatch !== null && isLiveObservationOutput(workerOutputText)) {
+                workerChainActiveByPath.set(path, true);
+                workerChainHandleByPath.set(path, handleMatch);
+              } else {
+                workerChainActiveByPath.set(path, false);
+                workerChainHandleByPath.delete(path);
+              }
+            }
+          } else if (workerChainCallOwner.get(payload.call_id) === path) {
+            workerChainCallOwner.delete(payload.call_id);
+            if (workerOutputText.includes(COMPLETION_MARKER)) {
+              fileExecMatchedWorker.set(path, true);
+              workerChainActiveByPath.set(path, false);
+            } else if (!isLiveObservationOutput(workerOutputText)) {
+              workerChainActiveByPath.set(path, false);
+              workerChainHandleByPath.delete(path);
+            } else {
+              const handleMatch = extractLiveHandle(workerOutputText);
+              if (handleMatch !== null) workerChainHandleByPath.set(path, handleMatch);
+            }
+          }
+        }
+        // A yielded script (either shape) resolves its pending state from
+        // its observed OUTPUT: `Script running...` keeps the pending id (the
+        // inner write_stdin is still active — a second poll is an
+        // unproven-concurrency violation); `Script completed` clears it.
+        if (typeof payload.call_id === 'string' && pendingYieldedScriptIds.has(payload.call_id)) {
+          const outputText = outputTextOf(payload);
+          if (outputText.includes('Script running')) {
+            // The yielded script is running: remember its cell so the wait
+            // continuation can be associated with the original pending call.
+            const cellMatch = outputText.match(/cell ID (\d+)/);
+            if (cellMatch !== null) {
+              const yieldedCell = Number(cellMatch[1]);
+              pendingCellForAwait = yieldedCell;
+              callIdToCell.set(payload.call_id, yieldedCell);
+              const cellCalls = pendingCellCalls.get(yieldedCell) ?? new Set();
+              cellCalls.add(payload.call_id);
+              pendingCellCalls.set(yieldedCell, cellCalls);
+            }
+          } else {
+            // Completion resolves ONLY its own association: a call that
+            // never yielded a cell just retires its own pending id; a call
+            // that yielded cell N retires ONLY cell N — never the cell
+            // another outstanding script is awaiting.
+            pendingCallIds.delete(payload.call_id);
+            pendingYieldedScriptIds.delete(payload.call_id);
+            const ownCell = callIdToCell.get(payload.call_id);
+            if (ownCell !== undefined) {
+              callIdToCell.delete(payload.call_id);
+              const finished = pendingCellCalls.get(ownCell) ?? new Set();
+              for (const pendingId of finished) pendingCallIds.delete(pendingId);
+              pendingCellCalls.delete(ownCell);
+              if (pendingCellForAwait === ownCell) {
+                pendingCellForAwait = null;
+              }
+            }
+          }
+        } else if (typeof payload.call_id === 'string') {
+          const outputText = outputTextOf(payload);
+          // ONLY a call explicitly mapped to a cell (a wait continuation
+          // bound to its referenced cell at call time) may settle that
+          // cell, and the mapping — NOT the latest-yield flag — decides:
+          // with cells 7 and 8 outstanding, cell 8's completion clears the
+          // latest-yield flag while cell 7 is still being observed, and
+          // cell 7's later wait completion must still settle cell 7 here.
+          // An unrelated call that happens to return `Script completed`
+          // retires its own id and clears NOTHING.
+          const mappedCell = waitCellByCallId.get(payload.call_id);
+          if (mappedCell !== undefined) {
+            // EVERY response retires THIS wait's mapping (a wait answered
+            // with `Script running...` is no longer outstanding — a later
+            // sequential wait for the same cell is not its overlap); the
+            // CELL's pending state persists until an actual completion.
+            waitCellByCallId.delete(payload.call_id);
+            // The outer wrapper's `Script completed` header does not settle
+            // the awaited cell when the SAME output announces a live inner
+            // handle (`Script completed\nProcess running with session ID S`):
+            // the inner observation is still active.
+            if (outputText.includes('Script completed')) {
+              // Capture the retired calls FIRST: if the same output exposes
+              // a live inner cell, they are RESTORED (the original
+              // observation stays pending until the inner cell completes).
+              const retiredCalls = new Set(pendingCellCalls.get(mappedCell) ?? []);
+              // The awaited CELL's completion settles it even when the SAME
+              // output later announces a live process handle: the shell
+              // observation returned; the handle is a NEW observation target
+              // tracked separately (fresh polls of it start a new chain).
+              const finished = pendingCellCalls.get(mappedCell) ?? new Set();
+              for (const pendingId of finished) pendingCallIds.delete(pendingId);
+              pendingCellCalls.delete(mappedCell);
+              if (pendingCellForAwait !== null && pendingCellForAwait === mappedCell) {
+                pendingCellForAwait = null;
+              }
+              // A WRAPPED wait's completion settles its whole chain: the
+              // wrapper cell's predecessor (the original observation) is
+              // retired with it.
+              let chainCell = mappedCell;
+              while (cellPredecessorByCell.has(chainCell)) {
+                const predecessorValue = cellPredecessorByCell.get(chainCell);
+                if (predecessorValue === undefined) break;
+                const predecessor = predecessorValue;
+                cellPredecessorByCell.delete(chainCell);
+                const chained = pendingCellCalls.get(predecessor) ?? new Set();
+                for (const pendingId of chained) pendingCallIds.delete(pendingId);
+                pendingCellCalls.delete(predecessor);
+                for (const chainedId of chained) retiredCalls.add(chainedId);
+                if (pendingCellForAwait !== null && pendingCellForAwait === predecessor) {
+                  pendingCellForAwait = null;
+                }
+                chainCell = predecessor;
+              }
+              const completedHandle = extractLiveHandle(outputText);
+              if (completedHandle !== null && completedHandle.kind === 'cell' && /running/i.test(outputText)) {
+                // The wrapper's completion header hides a LIVE INNER CELL:
+                // the original observation is still active — RESTORE the
+                // retired pending ids under the SURVIVING ANNOUNCED CELL
+                // (never under the completed wrapper cell, whose state
+                // would strand them forever) so fresh polls of it count as
+                // overlaps and its own later completion settles the chain.
+                workerChainActiveByPath.set(path, true);
+                workerChainHandleByPath.set(path, completedHandle);
+                const survivingCell = Number(completedHandle.value);
+                pendingCellCalls.set(Number.isFinite(survivingCell) ? survivingCell : mappedCell, retiredCalls);
+                for (const pendingId of retiredCalls) pendingCallIds.add(pendingId);
+              } else if (completedHandle !== null && /running/i.test(outputText)) {
+                // A live SESSION handle after completion: the shell
+                // observation returned; the process continues as a new
+                // chain target.
+                workerChainActiveByPath.set(path, true);
+                workerChainHandleByPath.set(path, completedHandle);
+              }
+            } else {
+              // A WRAPPED wait can itself yield a new cell (`wait({cell_id:
+              // 7})` returning `Script running with cell ID 10`): register
+              // the wrapper cell chained to the original so resuming cell
+              // 10 is a continuation and its completion settles the whole
+              // chain.
+              const wrappedHandle = extractLiveHandle(outputText);
+              if (wrappedHandle !== null && wrappedHandle.kind === 'cell') {
+                const wrapperCell = Number(wrappedHandle.value);
+                if (Number.isFinite(wrapperCell) && wrapperCell !== mappedCell) {
+                  cellPredecessorByCell.set(wrapperCell, mappedCell);
+                  const wrapperCalls = pendingCellCalls.get(wrapperCell) ?? new Set();
+                  wrapperCalls.add(payload.call_id);
+                  pendingCellCalls.set(wrapperCell, wrapperCalls);
+                }
+              }
+            }
+            pendingCallIds.delete(payload.call_id);
+          } else {
+            // An ordinary (non-yielded) call's own output resolves it.
+            pendingCallIds.delete(payload.call_id);
+          }
+        }
+        // Chronological extrema: rollouts are scanned newest-mtime first,
+        // so plain assignment would describe the last SCANNED file rather
+        // than the actual latest/earliest events across Root and Child.
+        if (Number.isFinite(atMs) && (summary.lastFunctionCallOutputAtMs === null || atMs > summary.lastFunctionCallOutputAtMs)) summary.lastFunctionCallOutputAtMs = atMs;
+      } else if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+        // Two installed host shapes record the same model decision: the
+        // `function_call` (JSON `arguments`) shape and the newer
+        // `custom_tool_call` shape whose `input` is a tool-DSL string, e.g.
+        // `const r = await tools.exec_command({cmd:"...",yield_time_ms:30000});text(r.output);`.
+        summary.functionCalls += 1;
+        fileSummary.functionCalls += 1;
+        const name = typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : 'unknown';
+        // CONTENT-BASED Root identification during the bounded scan: a
+        // rollout whose call NAMED spawn_agent is the Root session.
+        if (name === 'spawn_agent' && rootRolloutPath === null) rootRolloutPath = path;
+        if (Number.isFinite(atMs) && (summary.firstFunctionCallAtMs === null || atMs < summary.firstFunctionCallAtMs)) summary.firstFunctionCallAtMs = atMs;
+        toolNames[name] = (toolNames[name] ?? 0) + 1;
+        let args = null;
+        let callText = '';
+        if (typeof payload.arguments === 'string' && payload.arguments.length > 0) {
+          callText = payload.arguments;
+          try {
+            const parsedArguments = JSON.parse(payload.arguments);
+            if (parsedArguments !== null && typeof parsedArguments === 'object' && !Array.isArray(parsedArguments)) args = parsedArguments;
+          } catch { /* an unparseable argument string stays unclassified */ }
+        } else if (payload.arguments !== null && typeof payload.arguments === 'object' && !Array.isArray(payload.arguments)) {
+          args = payload.arguments;
+          callText = JSON.stringify(payload.arguments);
+        }
+        if (typeof payload.input === 'string') callText = `${callText}\n${payload.input}`;
+        // BOUNDED synthetic-role match from the spawn ARGUMENTS: ONLY the
+        // source-pinned effective role field (agent_type — SpawnAgentArgs
+        // has no `role` property, so a `role` alias is never the host's
+        // role selection) is inspected; any other argument content proves
+        // nothing. Nothing but the boolean and the spawn's call id
+        // survives the scan (no rollout text).
+        if (name === 'spawn_agent') {
+          spawnCallCount += 1;
+          if (!spawnedSyntheticRole && args !== null && args.agent_type === SYNTHETIC_ROLE_NAME) {
+            spawnedSyntheticRole = true;
+            syntheticSpawnCallId = typeof payload.call_id === 'string' ? payload.call_id : null;
+          }
+        }
+        // Requested yields: structured first (function_call arguments); the
+        // tool-DSL form is extracted LATER, from the effective directive and
+        // the actual operation argument segments (after the sites are
+        // scanned).
+        /** @type {number|null} the first yield this call requested (the clamp analysis key). */
+        let callYieldTimeMs = null;
+        if (args !== null && Number.isSafeInteger(args.yield_time_ms)) {
+          summary.requestedYieldCount += 1;
+          callYieldTimeMs = args.yield_time_ms;
+          if (summary.requestedYieldsMs.length < SESSION_MAX_YIELD_SAMPLES) summary.requestedYieldsMs.push(args.yield_time_ms);
+        }
+        // Exec/poll classification: the structured shapes carry `cmd` (an
+        // initial exec) and an empty-string `input` (a write_stdin poll);
+        // the tool-DSL shape names the same two operations in the call text.
+        /** @type {'initial-exec'|'empty-poll'|'other'} */
+        let callKind = 'other';
+        if (args !== null && typeof args.cmd === 'string') {
+          callKind = 'initial-exec';
+          summary.initialExecCalls += 1;
+          fileSummary.initialExecCalls += 1;
+          // Per-file exec fact: child evidence is derived AFTER the scan
+          // resolves Root, never during it (a Root exec scanned before the
+          // spawn marker must not become child evidence).
+          fileHadInitialExecByPath.set(path, true);
+          // INVOCATION evidence, not a mention: the structured cmd must BE
+          // the exact built worker command (an `echo <command>` wrapper is
+          // a printer, not a runner). The match is PENDING until its own
+          // observation chain carries the worker's marker.
+          if (input.workerEvidenceToken !== undefined && args.cmd === input.workerEvidenceToken
+            && typeof payload.call_id === 'string') workerExecCallOwner.set(payload.call_id, path);
+        } else if (args !== null && (typeof args.input === 'string' || args.session_id !== undefined || typeof args.chars === 'string')) {
+          // The EFFECTIVE input field decides: legacy `input` vs `chars` —
+          // when both are present and CONFLICT (one empty, one nonempty,
+          // e.g. legacy `input:""` with a Ctrl-C `chars`), the effective
+          // write is unresolved and stays UNCLASSIFIED; a nonempty field
+          // is a nonempty write; both empty (or both absent with a
+          // session id) is the configured empty poll.
+          const hasInput = typeof args.input === 'string';
+          const hasChars = typeof args.chars === 'string';
+          const inputEmpty = hasInput && args.input.length === 0;
+          const charsEmpty = hasChars && args.chars.length === 0;
+          const isEffectiveEmpty = hasInput && hasChars
+            ? (inputEmpty && charsEmpty)
+            : hasInput ? inputEmpty
+              : hasChars ? charsEmpty
+                : true;
+          if (isEffectiveEmpty) {
+            callKind = 'empty-poll';
+            summary.emptyPolls += 1;
+            fileSummary.emptyPolls += 1;
+            if (Number.isFinite(atMs) && (summary.firstEmptyPollAtMs === null || atMs < summary.firstEmptyPollAtMs)) summary.firstEmptyPollAtMs = atMs;
+          } else {
+            summary.otherFunctionCalls += 1;
+          }
+        } else if (args === null && WRAPPER_TOOL_NAMES.includes(name)) {
+          // Custom tool-DSL script for a RECOGNIZED EXECUTABLE WRAPPER:
+          // shell operations are detected at REAL call positions only —
+          // quoted/template-literal mentions and comments never classify
+          // (a script that prints or comments `write_stdin(...)` runs no
+          // poll, and a commented `exec_command` is no child-execution
+          // evidence). Other custom tools (apply_patch and the like) stay
+          // unclassified: their input is not executed as code. Script-level
+          // escapes are PRESERVED: the rollout JSON already decoded the
+          // enclosing string, so a remaining `\"` is literal script text
+          // whose string contents the lexical scanner skips natively —
+          // normalizing it to a delimiter would turn string contents into
+          // executable-looking script.
+          // COOPERATIVE deadline check per call: a hostile script (tens of
+          // thousands of awaited polls in one line) would otherwise hold
+          // the event loop past cleanup — past the deadline the
+          // classification stops and reports truncation (fail closed).
+          if (Date.now() > analysisDeadline) {
+            summary.truncated = true;
+            summary.otherFunctionCalls += 1;
+            return false;
+          }
+          if (process.env.WAIT_ROUTE_DBG) console.error('DBG dsl entered, callText len', callText.length);
+          const execSites = callSitesForOperation(callText, 'exec_command');
+          const stdinSites = callSitesForOperation(callText, 'write_stdin');
+          const callNameStarts = [...execSites, ...stdinSites]
+            .map((openParen) => callNameStartBefore(callText, openParen));
+          // SITE CAP: beyond this the per-pair serialization scans become
+          // quadratic on hostile scripts — skip the analysis and report
+          // truncation (the exactly-one-spawn grant fails closed on it).
+          // HELPER INVOCATIONS count toward the cap too: 30k sequential
+          // `await poll()` calls enter the same serialization scans. The
+          // helper scan runs when the LITERAL sites alone are within the
+          // cap, the TOTAL (literal sites + helper invocations) governs,
+          // and over the total cap the helper analysis is DISCARDED
+          // (never fed downstream) with truncation reported.
+          /** @type {string[]} */
+          let pollingHelperNames = [];
+          let helperCallStarts = [];
+          if (execSites.length + stdinSites.length <= SESSION_MAX_SITES_PER_CALL) {
+            pollingHelperNames = [...callText.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\b)?\s*(?:\([^)]*\)|[\w$]+)\s*=>/g), ...callText.matchAll(/\b(?:async\s+)?function\s+([\w$]+)/g)]
+              .map((match) => ({ name: match[1], declStart: match.index }))
+              .slice(0, 64)
+              .filter((helper, index, all) => all.findIndex((other) => other.name === helper.name) === index)
+              // Only helpers whose OWN statement contains a shell operation
+              // are polling helpers: an unrelated `const f = async () => 1`
+              // dispatched as auxiliary work serializes nothing.
+              .filter(({ declStart }) => {
+                const statementEnd = statementEndIndex(callText, declStart);
+                return callNameStarts.some((start) => start > declStart && start < statementEnd);
+              })
+              .map((helper) => helper.name);
+            for (const helperName of pollingHelperNames) {
+              const declaration = [...callText.matchAll(new RegExp(`(?:const|let|var)\\s+${helperName}\\s*=|\\b(?:async\\s+)?function\\s+${helperName}\\b`, 'g'))][0];
+              const declarationEnd = declaration === undefined ? -1 : helperDeclarationEndIndex(callText, declaration.index);
+              for (const openParen of callSitesForOperation(stripSegmentComments(callText), helperName)) {
+                // The DECLARATION's own parameter list (`function poll()`)
+                // is not an invocation.
+                if (openParen < declarationEnd) continue;
+                helperCallStarts.push(callNameStartBefore(callText, openParen));
+              }
+            }
+          }
+          const withinSiteCap = execSites.length + stdinSites.length + helperCallStarts.length <= SESSION_MAX_SITES_PER_CALL;
+          if (!withinSiteCap) {
+            summary.truncated = true;
+            pollingHelperNames = [];
+            helperCallStarts = [];
+          }
+          const dispatchRanges = withinSiteCap ? concurrentDispatchRanges(callText) : [];
+          const dispatchSiteStarts = [...callNameStarts, ...helperCallStarts].sort((left, right) => left - right);          // Multiple operation sites are the forbidden concurrency ONLY
+          // when they are dispatched concurrently: every site directly
+          // preceded by `await` is a sequential observation (compliant
+          // same-handle polling), sites inside a Promise.all/race/
+          // allSettled/any dispatch run concurrently, and any site that is
+          // neither awaited nor collected is fire-and-forget concurrency.
+          // A dispatch may also run ONE site N times concurrently
+          // (`Promise.all([1,2].map(async () => await tools.write_stdin(...)))`),
+          // and awaited sites inside separately defined concurrent
+          // callbacks are ordered by nothing — so ANY script combining a
+          // concurrent dispatch construct with an operation site is
+          // treated as concurrent (never as confirmed absence of overlap).
+          if (execSites.length + stdinSites.length > 0) {
+            // Concurrent-dispatch violation ONLY when an operation site can
+            // actually overlap: a site inside a dispatch span runs with the
+            // dispatch's other callbacks (possibly N times), an ASYNC
+            // HELPER whose body contains a shell operation and which is
+            // dispatched inside a span runs its poll N times concurrently
+            // (`async function poll() { await tools.write_stdin(...) };
+            // Promise.all([poll(), poll()])`), and with multiple sites an
+            // unawaited one is fire-and-forget. A dispatch of a helper with
+            // NO shell operation (`const f = async () => 1`) cannot
+            // overlap the polls and is never flagged. A single unawaited
+            // site cannot overlap anything by itself; with multiple sites,
+            // an unawaited one is fire-and-forget concurrency.
+            // A site inside a dispatch range is concurrent only as an
+            // INDEPENDENT branch (two polling callbacks) or a REPEATED
+            // invocation (.map-style) — a single direct call or awaited
+            // sites inside one callback execute sequentially.
+            // Outside combinators, repeated callback dispatches
+            // (`[1,2].forEach(async () => await tools.write_stdin(...))`)
+            // overlap too. Storing promises and awaiting them LATER is
+            // sequential only when EVERY consecutive site pair has an
+            // await between them — starting both polls before awaiting
+            // either (`const p = a(); const q = b(); await p; await q;`)
+            // overlaps regardless of the await count.
+            const orderedSites = withinSiteCap
+              ? [...callNameStarts].sort((left, right) => left - right)
+              : [];
+
+
+            // Literal sites INSIDE declared helper bodies are the helper's
+            // business (the invocation rules below govern them): exclude
+            // them from the direct-site serialization pairs. The SAME
+            // declaration boundary as the invocation loops applies — a
+            // `function`-form declaration ends at its body's closing
+            // brace, so a DIRECT poll sharing the line after the body is
+            // NOT inside the helper and stays in the pairs. The NEAREST
+            // declaration before the site owns it (redeclaration edge).
+            const directSiteStarts = orderedSites.filter((start) => !pollingHelperNames.some((helperName) => {
+              let nearest = null;
+              for (const declMatch of callText.slice(0, start).matchAll(new RegExp(`(?:const|let|var)\\s+${helperName}\\s*=|\\bfunction\\s+${helperName}\\b`, 'g'))) nearest = declMatch;
+              if (nearest === null) return false;
+              const declarationEnd = helperDeclarationEndIndex(callText, nearest.index);
+              return start > nearest.index && start < declarationEnd;
+            }));
+            const serialized = directSiteStarts.every((start, index) => {
+              if (index === 0) return true;
+              const previousStart = directSiteStarts[index - 1];
+              if (isDirectlyAwaited(callText, previousStart)) return true;
+              const assignMatch = new RegExp(`([\\w$]+)\\s*=\\s*(?:[\\w$]+\\s*\\.\\s*)*\\s*$`).exec(callText.slice(0, previousStart));
+              if (assignMatch === null) return false;
+              const varName = assignMatch[1].replaceAll('$', '\\$&');
+              // The gap scan runs on the STRING-STRIPPED view: printed text
+              // (`text("await p")`) is content and serializes nothing. The
+              // gap is SLICED FROM THE ORIGINAL TEXT first — the stripped
+              // view's offsets differ once strings collapse.
+              const between = stripStringValuesKeepKeys(stripSegmentComments(callText.slice(previousStart, start)));
+              // The await must START A STATEMENT in the gap: after `;`, `}`,
+              // or an ASI newline — but a newline directly after a
+              // conditional head (`if (false)`) is the conditional's body
+              // and settles nothing. An awaited JOIN that includes the
+              // stored poll (`await Promise.all([p])`) settles it too.
+              const statementAwait = new RegExp(`(?:^|[;}]\\s*)await\\s+${varName}\\b`).test(between)
+                || (new RegExp(`\\n\\s*await\\s+${varName}\\b`).test(between)
+                  && !/\b(?:if|while|for)\s*\([^)]*\)\s*$/.test(between.slice(0, between.indexOf(`await ${varName}`))));
+              const joinAwait = new RegExp(`(?:^|[;}]\\s*)await\\s+Promise\\.all\\([^)]*\\b${varName}\\b[^)]*\\)`).test(between);
+              return statementAwait || joinAwait;
+            });
+            const concurrent = callNameStarts.filter((start) => callNameStarts.length > 1 && !serialized && !isDirectlyAwaited(callText, start));
+            // HELPER INVOCATIONS are observation sites too:
+            // `[1,2].map(() => poll())` runs the helper's poll N times —
+            // the branch/repeated-dispatch checks must see those call
+            // positions, not just literal operation sites.
+            // Repeated UNAWAITED helper invocations outside combinators
+            // (`const a = poll(); const b = poll(); await a; await b;`)
+            // overlap: the serialization gap rule applies to helper call
+            // positions with the same var-reference discipline as sites.
+            // The overlap check runs across the COMBINED execution order of
+            // direct sites and FREE helper invocations (dispatch-contained
+            // invocations are the per-dispatch counts' business): `const p =
+            // poll(); await tools.write_stdin(...); await p;` starts two
+            // overlapping observations even though each list alone looks
+            // serialized.
+            const freeHelperStarts = helperCallStarts
+              .filter((start) => !dispatchRanges.some(([rangeStart, rangeEnd]) => start > rangeStart && start < rangeEnd))
+              .sort((left, right) => left - right);
+            const orderedCombined = [...directSiteStarts, ...freeHelperStarts].sort((left, right) => left - right);
+            const serializedCombined = orderedCombined.every((start, index) => {
+              if (index === 0) return true;
+              const previousStart = orderedCombined[index - 1];
+              if (isDirectlyAwaited(callText, previousStart)) return true;
+              const assignMatch = new RegExp(`([\\w$]+)\\s*=\\s*(?:[\\w$]+\\s*\\.\\s*)*\\s*$`).exec(callText.slice(0, previousStart));
+              if (assignMatch === null) return false;
+              const varName = assignMatch[1].replaceAll('$', '\\$&');
+              const between = stripStringValuesKeepKeys(stripSegmentComments(callText.slice(previousStart, start)));
+              // ASI newline boundaries count (`await p` on its own line); a
+              // newline directly after a conditional head is that
+              // conditional's body and settles nothing. An awaited JOIN that
+              // includes the stored poll settles it too.
+              const awaitOk = new RegExp(`(?:^|[;}]\\s*)await\\s+${varName}\\b`).test(between)
+                || (new RegExp(`\\n\\s*await\\s+${varName}\\b`).test(between)
+                  && !/\b(?:if|while|for)\s*\([^)]*\)\s*$/.test(between.slice(0, between.indexOf(`await ${varName}`))))
+                || new RegExp(`(?:^|[;}]\\s*)await\\s+Promise\\.all\\([^)]*\\b${varName}\\b[^)]*\\)`).test(between);
+              return awaitOk;
+            });
+            let dispatchedBranches = 0;
+            for (const [rangeStart, rangeEnd] of dispatchRanges) dispatchedBranches += rangePollingBranches(callText, rangeStart, rangeEnd, dispatchSiteStarts);
+            const repeatedBranches = repeatedCallbackDispatchBranches(callText, callNameStarts, dispatchRanges, pollingHelperNames);
+            // One increment per script: the combined check subsumes the
+            // direct-site, dispatch-branch, repeated-dispatch, loop-body,
+            // and helper-invocation rules.
+            if (concurrent.length > 0 || dispatchedBranches > 0 || repeatedBranches > 0
+              || loopBodyContainsOperation(callText, callNameStarts)
+              || dispatchedPollingHelperInvocations(callText, dispatchSiteStarts, dispatchRanges) >= 2
+              || !serializedCombined) summary.parallelToolCallViolations += 1;
+
+          }
+          // DECLARED-HELPER bodies: a body site executes once per
+          // ESTABLISHED invocation of the helper — never-invoked helpers
+          // execute nothing, and unknown multiplicity counts once (the
+          // summary reports the established minimum honestly).
+          const helperMultiplicityBySite = new Map();
+          for (const helperName of pollingHelperNames) {
+            const declaration = [...callText.matchAll(new RegExp(`(?:const|let|var)\\s+${helperName}\\s*=|\\b(?:async\\s+)?function\\s+${helperName}\\b`, 'g'))][0];
+            if (declaration === undefined) continue;
+            const declarationEnd = helperDeclarationEndIndex(callText, declaration.index);
+            let invocations = 0;
+            for (const openParen of callSitesForOperation(stripSegmentComments(callText), helperName)) {
+              if (openParen < declarationEnd) continue;
+              invocations += 1;
+            }
+            // IMMEDIATELY INVOKED declarations (`const p = (async () =>
+            // ...)();`) execute their body exactly once at the declaration
+            // itself — no later `p()` call is needed. Without this, the
+            // executed command and requested yield would vanish from the
+            // summary.
+            const statementText = callText.slice(declaration.index, declarationEnd).trim();
+            if (/\)\s*\(\)\s*;?$/.test(statementText)) invocations = Math.max(invocations, 1);
+            const referencePattern = new RegExp(`\\.\\s*(?:map|forEach|filter|flatMap)\\s*\\(\\s*${helperName}\\s*\\)`, 'g');
+            for (const namedReference of callText.matchAll(referencePattern)) {
+              // Named callback references outside dispatch ranges count too
+              // (`[1,2].forEach(poll)`), with the receiver's multiplicity.
+              const insideDispatch = dispatchRanges.some(([rangeStart, rangeEnd]) => namedReference.index > rangeStart && namedReference.index < rangeEnd);
+              const methodStart = namedReference.index + 1;
+              if (!insideDispatch) {
+                const elements = receiverElementCount(callText, methodStart);
+                invocations += elements === null ? 2 : elements;
+                continue;
+              }
+              const elements = receiverElementCount(callText, methodStart);
+              invocations += elements === null ? 2 : elements;
+            }
+            for (const openParen of [...execSites, ...stdinSites]) {
+              const site = openParen;
+              const siteStart = callNameStartBefore(callText, site);
+              if (siteStart > declaration.index && siteStart < declarationEnd) {
+                helperMultiplicityBySite.set(site, invocations);
+              }
+            }
+          }
+          const siteMultiplicity = (/** @type {number} */ site) => helperMultiplicityBySite.get(site) ?? 1;
+          // Requested yields (DSL shape) come from EFFECTIVE sources only:
+          // the leading @exec directive payload and the argument segments
+          // of the ACTUAL operation sites — an unrelated object literal
+          // (`const unused = {yield_time_ms: N}`) requests nothing. Within
+          // one segment the LAST duplicate key wins (JavaScript
+          // semantics). Each value must be a COMPLETE numeric literal at a
+          // parameter boundary; unsupported expressions stay unclassified.
+          /** @type {{position: number, value: number}[]} */
+          const dslYieldCandidates = [];
+          // The wrapper honors the directive ONLY as the script's LEADING
+          // pragma — the first non-blank line of the raw script. An inline
+          // or later-line `// @exec:` comment requests nothing.
+          const firstContentLine = callText.split('\n').find((line) => line.trim().length > 0) ?? '';
+          const directivePayload = /^\s*\/\/\s*@exec\s*:\s*\{([^}]*)\}\s*$/.exec(firstContentLine);
+          if (directivePayload !== null) {
+            const directiveValue = effectiveYieldValue(directivePayload[1]);
+            if (directiveValue !== null) dslYieldCandidates.push({ position: 0, value: directiveValue });
+          }
+          for (const openParen of [...execSites, ...stdinSites, ...callSitesForOperation(callText, 'wait')]) {
+            // COOPERATIVE deadline check per site (bounded analysis).
+            if (Date.now() > analysisDeadline) {
+              summary.truncated = true;
+              break;
+            }
+            const segment = balancedCallSegment(callText, openParen);
+            if (segment === null) continue;
+            // Comments only — the value scanner is quote-aware and must
+            // SEE quoted keys (`["yield_time_ms"]`); collapsing string
+            // values here would erase them.
+            const segmentValue = effectiveYieldValue(stripSegmentComments(segment));
+            if (segmentValue !== null) dslYieldCandidates.push({ position: openParen, value: segmentValue });
+          }
+          dslYieldCandidates.sort((left, right) => left.position - right.position);
+          for (const candidate of dslYieldCandidates) {
+            // Each ESTABLISHED invocation of the site requests its own
+            // window: multiplicity multiplies the recorded requests.
+            const candidateMultiplicity = siteMultiplicity(candidate.position);
+            for (let i = 0; i < candidateMultiplicity; i += 1) {
+              summary.requestedYieldCount += 1;
+              if (callYieldTimeMs === null) callYieldTimeMs = candidate.value;
+              if (summary.requestedYieldsMs.length < SESSION_MAX_YIELD_SAMPLES) summary.requestedYieldsMs.push(candidate.value);
+            }
+          }
+          if (execSites.length > 0) {
+            callKind = 'initial-exec';
+            const execMultiplicity = execSites.reduce((total, site) => total + siteMultiplicity(site), 0);
+            summary.initialExecCalls += execMultiplicity;
+            fileSummary.initialExecCalls += execMultiplicity;
+            if (execMultiplicity > 0) fileHadInitialExecByPath.set(path, true);
+            const workerToken = input.workerEvidenceToken;
+            // INVOCATION evidence in the DSL shape: the DECODED cmd value
+            // of an exec site must BE the exact built command (a comment
+            // or concatenation mentioning it is not a runner). The script
+            // must carry EXACTLY ONE exec site — a multi-exec script's
+            // aggregate output cannot be attributed to the matched inner
+            // invocation — and the script text itself must NOT mention the
+            // completion marker: a `text("<marker>")` after the exec makes
+            // the aggregate output's marker fabricated, not observed (fail
+            // closed). The match is PENDING until the observation chain
+            // carries the worker's marker.
+            // A script mixing the exec with a POLL of another handle has an
+            // aggregate output no single operation produced — ambiguous,
+            // fail closed.
+            if (workerToken !== undefined && execSites.length === 1 && stdinSites.length === 0 && !callText.includes(COMPLETION_MARKER)) {
+              const segment = balancedCallSegment(callText, execSites[0]);
+              if (segment !== null && decodeDslCmdValue(segment) === workerToken
+                && typeof payload.call_id === 'string') workerExecCallOwner.set(payload.call_id, path);
+            }
+          }
+          // Inspect the ACTUAL input of EVERY stdin site: only a
+          // confirmed-empty input is an empty observation. Quoted keys with
+          // escape sequences (e.g. "\u0003" — Ctrl-C) and nonliteral values
+          // (e.g. chars: signal) are UNCLASSIFIED rather than assumed
+          // empty: interruption/nonempty writes carry a different timeout
+          // policy, so conflating them corrupts configured-window
+          // measurements.
+          // A write_stdin whose arguments are a SELF-CONTAINED LITERAL
+          // object carrying NO chars/input key at all is an empty poll
+          // (omitted input defaults to empty). A literal empty quoted value
+          // is also empty — but only when NO spread and NO duplicate key
+          // can override it. INDIRECT shapes (a bare identifier like
+          // `tools.write_stdin(args)` or a spread `{...args}`) stay
+          // UNCLASSIFIED when the key is absent: their actual arguments
+          // can carry nonempty input the rollout never shows.
+          // The ARGUMENT SEGMENT (balanced parens, up to the call's closing
+          // paren) is inspected instead of the whole script: a naive
+          // [^)]* stops at the nested `)` of e.g. Number("123") and misses
+          // the later chars property, misclassifying nonempty input as an
+          // empty poll.
+          for (const stdinSite of stdinSites) {
+            // COOPERATIVE deadline check per site (bounded analysis).
+            if (Date.now() > analysisDeadline) {
+              summary.truncated = true;
+              break;
+            }
+            const wsSegment = balancedCallSegment(callText, stdinSite);
+            // Comments are stripped BEFORE key detection: a key separated
+            // from its colon by a comment is still the effective key, and
+            // a commented-out key is not one. String contents survive.
+            const effectiveSegment = wsSegment === null ? null : stripSegmentComments(wsSegment.trim());
+            const trimmedSegment = effectiveSegment;
+            const hasSpread = trimmedSegment !== null && trimmedSegment.includes('...');
+            const keyMatches = trimmedSegment === null ? [] : [...trimmedSegment.matchAll(/["']?(?:chars|input)["']?\s*:/g)];
+            const charsEmptyQuoted = trimmedSegment !== null && /["']?(?:chars|input)["']?\s*:\s*(['"])\1\s*(?=[,)}]|$)/.test(trimmedSegment);
+            // OPAQUE properties make the effective input unprovable:
+            // shorthand (`chars` with no colon — the variable may hold
+            // nonempty input), COMPUTED keys (`["chars"]:` — the key is
+            // dynamic), and a stray backslash outside strings (unparseable
+            // escaped shape) all force UNCLASSIFIED — only proven omission
+            // or a literal empty value may count as the empty poll.
+            const strippedSegment = trimmedSegment === null ? null : stripStringValuesKeepKeys(trimmedSegment);
+            const hasOpaqueProperties = strippedSegment === null
+              || /\\/.test(strippedSegment)
+              || /(^|[{,]\s*)(\[[^\]]*\]|[A-Za-z_$][\w$]*)\s*(?=[,}])/.test(strippedSegment)
+              || /(^|[{,]\s*)\[[^\]]*\]\s*:/.test(strippedSegment)
+              // ACCESSOR properties (`get chars(){...}`) compute their value
+              // at read time — their missing colon-form key proves nothing.
+              || /\b(?:get|set)\s+["']?[\w$]+["']?\s*\(/.test(strippedSegment);
+            // OMISSION as empty requires the SELF-CONTAINED LITERAL
+            // argument shape (object literal or keyword-argument list) with
+            // no spread and no opaque properties; an explicit literal empty
+            // is proof only when no spread, no opaque properties, and no
+            // duplicate key can override it.
+            const confirmedEmpty = !hasOpaqueProperties && !hasSpread
+              && ((trimmedSegment !== null && keyMatches.length === 0
+                && /^(\{|["']?[A-Za-z_$][\w$]*["']?\s*:)/.test(trimmedSegment))
+                || (keyMatches.length === 1 && charsEmptyQuoted));
+            if (confirmedEmpty) {
+              if (callKind !== 'initial-exec') callKind = 'empty-poll';
+              const pollMultiplicity = siteMultiplicity(stdinSite);
+              summary.emptyPolls += pollMultiplicity;
+              fileSummary.emptyPolls += pollMultiplicity;
+              // The OUTER script-call timestamp is the poll's start only
+              // when the poll is the script's single operation AND its
+              // execution is IMMEDIATE — the script's only `await` is the
+              // one directly preceding the poll, with no earlier
+              // statement (a delayed start — a timer, preceding awaits —
+              // leaves the poll's actual start unproven and the field
+              // unset).
+              const firstStdinStart = callNameStartBefore(callText, stdinSite);
+              const pollPrefix = callText.slice(0, firstStdinStart);
+              // A PROVEN immediate shape only: after stripping at most one
+              // leading `const|let|var NAME =` and the `await` keyword,
+              // NOTHING may remain before the poll — a semicolon-free
+              // synchronous delay (`while (...) {...} text(await ...)`)
+              // delays the start just as much as a statement with a
+              // semicolon. The poll's ARGUMENTS may suspend too
+              // (`session_id: await new Promise(...)`) — same rule.
+              const immediatePrefix = pollPrefix
+                // The documented directive is a leading COMMENT: it executes
+                // nothing and never delays the poll.
+                .replace(/^\s*\/\/\s*@exec\s*:[^\n]*\n/, '')
+                .replace(/^\s*(?:const|let|var)\s+[\w$]+\s*=\s*/, '')
+                // A text() WRAPPER around the awaited poll (`text(await
+                // tools.write_stdin(...))` — the recorded continuation
+                // shape) executes the poll immediately too.
+                .replace(/^\s*[\w$]+\s*\(\s*/, '')
+                .replace(/^\s*await\s*/, '');
+              // The poll's ARGUMENTS may suspend or delay too (`session_id:
+              // await new Promise(...)`, a busy-wait IIFE) — any call in the
+              // argument segment can push the real start past the call
+              // timestamp, so the start stays unproven unless the arguments
+              // are pure literals.
+              const argumentText = stripSegmentComments(wsSegment ?? '');
+              const pollIsImmediate = isDirectlyAwaited(callText, firstStdinStart)
+                && /^(?:[\w$]+\s*\(\s*)?(?:[\w$]+\s*\.\s*)*$/.test(immediatePrefix.trim())
+                && !/\bawait\b/.test(argumentText)
+                && !/\bnew\b|[\w$]\s*\(/.test(argumentText);
+              if (execSites.length === 0 && stdinSites.length === 1 && pollIsImmediate
+                && Number.isFinite(atMs) && (summary.firstEmptyPollAtMs === null || atMs < summary.firstEmptyPollAtMs)) summary.firstEmptyPollAtMs = atMs;
+            } else {
+              if (callKind !== 'initial-exec' && callKind !== 'empty-poll') callKind = 'other';
+              summary.otherFunctionCalls += 1;
+            }
+          }
+          if (execSites.length === 0 && stdinSites.length === 0) summary.otherFunctionCalls += 1;
+        } else {
+          summary.otherFunctionCalls += 1;
+        }
+        if (summary.calls.length < SESSION_MAX_YIELD_SAMPLES) {
+          summary.calls.push({
+            atMs: Number.isFinite(atMs) ? atMs : null,
+            kind: callKind,
+            name,
+            yieldTimeMs: callYieldTimeMs,
+          });
+          // Child evidence is NEVER attributed here: Root may not be
+          // resolved yet (a Root exec can precede the spawn marker in its
+          // own rollout), and the flag would be sticky. The post-scan
+          // reconciliation below derives it from the complete per-file
+          // facts.
+        } else {
+          summary.callsTruncated = true;
+        }
+        // A continuation is an ACTUAL wait operation (wait_agent name, or a
+        // write_stdin whose arguments reference the pending cell id). A
+        // second write_stdin WITHOUT the cell reference starts another
+        // observation and IS a violation.
+        // The host resumes a yielded script through wait({cell_id: N}):
+        // the continuation is an ACTUAL wait call whose cell_id matches.
+        // Script-tool shape: an ACTUAL wait(...) call site (lexical scan —
+        // quoted mentions and comments never establish continuation
+        // identity) whose ARGUMENT SEGMENT carries a COMPLETE cell-id
+        // literal (an expression like `3 + 1` references a different cell
+        // and stays unclassified).
+        let waitCellMatch = null;
+        for (const waitSite of callSitesForOperation(callText, 'wait')) {
+          const waitSegment = balancedCallSegment(callText, waitSite);
+          if (waitSegment === null) continue;
+          // EFFECTIVE-argument validation: comments are stripped, a spread
+          // or a DUPLICATE cell_id key (`{cell_id:7,cell_id:999}` passes
+          // 999) makes the first literal a lie — such segments stay
+          // unclassified, never matched against the outstanding cell. A
+          // COMPUTED cell key (`["cell_id"]:999`) executes unresolvably —
+          // same rule.
+          const effectiveWaitSegment = stripSegmentComments(waitSegment.trim());
+          if (effectiveWaitSegment.includes('...')) continue;
+          if (/(?:^|[{,])\s*\[[^\][]*\]\s*:/.test(effectiveWaitSegment)) continue;
+          const cellKeyCount = [...effectiveWaitSegment.matchAll(/["']?cell_id["']?\s*:/g)].length;
+          if (cellKeyCount !== 1) continue;
+          const cellMatch = /cell_id["']?\s*:\s*["']?(\d+)["']?\s*(?=[,}\n]|$)/.exec(effectiveWaitSegment);
+          if (cellMatch !== null) {
+            waitCellMatch = cellMatch;
+            break;
+          }
+        }
+        // Structured shape: name === 'wait' with JSON args.cell_id matching
+        // ANY outstanding yielded cell (the per-cell pending map, not just
+        // the most recent yield — with cells 1 and 2 outstanding, a wait
+        // for cell 1 is still a continuation). Script-tool shape: a
+        // wait(...) call whose complete cell_id literal matches any
+        // outstanding cell. Either is a CONTINUATION, not a new
+        // observation; the continuation's own terminal output retires its
+        // pending id.
+        const continuationCellRef = args !== null && args.cell_id !== undefined ? String(args.cell_id)
+          : waitCellMatch !== null ? waitCellMatch[1]
+            : null;
+        const structuredWait = name === 'wait' && continuationCellRef !== null
+          && [...pendingCellCalls.keys()].some((cell) => String(cell) === continuationCellRef);
+        const isWaitOperation = structuredWait
+          || (waitCellMatch !== null && [...pendingCellCalls.keys()].includes(Number(waitCellMatch[1])));
+        const isContinuation = pendingCellCalls.size > 0 && isWaitOperation;
+        // Each wait call is bound to the cell IT references (from its
+        // structured cell_id argument or its script text) so its terminal
+        // output settles THAT cell — never whichever cell was awaited most
+        // recently.
+        if (typeof payload.call_id === 'string') {
+          let referencedCell = null;
+          if (structuredWait) referencedCell = Number(args.cell_id);
+          else if (waitCellMatch !== null) referencedCell = Number(waitCellMatch[1]);
+          if (referencedCell !== null && Number.isFinite(referencedCell)) {
+            // The continuation exemption covers overlapping the SUSPENDED
+            // script, never overlapping ANOTHER UNANSWERED wait: a second
+            // wait for a cell whose first wait has not returned yet is a
+            // fresh overlapping observation.
+            if (isContinuation && [...waitCellByCallId.values()].some((cell) => cell === referencedCell)) {
+              summary.parallelToolCallViolations += 1;
+            }
+            waitCellByCallId.set(payload.call_id, referencedCell);
+          }
+        }
+        const outputText = outputTextOf(payload);
+        if (isContinuation && outputText.includes('Script completed')) {
+          pendingCallIds.delete(payload.call_id);
+        }
+        if (pendingCallIds.size > 0 && !isContinuation) summary.parallelToolCallViolations += 1;
+        // The continuation exemption covers THE WAIT ITSELF, never other
+        // operations sharing the script: `write_stdin(...); wait({cell_id:
+        // N})` still launches a fresh poll that overlaps the outstanding
+        // cell, so a continuation script carrying more than its own wait
+        // site counts the violation.
+        if (isContinuation && args === null
+          && callSitesForOperation(callText, 'exec_command').length + callSitesForOperation(callText, 'write_stdin').length + callSitesForOperation(callText, 'wait').length > 1) summary.parallelToolCallViolations += 1;
+        // A yielded script whose INNER write_stdin observation may still be
+        // pending stays in the pending set: outer call/output alternation
+        // does not prove the inner observation completed, so concurrency
+        // through yielded scripts is reported as unproven (the pending id
+        // is retained rather than deleted on the outer output).
+        if (typeof payload.call_id === 'string') {
+          pendingCallIds.add(payload.call_id);
+          // Chain tracking: while the matched worker observation has a
+          // LIVE handle in this rollout, a wait/write_stdin poll that
+          // REFERENCES THAT HANDLE continues the observation (its result
+          // may carry the worker's marker). The script must carry EXACTLY
+          // ONE poll operation — a multi-poll script's aggregate output
+          // cannot be attributed to the matched observation (a poll of an
+          // unrelated handle in the same script is not the worker's
+          // result). A poll of any other handle is an unrelated
+          // observation, never this chain's continuation.
+          const chainHandle = workerChainHandleByPath.get(path);
+          const chainPollSiteCount = callSitesForOperation(callText, 'wait').length + callSitesForOperation(callText, 'write_stdin').length;
+          if (typeof payload.call_id === 'string' && workerChainActiveByPath.get(path) === true && chainHandle !== undefined
+            && !callText.includes(COMPLETION_MARKER)
+            && (name === 'wait' || name === 'write_stdin' || chainPollSiteCount === 1)
+            && chainPollSiteCount <= 1
+            && referencesChainHandle(callText, args, chainHandle, name)) workerChainCallOwner.set(payload.call_id, path);
+          // Both installed shapes can be yielded scripts whose inner
+          // observation stays pending: the outer output does not prove the
+          // inner operation finished (tracked in pendingYieldedScriptIds
+          // so the output handler retains the pending id). An initial-exec
+          // script registers TOO — a yielded `Script running with cell ID`
+          // leaves ITS inner operation outstanding, and only the observed
+          // output resolves it.
+          // LEXICAL operation facts only: a comment or quoted mention of
+          // `write_stdin` in a wait-continuation script must not register
+          // it as a yielded script (its `Script completed` output would
+          // bypass the wait-cell settlement and strand the observation).
+          if (callKind === 'initial-exec' || callSitesForOperation(callText, 'write_stdin').length > 0) pendingYieldedScriptIds.add(payload.call_id);
+        }
+      }
+      return false;
+    }
+  }
+  // Child-exec provenance is derived AFTER Root identification and after
+  // ALL rollouts are scanned: an exec in a file scanned before the
+  // spawn_agent marker (same-file Root exec) cannot set the flag
+  // prematurely — the flag is derived here from the COMPLETE per-file
+  // facts, never during the scan. Any initial-exec in a NON-Root rollout
+  // counts as child exec; it only corroborates the managed-child lifecycle
+  // when the child rollout is PARENT-LINKED to the Root session (the child
+  // rollout's session_meta parent_thread_id equals the Root rollout's own
+  // session_meta id — the source-pinned spawn edge).
+  const rootMeta = rootRolloutPath !== null ? fileMetaByPath.get(rootRolloutPath) : undefined;
+  let linkedChildExecSeen = false;
+  for (const [execPath, hadExec] of fileHadInitialExecByPath) {
+    if (!hadExec || execPath === rootRolloutPath) continue;
+    childExecSeen = true;
+    // The linked child's exec must reference the PROBE WORKER when the
+    // caller supplies the worker evidence token: an unrelated child
+    // command (`echo hello`) must not let the Root-launched worker be
+    // attributed to the child.
+    const execMatchesWorker = input.workerEvidenceToken === undefined
+      || fileExecMatchedWorker.get(execPath) === true;
+    const childMeta = fileMetaByPath.get(execPath);
+    if (execMatchesWorker && rootMeta !== undefined && childMeta !== undefined
+      && rootMeta !== null && childMeta !== null
+      && childMeta.parentThreadId !== undefined && childMeta.parentThreadId !== null
+      && String(childMeta.parentThreadId) === String(rootMeta.id)) {
+      linkedChildExecSeen = true;
+    }
+  }
+  Object.defineProperty(summary, 'childExecSeen', { value: childExecSeen, enumerable: false });
+  Object.defineProperty(summary, 'spawnedSyntheticRole', { value: spawnedSyntheticRole, enumerable: false });
+  Object.defineProperty(summary, 'syntheticSpawnAnswered', { value: syntheticSpawnAnswered, enumerable: false });
+  Object.defineProperty(summary, 'linkedChildExecSeen', { value: linkedChildExecSeen, enumerable: false });
+  // The FULL-scan spawn count (never the sampled calls array): the grant
+  // requires exactly one spawn, and a truncated scan cannot establish any
+  // count — the consumer must fail closed on it.
+  Object.defineProperty(summary, 'spawnAgentCallCount', { value: spawnCallCount, enumerable: false });
+  return summary;
 }
 
 /**
@@ -1991,24 +4428,42 @@ export function buildShellWorkerCommand(nodePath, workerPath, platform = process
 /**
  * Runs the host exec for the selected case. The returned stdout is bounded;
  * stderr is a count only. The observation budget kills the child on expiry.
- * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number}} input
+ * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number, profile: {workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}}} input
  */
 async function runHostExec(input) {
-  const { caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline } = input;
+  const { caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline, profile } = input;
   /** @type {string[]} */
   let args;
+  /** The exact built worker invocation (shell cases) — the bounded evidence token for child-exec correlation. @type {string|null} */
+  let workerCommand = null;
   if (caseLabel === 'hook-entry') {
     // Positive fixture runs MUST NOT skip the fixture config: isolation comes
     // from the fixture-local CODEX_HOME, and the fixture hooks run under the
-    // fixture-local trust bypass for this one synthetic prompt.
-    args = [...EXEC_BASE_FLAGS, ...HOOK_ONLY_FLAGS, '-C', workspace, HOOK_ENTRY_PROMPT];
+    // fixture-local trust bypass for this one synthetic prompt. The hook case
+    // stays --ephemeral (its Task 2 shape); the shell cases DROP --ephemeral
+    // so the host persists its session rollout into the isolated home, which
+    // is where the bounded model-decision counting reads from. The rollout
+    // never leaves the private run directory (cleanup removes it).
+    args = [...EXEC_BASE_FLAGS, ...EPHEMERAL_FLAG, ...EXEC_FLAG_SELECTIONS.hookEntry, ...HOOK_ONLY_FLAGS, '-C', workspace, HOOK_ENTRY_PROMPT];
   } else {
     const workerPath = join(workspace, WORKER_FILE_NAME);
     await writeFile(workerPath, await readFixtureWorker(fixture), { encoding: 'utf8', mode: 0o755 });
     if (process.platform !== 'win32') await chmod(workerPath, 0o755);
-    const command = buildShellWorkerCommand(process.execPath, workerPath);
-    const prompt = `Run exactly one command with the shell tool: ${command}\nThen reply with the final output line of that command, verbatim. Do not run any other command.`;
-    args = [...EXEC_BASE_FLAGS, '-C', workspace, prompt];
+    /** @type {string[]} */
+    const workerArguments = [];
+    if (profile.workerDurationMs > 0) workerArguments.push('--duration-ms', String(profile.workerDurationMs));
+    if (profile.workerNoiseIntervalMs > 0) workerArguments.push('--noise-interval-ms', String(profile.workerNoiseIntervalMs));
+    const command = [buildShellWorkerCommand(process.execPath, workerPath), ...workerArguments].join(' ');
+    workerCommand = command;
+    /** @type {string[]} */
+    const yieldSentences = [];
+    if (profile.execYieldMs > 0) yieldSentences.push(`For the initial exec_command call pass yield_time_ms: ${profile.execYieldMs}.`);
+    if (profile.pollYieldMs > 0) yieldSentences.push(`If it returns a live process handle, observe only that same handle with empty-input write_stdin polls passing yield_time_ms: ${profile.pollYieldMs}; send no characters and never start another process.`);
+    const yieldText = yieldSentences.length > 0 ? `\n${yieldSentences.join('\n')}` : '';
+    const prompt = caseLabel === 'role-control'
+      ? `Spawn exactly one child agent with the spawn agent tool, passing role "${SYNTHETIC_ROLE_NAME}" (this role is declared in the session configuration). The child's assignment must be exactly: Run exactly one command with the shell tool: ${command}${yieldText}\nWhen the command finishes the child replies with its final output line, verbatim, and runs no other command. Then reply with the child's final output line, verbatim. Do not run any command yourself and do not spawn a second agent.`
+      : `Run exactly one command with the shell tool: ${command}${yieldText}\nThen reply with the final output line of that command, verbatim. Do not run any other command.`;
+    args = [...EXEC_BASE_FLAGS, ...EXEC_FLAG_SELECTIONS.shell, '-C', workspace, prompt];
   }
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
@@ -2023,7 +4478,7 @@ async function runHostExec(input) {
   let trustedHostPid = null;
   /** Set when the observation settles: pending discovery continuations are invalidated. @type {boolean} */
   let discoveryClosed = false;
-  const onPoll = caseLabel === 'shell-window'
+  const onPoll = caseLabel === 'shell-window' || caseLabel === 'role-control'
     ? () => {
         // While the spawned host lives, a recorded worker is owned only when
         // its ancestry reaches this run's host pid — a model-writable record
@@ -2049,18 +4504,25 @@ async function runHostExec(input) {
     ...(onPoll ? { pollMs: 250, onPoll, onSpawn: (child) => { trustedHostPid = child.pid ?? null; }, onSettled: () => { discoveryClosed = true; } } : {}),
   });
   const hostExit = result.timedOut ? { state: 'killed', code: null } : { state: result.code === 0 ? 'exit-0' : 'exit-nonzero', code: result.code };
-  return { exitCode: result.code ?? -1, stdout: result.stdout, timedOut: result.timedOut, overflow: result.overflow, hostExit, hostFlags: flagsOf(args), lastOutputAtMs: result.lastOutputAtMs, markerAtMs: result.markerAtMs, deadlineAtMs: result.deadlineAtMs, hostPid: result.child?.pid ?? null };
+  return { exitCode: result.code ?? -1, stdout: result.stdout, timedOut: result.timedOut, overflow: result.overflow, hostExit, hostFlags: flagsOf(args), lastOutputAtMs: result.lastOutputAtMs, markerAtMs: result.markerAtMs, deadlineAtMs: result.deadlineAtMs, hostPid: result.child?.pid ?? null, workerCommand };
 }
 
 /**
  * Runs one selected wait-route probe case to a bounded, redacted summary.
  * Instrument failures throw closed codes; every bounded conclusion (including
  * inconclusive ones naming the missing prerequisite) returns a summary.
- * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string}} input
+ * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string, workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number}} input
  * @returns {Promise<WaitRouteSummary>}
  */
 export async function runWaitRouteCase(input) {
   const { caseLabel, outputDir, budgetMs } = input;
+  const profile = validateShellProfile({
+    workerDurationMs: input.workerDurationMs,
+    workerNoiseIntervalMs: input.workerNoiseIntervalMs,
+    execYieldMs: input.execYieldMs,
+    pollYieldMs: input.pollYieldMs,
+    backgroundTerminalMaxTimeoutMs: input.backgroundTerminalMaxTimeoutMs,
+  }, caseLabel);
   const stageDeadline = Date.now() + budgetMs;
   /** Shared-group worker pids covered by the host group's settlement, handed back by settleWorkerExits for post-signal verification. @type {number[]} */
   const coveredWorkerPids = [];
@@ -2092,9 +4554,12 @@ export async function runWaitRouteCase(input) {
     hostFlags: [],
     trace: {
       serverStarted: false, handlerEntered: false, handlerCompleted: false, handlerCompletedAtMs: null,
-      markerObserved: null, workerLaunches: null, possibleDuplicateLaunch: null,
+      markerObserved: null, workerLaunches: null, possibleDuplicateLaunch: null, workerLaunchAtMs: null,
       events: 0, truncated: false,
     },
+    fixture: { backgroundTerminalMaxTimeoutMs: profile.backgroundTerminalMaxTimeoutMs > 0 ? profile.backgroundTerminalMaxTimeoutMs : null, multiAgentFeature: caseLabel === 'role-control', agentRoles: [] },
+    requestedProfile: { workerDurationMs: profile.workerDurationMs, workerNoiseIntervalMs: profile.workerNoiseIntervalMs, execYieldMs: profile.execYieldMs, pollYieldMs: profile.pollYieldMs },
+    session: null,
     cleanup: { marketplaceRemoved: false, isolatedHomeRemoved: false, serverExit: 'not-started', workerExit: 'not-started', failures: [] },
     budgetMs,
   };
@@ -2140,7 +4605,26 @@ export async function runWaitRouteCase(input) {
       summary.reason = 'auth-unavailable';
       return summary;
     }
-    await writeFixtureConfig({ codexHome });
+    // The role-control case prepares its clearly labeled SYNTHETIC role
+    // control first: the role file declares the raised cap so the case can
+    // measure whether a role-declared value propagates at all. The managed
+    // production Role is never touched.
+    /** @type {{name: string, description: string, configPath: string}[]} */
+    const syntheticRoles = [];
+    if (caseLabel === 'role-control') {
+      // The role directory path is DETERMINISTIC (join(outputDir, 'role')):
+      // register it BEFORE the builder runs so a partial build (e.g.
+      // ENOSPC mid-write) is covered by cleanup too.
+      cleanupDirectories.push(join(outputDir, 'role'));
+      const syntheticRole = await buildWaitRouteSyntheticRole({ outputDir });
+      syntheticRoles.push({ name: syntheticRole.roleName, description: syntheticRole.description, configPath: syntheticRole.rolePath });
+      summary.fixture.agentRoles.push(syntheticRole.roleName);
+    }
+    await writeFixtureConfig({
+      codexHome,
+      ...(profile.backgroundTerminalMaxTimeoutMs > 0 ? { backgroundTerminalMaxTimeoutMs: profile.backgroundTerminalMaxTimeoutMs } : {}),
+      ...(caseLabel === 'role-control' ? { multiAgentFeature: true, agentRoles: syntheticRoles } : {}),
+    });
 
     const serverModulePath = join(dirname(fileURLToPath(import.meta.url)), 'server.mjs');
     const fixture = await buildWaitRouteFixture({ outputDir: marketplaceDirectory, serverPath: serverModulePath });
@@ -2157,17 +4641,31 @@ export async function runWaitRouteCase(input) {
     }
 
     summary.stage = 'exec';
-    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline });
+    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline, profile });
     summary.hostExit = exec.hostExit;
     summary.hostFlags = exec.hostFlags;
     // The durable trace facts are read on EVERY post-exec path: observed
     // entry is never suppressed by a host failure, an output overflow, or an
     // expired budget.
-    const facts = await readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, exec.hostPid ?? null);
-    summary.trace = { ...summary.trace, ...facts, markerObserved: caseLabel === 'shell-window' ? exec.stdout.includes(COMPLETION_MARKER) : null };
+    const facts = await readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, exec.hostPid ?? null, profile);
+    summary.trace = { ...summary.trace, ...facts, markerObserved: caseLabel === 'shell-window' || caseLabel === 'role-control' ? exec.stdout.includes(COMPLETION_MARKER) : null };
+    // Bounded model-decision counting over the isolated home's session
+    // rollouts (the shell cases run WITHOUT --ephemeral exactly so this
+    // durable record exists); diagnostic only — never a classification gate.
+    if (caseLabel === 'shell-window' || caseLabel === 'role-control') {
+      summary.session = await summarizeCodexSessions({
+        sessionsDirectory: join(codexHome, 'sessions'),
+        // The EXACT built worker invocation is the bounded evidence token
+        // tying a child rollout's exec to THE probe command — a bare
+        // basename mention (`echo wait-route-worker.mjs`) is not an
+        // invocation. The token is compared, never retained (the summary
+        // keeps only the boolean match fact).
+        workerEvidenceToken: exec.workerCommand ?? undefined,
+      });
+    }
     // The shell worker's exit is verified and settled separately from the
     // host on every post-exec path, and the summary reflects it.
-    if (caseLabel === 'shell-window') {
+    if (caseLabel === 'shell-window' || caseLabel === 'role-control') {
       summary.cleanup.workerExit = await settleWorkerExits(join(workspace, 'worker-launches.jsonl'), stageDeadline, exec.hostPid ?? null, coveredWorkerPids);
       if (coveredWorkerPids.length > 0 && summary.cleanup.workerExit === 'verified-exited') {
         // Covered workers are settled by the host group's own signal in the
@@ -2203,11 +4701,30 @@ export async function runWaitRouteCase(input) {
       } else if (caseLabel === 'hook-entry' && facts.handlerEntered && facts.handlerCompleted && completedWithinBudget) {
         summary.outcome = 'entry-observed';
         summary.reason = 'observed-before-budget-expiry';
-      } else if (caseLabel === 'shell-window' && summary.trace.markerObserved && facts.workerLaunches === 1 && markerWithinBudget && !facts.workerLaunchesTruncated && !facts.workerLaunchesIncomplete && summary.cleanup.workerExit !== 'unresolved') {
+      } else if ((caseLabel === 'shell-window' || caseLabel === 'role-control') && summary.trace.markerObserved && facts.workerLaunches === 1 && markerWithinBudget && !facts.workerLaunchesTruncated && !facts.workerLaunchesIncomplete && summary.cleanup.workerExit !== 'unresolved' && facts.workerProfileMatches !== false) {
         // workerExit 'unresolved' means the recorded launch was never owned
         // through the trusted boundary — the model-writable log alone is
-        // not execution evidence, so the smoke grant refuses it.
-        summary.outcome = 'shell-smoke-completed';
+        // not execution evidence, so the smoke grant refuses it. A
+        // role-control grant additionally requires CORROBORATED managed-
+        // child execution (spawn_agent for the synthetic role + exec in
+        // the child rollouts): the model running the command directly in
+        // Root would otherwise look identical.
+        if (caseLabel === 'role-control' && !roleChildProven(summary)) {
+          summary.outcome = 'inconclusive';
+          summary.reason = 'role-session-evidence-missing';
+          return summary;
+        }
+        if (profile.workerDurationMs > 0 && summary.cleanup.workerExit === 'terminated') {
+          // On a PROFILED run the worker prints the marker only at its
+          // natural finish: a marker arriving while the worker still runs
+          // (settlement had to kill it) was not terminal evidence —
+          // fabricated or premature. Successful cleanup does not prove
+          // successful execution.
+          summary.outcome = 'inconclusive';
+          summary.reason = 'worker-still-running-at-marker';
+          return summary;
+        }
+        summary.outcome = caseLabel === 'role-control' ? 'role-control-completed' : 'shell-smoke-completed';
         summary.reason = 'observed-before-budget-expiry';
       } else {
         summary.outcome = 'budget-exhausted';
@@ -2251,10 +4768,10 @@ export async function runWaitRouteCase(input) {
       }
       return summary;
     }
-    // shell-window: the fixed marker AND the worker's own launch log must
-    // both corroborate the run — the marker alone can come from a model
-    // response or another command, and a second launch is flagged, never
-    // silently accepted.
+    // shell-window and role-control: the fixed marker AND the worker's own
+    // launch log must both corroborate the run — the marker alone can come
+    // from a model response or another command, and a second launch is
+    // flagged, never silently accepted.
     if (!summary.trace.markerObserved) {
       summary.outcome = 'inconclusive';
       summary.reason = 'marker-absent';
@@ -2270,8 +4787,32 @@ export async function runWaitRouteCase(input) {
       // shape-valid record + marker cannot qualify the smoke.
       summary.outcome = 'inconclusive';
       summary.reason = 'worker-launch-evidence-missing';
+    } else if (caseLabel === 'role-control' && summary.session !== null && !summary.session.present) {
+      // A role-control run must prove the SYNTHETIC ROLE executed the
+      // command: without a session rollout there is no evidence the host
+      // spawned the managed child at all (the model may have run the
+      // command directly in Root) — report an inconclusive control.
+      summary.outcome = 'inconclusive';
+      summary.reason = 'role-session-evidence-missing';
+    } else if (caseLabel === 'role-control' && !roleChildProven(summary)) {
+      summary.outcome = 'inconclusive';
+      summary.reason = 'role-session-evidence-missing';
+    } else if (facts.workerProfileMatches === false) {
+      // The launched worker's OWN record disagrees with the requested
+      // profile: the remaining-lifetime math of the requested profile is
+      // not evidence of what ran.
+      summary.outcome = 'inconclusive';
+      summary.reason = 'worker-profile-mismatch';
+    } else if (profile.workerDurationMs > 0 && summary.cleanup.workerExit === 'terminated') {
+      // On a PROFILED run the worker prints the marker only at its natural
+      // finish: a marker arriving while the worker still runs (settlement
+      // had to kill it) was not terminal evidence. The bare marker-then-
+      // late-noise research shape is unaffected — its worker intentionally
+      // stays alive to emit post-budget noise.
+      summary.outcome = 'inconclusive';
+      summary.reason = 'worker-still-running-at-marker';
     } else {
-      summary.outcome = 'shell-smoke-completed';
+      summary.outcome = caseLabel === 'role-control' ? 'role-control-completed' : 'shell-smoke-completed';
       summary.reason = 'ok';
     }
     return summary;
@@ -2336,12 +4877,21 @@ export async function runWaitRouteCase(input) {
           // path): only a COMPLETED verification with every worker settled
           // earns `terminated`.
           summary.cleanup.workerExit = 'unresolved';
-          if (summary.outcome === 'shell-smoke-completed') {
+          if (summary.outcome === 'shell-smoke-completed' || summary.outcome === 'role-control-completed') {
             summary.outcome = 'inconclusive';
             summary.reason = 'covered-settlement-unresolved';
           }
         } else if (summary.cleanup.workerExit === 'not-started') {
           summary.cleanup.workerExit = 'terminated';
+          // A PROFILED worker prints the marker only at its natural finish:
+          // if the DEFERRED (covered) settlement had to terminate it, any
+          // granted success rested on a premature marker — revoke it here,
+          // after settlement finalizes.
+          if (profile.workerDurationMs > 0
+            && (summary.outcome === 'shell-smoke-completed' || summary.outcome === 'role-control-completed')) {
+            summary.outcome = 'inconclusive';
+            summary.reason = 'worker-still-running-at-marker';
+          }
         }
       }
       await removeStateDirectories(cleanupDirectories, [codexHome, isolatedHome], summary);
@@ -2354,16 +4904,16 @@ export async function runWaitRouteCase(input) {
  * Reads the durable trace facts shared by the classify and budget-expiry
  * paths. The marker observation is the caller's (it comes from the bounded
  * host stdout, not the trace).
- * @param {string} caseLabel @param {string} traceDirectory @param {string} workspace @param {string} runNonce @param {number|null} caseHostPid
- * @returns {Promise<{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, possibleDuplicateLaunch: boolean|null, events: number, truncated: boolean}>}
+ * @param {string} caseLabel @param {string} traceDirectory @param {string} workspace @param {string} runNonce @param {number|null} caseHostPid @param {{workerDurationMs: number, workerNoiseIntervalMs: number}} profile
+ * @returns {Promise<{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}>}
  */
-async function readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, caseHostPid) {
+async function readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, caseHostPid, profile) {
   const { records, truncated } = await readTraceEvents({ runDirectory: traceDirectory, runNonce });
   let handlerCompletedAtMs = null;
   for (const record of records) {
     if (record.kind === 'handler-completed' && typeof record.at === 'number') handlerCompletedAtMs = record.at;
   }
-  /** @type {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, possibleDuplicateLaunch: boolean|null, events: number, truncated: boolean}} */
+  /** @type {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}} */
   const facts = {
     serverStarted: records.some((record) => record.kind === 'server-started'),
     handlerEntered: records.some((record) => record.kind === 'handler-entered'),
@@ -2372,22 +4922,47 @@ async function readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, ca
     workerLaunches: null,
     workerLaunchesTruncated: false,
     workerLaunchesIncomplete: false,
+    workerProfileMatches: null,
     possibleDuplicateLaunch: null,
+    workerLaunchAtMs: null,
     events: records.length,
     truncated,
   };
-  if (caseLabel === 'shell-window') {
+  if (caseLabel === 'shell-window' || caseLabel === 'role-control') {
     const { records: launchRecords, truncated: workerLaunchesTruncated, incomplete: workerLaunchesIncomplete } = await readWorkerLaunchRecords(join(workspace, 'worker-launches.jsonl'));
     // Own each recorded worker's separate group from the moment it is known,
     // so the deadline, the interrupt path, and cleanup can settle it.
     ownRecordedWorkerGroups(launchRecords, { trustedHostPid: caseHostPid, attestOnly: true, inspectionDeadline: Date.now() + 1_000 });
     facts.workerLaunches = launchRecords.length;
     facts.possibleDuplicateLaunch = launchRecords.length > 1;
+    // The worker's own epoch-ms launch stamp (diagnostic only): the report
+    // correlates process lifetime with the host's poll timing through it.
+    for (const record of launchRecords) {
+      if (typeof record.at === 'number' && Number.isSafeInteger(record.at)) {
+        facts.workerLaunchAtMs = record.at;
+        break;
+      }
+    }
     // A truncated log is a bounded PREFIX, and an incomplete log (a torn or
     // malformed record) cannot prove how many launches happened: the smoke
     // grants below refuse both.
     facts.workerLaunchesTruncated = workerLaunchesTruncated;
     facts.workerLaunchesIncomplete = workerLaunchesIncomplete;
+    // The LAUNCHED worker must match the REQUESTED profile: the worker
+    // records its actual duration/noise flags, and a model that altered or
+    // dropped them would otherwise let the requested profile (and its
+    // remaining-lifetime math) stand in for what actually ran.
+    if (launchRecords.length === 1) {
+      const launch = launchRecords[0];
+      // When a profile was REQUESTED, BOTH fields compare exactly — a
+      // zero-valued request (a silent run) is as binding as a positive
+      // one. A bare run (no profile requested) makes no claim to verify.
+      const profileRequested = profile.workerDurationMs > 0 || profile.workerNoiseIntervalMs > 0;
+      facts.workerProfileMatches = !profileRequested
+        || (launch.durationMs === profile.workerDurationMs && launch.noiseIntervalMs === profile.workerNoiseIntervalMs);
+    } else {
+      facts.workerProfileMatches = false;
+    }
   }
   return facts;
 }

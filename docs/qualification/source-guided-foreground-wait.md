@@ -1,6 +1,6 @@
 # Source-guided Foreground Wait Investigation
 
-Status: Task 1 of the [source-guided investigation plan](../superpowers/plans/2026-09-30-source-guided-foreground-wait.md) — provenance pinned and source questions narrowed. Everything below is source inspection and baseline recording. No fixture, no installed-host observation, and no production change belongs to this task; later-task sections are placeholders. Spec: [`docs/superpowers/specs/2026-09-30-source-guided-foreground-wait-design.md`](../superpowers/specs/2026-09-30-source-guided-foreground-wait-design.md).
+Status: Tasks 1–3 of the [source-guided investigation plan](../superpowers/plans/2026-09-30-source-guided-foreground-wait.md) are complete — provenance and source index (section 1–5), isolated probe fixture and research entry (section 6), and configured-shell measurements (section 7). Tasks 4–7 are pending; their sections remain placeholders. Spec: [`docs/superpowers/specs/2026-09-30-source-guided-foreground-wait-design.md`](../superpowers/specs/2026-09-30-source-guided-foreground-wait-design.md).
 
 Evidence labels follow spec section 6: `source-confirmed`, `fixture-tested`, `installed-observed`, `not-proven`. Task 1 contributes only `source-confirmed` and `not-proven` rows.
 
@@ -382,6 +382,589 @@ Forty-sixth review round (three P2s + one P3; fixed 2026-10-01; the ROOT agent r
 
 Final committed suite after the forty-sixth review round: `node --test tests/wait-route-probe.test.mjs` — `tests 96, pass 96, fail 0, cancelled 0, skipped 0, todo 0`. Combined gate `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs`: `tests 100, pass 100, fail 0, cancelled 0, skipped 0, todo 0`.
 
+Fifth codex round on Task 3 (five P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The role-control success survived a failed covered settlement (P2, driver): the covered-settlement revocation covered only `shell-smoke-completed`; GREEN - `role-control-completed` is revoked identically.
+- Structured `write_stdin` polls (the host uses `chars`, not `input`) were classified as `other` (P2, driver); GREEN - the classifier recognizes the structured shape (present session id + empty/absent chars) so function-call hosts produce accurate poll counts.
+- The fixture worker accepted unknown/duplicate/missing-value flags silently (P2, fixture): the model authors the command, so `--typo-duration-ms 420000` could turn a long measurement into an instant successful smoke; GREEN - strict flag-name/duplicate/value validation with exit 2, verified against the generated worker standalone.
+- The rollout scanner's stop condition only broke the newline loop (P2, driver): a malformed first line did not terminate the retained prefix; GREEN - the stop condition propagates to the outer read loop with truncation reported.
+- The pending-call tracking was shared across session rollouts (P2, driver): unrelated calls in other sessions could be counted as parallel-poll violations; GREEN - the pending set is scoped per session rollout (cross-session concurrency would require a chronological merge, documented as out of scope).
+
+Final committed suite after the fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0` (including the new strict-flag validation regressions).
+
+Sixth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Role-control success lacked child-execution evidence (P2, driver): the synthetic-role grant never checked that the host actually spawned the managed child, and the fake-host fixture wrote no session rollout. GREEN - the grant now requires a present session rollout, and the fake-host role-control mode writes a minimal spawn_agent/wait_agent rollout proving the managed child ran.
+- Structured write_stdin calls with nonempty chars were counted as empty polls (P2, driver): the classifier now inspects the actual chars argument; nonempty writes are `other`, preserving interruption-measurement accuracy.
+- Quoted yield keys were unparseable (P3, driver): confirmed the yield regex already matches quoted keys (quotes precede the key) and documented that wrapper-directive and inner-tool yields are both sampled.
+- Session timestamps used last-scan order (P2, driver): `lastFunctionCallOutputAtMs`/`firstFunctionCallAtMs` now use chronological extrema (max/min across rollouts) so Root/Child scan order cannot distort cadence evidence.
+
+Final committed suite after the sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Seventh codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Quoted directive yield keys were unrecognized (P2, driver): the demonstrated directive form `// @exec: {"yield_time_ms": 120000}` quotes the key, so the wrapper bound was missed and an inner-tool yield was substituted. GREEN - the yield scan matches bare AND quoted keys.
+- Yielded-script observations were treated as completed on the outer output (P2, driver): outer call/output alternation does not prove an inner write_stdin finished, so overlapping polls went unreported. GREEN - yielded-script call ids stay pending (concurrency through yielded scripts is reported as unproven).
+- Quoted stdin keys were classified as empty polls (P2, driver): `chars:"\u0003"` (an interrupt) counted as an empty observation; GREEN - only a confirmed-empty or omitted chars counts; quoted/nonliteral values are unclassified.
+- `firstEmptyPollAtMs` used first-scanned order (P2, driver): newest-mtime scan order could report a later poll as the earliest; GREEN - chronological minimum in both the structured and script-tool poll branches.
+
+Final committed suite after the seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Eighth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Quoted directive keys still missed (P2, driver): the closing quote between key and colon broke the bare-key regex; GREEN - the yield scan matches `"yield_time_ms"` quoted keys, capturing the wrapper bound rather than substituting an inner-tool yield.
+- Yielded-script pending ids were deleted on the outer output (P2, driver): outer call/output alternation treated the inner write_stdin as finished; GREEN - yielded-script call ids are tracked in a dedicated set and retained pending (concurrency through yielded scripts reported as unproven).
+- The confirmed-empty stdin check misfired on escape sequences and nonliteral values (P2, driver): GREEN - only a no-chars-key write_stdin or an empty quoted chars counts as empty; escapes and nonliteral values are unclassified.
+- `firstEmptyPollAtMs` used first-scanned order (P2, driver): GREEN - chronological minimum across retained rollouts in both structured and script-tool branches.
+
+Final committed suite after the eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Ninth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Continuations were identified by substring (P2, driver): the host resumes a yielded script through `wait({cell_id: N})`, not wait_agent or another write_stdin; GREEN - the continuation predicate recognizes the ACTUAL wait operation carrying the pending cell id, and a second write_stdin without the cell reference IS a violation.
+- Yielded-script completion through `wait` didn't clear the ORIGINAL pending call (P2, driver): the completion output carries the wait call's id; GREEN - per-cell pending tracking (`pendingCellCalls`) clears ONLY the finished cell's calls, and a wait continuation's completion output settles the ORIGINAL script's cell.
+- Quoted stdin keys bypassed the empty-poll check (P2, driver): `"chars":"\u0003"` was counted as empty; GREEN - quoted property names are recognized and nonempty/escaped values are unclassified.
+
+Final committed suite after the ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Ninth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The role-control grant lacked child-execution proof (P2, driver): a present rollout alone was insufficient (the model could ignore the spawn instruction and run the worker in Root; even an empty sessions dir sets `present`); GREEN - `roleChildProven` requires BOTH a spawn_agent call for the synthetic role AND initial-exec evidence, enforced on BOTH success paths (clean-exit and budget-expiry); the fake-host role-control mode now writes a minimal response_item-wrapped rollout proving the managed-child lifecycle.
+- Yielded-script pending ids were deleted on the outer output (P2, driver): the output handler now retains ids registered in `pendingYieldedScriptIds` (both installed shapes), so overlapping inner write_stdin observations report as unproven-concurrency violations.
+- Quoted chars keys bypassed the empty-poll check (P2, driver): `"chars":"\u0003"` counted as an empty poll; GREEN - quoted property names are recognized and nonempty/escaped/nonliteral values are unclassified.
+
+Final committed suite after the ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Tenth codex round on Task 3 (three P2s + one P3; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The clean-exit classification accepted late completion (P2, driver): a host exiting 0 while an independently surviving server completed after budget returned `entry-observed`; GREEN - the clean-exit path applies the same `handlerCompletedAtMs <= deadlineAtMs` gate.
+- The exit-time members snapshot ran unbounded (P2, driver): the synchronous re-anchor walked every surviving member with a fixed timeout; GREEN - the re-anchor arms a bounded inspection budget (clamped to 1 s) and fails closed on expiry.
+- Settlement probes bypassed the inspection budget (P2, driver): `isProcessSettled` used a fixed 2 s timeout; GREEN - expiry check + remaining-budget clamp.
+- The trace basename check accepted suffix matches (P3, server): `not-events.jsonl` passed `endsWith('events.jsonl')`; GREEN - exact basename validation via `node:path.basename()`.
+
+Final committed suite after the tenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Eleventh and later codex rounds on Task 3 (fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Role-control child-execution proof (P2, driver): the ROOT rollout is identified by CONTENT (the rollout containing spawn_agent), not mtime; `roleChildProven` requires a spawn_agent call plus `childExecSeen` (initial-exec from a NON-Root rollout) attached non-enumerably by summarizeCodexSessions; both success paths enforce it; the fake-host role-control mode writes SEPARATE root and child rollouts proving the managed-child lifecycle.
+- Yielded-script pending state (P2, driver): pending ids are retained while a yielded script's output says `Script running` (a wait continuation with the matching cell id is exempted as a continuation, not a violation), and cleared when the output says `Script completed` — including a completed script with no registered cell.
+- Quoted chars keys normalized before detection (P2, driver): JSON-escaped `chars` keys are recognized.
+- Requested yields extracted only from actual parameter positions (P2, driver): the key must follow `(`/`{`/`,`/`@exec: {` — sentence mentions and cmd string literals never match; complete numeric literals only (`60_000` accepted, `60*1000`/`60000 + 1`/decimals left unclassified via terminator lookahead).
+- The stdin argument segment uses balanced-paren extraction with quote-awareness (P2, driver): nested `Number("123")` no longer truncates the segment; failed extraction is UNCLASSIFIED, never assumed empty.
+
+Final committed suite after the fifteenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Sixteenth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Root identification used an unbounded pre-read (P2, driver): reading every rollout to find spawn_agent bypassed the memory bounds; GREEN - Root is identified DURING the bounded per-line scan (a spawn_agent call marks that file as Root).
+- Structured wait continuations were unrecognized (P2, driver): a function-call host records the continuation as `wait` with JSON `{cell_id}` args; GREEN - both the structured shape and the script-tool text form are recognized, and the continuation's own terminal output retires its pending id.
+- The wait continuation's own pending id survived completion (P2, driver): only the original call was cleared, falsely flagging the next sequential poll; GREEN - the continuation's terminal output retires its own id too.
+- Indirect stdin arguments were counted as empty polls (P2, driver): variable/spread arguments with no literal chars key defaulted to empty; GREEN - indirect arguments are UNCLASSIFIED (absence of a literal key does not prove empty stdin).
+
+Final committed suite after the sixteenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+(A duplicate copy of the sixteenth-round record that a context interruption appended was removed on 2026-10-02.)
+
+Seventeenth codex round on Task 3 (six P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Role-control execution was not correlated with the spawned child (P2, driver): a spawn for another role, or a failed spawn with Root running the worker itself, still granted the control outcome; GREEN - subsequent rounds retained a bounded synthetic-role fact from the spawn arguments (see the twentieth round) and required it in the grant.
+- Quoted parameter names were erased before yield extraction (P2, driver): the string-stripping pass turned the documented `// @exec: {"yield_time_ms": N}` directive key into empty quotes; GREEN - the stripping pass was rewritten (see the twenty-first round) to collapse quoted string VALUES while keeping quoted property KEYS.
+- Script-cell wait continuations were unrecognized (P2, driver): a yielded cell resumes through `wait({cell_id: N})`, which was counted as a parallel violation and never cleared the original poll; GREEN - the continuation is identified by the ACTUAL wait operation whose cell id matches the pending cell.
+- One script's completion cleared EVERY pending call (P2, driver): overlapping script B's completion also cleared still-running script A; GREEN - per-cell pending tracking (pendingCellCalls) clears only the finished cell's calls.
+- Indirect stdin arguments defaulted to empty (P2, driver): `tools.write_stdin(args)` counted as an empty poll because the segment had no literal chars key; GREEN - see the eighteenth/twenty-first rounds (self-contained literal argument shapes only).
+- Yield literals backtracked to decimal prefixes (P2, driver): `60*1000` recorded 6; GREEN - a complete numeric literal followed by a valid value terminator is required; unsupported expressions left unclassified.
+
+Eighteenth codex round on Task 3 (five P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Quoted property names were still erased during yield extraction (P2, driver, residual of the seventeenth round): the rewrite landed in the twenty-first round with live verification.
+- Completed non-yielded polls stayed pending forever (P2, driver): two strictly sequential completed polls produced a false violation; GREEN - an ordinary call's own output retires its pending id even when no cell was registered.
+- Wait continuations were recognized neither by tool name nor by structured cell argument (P2, driver); GREEN - `name: "wait"` with matching `cell_id` args is a continuation, and its completion retires it.
+- Root and Child were identified by file mtime (P2, driver): Root writing its final response after the Child mislabeled both rollouts; GREEN - Root is identified by CONTENT (the rollout whose call is named spawn_agent), never by modification order.
+- The synthetic role was not verified before granting role-control success (P2, driver, residual); GREEN - see the twenty-first round.
+
+Nineteenth codex round on Task 3 (six P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The spawned child's actual role was unverified (P2, driver, residual); GREEN - see the twenty-first round.
+- Quoted yield keys were still erased (P2, driver, residual); GREEN - see the twenty-first round.
+- Root identification was moved out of the read bounds (P2, driver): an intermediate fix pre-read every rollout to find spawn_agent, bypassing maxFileBytes; GREEN - Root identification happens DURING the bounded per-line scan.
+- The completed continuation's own pending call survived (P2, driver), falsely flagging the next sequential poll; GREEN - the continuation's terminal output retires its own id.
+- Structured wait continuations were unrecognized (P2, driver): `{"cell_id":"123"}` JSON args are not source text; GREEN - parsed arguments and the tool name are used for structured calls.
+- Unresolved stdin argument objects were counted as empty polls (P2, driver, residual); GREEN - see the twenty-first round.
+
+Twentieth codex round on Task 3 (five P2s; fixed 2026-10-02; the ROOT agent remained the implementer; all fixes through this round are in the amended Task-3 commit):
+
+- The selected role was unverified before granting completion (P2, driver, residual); GREEN - see the twenty-first round.
+- Child-exec evidence was derived before Root identity was known (P2, driver): a single Root rollout with an exec before the spawn marker set childExecSeen permanently; GREEN - per-file exec facts accumulate during the scan and child evidence is derived only AFTER all rollouts are read, excluding the content-identified Root file.
+- Quoted yield keys were still erased (P2, driver, residual — see the twenty-first round; honestly recorded: the fix claimed in rounds 17-19 was never actually landed, and a live probe on the amended HEAD reproduced the broken directive extraction before the twenty-first round's rewrite).
+- Empty polls required literal argument evidence (P2, driver, residual); GREEN - see the twenty-first round.
+- Continuation outputs were associated with the MOST RECENT cell (P2, driver): completing cell 10 cleared cell 20; GREEN - each continuation is tracked against ITS cell (per-cell pending sets), and only that cell's calls are cleared.
+
+Twenty-first codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with regression tests at public seams):
+
+- The role-control grant ignored the spawn ARGUMENTS (P2, driver): only the tool name was checked, so a default-role spawn was accepted; GREEN - the summarizer retains a BOUNDED `spawnedSyntheticRole` boolean fact (spawn arguments inspected, never retained — privacy holds) and roleChildProven (now exported for the seam test) requires it; regression test covers wrong-role refusal and right-role acceptance.
+- Indirect stdin arguments were still counted as empty polls (P2, driver): a bare identifier or a spread object with no literal key defaulted to empty; GREEN - omission-as-empty requires a SELF-CONTAINED LITERAL argument shape (object literal or keyword-argument list, no spread); an explicit literal empty value is proof regardless of shape; regression test covers identifier, spread, and literal control.
+- Quoted/commented operation mentions were classified as shell operations (P2, driver): raw-text regexes matched `text('write_stdin(...)')` prints and commented `exec_command` lines, supplying false polls and false child-execution evidence; GREEN - a lexical call-site scanner (quoted strings and `#`/`//` line comments skipped) detects real call positions, and a shared balanced-segment extractor with the same lexical model carves the argument segment.
+- Yielded initial-exec scripts were not tracked pending (P2, driver): only write_stdin scripts registered as yielded, so a yielded `Script running with cell ID` exec lost its pending id and a subsequent overlapping poll reported zero violations; GREEN - initial-exec calls register as yielded candidates (their observed output resolves them), and the dead output-handler branch that could never fire was removed.
+- Carried residual fixed in this round: the documented `// @exec: {"yield_time_ms": N}` directive form recorded NO requested yield on the amended HEAD (live-probe verified — the quoted key had been erased by string stripping in every round since the seventeenth); GREEN - the stripping view is produced by a key-preserving pass (quoted string VALUES collapse, quoted property KEYS survive), with a regression test pinning the wrapper bound (3600000 recorded as the call's governing yield, a directive mention inside a cmd string value not recorded, inner bare-key yields still recorded).
+
+Final committed suite after the twenty-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 123, pass 123, fail 0`.
+
+Twenty-second codex round on Task 3 (seven P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with regression tests at public seams):
+
+- Child-execution attribution raced Root resolution (P2, driver): a Root rollout whose structured exec preceded its spawn marker set `childExecSeen` permanently during the scan (the flag was sticky and the post-scan reconciliation skipped); GREEN - the in-scan attribution is REMOVED; structured initial-exec calls also record the per-file exec fact, and child evidence is derived only AFTER the scan from the complete per-file facts.
+- The synthetic-role match matched the role NAME anywhere (P2, driver): a substring fallback let `{agent_type:"default", message:"...wait-probe-synthetic..."}` grant the spawn fact; GREEN - only the actual role fields are inspected (`agent_type` — the source-pinned `SpawnAgentArgs` field — or `role`); any other argument content proves nothing.
+- Child execution was not correlated with the synthetic spawn (P2, driver): any non-Root exec qualified, independent of the spawn's result; GREEN - the grant now requires the FULL source-pinned chain: EXACTLY ONE spawn_agent call (a second spawn makes the executed child ambiguous — fail closed), role-named arguments, the synthetic spawn's OWN output observed, and the exec evidence from a rollout PARENT-LINKED to the Root session (child rollout `session_meta.parent_thread_id` == Root rollout `session_meta.id` — the spawn edge the pinned source's rollout reducer builds; the spawn's model-visible output carries only `task_name`/`nickname`, so the parent link is the derivable identity fact). The fake-host role-control fixture now writes the meta lines and the link.
+- A non-yielding completion cleared the most-recent cell (P2, driver): overlapping script B's completion retired outstanding script A's cell through the shared last-yielded pointer; GREEN - per-call cell association (`callIdToCell`): a completion retires ONLY its own cell; an unrelated outstanding cell keeps flagging later overlaps (two violations where before one was lost).
+- Multiple observations inside one script were invisible (P2, driver): a `Promise.all` of two polls counted one poll and zero violations; GREEN - EVERY inner operation site is classified (per-site segment extraction), and a script carrying more than one operation counts the forbidden concurrency explicitly.
+- Template literals and block comments were not excluded (P2, driver): `` text(`exec_command(...)`) `` classified as an initial exec; GREEN - the lexical call-site scanner, the balanced-segment extractor, and the string-stripping view all skip template-literal contents and `/* */` block comments (the stripping view keeps `//` line contents because the documented `@exec` directive IS a comment).
+- An explicit empty input was provable even when overridden (P2, driver): `{chars:"", ...args}` and `{chars:"",chars:"\u0003"}` counted as empty polls; GREEN - the explicit-literal-empty proof requires no spread and exactly one input/chars key.
+
+Final committed suite after the twenty-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 129, pass 129, fail 0`. Honest note: the committed role-control gate is now stricter than the one the section-7 installed runs passed under (their recorded evidence predates the parent-link requirement); the synthetic control's mechanism evidence stands, and an installed re-run under the committed gate is the honest follow-up if Task 4 re-opens this case.
+
+Twenty-third codex round on Task 3 (one P1 + four P2s; fixed 2026-10-02; the ROOT agent remained the implementer; the P1 was confirmed locally with `npm run lint` and `npx tsc --noEmit` before fixing):
+
+- [P1] The round-22 code broke both static gates: ESLint flagged the unused `spawnCallCount` and `execSite`, TypeScript reported an implicit-any spawn call id and a possibly-null `waitCellMatch` dereference; GREEN - the spawn count is now a consumed summary fact (see below), exec sites are counted by length, the call id is JSDoc-annotated, and the nullable match is narrowed through an explicit local.
+- The spawn count came from the 64-sample calls array (P2, driver): a second spawn beyond the sample window still passed the exactly-one check; GREEN - the summarizer retains the FULL-scan `spawnAgentCallCount` and the grant requires exactly 1, and it FAILS CLOSED on any truncated scan (`truncated`/`callsTruncated`), since an incomplete scan establishes no count.
+- Every multi-operation script was treated as parallel (P2, driver): two `await`-chained polls — compliant sequential same-handle polling — were reported as forbidden concurrency; GREEN - a violation is counted only for CONCURRENT dispatch: a site not directly preceded by `await` (sites inside `Promise.all`-style dispatches and fire-and-forget calls); awaited chains report zero violations while every observation site is still counted per-site.
+- Script-level escaped quotes were normalized into delimiters (P2, driver): the `\\['"]` replacement turned string contents mentioning `write_stdin(...)` into executable-looking script (a false exec + false poll + false concurrency); GREEN - the normalization is REMOVED — the rollout JSON already decoded the enclosing string, so remaining `\"` stays literal string content that the lexical scanner skips natively.
+- Ordinary comments fed the yield extraction (P2, driver): `// example: {yield_time_ms:3600000}` recorded 3600000 over the real 60000 request; GREEN - the string-stripped view drops ordinary `//` comments entirely with ONE documented exception: the `// @exec: {...}` directive head is kept (the directive IS a comment — its quoted key and payload are scanned normally).
+
+Final committed suite after the twenty-third Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 133, pass 133, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-fourth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN, and the static gates run on every round since the P1):
+
+- Role-control evidence accepted ANY linked child exec (P2, driver): a child that ran `echo hello` while ROOT ran the probe worker still granted the lifecycle, attributing Root's shell behavior to the child; GREEN - the summarizer accepts a bounded `workerEvidenceToken` (the caller supplies the probe worker's fixture-specific file name — never a private path) and the linked child's exec must REFERENCE it (structured `cmd` or the DSL exec segment); the fake-host fixture's child command now carries the real worker file name.
+- An unassociated completion cleared the pending cell through the fallback (P2, driver): an unrelated call returning `Script completed` settled the most-recent cell it never referenced; GREEN - ONLY a call explicitly mapped to a cell (a wait continuation bound to its referenced cell at call time) settles that cell; an unmapped completion retires only its own id, so an outstanding yield keeps flagging later overlaps.
+- Shorthand and computed object properties counted as empty polls (P2, driver): `{session_id:1, chars}` has no colon-form key, so omission-as-empty misclassified a possibly-nonempty write; GREEN - OPAQUE properties (shorthand identifiers, computed `[expr]` keys, and stray backslashes outside strings) force UNCLASSIFIED — only proven omission or a literal empty value counts, on the string-stripped segment view.
+- Block comments fed the yield extraction (P2, driver): `/* example: {yield_time_ms:3600000} */` recorded 3600000 over the real 60000; GREEN - block-comment contents are excluded from the string-stripped view like ordinary line comments (the documented `// @exec:` directive keeps its exception).
+
+Final committed suite after the twenty-fourth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 137, pass 137, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-fifth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Child evidence matched a bare worker basename MENTION (P2, driver): `echo wait-route-worker.mjs` satisfied the substring and granted the lifecycle while Root ran the real worker; GREEN - the driver now supplies the EXACT built worker invocation as the evidence token (`runHostExec` returns `workerCommand`) and the linked child's structured `cmd` must BE that invocation (the DSL segment must carry it verbatim) — a basename or flag mention, an `echo` wrapper, and a Root-executed command (non-Root-file requirement unchanged) all fail; the fake-host fixture extracts the exact command from its prompt and records it as the child's exec.
+- Wait continuations were recognized on raw call text (P2, driver): a quoted `text('wait({cell_id:7})')` mention exempted an overlapping poll; GREEN - continuation identity comes from an ACTUAL wait call site (the same lexical call-site scanner as operations) whose balanced ARGUMENT SEGMENT carries the cell id — quoted mentions and comments never exempt.
+- The awaited-call locator mis-counted the name start with whitespace before the paren (P2, driver): `tools.exec_command ({...})` placed the computed start inside the identifier, failing the `await` prefix check and falsely reporting sequential observations as parallel; GREEN - the helper returns the actual name-START index (whitespace accounted), verified with a spaced-paren sequential test.
+
+Final committed suite after the twenty-fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 139, pass 139, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-sixth codex round on Task 3 (five P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The DSL worker match searched the raw argument TEXT (P2, driver): a comment or `"echo " + cmd` concatenation mentioning the command satisfied the substring; GREEN - the DSL branch now DECODES the actual `cmd` value from the exec argument segment (JSON-decoded double-quoted literal; anything undecodable is fail-closed) and compares it to the exact built invocation, as the structured branch already did.
+- A command match was credited without execution (P2, driver): a child call carrying the exact command was credited even when its result reported a validation error or never arrived; GREEN - the match is PENDING and credited only by the call's OWN output carrying the worker's completion marker; attempts stay diagnostic, execution is what counts (the fake-host fixture's child result now carries the marker).
+- Locally awaited polls inside a concurrent dispatch were sequential-by-assumption (P2, driver): two awaited polls in two async callbacks inside `Promise.all` overlap, but each passed the direct-await check; GREEN - a site inside a `Promise.all/allSettled/race/any` span is concurrent regardless of its local `await` (a local await orders statements within one callback, never across independently scheduled callbacks).
+- An inner poll inherited the wrapper-start timestamp (P2, driver): a script awaiting an exec before its poll recorded the call timestamp as `firstEmptyPollAtMs`, overstating remaining worker lifetime; GREEN - the DSL poll timestamp is recorded only when the poll IS the script's single operation (no awaited exec precedes it); otherwise the inner poll's start is unproven and the field stays null.
+- Session-file discovery was unbounded (P2, driver): the recursive walk materialized the whole model-writable tree and stat'd every JSONL before `maxFiles` applied; GREEN - the walk itself is bounded (SESSION_MAX_DISCOVERY_ENTRIES entries inspected), stops and reports truncation at the cap, and an incomplete scan already fails closed downstream.
+
+Final committed suite after the twenty-sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 141, pass 141, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-seventh codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The completion marker was only credited in the initial exec's result (P2, driver): a correctly completed LONG-RUNNING child — whose marker arrives in a later poll result, not the initial window — was rejected as unproven; GREEN - the invocation match is timestamped at the matched call and credited by the worker's marker in ANY output AT OR AFTER it in the same rollout (the initial result or a later poll/cell result); an output preceding the match, an error, or no result never credits.
+- A computed property key slipped the opaque-property guard (P2, driver): `{["chars"]:"\u0003"}` has `]` followed by `:`, which the shorthand/computed regex (expecting `,`/`}`) missed, counting the interrupt as an empty poll; GREEN - actual computed-key syntax (`[...]:`) is rejected explicitly before any `confirmedEmpty` grant.
+- Discovery's readdir still materialized one directory's Dirent array (P2, driver): a single huge model-writable directory allocated everything before the 512-entry budget was checked; GREEN - enumeration is INCREMENTAL (`opendir`/`read`), stopping at the entry budget and reporting truncation.
+
+Final committed suite after the twenty-seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 143, pass 143, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-eighth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The marker credit accepted any LATER output (P2, driver): after a failed matched exec, `echo <marker>`'s output still credited the child; GREEN - the credit follows the matched exec's OWN OBSERVATION CHAIN only: the matched exec's result, or — while that observation is running — a wait/write_stdin poll of it, carrying the worker's marker; the chain ends at the first non-running result, so an echo's marker after a failed exec never credits.
+- The cmd decode read a COMMENTED property (P2, driver): `{/* cmd: "node worker.mjs" */ cmd: "echo ..."}` decoded the commented command; GREEN - the segment is comment-stripped first (same lexical model), THE effective cmd literal is decoded, and DUPLICATE cmd properties are rejected as ambiguous.
+- Discovery silently skipped unreadable subtrees (P2, driver): an opendir/read failure left `truncated` false while an unreadable subtree could hide another spawn; GREEN - discovery errors (open or read) mark the summary incomplete, and the exactly-one-spawn grant fails closed on it (regression test with a mode-0000 subtree).
+
+Final committed suite after the twenty-eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 144, pass 144, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Twenty-ninth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The chain recognized only the `Script running` shape (P2, driver): the process-handle shape (`Process running with session ID …`) and a wrapper's `Script completed` over a still-live inner process closed the chain and dropped valid long-running completions; GREEN - BOTH running shapes keep the chain alive (any `running` output naming a `cell|session ID` handle), the HANDLE is recorded, and the chain continues only through polls referencing it.
+- The cmd decode accepted a prefix or an ambiguous property (P2, driver): `cmd: "<expected>" + suffix` matched the literal prefix and `cmd: "<expected>", cmd: replacement` counted one literal; GREEN - exactly ONE cmd property (literal or not) may exist, and its value must be a COMPLETE literal (an operator after it means a different effective command → fail closed).
+- Chain continuation ignored the returned handle (P2, driver): a `wait({cell_id:999})` whose output echoed the marker credited the chain started at cell 3; GREEN - a chain continuation must REFERENCE the recorded handle (structured `cell_id`/`id` args or the DSL argument text); a poll of any other handle is an unrelated observation.
+
+Final committed suite after the twenty-ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 144, pass 144, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirtieth codex round on Task 3 (five P2s — four on the driver, ONE ON THE REPORT'S EVIDENCE CHARACTERIZATION; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Handle references were matched on the raw script text (P2, driver): a quoted `text("id:17")` mention tied an unrelated poll of handle 999 to the chain; GREEN - the reference must live in the ACTUAL argument segment of a wait/write_stdin call site (comment-stripped, same lexical model).
+- A single lexical site dispatched N times was invisible (P2, driver): `Promise.all([1,2].map(async () => await tools.write_stdin(...)))` reported zero overlap (one site, locally awaited); GREEN - ANY script combining a concurrent-dispatch construct with an operation site counts the forbidden concurrency (never a confirmed absence of overlap); a single unawaited site with no dispatch construct still cannot overlap and is not flagged.
+- A delayed inner poll inherited the call timestamp (P2, driver): `await sleep(60000); await tools.write_stdin(...)` recorded the call time as the poll's start; GREEN - the timestamp is recorded only when the poll is the script's single operation AND its execution is IMMEDIATE (the script's only `await` directly precedes it, no earlier statement); otherwise unproven.
+- A comment between a key and its colon hid the effective stdin value (P2, driver): `chars /* interrupt */: "\u0003"` missed the key regex and counted the interrupt as an empty poll; GREEN - the argument segment is comment-stripped (string contents preserved) BEFORE key/value detection.
+- [REPORT] The cap-behavior conclusion overreached (P2, report): "the configured cap is effective ONLY through the directive path" treated the ≈31 s plain-yield Wall times as inner-observation completions, but each plain-yield return is a live cell that later wait continuations keep observing — the raised-config summary's single empty poll across ≈386 s measures the WRAPPER's model-reentry granularity, not an inner-cap effect; GREEN (report) - §7.3 now states what IS established (the directive path's single >300 s observation under the configured cap; the wrapper's ≈31 s per-re-entry clamp) and marks the negative claim (plain-argument inner cap) as not-proven; §7.6/§7.7 aligned (decision cadence vs inner length separated).
+
+Final committed suite after the thirtieth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 146, pass 146, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-first codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Structured worker-chain polls ignored `session_id` (P2, driver): a function-call host polls a long-running worker with `{session_id:17,chars:""}`, but only `cell_id`/`id` were compared — the terminal poll was never associated and a successful run was misreported `role-session-evidence-missing`; GREEN - `session_id` joins the structured handle comparison (regression test proves the structured poll continues the chain).
+- The numeric handle match accepted a numeric EXPRESSION (P2, driver): `session_id:17 + 1` matched handle 17 via a not-a-digit lookahead although it polls 18; GREEN - the handle literal must be COMPLETE (the value must end at a delimiter), so expressions never match and stay unclassified (regression test: expression-poll marker output cannot credit).
+- The fixture worker exited before flushing its terminal write (P2, fixture): with the host pipe full of noise, the queued marker was discarded by the immediate `process.exit(0)`; GREEN - the completion marker AND the signal line exit in the write callback (flush-error → exit 1), with a full-pipe + delayed-reader reproduction test (5 s of 1 ms noise over the 64 KB pipe).
+
+Final committed suite after the thirty-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 147, pass 147, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-second codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A multi-exec script's aggregate output credited the matched invocation (P2, driver): two exec sites share the outer call id, so a failed worker attempt followed by an inner echo of the marker proved "completion"; GREEN - the DSL match registers only when the script carries EXACTLY ONE exec site (a multi-exec script's output cannot be attributed to the matched inner invocation — fail closed).
+- A spread could override the literal cmd (P2, driver): `{cmd: expectedCommand, ...opts}` accepted the literal while `opts.cmd` could replace the effective command; GREEN - any spread in the cmd-decoding segment fails the decode (fail closed).
+- Dispatch and async detection ran on raw text (P2, driver): a commented or printed `Promise.all(async callback)` before a single awaited poll produced a false violation; GREEN - the dispatch construct is detected only at executable lexical positions (the scanner skips strings and comments) and the `async` keyword is tested on the comment- and string-stripped view.
+
+Final committed suite after the thirty-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 147, pass 147, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-third codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A `role` alias could carry the synthetic-role match (P2, driver): `{agent_type:"default", role:"wait-probe-synthetic"}` granted the spawn fact although the source-pinned host selects roles from `agent_type` only; GREEN - ONLY `agent_type` is matched (SpawnAgentArgs has no `role` property — an alias never exercises the synthetic configuration).
+- Quoted numeric handles were disconnected from the chain (P2, driver): `write_stdin({id:"17",...})` failed the numeric pattern's delimiter lookahead at the closing quote; GREEN - the complete-literal pattern accepts an optional closing quote (string-passed digits continue the chain; expressions like `17 + 1` still never match).
+- The dispatch heuristic flagged dispatches that CANNOT overlap (P2, driver): a `Promise.all` over non-operations completing before sequentially awaited polls produced a false violation; GREEN - the violation requires an operation site INSIDE a dispatch span (or multi-site fire-and-forget); a dispatch whose span contains no operation site cannot overlap the polls and is never flagged.
+
+Final committed suite after the thirty-third Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 147, pass 147, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-fourth codex round on Task 3 (two P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A cell EXPRESSION was accepted as a continuation literal (P2, driver): `wait({cell_id:3 + 1})` parsed as cell 3, so its completion retired the wrong cell's pending calls; GREEN - the cell id must be a COMPLETE literal (delimiter-terminated, optional closing quote); expressions stay unclassified and their calls count as overlaps (regression test).
+- A dispatched async HELPER's concurrent polls were invisible (P2, driver): `const poll = async () => await tools.write_stdin(...); Promise.all([poll(), poll()])` reported zero violations (the lexical site sits outside the dispatch span and is locally awaited); GREEN - an async helper (a `const name = async` definition) INVOKED inside a dispatch span counts the forbidden concurrency — its N invocations run its polls N times concurrently (regression test).
+
+Final committed suite after the thirty-fourth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 147, pass 147, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-fifth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The completion marker was searched in the AGGREGATE script output (P2, driver): a single-exec script ending in `text("<marker>")` fabricated completion even when the exec failed; GREEN - the matched registration FAILS CLOSED when the script text itself mentions the completion marker (the model's own output can never be the worker's observation result).
+- Structured JSON process handles closed the chain (P2, driver): a live process rendered as `{"status":"running","session_id":"s9"}` matched neither the human handle form nor any continuation; GREEN - `extractLiveHandle` decodes BOTH shapes (human `cell|session ID X` and structured `session_id`/`cell_id` JSON fields), so a matching poll of the JSON-named handle continues the chain. The refactor also fixed an indexing slip (`handleMatch[1]` on a string return) the new regression tests exposed.
+- The noisy worker could emit lines AFTER the terminal marker (P2, fixture): the noise interval kept queueing writes while `finish()` waited for the marker's flush callback, so the marker was not the final output line; GREEN - `finish()` clears the noise timer before queueing the marker, and the interval callback checks `finished` before every write.
+
+Final committed suite after the thirty-fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 147, pass 147, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-sixth codex round on Task 3 (two P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A structured yield return WITHOUT running text closed the chain (P2, driver): `{"session_id":17,"output":"","wall_time_seconds":30}` extracted the handle but was discarded for lacking `running` text, so subsequent polls could not prove completion; GREEN - liveness is determined from the structured fields (`isLiveObservationOutput`: running text, OR a structured handle without a completed/exited/finished status), applied identically to the matched exec's result and to continuation results (a structured completed status ends the chain — regression-tested both ways).
+- The signal handler could hang forever under backpressure (P2, fixture): with stdout unread and the pipe full, the signal line's flush callback never fires and `finished` blocks every other exit path; GREEN - the signal handler stops the noise timer and installs a bounded 1 s fallback exit (`setTimeout(...).unref()`), so interruption stays prompt even when the signal line cannot flush (regression test: SIGTERM with unread stdout terminates well under 5 s).
+
+Final committed suite after the thirty-sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 148, pass 148, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-seventh codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Continuation scripts could print their own marker (P2, driver): a poll of the live handle whose script ends in `text("<marker>")` fabricated completion through the aggregate output; GREEN - the marker-fabrication guard extends to chain registration (a continuation script mentioning the marker is refused).
+- The outer `Script completed` header decided inner-process liveness (P2, driver): `Script completed` followed by a structured result carrying a live `session_id` closed the chain and dropped the real marker from a later same-handle poll; GREEN - liveness is determined from the INNER result after the wrapper's completion header (the header is stripped before the structured test; explicit running text anywhere still counts).
+- Signals were ignored while the completion flush pended (P2, fixture): after `finish()` set `finished` with its marker write queued behind a full pipe, SIGTERM/SIGINT returned without exiting and the worker hung until SIGKILL; GREEN - a signal arriving during pending completion force-exits with the signal status (pending completion is not an exit; regression test with an undrained 64 KB pipe and a post-finish SIGTERM).
+
+Final committed suite after the thirty-seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 149, pass 149, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Thirty-eighth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- An AMBIGUOUS handle argument matched the worker handle (P2, driver): `{session_id:17,session_id:999}` polls 999 yet matched 17, so the unrelated process's marker credited the chain; GREEN - a handle reference requires EXACTLY ONE handle key and no spread in the poll's argument segment (ambiguity never attributes).
+- A multi-poll continuation script's aggregate output was credited (P2, driver): a script polling both the worker handle and an unrelated handle was registered on either match; GREEN - the chain registration requires EXACTLY ONE poll operation site (the same attribution restriction as multi-exec scripts).
+- Structured waits resolved only against the MOST RECENT cell (P2, driver): with cells 1 and 2 outstanding, `wait({cell_id:1})` was neither a continuation nor settled cell 1, so trailing sequential calls were falsely flagged; GREEN - both the structured shape and the script-text literal resolve against the PER-CELL pending map (any outstanding cell), and the continuation gate is the map's size, not the latest cell (regression test: two yielded cells, waits for each in turn, exactly one violation).
+
+Final committed suite after the thirty-eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 150, pass 150, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+(Thirty-ninth codex round was BLOCKED at launch on 2026-10-02 ~17:45–17:56 +08:00: three consecutive review jobs failed with the codex auth error "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again." — root cause was the companion's RESIDENT `codex app-server` process (started before the re-login) holding the stale token; after the operator re-logged in, killing the resident app-server restored the gate. Round 39 ran 2026-10-02 ~18:04 +08:00.)
+
+Thirty-ninth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The continuation exemption covered the WHOLE script (P2, driver): `write_stdin(...); wait({cell_id:7})` was fully exempt although its fresh poll overlaps the outstanding cell; GREEN - the exemption covers THE WAIT ITSELF — a continuation script carrying more than its own wait site counts the violation.
+- The wait continuation accepted a non-effective cell literal (P2, driver): `wait({cell_id:7,cell_id:999})` matched 7 although JavaScript passes 999, and its completion retired cell 7; GREEN - effective-argument validation on the comment-stripped wait segment: a spread or a duplicate cell_id key leaves the continuation UNCLASSIFIED (its call counts as an overlap and its completion never retires).
+- Cell settlement was gated on the latest-yield flag (P2, driver): with cells 7 and 8 outstanding, cell 8 completing first cleared the flag, so cell 7's later mapped completion skipped settlement and stranded its pending call (two violations instead of one); GREEN - mapped wait completions settle THEIR cell through the per-cell pending map, independent of any latest-yield state; the now-unused flag was removed (regression test: reverse-order completions, exactly one violation).
+
+Final committed suite after the thirty-ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 153, pass 153, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fortieth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A HELPER-BODIED poll inherited the call timestamp (P2, driver): `async function poll() {...}` defined before a delay still passed the immediate-poll check (the definition text has the site as its first await); GREEN - immediacy requires the site NOT inside a function context (no `function`/`=>` in the prefix), so a helper-invoked poll's start stays unproven.
+- Yields were scanned across the WHOLE script (P2, driver): `const unused = {yield_time_ms:3600000}` recorded 3600000 over the poll's actual 5000, and duplicate keys recorded the first value; GREEN - the DSL extraction now takes ONLY the leading @exec directive payload and the EFFECTIVE argument segments of the actual operation sites (position-ordered, string/comment-stripped), with the LAST duplicate key winning per segment.
+- Helper dispatch detection was name-shape-based (P2, driver): `async function poll()` declarations were invisible (zero violations for a dispatched polling helper) while a dispatched `const f = async () => 1` (no shell op) was falsely flagged; GREEN - the helper scan recognizes BOTH declaration forms and attributes an operation to a helper only inside its OWN statement (bracket-depth-bounded by statementEndIndex), so a dispatched polling helper counts and a dispatched non-polling helper does not.
+
+Final committed suite after the fortieth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 155, pass 155, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-first codex round on Task 3 (three P2s + one P3; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A later EXPRESSION duplicate kept the earlier yield literal (P2, driver): `{yield_time_ms:7000,yield_time_ms:60*1000}` recorded 7000 although the tool receives the unsupported 60000; a trailing spread could likewise override; GREEN - the effective value is the LAST yield key's value — an unsupported expression or a spread after it yields null (unclassified), never the earlier literal (regression tests for both overrides).
+- Operations inside template INTERPOLATIONS were invisible (P2, driver): `` text(`${await tools.write_stdin({...})}`) `` performs a real poll but the scanner skipped the whole template; GREEN - the call-site scanner treats `${...}` as executable code (bracket-depth tracked, re-entering literal-text mode at the matching `}`), so interpolated operations are detected, classified, and sampled (regression test).
+- [REPORT] The managed-Child config claim cited the WRONG client (P2, report): `startClient` serves only the setup/inspection clients (`runSetup`, `inspectRescueRoleStatus`), not the managed Rescue Child (which launches through the host spawn flow of `skills/rescue/SKILL.md`); GREEN (report) - the inheritance claim ("Child's effective cap comes from the same user config layer as Root's") is withdrawn and marked not-proven, deferred to Tasks 5/6 with the actual host spawn path.
+- [P3] The flush regression test attached a flowing reader immediately (P3, tests): the pipe never actually filled, so an immediate-exit regression could pass; GREEN - stdout stays paused until after the worker exits, then is drained and verified (marker present AND the final output line); the SIGTERM tests' resume-then-pause feint removed.
+
+Final committed suite after the forty-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 155, pass 155, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-second codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- TWO waits for the same cell were both exempted (P2, driver): with cell 7 outstanding, a second `wait({cell_id:7})` dispatched before the first returned hid the overlap (zero violations); GREEN - the exemption covers overlapping the SUSPENDED script, never another UNANSWERED wait — a wait whose cell already has an unresolved mapped wait counts the violation (regression test: double wait, one violation, trailing poll clean).
+- The legacy `input` field outranked a nonempty `chars` (P2, driver): `{input:"", chars:"\u0003"}` matched the empty-input branch and attributed the interrupt to the empty-poll window; GREEN - the EFFECTIVE field decides: both fields conflict (one empty, one nonempty) → unclassified; both empty → empty poll; a nonempty field is a nonempty write (regression test covers all three).
+- Quotes were not opaque inside template interpolations (P2, driver): `` text(`${"exec_command({})"}`) `` counted as an initial exec because interpolation code mode skipped string handling; GREEN - interpolation code handles quoted strings (and nested templates), so printed operation names never inflate shell-call counts (regression test).
+
+Final committed suite after the forty-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 158, pass 158, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-third codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A wait mapping survived its own response (P2, driver): a wait answered `Script running with cell ID 7` kept its mapping (deleted only on completion), so a subsequent SEQUENTIAL wait for cell 7 counted as its overlap; GREEN - EVERY response retires the individual wait's mapping while the CELL's pending state persists until an actual completion (regression test: wait → still-running → sequential wait → clean).
+- The launched worker was never compared with the REQUESTED profile (P2, driver): a model altering or dropping the duration/noise flags still earned `shell-smoke-completed` under the requested profile's remaining-lifetime math; GREEN - `readTraceFacts` now retains the single launch's OWN `durationMs`/`noiseIntervalMs` and compares them with the requested profile (`workerProfileMatches`); both grant paths refuse a mismatch (`inconclusive` / `worker-profile-mismatch`), proven by a new fake-host mode that drops the requested duration flag.
+- The wrapper directive was recognized anywhere (P2, driver): an inline or trailing `// @exec:` comment credited position zero although the wrapper honors only a leading pragma; GREEN - the directive is parsed from the FIRST non-blank line of the RAW script (anchored `^\s*//\s*@exec:\s*{...}$`); later-line or inline comments request nothing (regression test: trailing comment, the poll's own 60000 governs).
+
+Final committed suite after the forty-third Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 160, pass 160, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-fourth codex round on Task 3 (four P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The backpressure flush test could deadlock on a FULL pipe (P2, tests): holding stdout paused while awaiting exit is circular (the worker's marker flush needs the parent to drain); GREEN - the hold expires BEFORE draining starts, the drain precedes the exit await, a watchdog kills the child on failure, and the noise volume (8 s ≈ 220 KB) now provably exceeds kernel+readahead buffers (a live repro showed the 5 s volume never actually blocked).
+- A quoted STRING handle accepted an expression tail (P2, driver): `id:"s1" + suffix` matched the `"s1"` prefix; GREEN - the complete-value boundary applies to string handles too (`["']s1["']` must be followed by a delimiter); expression tails stay unclassified.
+- Zero-valued profile fields were not compared (P2, driver): a requested SILENT run (noise 0) accepted a launch recorded with a noise cadence via the `<= 0` short-circuit; GREEN - when a profile was requested, BOTH fields compare exactly (zero is as binding as positive); a bare run (no profile requested) makes no claim and skips the check.
+- Yield expression tails passed the operator blacklist (P2, driver): `60000 % 7000` and `60000 ? 5000 : 1000` recorded 60000; GREEN - the complete literal must be followed by an actual VALUE DELIMITER (`\s*[,})]` or end), so operator tails are unsupported expressions and stay unclassified.
+
+Final committed suite after the forty-fourth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 160, pass 160, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-fifth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Tool outputs stored as CONTENT ITEMS were read as empty (P2, driver): the pinned code-mode rollout shape (`[{type:'input_text',text:...}]`) replaced valid output with `''`, losing terminal markers (valid role controls became inconclusive) and treating yielded scripts as completed; GREEN - `outputTextOf` normalizes BOTH shapes (string and content-item arrays) at every output reader (regression test: marker + live handle carried by content items).
+- `Promise.allSettled` matched its `all` prefix (P2, driver): the keyword alternation left the scanner at `S`, so no dispatch range recorded and overlapping polls reported zero violations; GREEN - `allSettled` is matched before `all` (regression test).
+- The DIAGNOSTIC sample truncation gated the role proof (P2, driver): a valid run with more than 64 tool decisions was rejected solely because the bounded `calls` sample filled, although the full-scan facts (spawn count, spawn answer, linked worker execution) were complete; GREEN - the fail-closed gate keys on actual SCAN truncation only; sample truncation stays diagnostic (regression test: 70-call root, proof stands).
+
+Final committed suite after the forty-fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 163, pass 163, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-sixth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Yielded-script registration used a raw substring (P2, driver): a wait-continuation script whose COMMENT mentioned `write_stdin` registered as yielded, so its `Script completed` output bypassed the wait-cell settlement and stranded the observation (false violation on the next poll); GREEN - registration keys on LEXICAL operation facts (the initial-exec classification or actual write_stdin call sites), never raw text (regression test: commented continuation settles cell 7, trailing poll clean).
+- Any site inside a dispatch range was treated as concurrent (P2, driver): `Promise.all([write_stdin(...)])` (a single direct call executing once) and two awaited polls inside ONE callback were both flagged; GREEN - `rangePollingBranches` counts INDEPENDENTLY DISPATCHED polling branches (two nested callback bodies with operations) and REPEATED invocations (.map/.forEach/.filter/.flatMap of one polling callback); a single direct range call and one-callback awaits stay sequential (regression tests for both shapes plus the standing multi-branch and map cases).
+
+Final committed suite after the forty-sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 164, pass 164, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-seventh codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Observation handles lost their NAMESPACE (P2, driver): a poll of `session_id:7` credited a chain whose handle was `cell ID 7`, although a session poll observes a different process than the suspended script; GREEN - `extractLiveHandle` returns the handle KIND (cell vs session), the chain stores it, and `referencesChainHandle` requires the corresponding key (`cell_id` for cell handles; `session_id`/`id` for session handles) — a cross-namespace marker never credits (regression test).
+- Awaited expressions with comments or parens were treated as unawaited (P2, driver): `await /* observation */ tools.write_stdin(...)` and `await (tools.write_stdin(...))` failed the direct-await prefix test, falsely reporting compliant sequential polls as parallel; GREEN - the prefix is comment-stripped and the await tail tolerates one opening paren before the receiver (regression test extends the sequential case with both forms).
+
+Final committed suite after the forty-seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 164, pass 164, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-eighth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Quoted property keys broke handle correlation (P2, driver): `tools.write_stdin({"session_id":17,...})` — a valid quoted-key shape — failed the handle-literal pattern (which allowed a closing but not an opening quote before the key), so the completion marker went unattributed and a completed run became inconclusive; GREEN - the pattern accepts quoted keys (regression covers the complete child observation chain with quoted keys).
+- A SINGLE polling-helper invocation was flagged as overlap (P2, driver): `await Promise.all([poll()])` reports concurrency although one invocation is one observation; GREEN - the helper scan now counts INVOCATIONS inside dispatches (`dispatchedPollingHelperInvocations`) and the violation requires two or more (regression test: single invocation clean, double still flagged).
+
+Final committed suite after the forty-eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 164, pass 164, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Forty-ninth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Operation names matched as SUBSTRINGS (P2, driver): a helper `my_exec_command(...)` counted as two initial execs plus a false concurrency violation although no shell tool ran; GREEN - the call-site scanner requires an identifier boundary before the operation name (a receiver dot still allowed), so helper names never corrupt the counts (regression test with the real-name control).
+- ACCESSOR properties escaped the stdin classification (P2, driver): `{session_id:17, get chars(){return "x"}, ...}` missed the key scan and the opaque guards, counting an interrupt write as an empty poll with a start timestamp; GREEN - accessor syntax (`get|set key(...)`) is an opaque property forcing UNCLASSIFIED (regression test).
+
+Final committed suite after the forty-ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 165, pass 165, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fiftieth codex round on Task 3 (four P2s + one P3; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Repeated callback dispatches OUTSIDE Promise combinators were invisible (P2, driver): `[1,2].forEach(async () => await tools.write_stdin(...))` runs one lexical site N times; GREEN - `repeatedCallbackDispatchBranches` flags method-dispatched polling callbacks whose array-literal receiver holds two or more elements (non-literal receivers are flagged as unproven; single-element receivers skip).
+- Awaited promise VARIABLES were flagged as parallel (P2, driver): `const p = tools.write_stdin(...); await p; const q = ...; await q;` is strictly sequential although no site is DIRECTLY awaited; GREEN - the scheduling is not flagged when the script holds at least one `await` per operation site (await count on the comment/string-stripped view).
+- NESTED yield keys overwrote the outer request (P2, driver): `yield_time_ms: 60000 + ({yield_time_ms:5000}).x` recorded 5000; GREEN - `effectiveYieldValue` is depth-tracked: only OUTER-object keys count, the last wins, and an expression value stays unclassified (regression: the 60000+5000 expression records nothing).
+- An AWAITING ARGUMENT delayed the poll past the call timestamp (P2, driver): `session_id: await new Promise(...)` still recorded the call time as the poll start; GREEN - the immediacy check also inspects the poll's argument segment for awaits (regression: start unproven).
+- [P3] Command-string contents triggered the cmd syntax checks (P3, driver): a worker path containing `...` or a quoted `cmd:` voided the exact-invocation match; GREEN - the spread/duplicate-key checks run on the STRING-STRIPPED segment while the literal decodes from the raw text (regression: a path containing `...` and `cmd:` still proves the invocation).
+
+Final committed suite after the fiftieth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 169, pass 169, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-first codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Await COUNT stood in for await ORDERING (P2, driver): `const p = a(); const q = b(); await p; await q;` starts both polls before awaiting either yet passed the two-awaits heuristic; GREEN - the scheduling check requires an await between EVERY consecutive site pair (gap rule on the stripped view); start-before-await shapes count as overlaps while stored-then-awaited variables stay sequential (regression tests for both).
+- An unrelated map formatter was flagged as a repeated dispatch (P2, driver): `text(r.output.split("\n").map(line => line.trim()))` after a single awaited poll counted a violation because the unknown-receiver branch returned before inspecting the callback; GREEN - the callback must contain a POLLING operation before the receiver branch runs (regression test).
+- A COMPUTED key could override the yield unresolvably (P2, driver): `{yield_time_ms:60000,["yield_time_ms"]:5000}` records 60000 although the host receives 5000; GREEN - a supported string-form computed key participates in last-property-wins; ANY other computed key in property position fails the request closed (unclassified). The fix also exposed and corrected a yield-path stripping slip (quoted keys were erased before the key scan; only comments are stripped there now).
+
+Final committed suite after the fifty-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 171, pass 171, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-second codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A WRAPPED wait yielding a new cell lost its pending state (P2, driver): `wait({cell_id:7})` returning `Script running with cell ID 10` neither registered cell 10 nor preserved cell 7 — resuming cell 10 counted as an overlap and its completion never settled cell 7; GREEN - the wrapper cell is registered CHAINED to its predecessor (`cellPredecessorByCell`), resuming it is a continuation, and its completion settles the whole chain (regression test: sequential end to end, zero violations).
+- An ARBITRARY intervening await "serialized" two started polls (P2, driver): `const p = a(); await Promise.resolve(); const q = b(); await p; await q;` overlaps, but the any-await-between heuristic cleared it; GREEN - the gap must hold an await that REFERENCES the preceding poll's own promise (`await p`) or the preceding site must be directly awaited; anything else overlaps (regression covers both shapes).
+- Whitespace before a computed yield key broke the property boundary (P2, driver): `{yield_time_ms:60000, ["yield_time_ms"]:5000}` recorded 60000 (the `\S$` boundary check saw the space); GREEN - trailing whitespace is trimmed before the boundary check, so the spaced supported key resolves last-property-wins (5000) and a spaced dynamic key fails closed (regression test).
+
+Final committed suite after the fifty-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 174, pass 174, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-third codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The cmd decode searched the RAW segment (P2, driver): `{ /* cmd: "worker", */ cmd: "other" }` decoded the COMMENTED invocation (false correlation) while `cmd /* note */ : "worker"` failed a real one; GREEN - three views with distinct jobs: the COMMENT-STRIPPED text is where the literal decodes, the STRING-STRIPPED view is where the spread/duplicate-key syntax checks run (command-value contents like `...` or `cmd:` are paths, not syntax).
+- A polling helper PASSED AS A CALLBACK was invisible (P2, driver): `await Promise.all([1, 2].map(poll))` reported zero violations (the counter only saw explicit `poll(...)` calls); GREEN - named callback references inside a dispatch count with their array's multiplicity (regression test).
+- Helper invocation counts accumulated ACROSS dispatches (P2, driver): two sequential awaited single-invocation dispatches counted two and were flagged; GREEN - counts are evaluated PER DISPATCH RANGE and the maximum wins, so sequential awaited dispatches never overlap (regression test).
+
+Final committed suite after the fifty-third Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 176, pass 176, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-fourth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A COMPUTED cmd property could override the invocation (P2, driver): `{cmd: expected, ["cmd"]: replacement}` executed the replacement while the decode credited `expected` (marker-printing replacements could grant role evidence without child execution); the handle correlation had the same override gap; GREEN - ANY computed property in the segment voids the cmd decode, and a computed handle key in the poll segment skips that segment's handle match (fail closed, regression test).
+- Receiver cardinality was lost in both dispatch checks (P2, driver): `[17].map(async () => await tools.write_stdin(...))` was flagged although exactly one invocation runs, and an empty receiver was flagged despite executing none; GREEN - `receiverElementCount` (tolerating the member-access dot) is consulted by the repeated-callback path AND the dispatch-range path — singletons and empty receivers cannot overlap, unknown receivers stay flagged (regression test).
+- Yield keys matched as name SUFFIXES (P2, driver): `{yield_time_ms:60000, previous_yield_time_ms:5000}` recorded 5000 over the actual 60000; GREEN - a key is accepted only at a COMPLETE PROPERTY boundary (following `{` or `,`), so longer names ending in the key never overwrite it (regression test).
+
+Final committed suite after the fifty-fourth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 178, pass 178, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-fifth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Repeated executions OUTSIDE recognized dispatch shapes were invisible (P2, driver): `for (let i = 0; i < 2; i++) { tools.write_stdin(...); }` and a NON-async promise-returning helper (`function poll() { return tools.write_stdin(...) }`) dispatched twice both reported zero violations; GREEN - loop bodies containing a shell operation count the forbidden concurrency (`loopBodyContainsOperation` with brace-balanced bodies), and plain function declarations join the dispatched-helper scan (deduplicated by name) (regression tests for both).
+- DSL wait-continuation yields were omitted (P2, driver): `await tools.wait({cell_id:7, yield_time_ms:60000})` recorded no requested yield although structured wait calls do; GREEN - the yield extraction visits ACTUAL wait sites alongside exec/stdin sites (regression test).
+
+Final committed suite after the fifty-fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 179, pass 179, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-sixth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A semicolon-free delay before the poll passed the immediacy check (P2, driver): `while (...) {...} text(await tools.write_stdin(...))` still recorded the call timestamp as the poll start; GREEN - a PROVEN immediate shape only: after stripping at most one leading declaration and the `await` keyword (plus the receiver chain), NOTHING may remain before the poll (regression test: busy-wait prefix leaves the start unproven).
+- AWAITED loop bodies were flagged as overlaps (P2, driver): `for (...) { const r = await tools.write_stdin(...); }` serializes iterations — one active observation at a time; GREEN - `loopBodyContainsOperation` skips bodies whose sites are directly awaited; only fire-and-forget body sites count (regression test).
+- Named callback references assumed two invocations (P2, driver): `Promise.all([1].map(poll))` was flagged although a singleton receiver runs the callback once; GREEN - the named reference counts the RECEIVER's multiplicity (`receiverElementCount`; unknown receivers stay flagged at two) (regression test: singleton clean, two-element flagged).
+
+Final committed suite after the fifty-sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 181, pass 181, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-seventh codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A premature marker qualified HELD shell profiles (P2, driver): with a positive worker duration, a model-authored marker arriving while the worker still runs (settlement then kills it → `terminated`) was accepted as `shell-smoke-completed`, including on budget expiry; GREEN - both grant paths refuse a profiled run whose settlement terminated the still-running worker (`inconclusive` / `worker-still-running-at-marker` — the fixture worker prints the marker only at natural finish, so a terminated settlement means the marker was fabricated or premature; the bare marker-then-late-noise research shape, whose worker intentionally stays alive to emit post-budget noise, is unaffected) (regression test with the kept-alive stage).
+- The documented directive broke the poll-immediacy check (P2, driver): a poll led by `// @exec: {...}` left the comment in the immediate prefix and lost `firstEmptyPollAtMs` on the decisive long-window path; GREEN - the leading directive comment is stripped before the immediacy validation (regression covered by the existing directive-form timing evidence plus the immediacy tests).
+- A COMPUTED cell key overrode the continuation identity (P2, driver): `wait({cell_id:7, ["cell_id"]:999})` matched cell 7 although 999 executes; GREEN - a computed cell key in the wait segment leaves the continuation unclassified (the same computed-property rule the observation handles use).
+
+Final committed suite after the fifty-seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 182, pass 182, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-eighth codex round on Task 3 (seven P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- An UNREADABLE discovered rollout was silently skipped (P2, driver): stat/open failures left `truncated` false, letting a hidden second spawn satisfy the exactly-one-spawn grant; GREEN - both metadata failures and open failures mark the scan incomplete (the role grant fails closed on it).
+- The cmd decode matched a string VALUE's contents (P2, driver): `justification: 'cmd: "expected",'` decoded the value's text over the actual `cmd: "other"`; GREEN - the actual property is located LEXICALLY on the depth-tracked value-stripped view (exactly one top-level cmd key), and only the literal after THAT key is decoded from the comment-stripped text.
+- DSL classification ran on EVERY custom tool (P2, driver): an `apply_patch` call whose input text contains `await tools.exec_command(...)` counted as an initial exec although nothing executed; GREEN - executable-script interpretation is restricted to the recognized wrapper tools (`WRAPPER_TOOL_NAMES`: exec/shell); other custom tools stay unclassified.
+- Plain (non-async) arrow helpers were invisible (P2, driver): `const poll = () => tools.write_stdin(...)` dispatched twice reported zero violations; GREEN - ordinary promise-returning arrows join the helper declaration forms.
+- Helper invocations inside callbacks were single-counted (P2, driver): `[1,2].map(() => poll())` runs the helper's poll twice but counted one textual occurrence; GREEN - helper call positions augment the operation-site set for the branch/repeated-dispatch checks.
+- Printed text satisfied the serialization gap (P2, driver): `text("await p")` between two started polls counted as the serialization await; GREEN - the gap scan runs on the STRING-STRIPPED view (printed await words are content).
+- An unquoted computed yield key was resolved (P2, driver): `[yield_time_ms]` (an identifier that can evaluate to anything) was accepted as the key; GREEN - only a QUOTED string literal is the supported computed-key form; identifiers fail closed (regression tests for all seven).
+
+Final committed suite after the fifty-eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 184, pass 184, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Fifty-ninth codex round on Task 3 (three P2s, all in the fifty-eighth round's new code; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- FORMATTED and quoted cmd keys were rejected (P2, driver): `{ cmd: "..." }` (leading whitespace) and a comment between the key and its colon failed the top-level walk's preceding-character check, breaking real correlation; GREEN - the walker matches keys with leading whitespace, optional quotes, and a following colon BEFORE quote handling.
+- The value decode was unanchored (P2, driver): `cmd: "other" || "<expected>"` decoded the SECOND operand although JavaScript passes `other`; GREEN - the literal is anchored immediately after the located colon and the ENTIRE value must be the supported literal (regression test).
+- The serialized-gap used STRIPPED-view offsets (P2, driver): a long command literal shifted the offsets so sequential stored-promise polls falsely overlapped and overlapping starts followed by later awaits hid; GREEN - the gap is sliced from the ORIGINAL text and stripped afterwards (regression test covers both directions).
+
+Final committed suite after the fifty-ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 185, pass 185, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixtieth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The decode could select a STRING VALUE's interior (P2, driver): `justification:'{cmd: "expected"}', cmd:"other"` — the commentMatch regex matched the value's command-shaped text; GREEN - the top-level cmd key is located LEXICALLY on the comment-stripped text (depth-tracked, quotes handled, property-boundary checked) and the literal is anchored at THAT colon (regression test).
+- Named polling callbacks OUTSIDE combinators were invisible (P2, driver): `[1,2].forEach(poll)` dispatched the helper twice with zero violations (the check required an inline callback body); GREEN - `repeatedCallbackDispatchBranches` recognizes named polling callbacks with the receiver's multiplicity (regression test).
+- NON-polling helper call sites polluted the branch checks (P2, driver): `const f = async () => 1` dispatched twice as auxiliary work flagged the trailing sequential poll; GREEN - `helperCallStarts` includes only helpers whose OWN statement contains a shell operation (regression test).
+
+Final committed suite after the sixtieth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 187, pass 187, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-first codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Profiled grants were not revoked after DEFERRED settlement (P2, driver): a still-running profiled worker's settlement finished after classification (`not-started` → `terminated` in cleanup), leaving the premature-marker success standing; GREEN - the not-started→terminated transition revokes a profiled `shell-smoke-completed`/`role-control-completed` to `inconclusive`/`worker-still-running-at-marker` after settlement finalizes (both success paths covered; the grant-time refusals from the fifty-seventh round stand for already-terminated settlements).
+- Continuation handles ignored the OBSERVING operation (P2, driver): `write_stdin({session_id:999, cell_id:7, chars:""})` credited a cell-7 chain although write_stdin observes SESSION 999 (its cell_id field is inert); GREEN - handle KIND binds to the observing operation: cell handles resolve only through `wait` (structured `wait` calls or wait(...) sites), session handles only through `write_stdin` (regression test: the cross-observation marker never credits).
+- The text()-wrapped awaited poll lost its start timestamp (P2, driver): `text(await tools.write_stdin(...))` — the recorded continuation shape — failed the immediacy prefix check and dropped `firstEmptyPollAtMs`; GREEN - a text()-wrapper prefix is recognized as immediate (with the directive-comment strip), preserving the remaining-lifetime evidence (regression test).
+
+Final committed suite after the sixty-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 188, pass 188, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-second codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A rollout VANISHING between discovery and open was skipped silently (P2, driver): the ENOENT branch left `truncated` false, hiding an additional spawn from the exactly-one-spawn grant; GREEN - every discovered-but-unreadable rollout (ENOENT included) marks the scan incomplete (the role grant fails closed on it).
+- FREE helper invocations outside combinators were unserialized (P2, driver): `const a = poll(); const b = poll(); await a; await b;` starts two observations concurrently and reported zero violations; GREEN - free (non-dispatch) helper invocations participate in the var-reference serialization-gap rule with declaration positions excluded; awaited invocations stay sequential (regression test covers both).
+- A SYNCHRONOUS argument evaluation delayed the poll past the call timestamp (P2, driver): a busy-wait IIFE in `session_id:` still recorded the call time as the poll start; GREEN - the start stays unproven unless the argument segment is pure literals (no calls, no `new`, no awaits) (regression test).
+
+Final committed suite after the sixty-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 189, pass 189, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-third codex round on Task 3 (four P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- DEFERRED (covered) settlement escaped the profiled refusal (P2, driver): `workerExit` `not-started` → `terminated` in cleanup happened after classification, leaving a premature-marker success standing; GREEN - the not-started→terminated transition revokes profiled grants after settlement finalizes (both success paths), complementing the grant-time refusals.
+- A MIXED exec+poll wrapper's aggregate output was credited (P2, driver): one matching exec followed by a poll of an unrelated handle let the aggregate marker credit the matched invocation; GREEN - the DSL registration additionally requires ZERO stdin sites (a mixed script's output is ambiguous, fail closed).
+- A rollout VANISHING between stat and open (ENOENT) was skipped silently (P2, driver); GREEN - every open failure including ENOENT marks the scan incomplete.
+- A CONDITIONAL gap await "serialized" started polls (P2, driver): `if (false) await p;` matched the await-reference regex; GREEN - the serialization await must START A STATEMENT in the gap (`^|[;}]`), applied to both the direct-site and helper-invocation rules (regression tests).
+
+Final committed suite after the sixty-third Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 190, pass 190, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-fourth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- CONFLICTING structured handle aliases matched anyway (P2, driver): `{session_id:999, id:17}` — the OR condition credited handle 17 through the ignored `id` field although the host observes session 999; GREEN - conflicting aliases leave the effective handle host-defined → unproven, never matched (regression test).
+- Yield-key boundary detection was QUADRATIC (P2, driver): the per-character prefix rescan made a 10k-space padded argument take ~1.3 s, delaying cleanup past the observation budget; GREEN - `effectiveYieldValue` tracks the previous non-whitespace character incrementally, with depth gating restored for nested keys after the rewrite briefly regressed the nested-key rule (timing regression test with 10k padding).
+
+Final committed suite after the sixty-fourth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 191, pass 191, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-fifth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A wrapped wait's `Script completed` header cleared a STILL-LIVE inner cell (P2, driver): an output containing both the completion header and a live `session ID S` announcement retired the original observation prematurely, hiding a subsequent fresh poll; GREEN - the wrapper header settles the cell only when the SAME output announces no live handle (regression covered by the chain semantics).
+- HELPER and DIRECT polls were overlap-checked separately (P2, driver): `const p = poll(); await tools.write_stdin(...); await p;` started two observations but each list alone looked serialized; GREEN - the serialization rule runs across the COMBINED execution order of direct sites and free helper invocations, as a single per-script increment (regression test: overlap flagged, compliant mixed shape clean).
+
+Final committed suite after the sixty-fifth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 192, pass 192, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-sixth codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A live-handle announcement vetoed the cell retirement (P2, driver): a wait returning `Script completed` followed by `Process running with session ID 17` kept the original call pending, so the next sequential write_stdin of session 17 was falsely flagged; GREEN - the awaited CELL's completion retires it even when the same output announces a live process handle, and the live handle starts a NEW chain (fresh polls of it are continuations, not overlaps) (regression test).
+- ASI newline awaits were invisible to both serialization checks (P2, driver): `const p = tools.write_stdin(...)\nawait p\nconst q = ...` — the await reference after a newline (no semicolon) never matched the statement-initial boundary; GREEN - ASI newline boundaries count in both the direct-site and combined rules, while a newline directly after a conditional head (`if (false)\nawait p`) remains the conditional's body and settles nothing (regression tests).
+
+Final committed suite after the sixty-sixth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 193, pass 193, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-seventh codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The cmd-key count and locator rescanned whitespace at every boundary (P2, driver): 40k padded spaces took ~900 ms of synchronous decoding (quadratic `matchAll`/regex-on-suffix), delaying cleanup and signal handling; GREEN - both scans are LINEAR: boundaries skip their whitespace run once, then check the key (bare or quoted) with whitespace before the colon allowed (timing regression test with 40k padding; formatted/commented key regression tests keep passing).
+- Awaited JOINS (`await Promise.all([p])`) were invisible to both serialization checks (P2, driver): a stored poll settled through an awaited join then a second poll was flagged as parallel although strictly sequential; GREEN - both the direct-site and combined rules accept an awaited `Promise.all` join that references the stored poll (regression test).
+
+Final committed suite after the sixty-seventh Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 194, pass 194, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-eighth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- A wrapped wait's completion header hid a LIVE INNER CELL (P2, driver): `Script completed` + `Script running with cell ID 7` retired the mapped cell and hid a subsequent fresh poll; GREEN - a live CELL handle announced with the completion header keeps the mapped cell pending and starts a new chain (fresh polls count as overlaps); a live SESSION handle after completion still retires (regression test).
+- An ACCESSOR override (`get yield_time_ms(){...}`) kept the earlier literal (P2, driver): the literal 60000 stood although the accessor replaces it at runtime; GREEN - a top-level accessor for the yield key fails the request closed (regression test).
+- Stored-promise awaits INSIDE polling loops were fire-and-forget (P2, driver): `for (...) { const p = tools.write_stdin(...); await p; }` serialized iterations but was flagged; GREEN - the loop-body check accepts a stored-promise variable awaited later in the same body (regression test).
+
+Final committed suite after the sixty-eighth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 195, pass 195, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Sixty-ninth codex round on Task 3 (three P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The accessor-detection regex rescanned the whole suffix (P2, driver): a 960 KB argument segment took ~16 s (quadratic), delaying cleanup and signals; GREEN - the accessor check runs only at TOP-LEVEL PROPERTY positions against the CURRENT boundary (bounded 32-char window).
+- Regex LITERAL contents were scanned as code (P2, driver): `text(/write_stdin({...})/.source)` counted a poll and a yield although nothing executed; GREEN - `isRegexLiteralStart`/`regexLiteralEnd` (value-position heuristic + same-line closing slash + flags) are consulted by the call-site scanner, the dispatch-range walk, and the segment extractor, so regex contents are opaque (regression test).
+- DECLARED-helper body sites were counted as executions even when never invoked, and invoked helpers counted once regardless of multiplicity (P2, driver); GREEN - a declared polling helper's body sites count × its ESTABLISHED invocation multiplicity (free invocations + named/dispatch references with receiver cardinality); never-invoked helpers execute nothing; yields multiply the same way (tests updated to the honest multiplicity counts).
+
+Final committed suite after the sixty-ninth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 196, pass 196, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Seventieth codex round on Task 3 (four P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Rollout analysis was UNBOUNDED in wall time (P2, driver): a single 940 KB rollout with 14k awaited polls took ~39 s of synchronous analysis BEFORE worker settlement, delaying cleanup and signals, without reporting truncation; GREEN - three stacked bounds: a 10 s cooperative analysis deadline (checked per line, per call, and per site — expiry stops the scan and reports truncation), a per-call site cap (SESSION_MAX_SITES_PER_CALL = 512, over-cap calls skip the quadratic serialization analysis and report truncation), and the existing byte/line/record caps (timing regression test with a 14k-poll rollout).
+- Loop-body serialization accepted CONDITIONAL awaits (P2, driver): `for (...) { const p = tools.write_stdin(...); if (false) await p; }` reported zero violations; GREEN - the loop-body rule requires an UNCONDITIONAL statement-initial await of the stored promise (same statement-boundary rule as the site pairs) (regression test).
+- Named callback multiplicity outside combinators was uncounted (P2, driver): `[1,2].forEach(poll)` dispatched twice but multiplicity stayed zero (empty polls unreported); GREEN - named `.method(helper)` references outside dispatch ranges count with the receiver's multiplicity (regression test).
+- Helper invocation counting ran on RAW text (P2, driver): a printed `text("poll()")` mention fabricated an invocation; GREEN - all three invocation counters use the LEXICAL call-site scanner (quoted/commented mentions are opaque) (regression test).
+
+Final committed suite after the seventieth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 197, pass 197, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Seventy-first codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- The site cap gated the SERIALIZATION passes but not everything (P2, driver): an 18k-poll script still spent ~41 s in the per-site classification passes; GREEN - `orderedSites` is now gated on `withinSiteCap` too (over-cap scripts skip ALL per-site passes), completing the three-layer bound with the cooperative deadline (timing regression test with 18k polls).
+- IMMEDIATELY-INVOKED helper declarations were misclassified as never-invoked (P2, driver): `const p = (async () => await tools.exec_command(...))();` executed its body once but zero `p()` calls meant multiplicity 0, erasing the executed command and requested yield (and rejecting a valid role run); GREEN - declarations whose statement ends in `)()` execute their body once at the declaration: multiplicity = max(invocations, 1) (regression test with the full role chain).
+
+Final committed suite after the seventy-first Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 198, pass 198, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Seventy-second codex round on Task 3 (two P2s; fixed 2026-10-03; the ROOT agent remained the implementer; each fixed RED→GREEN with the static gates run alongside):
+
+- Over the site cap, HELPER analysis still ran synchronously (P2, driver): 3000 polling-helper declarations took ~16 s (per-helper full-text invocation scans); GREEN - helper discovery is skipped entirely when over the site cap and capped at 64 declared helpers (regression timing test with 3000 declarations).
+- A completed wrapper exposing a LIVE CELL lost the original pending call (P2, driver): the completion handling deleted the pending ids and recreated an empty cell set, so a subsequent fresh poll reported zero violations while cell 7 remained active; GREEN - the retired pending ids are captured and RESTORED when a live cell is announced (the original observation stays pending until the inner cell completes) (regression test).
+
+Final committed suite after the seventy-second Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 199, pass 199, fail 0`, plus `npm run lint` and `npx tsc --noEmit` clean.
+
+Seventy-third codex round (four P2 findings; RECORDED AS PENDING — the review-gate session reached its context budget and these four fixes are specified but NOT yet applied; no code was changed for this round):
+
+- HELPER INVOCATIONS outside the site cap: 30k sequential `await poll()` calls bypass the 512-site cap (only literal sites are counted) and blocked summarization ~18 s; SPECIFIED FIX - include `helperCallStarts.length` in the site-cap comparison (the helper-scan hoist was reverted after it regressed two tests; re-apply together).
+- `function name(...) {...}` declarations must END at their closing brace: an invocation sharing the line afterwards is currently swallowed as part of the declaration (one invocation reports zero polls; two overlapping invocations report one); SPECIFIED FIX - end `function`-form declarations at `balancedBraceEnd` of their body brace in BOTH the helperCallStarts and multiplicity loops.
+- Restore pending state under the SURVIVING inner cell: waiting cell 7 → wrapper cell 10 → `Script completed` + `Script running with cell ID 7` currently restores pending state under COMPLETED cell 10; SPECIFIED FIX - restore under the surviving announced cell and keep the predecessor mapping.
+- Regex CHARACTER-CLASS slashes (`/[/].../`) end the literal early; SPECIFIED FIX - track `[`/`]` boundaries in `regexLiteralEnd` (the implementation was reverted with the mangled working tree; re-apply).
+
+These four are precisely specified with in-memory reproductions; the next session applies them RED→GREEN and continues the loop from round 74.
+
+(A codex round 74 re-review of the unchanged state reconfirmed the same four findings; the implementation attempt was reverted after the helperCallStarts hoist regressed two tests — re-apply each fix individually with its regression test rather than as one batch.)
+
+Round-73 addendum (2026-10-04, after the scope decision recorded in §7.9/§7.10): ALL FOUR specified fixes are now APPLIED, each individually RED→GREEN with its own named regression test — (4) `regexLiteralEnd` tracks `[`/`]` character-class boundaries (test: character-class slashes and quotes stay inside the literal); (2) `function`-form declarations end at `helperDeclarationEndIndex` (the body's `balancedBraceEnd`) in BOTH the helperCallStarts and multiplicity loops (test: function-form declarations end at their closing brace; same-line invocations are real — one invocation reports one poll, two unawaited invocations report exactly one violation); (3) the wrapper-completion restore lands under the SURVIVING announced cell (with the chained predecessors' ids merged into the restored set), so the surviving cell's own completion settles the chain (test: a wrapper completion restores pending state under the SURVIVING inner cell — RED measured 2 false overlaps, GREEN 0); (1) helper invocations count toward the site cap (the helper scan runs while literal sites are within the cap, the TOTAL governs, and over the total cap the helper analysis is discarded and truncation reported; test: 30000 `await poll()` calls — RED measured 18.5 s unbounded analysis, GREEN 31 ms with truncation). The individually-working hoist shape from the two reverted batch attempts was NOT reused; the applied form hoists only the invocation COUNT into the cap comparison and never feeds over-cap helper analysis downstream. Focused gate after the four fixes: 203 tests, 203 pass; final close-out gate including the golden recorded-shape samples (§7.9 step-3 artifacts): `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` — 204 tests, 204 pass, 0 fail (plus `npm run lint`, `npx tsc --noEmit`, `node scripts/check-line-endings.mjs`, `git diff --check` clean).
+
+Seventy-fifth codex round (contract-scoped adversarial review of the close-out commit; one medium finding, IN-CONTRACT, fixed 2026-10-04): the function-declaration boundary fix missed its THIRD consumer — `directSiteStarts` (the direct-site exclusion filter) still used `statementEndIndex`, so a DIRECT poll sharing the line after a `function`-form declaration's closing brace was wrongly excluded from the serialization pairs (reviewer's in-memory repro: `async function poll(){...} tools.write_stdin(...); await poll();` → emptyPolls 2, violations 0, truncated false — a false clean). GREEN — `directSiteStarts` now uses the SAME boundary (`helperDeclarationEndIndex` at the NEAREST declaration's actual index); regressions extend the function-form test with the reviewer's mixed-poll case (exactly one violation) and an awaited-then-invoked sequential control (zero). Full suite and static gates re-run clean at the same counts.
+
+Seventy-sixth codex round (re-review of the round-75 fix at commit `e6d0922`; contract-scoped adversarial review; verdict APPROVE, zero in-contract findings, 2026-10-04): the reviewer's read-only in-memory harness verified the round-75 fix (mixed polls report one overlap; sequential controls zero) and all five scoped tests; "Report attribution and Task 3 limitations remain honest." This is the Task 3 closing review — the scope decision, support scope (§7.9), derivation check (§7.10), four round-73 P2 fixes, golden samples, and round-75 boundary fix are accepted at the recorded contract bar. THE FINAL COMMIT adds only this record and the plan closure line (docs-only); the approved code and tests are those of `e6d0922`.
+
+TASK 3 CLOSED 2026-10-04 at commit `e6d0922`+docs (close-out per the 2026-10-03 independent evaluation, handoff §11.2 six steps, §11.3 review protocol). Surviving boundaries stay as recorded: managed-Child live measurement not-proven (Task 4-6 prerequisite); role-cap propagation not-proven; zero-concurrency and Child-attribution for the recorded runs remain run-time instrument records not independently re-derivable (§7.10). No push, no PR, nothing applied to user configuration.
+
+Tenth codex round on Task 3 (three P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Role-control grants required child-execution proof (P2, driver): roleChildProven now requires a spawn_agent call for the synthetic role AND childExecSeen (initial-exec in a NON-Root rollout), attached non-enumerably by summarizeCodexSessions so the privacy guarantee holds; the fake-host role-control mode writes SEPARATE root and child rollouts proving the managed-child lifecycle; both success paths (clean and budget-expiry) enforce it.
+- Yielded-script pending ids were deleted on outer output (P2, driver): resolved from the observed output instead - Script running keeps pending, Script completed clears.
+- The chars detection normalized JSON-escaped quotes before matching (P2, driver), so backslash-quoted chars keys are recognized.
+- Requested yields come only from actual tool parameters and the wrapper directive (P2, driver) - instruction sentences and cmd literals excluded via parameter-boundary matching.
+
+Final committed suite after the tenth Task-3 codex round: node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs: 118 pass / 0 fail.
+
+Eleventh codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The role-control downgrade missed `role-control-completed` (P2, driver): GREEN - the covered-settlement revocation covers both success outcomes.
+- Structured polls were misclassified (P2, driver): the host's `chars` argument shape (empty/omitted = empty poll) was unrecognized; GREEN - the classifier recognizes the structured shape.
+- Worker flags were unvalidated (P2, fixture): unknown/duplicate/missing-value flags could silently shorten a measured hold; GREEN - strict validation with exit 2.
+- The rollout scanner's stop only broke the inner newline loop (P2, driver); GREEN - propagated to the outer read loop with truncation.
+- Pending-call tracking was cross-session (P2, driver): unrelated session calls were counted as parallel-poll violations; GREEN - per-rollout scoping (chronological merge documented out of scope).
+- Requested-yield extraction scanned the whole call text (P2, driver, eleventh round): sentence mentions and cmd literals corrupted the requested-vs-actual evidence; GREEN - extraction restricted to ACTUAL parameter positions (argument boundary `(`/`{`/`,/`@exec: {`), excluding sentence and string-literal mentions.
+
+
 Forty-seventh review round (three P2s; fixed 2026-10-01; the ROOT agent remained the implementer):
 
 - Windows trace paths were rejected by a `/`-split basename check (P2, server): the driver constructs `C:\probe\trace\events.jsonl` on Windows, and splitting on `/` left the whole path — every Windows hook-entry server died with `WAIT_ROUTE_ENV_INVALID` before startup. GREEN — the basename is validated with `node:path.basename()`, platform-correct on both separators.
@@ -479,9 +1062,141 @@ The driver owns exactly: its own spawned host commands (each spawned detached in
 
 Task 3 can proceed independently: the shell smoke passed with exact cleanup, and the driver already supports `--case shell-window --budget-ms 600000` for the 420-second profiles. The hook-entry result enables Task 4's MCP work (installed `mcp_tool` hook dispatch to a model-hidden capture tool on the owning session is proven at transport/entry level); it does not by itself qualify ordering, readiness controls, authority, terminal delivery, or timeouts.
 
-## 7. Configured-shell measurements (later task placeholder)
+## 7. Configured-shell measurements (Task 3)
 
-To be filled by plan Task 3: default-cap and raised-cap controls with 130 s/420 s synthetic processes, Root versus managed Child effective config (role-overlay whitelist fact from section 2 applies), noisy output, interrupt responsiveness, and model-decision counts. Nothing measured yet.
+All work below ran 2026-10-02 in the dedicated worktree. Evidence labels: instrument behavior is `fixture-tested`; the runs against the installed CLI are `installed-observed`; the managed-Child and role-propagation questions end `not-proven` with their exact reasons. Nothing was applied to user configuration or shipped Skills.
+
+### 7.0 Provenance for this task
+
+- The installed CLI auto-updated during this task: Task 1/2 recorded `codex-cli 0.159.2`; every Task 3 run's driver-pinned version reports **`codex-cli 0.160.0`**. The source remains pinned at `67727e7c` and is NOT matched to either binary. Every conclusion below is about the measured 0.160.0 build.
+- The 0.160.0 shell tool is a MODEL-AUTHORED SCRIPT TOOL, not the plain function-call shape of the pinned source: the rollout records `custom_tool_call` items named `exec` whose `input` is a small JS body — `const r = await tools.exec_command({cmd:"…",yield_time_ms:30000});text(r.output);` and, for continuations, `text(await tools.write_stdin({session_id:<id>,chars:"",yield_time_ms:<n>}));`. Outputs carry the tool's own `Wall time <n> seconds` line, used below as the tool-reported observation duration.
+- Isolation on every run: private `mktemp -d` output directory, fixture-only `CODEX_HOME` (auth copied read-only from the source home), isolated `HOME`/`TMPDIR`, no user config touched, `--ignore-user-config` never used. Cleanup was exact on every run (`isolatedHomeRemoved: true`, no `cleanup.failures`).
+
+### 7.1 Instrument delta (fixture-tested, RED → GREEN)
+
+Extensions to the Task 2 probe, each written test-first against the public seams (`tests/wait-route-probe.test.mjs`, `tools/wait-route-probe/fixture.mjs`, `driver.mjs`):
+
+- Harmless worker profiles: `--duration-ms N` delays the fixed completion marker by exactly N ms; `--noise-interval-ms N` prints bounded noise lines that NEVER contain the marker; SIGTERM/SIGINT end the worker GRACEFULLY with a distinct `WAIT_ROUTE_PROBE_WORKER_SIGNALLED <signal>` line and exit code 128+signum — an interrupted run is never mistakable for a terminal completion; invalid arguments fail closed with exit 2; the launch record now carries an epoch-ms `at` stamp plus the requested profile, so the report can correlate process lifetime with poll timing. Tests prove: marker absent before the duration, noise lines never carry the marker, exactly one launch under noise with the exact spawned pid, signal exits prompt and distinct, invalid args exit 2.
+- `writeFixtureConfig` options: `backgroundTerminalMaxTimeoutMs` (5000–3600000, closed `WAIT_ROUTE_FIXTURE_CONFIG_CAP_INVALID`), `multiAgentFeature`, and synthetic `agents.<name>` registrations shaped exactly like the managed registration seam (`{description, config_file}`); `buildWaitRouteSyntheticRole` writes the clearly labeled SYNTHETIC role file declaring `background_terminal_max_timeout = 3600000`. TOML top-level keys precede the tables (the cap is a top-level key, as the runtime requires).
+- Driver: optional profile flags (`--worker-duration-ms`, `--worker-noise-interval-ms`, `--exec-yield-ms`, `--poll-yield-ms`, `--background-terminal-max-timeout-ms`, closed `WAIT_ROUTE_DRIVER_PROFILE_INVALID`); the prompt carries the requested yields verbatim and the rollout verifies what the model ACTUALLY passed (requested vs actual); a new `role-control` case label (the case runner accepting a further fixture selector, as the plan allows); the summary now echoes `fixture` (declared cap/features/roles), `requestedProfile`, `trace.workerLaunchAtMs`, and a bounded `session` block.
+- `summarizeCodexSessions` — bounded model-decision counting over the isolated home's session rollouts: counts only closed facts (assistant/reasoning/message counts, per-tool-name counts, requested yields per call, per-call `{atMs, kind, name, yieldTimeMs}` samples capped at 64, a strict call/output alternation check where a second call while the first is pending counts as a parallel-poll violation, epoch-ms timestamps). No rollout text is retained (asserted). Both installed shapes are classified: `function_call` (JSON arguments) and the 0.160.0 `custom_tool_call` (tool-DSL string, yields parsed from the text).
+- Shell cases now run WITHOUT `--ephemeral` so the host persists its rollout into the isolated home (deleted with cleanup), and select `--dangerously-bypass-approvals-and-sandbox` instead of `-s workspace-write`: the 0.160.0 workspace-write sandbox DENIES `/bin/ps` (measured exit 126), which structurally removes the worker's process-identity evidence; the first post-fix smoke honestly returned `worker-launch-evidence-missing` with `pgid/sid/identity: null` before this was diagnosed. The measured variable (the observation window) is a process-manager clamp independent of the sandbox; the flag choice is pinned by `EXEC_FLAG_SELECTIONS` and recorded here as a provenance note.
+
+Suite after the delta: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` — 117 tests, 117 pass, 0 fail (plus `npx tsc --noEmit`, `npx eslint tools/wait-route-probe/ tests/wait-route-probe.test.mjs`, `node scripts/check-line-endings.mjs` clean).
+
+### 7.2 Profile runs (installed-observed, codex-cli 0.160.0)
+
+Each row is one driver invocation (`--case shell-window`) on a fresh fixture; summaries are the driver's own redacted JSON (paths redacted by construction, verified per run). "Decisions" = tool calls counted in the session rollout (each requires a model decision); 0 parallel-poll violations on every run.
+
+| Profile | Configuration | Outcome | Decisions (during hold) | Key timing (epoch-ms deltas from the run's own records) |
+| --- | --- | --- | --- | --- |
+| Baseline 130 s | default cap; requested 30000 exec / 60000 polls | `shell-smoke-completed`, 1 launch, marker observed | 7 (6): exec + 2 empty polls requesting 60000 + 4 model-chosen `wait` calls (1000–10000 ms) | first empty poll at worker age 33.3 s (96.7 s lifetime remaining); both polls show the requested `yield_time_ms:60000` in the rollout |
+| Long request 130 s | default cap; requested 30000 / 180000 | `shell-smoke-completed`, 1 launch | 4 (3): exec + ONE empty poll requesting 180000 + 2 waits | the task completed INSIDE that one observation: the poll returned early at process exit ≈95.5 s in — one observation covers the remainder after the initial exec |
+| Cap control 420 s | DEFAULT config (no cap declared); requested polls 3600000 | `shell-smoke-completed`, 1 launch | 11 (8) | first poll at worker age 33.8 s → 386.2 s lifetime remaining ≥ 330 s, sample VALID; last tool output 14 ms after worker exit; see 7.3 for why the requested-3600000 polls returned early |
+| Increased cap 420 s | fixture `background_terminal_max_timeout = 3600000`; requested polls 3600000 | `shell-smoke-completed`, 1 launch | 15 (13) | first poll at worker age 33.7 s → 386.3 s remaining, VALID; every plain-yield poll still returned ≈31 s and the model fell back to 13 short `wait` calls — the config alone did NOT extend a single observation (see 7.3) |
+
+Verbatim summaries for the two 420 s profile runs (the report retains counts only; the driver deletes the isolated home and raw rollouts with the run directory):
+
+```json
+{"caseLabel":"shell-window","codexVersion":"codex-cli 0.160.0","outcome":"shell-smoke-completed","reason":"ok","hostExit":{"state":"exit-0","code":0},"trace":{"markerObserved":true,"workerLaunches":1,"possibleDuplicateLaunch":false,"workerLaunchAtMs":1790903426811,"workerExit":"verified-exited"},"fixture":{"backgroundTerminalMaxTimeoutMs":null},"requestedProfile":{"workerDurationMs":420000,"workerNoiseIntervalMs":0,"execYieldMs":30000,"pollYieldMs":3600000},"session":{"files":1,"functionCalls":11,"initialExecCalls":1,"emptyPolls":2,"otherFunctionCalls":8,"parallelToolCallViolations":0,"toolNames":{"exec":3,"wait":8},"requestedYieldsMs":[30000,3600000,1000,60000,60000,60000,60000,60000,3600000,1000,60000],"firstFunctionCallAtMs":1790903426603,"firstEmptyPollAtMs":1790903460596,"lastFunctionCallOutputAtMs":1790903846825}}
+```
+
+```json
+{"caseLabel":"shell-window","codexVersion":"codex-cli 0.160.0","outcome":"shell-smoke-completed","reason":"ok","hostExit":{"state":"exit-0","code":0},"trace":{"markerObserved":true,"workerLaunches":1,"workerLaunchAtMs":1790904097365,"workerExit":"verified-exited"},"fixture":{"backgroundTerminalMaxTimeoutMs":3600000},"requestedProfile":{"workerDurationMs":420000,"workerNoiseIntervalMs":0,"execYieldMs":30000,"pollYieldMs":3600000},"session":{"files":1,"functionCalls":15,"initialExecCalls":1,"emptyPolls":1,"otherFunctionCalls":13,"parallelToolCallViolations":0,"toolNames":{"exec":2,"wait":13},"requestedYieldsMs":[30000,3600000,1000,10000,10000,10000,10000,10000,10000,10000,50000,50000,50000,50000,50000],"firstEmptyPollAtMs":1790904131060}}
+```
+
+### 7.3 The wrapper clamp (the decisive installed limitation)
+
+Cause-directed diagnostics (isolated homes, same prompt shape, tool-reported `Wall time`):
+
+1. Plain `yield_time_ms` argument: EVERY observation returned at ≈31 s regardless of the requested value and regardless of configuration — `write_stdin(chars:"", yield_time_ms:60000)` → `Wall time 31.0`; `write_stdin(chars:"", yield_time_ms:3600000)` → `Wall time 31.0` under the DEFAULT config AND again under `background_terminal_max_timeout = 3600000` (the A/B pair differs in nothing but the config line). The wrapper (the script-tool runtime) clamps each call to ≈30 s; the source-pinned `write_stdin` clamp `[5000, configured]` is NOT what the installed wrapper delivers for the plain argument.
+2. The wrapper honors a per-call DIRECTIVE comment as the script's first line — `// @exec: {"yield_time_ms": N}` — and then the CONFIGURED cap governs:
+   - default config, `@exec {"yield_time_ms": 3600000}`: first observation returned at **exactly `Wall time 300.0` seconds** — the default 300000 ms cap clamping the configured poll — with the worker still running; the model re-entered once and the second poll (`Wall time 79.4`) caught process exit. 3 tool decisions total. This is precisely the "default-cap return near 300 seconds" the plan asks to distinguish from terminal completion.
+   - raised config (3600000), same directive: **ONE observation ran `Wall time 384.6` seconds to process exit** ("Script completed") — terminal completion in one configured poll, 2 tool decisions total. Validity: the poll began at worker age 35.5 s, so 384.5 s of process lifetime (≥ 330000 ms) remained — the sample distinguishes the cap from early completion.
+   - intermediate control: `@exec {"yield_time_ms": 120000}` under the default config ran `Wall time 55.2` to process exit, confirming the directive raises the wrapper's per-call bound and the observation then ends at whichever comes first: requested yield, configured cap, output closure, or process exit.
+3. The initial `exec_command` yield behaves as the source describes: requested 30000 → `wall_time_seconds: 30.0` every time.
+
+Measured cap behavior, one line: **on the installed 0.160.0 build the `@exec` directive path demonstrably delivers a single >300 s observation governed by the configured cap (exactly 300.0 s under the default cap; 384.6 s to process exit under the raised cap), while the plain `yield_time_ms` argument demonstrably clamps every model-visible wrapper re-entry to ≈31 s regardless of the request or the config. What the ≈31 s re-entries prove about the INNER observation's eventual length is NOT established: each plain-yield return is a live cell that later wait continuations keep observing, so the claim "the configured cap is effective ONLY through the directive path" is not-proven — what IS established is the wrapper's per-re-entry clamp (the model-reentry limitation) and the directive path's single-observation behavior.** (Recorded 2026-10-02 after the thirtieth codex round corrected the earlier overreach: the raised-config summary's single empty poll across ≈386 s measures the WRAPPER yield granularity, not an inner-cap effect, and cannot stand as evidence that the plain-argument path cannot reach a longer inner observation.)
+
+### 7.4 Interruption and noisy output (installed-observed)
+
+- Outer budget kill during the model phase (worker never launched): `--budget-ms 45000` and `90000` runs with a 120–240 s task → `budget-exhausted` / `observation-budget-exhausted`, host killed, `markerObserved: false`, no worker record, cleanup exact. (The 0-call outcome itself is honest variance: the model's first tool call arrived later than 90 s in those runs.)
+- Outer budget kill DURING a held command, with noise: `--budget-ms 150000 --worker-duration-ms 300000 --worker-noise-interval-ms 2000` → `budget-exhausted`, `workerLaunches: 1`, **`workerExit: "terminated"`** (the bounded interruption owned and settled the held worker's recorded group), `markerObserved: false` — ~75 noise lines reached the host stream and none was mistaken for the terminal marker; `parallelToolCallViolations: 0` and the rollout alternation check confirm no second poll was ever issued while the first was pending.
+- Outer-orchestration yields vs completed inner observations are distinguished by construction: the driver grants `shell-smoke-completed` only on the marker + exactly one trusted launch within budget; a yield (cap or budget return without the marker) classifies as `budget-exhausted`/inconclusive, and the per-call rollout samples separate a still-running observation ("Script running with cell ID …") from a completed one ("Script completed").
+- Fixture-level graceful signals (fixture-tested): SIGTERM → exit 143, SIGINT → exit 130, each printing `WAIT_ROUTE_PROBE_WORKER_SIGNALLED <signal>` and never the completion marker, well before the requested duration.
+
+### 7.5 Root versus the managed Rescue Child surface
+
+- Root (this surface): measured above — the larger window is demonstrated on Root, through the `@exec` directive path only.
+- The ACTUAL managed Rescue Child was not exercisable inside this task's disposable fixture: it requires the ZCode host runtime (the Companion's Rescue flow — Tasks 4–6 prerequisites; the probe's `authority`/`lifecycle` cases remain honestly `not-instrumented`). What IS traceable from the production seams: the managed Role file (`agents/zcode-rescue.toml.template`) carries only `developer_instructions` whose fixed yield policy is plain `exec_command` 30000 / empty-`write_stdin` 60000. (Correction, forty-first round: an earlier revision cited `scripts/lib/codex-config.mjs` `startClient` as proof the Child runtime inherits the ambient user `config.toml` — but `startClient` serves only the SETUP/inspection clients (`runSetup`, `inspectRescueRoleStatus`), a temporary configuration-inspection client, NOT the managed Rescue Child; the Child launches through the host spawn flow prescribed in `skills/rescue/SKILL.md`. Whether the Child's effective `background_terminal_max_timeout` equals Root's user-config layer is therefore **not-proven** — a Task 5/6 question requiring the actual host spawn/configuration path.) **Managed-Child live measurement: not-proven (missing prerequisite: the ZCode host runtime).**
+- Synthetic Role control (clearly labeled, `fixture-tested` + `installed-observed`): the fixture registers `agents.wait-probe-synthetic` (exactly the managed registration shape) pointing at a probe-only role file declaring `background_terminal_max_timeout = 3600000`. The driver's `role-control` case ran on the installed build: the Root spawned EXACTLY ONE child via `spawn_agent`, observed it via `wait_agent`, and the CHILD ran the shell tool itself (a second rollout file with the child's own `exec` requesting 30000; single worker launch; `role-control-completed`; cleanup exact).
+
+```json
+{"caseLabel":"role-control","codexVersion":"codex-cli 0.160.0","outcome":"role-control-completed","reason":"ok","hostExit":{"state":"exit-0","code":0},"fixture":{"backgroundTerminalMaxTimeoutMs":null,"multiAgentFeature":true,"agentRoles":["wait-probe-synthetic"]},"session":{"files":2,"functionCalls":5,"initialExecCalls":1,"emptyPolls":0,"otherFunctionCalls":4,"toolNames":{"spawn_agent":1,"wait_agent":3,"exec":1},"perFile":[{"records":49,"functionCalls":4},{"records":26,"functionCalls":1,"initialExecCalls":1}]},"cleanup":{"isolatedHomeRemoved":true,"workerExit":"verified-exited","failures":[]}}
+```
+
+- **Role-declared cap propagation: not-proven**, for two independent reasons: (a) the source fact (section 2) — the role overlay whitelist drops `background_terminal_max_timeout` from every role file; (b) the measured wrapper re-entry clamp — every model-visible poll returns at ≈31 s regardless of request or config, so poll WALL-TIME samples inside a disposable fixture cannot discriminate propagation (a >300 s single observation was demonstrated only through the directive path). The synthetic control demonstrates the registration/spawn/child-shell MECHANISM only.
+
+### 7.6 Model-decision counts (observed, not projected)
+
+| Run | Tool decisions (during hold) | Notes |
+| --- | --- | --- |
+| Baseline 130 s, 60000 policy | 7 (6) | model added 4 self-chosen short `wait` calls between polls |
+| Long request 130 s, 180000 poll | 4 (3) | completion inside one observation |
+| 420 s control, plain 3600000 requests | 11 (8) | wrapper-clamped ≈31 s observations + waits |
+| 420 s raised config, plain 3600000 requests | 15 (13) | config alone made cadence WORSE (more waits, same ≈31 s observations) |
+| 420 s default + `@exec 3600000` directive | 3 (2) | first poll = 300.0 s cap return, second catches exit |
+| 420 s raised + `@exec 3600000` directive | 2 (1) | one 384.6 s observation to completion |
+| role-control (root + child) | 5 total (root 4, child 1) | `spawn_agent` + `wait_agent`×3; child exec |
+
+Counts are rollout-derived tool-call counts; no token totals or per-call costs are claimed. Re-entry between holds is visible as the model's next call after each cap/budget return; every counted run shows strictly alternating call/output pairs (no parallel second poll).
+
+### 7.7 Deployment recommendation (demonstrated surfaces only)
+
+1. Demonstrated (installed-observed on Root): a >300 s single-observation wait for a long-running command IS supported by the installed host when the model's poll script carries the wrapper directive `// @exec: {"yield_time_ms": N}` and `background_terminal_max_timeout` is raised to cover N (one 384.6 s observation to terminal completion; the default config demonstrably clamps the same directive at exactly 300.0 s).
+2. The CURRENT shipped yield policy cannot reach that surface: the managed Role template's fixed policy (plain "empty-input write_stdin with yield_time_ms: 60000") is delivered by the 0.160.0 wrapper as ≈31 s model-visible re-entries — the wrapper's per-re-entry clamp, not the policy, decides the decision cadence (each re-entry returns a live cell that continuations keep observing; what inner length a plain-argument observation can eventually reach is not established). Raising user config alone measurably changed the decision cadence not at all (15 decisions/420 s).
+3. Therefore the smallest production delta that the demonstrated evidence supports is a PAIR, and neither half alone works on 0.160.0: (a) a user-config change `background_terminal_max_timeout = 3600000`, and (b) a Skill/Role yield policy that instructs the directive form for long observations. Both are wrapper-version-coupled: the `@exec` directive and the ≈30 s plain-yield clamp are observed behavior of one installed build (0.160.0), not a documented contract — pinned-source language about the configured clamp does not describe the wrapper layer at all.
+4. NOT demonstrated, therefore not recommended here: any managed-Child change (not-proven — ZCode-host prerequisite), role-file cap propagation (not-proven — whitelist + wrapper clamp), and any claim that the directive form is stable across host upgrades.
+5. Nothing was applied: user configuration, shipped Skills, Role templates, and packaging are untouched. The decision whether to adopt (a)+(b) — and to accept the wrapper-version coupling it implies — is a human release decision, informed by Tasks 4–6 for the Child half.
+
+Honest limitations: the decisive configured result was repeated once on a fresh fixture (7.8); model adherence varied across runs (two 420 s runs fell back to `wait` calls under the plain-yield policy — counted, not retried into a pass); one interrupted-repeat of the 45 s kill landed in the model phase twice before the 150 s mid-hold run (budget placement, not host behavior, was the cause); all durations above are diagnostic observations of the host tool, never new operation timeouts.
+
+### 7.8 Decisive-result repeat (fresh fixture)
+
+The raised-config + `@exec 3600000` decisive run was repeated once, same prompt, fresh isolated fixture: initial exec `Wall time 30.2`; ONE directive poll `Wall time 380.1` to "Script completed" (process exit at worker age ≈420 s; the poll began at worker age ≈39.8 s, so ≈380 s of process lifetime remained — valid). CONSISTENT with 7.3 — the configured window reproduced. (Rollout lines, temp paths elided: `CALL … tools.exec_command({cmd:"'node' '…/wait-route-worker.mjs' --duration-ms 420000",yield_time_ms:30000})` → `Wall time 30.2`; `CALL … // @exec: {"yield_time_ms": 3600000}` + `tools.write_stdin({session_id:<id>,chars:"",yield_time_ms:3600000})` → `Script completed / Wall time 380.1 seconds`.)
+
+### 7.9 Summarizer support scope and proof contract (recorded 2026-10-03, before the four pending §6.2 fixes are applied)
+
+Recorded per the 2026-10-03 independent evaluation (handoff §11.2 step 1): the rollout summarizer is a RESEARCH INSTRUMENT with a deliberately NARROW support scope, not a general JS interpreter. This section fixes what that scope is, which summary fields carry qualification weight, and how every unsupported shape is handled. Later rounds must not silently widen it.
+
+**Shapes the Task 3 measurement actually depended on** (all from real 0.160.0 rollouts, §7.0/§7.2/§7.3/§7.5/§7.8):
+
+- `custom_tool_call` items named `exec` whose input is a small single-statement body: `const r = await tools.exec_command({cmd:"…",yield_time_ms:N});text(r.output);` and the continuation `text(await tools.write_stdin({session_id:N,chars:"",yield_time_ms:N}));`, optionally with the leading `// @exec: {"yield_time_ms": N}` directive as the first non-blank line.
+- `function_call` items with JSON arguments: `wait`, `spawn_agent`, `wait_agent` (the role-control case).
+- Observed OUTPUT shapes: the tool's own `Wall time <n> seconds` line; `Script running with cell ID N` / `Script completed`; `Process running with session ID N`.
+- Real measured scripts were SMALL (≤15 tool calls per run) and used NO helper-function declarations, NO regex literals, NO conditional dispatch, NO wrapper-completion-hiding-a-live-inner-cell shape. The four pending §6.2 P2s all live in shapes OUTSIDE this observed set.
+
+**Which summary fields carry qualification assertions, and which are diagnostic-only:**
+
+- Qualification-asserting (a defect here would invalidate a recorded conclusion): `parallelToolCallViolations` (the strict call/output alternation check behind every "0 parallel-poll violations" claim); `toolNames`/decision counts behind §7.6; `requestedYieldsMs` and the requested-vs-actual worker profile match behind the §7.2 profile validity and §7.3 sample-validity conditions; the role-evidence chain behind §7.5's synthetic role-control claims; `initialExecCalls`/single-worker-launch correlation.
+- Diagnostic-only (never a qualification basis on their own): per-call `{atMs, kind, name, yieldTimeMs}` samples (capped at 64), `firstEmptyPollAtMs`/`firstFunctionCallAtMs`/`lastFunctionCallOutputAtMs` timestamps (cross-checked against host-reported `Wall time` where a conclusion depends on timing), `files`/`records` counts.
+- NOT summarizer-derived at all: every decisive DURATION in §7.3/§7.8 (300.0 s / 384.6 s / 380.1 s / ≈31 s — all read from the host's own `Wall time` output), marker observation, worker exit and cleanup states (process/trace evidence). A summarizer defect can therefore NOT alter the decisive §7.3/§7.8 duration observations; it can only affect the counts/attributions listed as qualification-asserting above.
+
+**Unsupported / ambiguous shapes and their mandated handling** — an unknown, truncated, or unclearly-attributed script makes the AFFECTED assertion `not-proven`/`inconclusive` (or falls back to manual rollout reading); it never generates a positive proof. Concretely: scripts over the 512-site cap set `truncated` and skip the expensive passes (fail closed); the 10 s cooperative analysis deadline truncates; vanished/unreadable rollouts report honestly; indirect/opaque `write_stdin` arguments stay unclassified (counted as overlaps, never as clean); computed `cmd` properties and accessor `yield_time_ms` fail closed; quoted/commented mentions never classify. Each of these fail-closed behaviors is pinned by a named regression test (over-cap skip, vanished rollouts, unclassified indirect arguments, computed-key/accessor fail-closed, quoted/comment mentions — `tests/wait-route-probe.test.mjs`), so "fail closed" here is a tested behavior, not a declaration. The four pending P2 fixes raise the boundary for helper-declaration/regex/wrapper-restore shapes to a defined minimal level WITH tests; they do not promise general JS semantics, and any future shape outside this scope is recorded as a scope limitation, not silently absorbed.
+
+### 7.10 Derivation check after the scope decision (recorded 2026-10-04)
+
+Recorded per the 2026-10-03 independent evaluation (handoff §11.2 step 4): each qualification-relevant derivation re-checked against surviving material; items whose raw evidence is gone keep their run-time records with the uncertainty stated. Raw rollouts were deleted with their isolated homes and are unrecoverable.
+
+| Derivation | Re-check result | Status |
+| --- | --- | --- |
+| Requested-vs-actual yields (§7.2, §7.8) | §7.8's verbatim call lines carry exactly the recorded requests (exec 30000; directive 3600000); the two §7.2 verbatim summaries' `requestedYieldsMs` arrays match their table rows; the extraction semantics (parameter-boundary, quoted-key survival, directive-led-pragma-only) are pinned by named tests, all green. | Re-verified from recordings + tests |
+| ≥330000 ms remaining sample validity (§7.3, §7.8) | Recorded arithmetic re-checked: 384.6 s poll began at worker age 35.5 s → 384.5 s remained; 380.1 s repeat began at ≈39.8 s → ≈380 s remained. Both ≥ 330000 ms. | Arithmetic re-checked; run-time inputs stand as recorded |
+| Decision / re-entry counts (§7.6) | Both §7.2 verbatim summaries match their §7.6 rows (11 calls / 8 during hold; 15 / 13). The directive-run rows (3 (2) and 2 (1)) cite §7.3 run-time records whose JSON was not retained verbatim. | Partially re-verified; directive-run counts are run-time records |
+| Zero parallel polls (§7.2–§7.4, §7.6) | The two §7.2 summaries record `parallelToolCallViolations: 0` (computed by the instrument AS IT WAS at run time). The raw rollouts are gone, and the continuation/kind-binding semantics were hardened AFTER those runs (§6.2 rounds 30–73), so the current instrument can no longer re-derive this from surviving material — demonstrated concretely by the golden reconstruction test, which documents why the reconstruction cannot reproduce the linkage input. | Run-time records; NOT independently re-derivable — kept with this uncertainty |
+| Synthetic Child attribution (§7.5 role-control) | The mechanism (exactly-one spawn, role-named arguments, parent-linked child rollout, exact exec command) is fixture-tested in the CURRENT suite (role-chain tests green). The installed role-control run's JSON (§7.5) is a run-time record; its raw rollout is gone, so the current stricter chain cannot re-adjudicate it. | Mechanism re-verified by tests; installed record stands as run-time evidence |
+
+Relation of the four §6.2 pending P2s (all four now fixed, §6.2 round-73 addendum) to the recorded conclusions: the recorded decisive runs' scripts — as far as the verbatim §7.0/§7.8 call lines and the retained decision counts show — used NO helper declarations, NO regex literals, and NO wrapper-completion-hiding-a-surviving-inner-cell shape, so none of the four defects could have altered those recorded counts. This bound rests on the recorded call lines and counts, not on the deleted raw rollouts. The independent evaluation's boundary stands: measured cap behavior, managed-Child questions, and role-cap propagation keep their §7.3/§7.5 not-proven labels unchanged.
 
 ## 8. Hook dispatch, readiness and sequencing (later task placeholder)
 
@@ -528,3 +1243,39 @@ Run 2026-10-01 from the worktree, before any probe code exists:
 | `node scripts/check-line-endings.mjs` | PASS — `LF line endings verified in 519 tracked files.` (exit 0) |
 
 No baseline failure existed, so the task proceeded to commit the spec, plan, and this report.
+
+Twelfth codex round on Task 3 (one P2 + one P3 + two P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- The duplicate re-anchor regression lacked discriminating power (P2, tests): the leader was never registered, so the safety guard's removal stayed green; GREEN - the leader is registered, ownership is asserted at the interrupt, and RED-verification (guard temporarily removed) confirms the test now fails.
+- Yield values were parsed as decimal prefixes (P2, driver): `60_000` recorded 60 and `60*1000` expressions were unsupported; GREEN - digits with optional underscore separators at a parameter boundary, arithmetic continuations left unclassified.
+- The chars check was whole-script and prefix-matched (P2, driver): `chars:"" + "\u0003"` counted as empty and unrelated empty chars elsewhere satisfied it; GREEN - the check is scoped to the write_stdin ARGUMENT SEGMENT with the empty-quoted value required at a value-boundary position.
+- The role directory was registered after its builder (P3, driver): a partial build leaked; GREEN - the deterministic directory path is registered BEFORE the builder.
+
+Final committed suite after the twelfth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Thirteenth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Continuation exemptions were substring-based (P2, driver): a second write_stdin while a cell was pending was auto-exempted, and `includes('wait')` matched ordinary async scripts; GREEN - continuations are identified by the ACTUAL pending CELL ID (extracted from `Script running with cell ID N` outputs and matched in the continuation's text).
+- Yield-script completion didn't clear the original pending call (P2, driver): the completion output belongs to the WAIT call's id; GREEN - on observed completion through a continuation, the original pending call and awaiting state are cleared.
+- Yield literals were parsed as decimal prefixes (P2, driver): `60*1000` recorded 6 and decimals truncated; GREEN - a complete numeric literal followed by a valid value terminator is required, arithmetic/decimal expressions left unclassified.
+- The empty-chars boundary lacked `}` (P2, driver): argument reordering changed classification; GREEN - the closing object brace is a valid empty-value boundary.
+
+Final committed suite after the thirteenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Fifteenth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Continuations were substring-exempted (P2, driver): a second write_stdin while a cell was pending was auto-exempted and `includes('wait')` matched ordinary async scripts; GREEN - continuations are identified by the ACTUAL wait operation (wait_agent name, or write_stdin referencing the pending cell id); a second write_stdin without the cell reference IS a violation.
+- Yielded-script completion through `wait` didn't clear the ORIGINAL pending call (P2, driver): the completion output carries the wait call's id; GREEN - on observed completion the ORIGINAL pending call, the yielded-script set, and the awaiting state are all cleared.
+- Yield literals were parsed as decimal prefixes (P2, driver): `60*1000` recorded 6 and `60000 + 1` recorded 6000 via lookahead backtracking; GREEN - a complete numeric literal followed by a valid value terminator (`}`/`,`/whitespace-end) is required; arithmetic/decimal expressions left unclassified (verified with an in-process regex check).
+- The stdin argument segment stopped at nested parens (P2, driver): `Number("123")` inside the args truncated the segment and missed the later chars property; GREEN - balanced-paren segment extraction with quote-awareness, and failed extraction left null (unclassified, never assumed empty).
+
+Final committed suite after the fifteenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.
+
+Fourteenth codex round on Task 3 (four P2s; fixed 2026-10-02; the ROOT agent remained the implementer):
+
+- Yielded-script completion through `wait` didn't clear the ORIGINAL pending call (P2, driver): the completion output belongs to the wait call's id, leaving the original pending and awaiting state outstanding (a sequential poll → wait → completion → next exec reported a false violation); GREEN - the wait continuation's `Script completed` output settles the ORIGINAL pending call and clears the awaiting state.
+- Yield literals were parsed as decimal prefixes (P2, driver): `60*1000` recorded 6 and `60000 + 1` recorded 6000 via lookahead backtracking; GREEN - a complete numeric literal followed by a valid value terminator is required; unsupported expressions left unclassified.
+- Yield extraction matched command-string contents (P2, driver): `cmd:"echo {yield_time_ms:123456}"` recorded 123456 over the actual 30000; GREEN - a STRING-STRIPPED view of the call text (quoted contents collapsed) feeds the parameter-position scans, so string-literal contents never match.
+- The stdin argument segment stopped at nested parens (P2, driver): `write_stdin({session_id:Number("123"),chars:...})` missed the later chars property; GREEN - balanced-paren segment extraction.
+
+Final committed suite after the fourteenth Task-3 codex round: `node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs` - `tests 118, pass 118, fail 0`.

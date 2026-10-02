@@ -11,7 +11,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, lstatSync, readFileSync } from 'node:fs';
 import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import test from 'node:test';
@@ -24,8 +24,11 @@ import {
   HOLD_TOOL_NAME,
   PLUGIN_NAME,
   SERVER_NAME,
+  SYNTHETIC_ROLE_NAME,
   WORKER_FILE_NAME,
+  WORKER_SIGNALLED_MARKER_PREFIX,
   buildWaitRouteFixture,
+  buildWaitRouteSyntheticRole,
   parseProcessIdentityLine,
   writeFixtureConfig,
 } from '../tools/wait-route-probe/fixture.mjs';
@@ -57,9 +60,11 @@ import {
   reAnchorHostGroupEvidence,
   registerOwnedChild,
   readWorkerLaunchRecords,
+  roleChildProven,
   runBoundedSubprocess,
   runWaitRouteCase,
   settleOwnedTarget,
+  summarizeCodexSessions,
 } from '../tools/wait-route-probe/driver.mjs';
 
 const HEX_NONCE = 'a'.repeat(64);
@@ -393,7 +398,7 @@ async function writeFakeCodex(directory, mode) {
     '        if (Number.isSafeInteger(jiffies) && jiffies > 0) starttime = jiffies;',
     '      } catch { starttime = null; }',
     '    }',
-    '    await appendFile(join(workspace, "worker-launches.jsonl"), JSON.stringify({ event: "worker-launched", pid: worker.pid, pgid: worker.pid, sid: null, identity, starttime }) + "\\n", "utf8");',
+    '    await appendFile(join(workspace, "worker-launches.jsonl"), JSON.stringify({ event: "worker-launched", pid: worker.pid, pgid: worker.pid, sid: null, identity, starttime, durationMs: 1200, noiseIntervalMs: 0 }) + "\\n", "utf8");',
     `    await writeFile(join(here, "wait-route-descendant.pid"), String(worker.pid), "utf8");`,
     '    const writerScript = "const marker = process.argv[1]; setTimeout(() => { process.stdout.write(JSON.stringify({ final: marker }) + String.fromCharCode(10)); }, 1750); setTimeout(() => {}, 20000);";',
     '    const writer = spawn(process.execPath, ["-e", writerScript, ' + JSON.stringify(COMPLETION_MARKER) + '], { stdio: ["ignore", "inherit", "inherit"], detached: true });',
@@ -425,7 +430,7 @@ async function writeFakeCodex(directory, mode) {
     '      }',
     '    }',
     '    const starttime = process.platform === "linux" ? await import("node:fs").then((fs) => { try { const stat = fs.readFileSync("/proc/" + worker.pid + "/stat", "utf8"); return Number(stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\\s+/)[19]); } catch { return null; } }) : null;',
-    '    await appendFile(join(workspace, "worker-launches.jsonl"), JSON.stringify({ event: "worker-launched", pid: worker.pid, pgid: worker.pid, sid: null, identity, starttime }) + "\\n", "utf8");',
+    '    await appendFile(join(workspace, "worker-launches.jsonl"), JSON.stringify({ event: "worker-launched", pid: worker.pid, pgid: worker.pid, sid: null, identity, starttime, durationMs: 1200, noiseIntervalMs: 0 }) + "\\n", "utf8");',
     `    await writeFile(join(here, "wait-route-descendant.pid"), String(worker.pid), "utf8");`,
     '    process.exit(0);',
     '  }',
@@ -617,6 +622,71 @@ async function writeFakeCodex(directory, mode) {
     '    process.stdout.write(JSON.stringify({ final: ' + JSON.stringify(COMPLETION_MARKER) + ' }) + "\\n");',
     '    process.exit(0);',
     '  }',
+    '  if (mode === "shell-profile" || mode === "shell-profile-altered" || mode === "role-control") {',
+    '    // Profile-mode fake host: extracts the quoted worker path AND the',
+    '    // numeric profile tail (--duration-ms / --noise-interval-ms) from',
+    '    // the prompt and launches the worker EXACTLY ONCE with that argv,',
+    '    // then prints the fixed final marker JSON like a model final message.',
+    `    const escapedProfile = ${JSON.stringify(WORKER_FILE_NAME.replace('.', '\\.'))};`,
+    '    const joinedProfile = args.join(" ");',
+    `    const quotedProfile = joinedProfile.match(new RegExp("'([^']*" + escapedProfile + ")'"));`,
+    `    const bareProfile = joinedProfile.match(new RegExp("(\\\\S+" + escapedProfile + ")"));`,
+    '    const profileMatch = quotedProfile || bareProfile;',
+    '    const profileWorker = profileMatch ? (profileMatch[1] ?? profileMatch[0]) : null;',
+    '    if (!profileWorker) process.exit(4);',
+    '    const durationMatch = joinedProfile.match(/--duration-ms (\\d+)/);',
+    '    const noiseMatch = joinedProfile.match(/--noise-interval-ms (\\d+)/);',
+    '    const profileWorkerArgs = [profileWorker];',
+    '    // The altered-profile mode DROPS the requested duration: the worker',
+    '    // records its actual (default) duration so the driver can prove it',
+    '    // refuses a mismatched profile.',
+    '    if (durationMatch && mode !== "shell-profile-altered") profileWorkerArgs.push("--duration-ms", durationMatch[1]);',
+    '    if (noiseMatch) profileWorkerArgs.push("--noise-interval-ms", noiseMatch[1]);',
+    '    await new Promise((resolve, reject) => {',
+    '      const child = spawn(process.execPath, profileWorkerArgs, { stdio: "inherit" });',
+    '      child.on("exit", resolve); child.on("error", reject);',
+    '    });',
+    '    if (mode === "role-control") {',
+    '      // The managed-child evidence: write a minimal session rollout',
+    '      // proving the synthetic-role child was spawned and polled',
+    '      // (spawn_agent + wait_agent calls with outputs).',
+    '      const { mkdir, writeFile: wFile } = await import("node:fs/promises");',
+    '      const sessionsDir = args[args.indexOf("-C") + 1].replace(/workspace$/, "codex-home") + "/sessions";',
+    '      if (sessionsDir) {',
+    '        await mkdir(sessionsDir, { recursive: true });',
+    '        const now = Date.now();',
+    '        const wrap = (payload) => JSON.stringify({ timestamp: new Date(now).toISOString(), type: "response_item", payload });',
+    '        const meta = (id, parentId) => JSON.stringify({ timestamp: new Date(now).toISOString(), type: "session_meta", payload: parentId === undefined ? { id } : { id, parent_thread_id: parentId } });',
+    '        // The ROOT rollout: session meta (own thread id), spawn_agent for',
+    '        // the synthetic role + wait_agent (written LAST so it is the',
+    '        // newest by mtime, the Root rollout).',
+    '        const rootRollout = [',
+    '          meta("rc-root-thread"),',
+    '          wrap({ type: "function_call", call_id: "rc-spawn", name: "spawn_agent", arguments: JSON.stringify({ agent_type: "wait-probe-synthetic" }) }),',
+    '          wrap({ type: "function_call_output", call_id: "rc-spawn", output: JSON.stringify({ task_name: "probe" }) }),',
+    '          wrap({ type: "function_call", call_id: "rc-wait", name: "wait_agent", arguments: JSON.stringify({ child_agent_id: "rc", wait_ms: 1000 }) }),',
+    '          wrap({ type: "function_call_output", call_id: "rc-wait", output: "ok" }),',
+    '        ].join("\\n");',
+    '        await wFile(sessionsDir + "/rollout-root.jsonl", rootRollout + "\\n", "utf8");',
+    '        // The CHILD rollout: session meta linking it to the Root thread',
+    '        // (the source-pinned spawn edge), then the exec_command the',
+    '        // synthetic-role child ran itself — the EXACT command from the',
+    '        // prompt (the invocation evidence the summarizer correlates),',
+    '        // written FIRST so its mtime is older than Root\'s.',
+    '        const promptText = String(args[args.length - 1] || "");',
+    '        const cmdMatch = promptText.match(/shell tool: ([^\\n]+)/);',
+    '        const childCmd = cmdMatch !== null ? cmdMatch[1] : "node wait-route-worker.mjs --duration-ms 1000";',
+    '        const childRollout = [',
+    '          meta("rc-child-thread", "rc-root-thread"),',
+    `          wrap({ type: "function_call", call_id: "rc-exec", name: "exec_command", arguments: JSON.stringify({ cmd: childCmd, yield_time_ms: 30000 }) }),`,
+    `          wrap({ type: "function_call_output", call_id: "rc-exec", output: ${JSON.stringify(COMPLETION_MARKER)} }),`,
+    '        ].join("\\n");',
+    '        await wFile(sessionsDir + "/rollout-child.jsonl", childRollout + "\\n", "utf8");',
+    '      }',
+    '    }',
+    `    process.stdout.write(JSON.stringify({ final: ${JSON.stringify(COMPLETION_MARKER)} }) + "\\n");`,
+    '    process.exit(0);',
+    '  }',
     '  if (mode === "marker-only") {',
     '    // Prints the fixed completion marker WITHOUT ever launching the',
     '    // worker: the smoke must not accept this as a completed run.',
@@ -719,6 +789,84 @@ async function expectErrorCode(promise, code) {
 function fixtureErrorCode(error) {
   return error && typeof error === 'object' && 'code' in error ? error.code : '';
 }
+
+test('the fixture worker flushes the terminal marker before exiting under a full pipe', { timeout: 30_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const output = await newRunDirectory(parent);
+    const fixture = await buildWaitRouteFixture({ outputDir: output, serverPath: serverModulePath });
+    // Noise at 1 ms for 8 s (~220 KB) overfills the 64 KB host pipe; the
+    // reader stays PAUSED for the whole hold (real backpressure — the
+    // written volume far exceeds the kernel buffer). DRAINING starts
+    // BEFORE awaiting exit — the worker's marker-write callback needs the
+    // parent to drain — and failure cleanup kills the child so a
+    // regression cannot leave it alive.
+    const child = spawn(process.execPath, [fixture.workerPath, '--duration-ms', '8000', '--noise-interval-ms', '1'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    child.stdout.pause();
+    await new Promise((resolve) => setTimeout(resolve, 9000));
+    const chunks = [];
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.stdout.resume();
+    const exitCode = await new Promise((resolve) => {
+      const watchdog = setTimeout(() => {
+        child.kill('SIGKILL');
+        resolve(null);
+      }, 10_000);
+      child.on('exit', (code) => {
+        clearTimeout(watchdog);
+        resolve(code);
+      });
+    });
+    await new Promise((resolve) => {
+      child.stdout.on('end', resolve);
+      setTimeout(resolve, 3000);
+    });
+    const outputText = Buffer.concat(chunks).toString();
+    assert.equal(exitCode, 0, 'the worker exits cleanly after flushing');
+    assert.equal(outputText.includes(COMPLETION_MARKER), true, 'the completion marker survives a full pipe and a delayed reader');
+    assert.equal(outputText.lastIndexOf(COMPLETION_MARKER), outputText.length - COMPLETION_MARKER.trim().length - 1, 'the marker is the final output line');
+  });
+});
+
+test('the fixture worker still terminates promptly under SIGTERM with unread stdout', { timeout: 20_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const output = await newRunDirectory(parent);
+    const fixture = await buildWaitRouteFixture({ outputDir: output, serverPath: serverModulePath });
+    // Heavy noise, stdout NEVER read (backpressure with no reader): the
+    // signal line cannot flush, yet SIGTERM must still terminate the
+    // worker promptly (bounded fallback exit).
+    const child = spawn(process.execPath, [fixture.workerPath, '--duration-ms', '60000', '--noise-interval-ms', '1'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    child.stdout.pause();
+    setTimeout(() => child.kill('SIGTERM'), 500);
+    const startedAt = Date.now();
+    const exit = await new Promise((resolve) => { child.on('exit', (code, signal) => resolve({ code, signal, at: Date.now() - startedAt })); });
+    assert.ok(exit.at < 5000, `SIGTERM must terminate promptly under backpressure (took ${exit.at} ms)`);
+    assert.ok(exit.code === 143 || exit.signal === 'SIGTERM', `the worker exits with the SIGTERM status (got code ${exit.code} signal ${exit.signal})`);
+  });
+});
+
+test('the fixture worker honors SIGTERM while the completion flush is pending', { timeout: 30_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const output = await newRunDirectory(parent);
+    const fixture = await buildWaitRouteFixture({ outputDir: output, serverPath: serverModulePath });
+    // finish() fires with stdout unread (its marker flush pends behind the
+    // full pipe — 10 s of 1 ms noise far overfills the 64 KB pipe); a
+    // SUBSEQUENT SIGTERM must still terminate the worker — pending
+    // completion is not an exit.
+    const child = spawn(process.execPath, [fixture.workerPath, '--duration-ms', '10000', '--noise-interval-ms', '1'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    child.stdout.pause();
+    setTimeout(() => child.kill('SIGTERM'), 11000);
+    const startedAt = Date.now();
+    const exit = await new Promise((resolve) => { child.on('exit', (code, signal) => resolve({ code, signal, at: Date.now() - startedAt })); });
+    assert.ok(exit.at < 15000, `SIGTERM after the pending flush must terminate promptly (took ${exit.at} ms)`);
+    assert.ok(exit.code === 143 || exit.signal === 'SIGTERM', `the worker exits with the SIGTERM status (got code ${exit.code} signal ${exit.signal})`);
+  });
+});
 
 test('buildWaitRouteFixture creates the complete isolated marketplace layout', async () => {
   await withTempDirectory(async (parent) => {
@@ -1213,7 +1361,7 @@ test('prepare_dependency records a bounded synthetic invocation dependency', asy
 
 test('the driver accepts exactly the documented case labels and bounds', async () => {
   await withTempDirectory(async (parent) => {
-    assert.deepEqual([...CASE_LABELS], ['shell-window', 'hook-entry', 'authority', 'lifecycle']);
+    assert.deepEqual([...CASE_LABELS], ['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control']);
     const codex = join(parent, 'codex');
     await writeFile(codex, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const output = await newRunDirectory(parent);
@@ -4018,5 +4166,2800 @@ test('authority and lifecycle cases report explicit not-instrumented outcomes', 
       assert.match(summary.reason, /candidate/);
       assert.equal(summary.cleanup.isolatedHomeRemoved, true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: configured shell observation windows. These tests cover the
+// instrument seams only: the worker's duration/noise/signal modes, the
+// fixture-only cap and synthetic-Role config options, the bounded session
+// summarizer, and the driver's profile prompt/classification against a FAKE
+// host. No live host, model, or provider run starts from these tests.
+// ---------------------------------------------------------------------------
+
+/** Spawns the generated fixture worker directly through process.execPath. */
+async function spawnWorker(workerPath, workerArgs) {
+  const child = spawn(process.execPath, [workerPath, ...workerArgs], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  /** @type {number|null} */
+  let code = null;
+  /** @type {NodeJS.Signals|null} */
+  let signal = null;
+  await new Promise((resolveExit) => {
+    child.on('exit', (exitCode, exitSignal) => { code = exitCode; signal = exitSignal; resolveExit(null); });
+    child.on('error', () => { code = null; resolveExit(null); });
+  });
+  return { child, stdout, code, signal, pid: child.pid ?? null };
+}
+
+test('the fixture worker honors an exact duration before printing the completion marker', { timeout: 20_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fixture = await buildWaitRouteFixture({ outputDir: await newRunDirectory(parent), serverPath: serverModulePath });
+    const startedAt = Date.now();
+    const early = await new Promise((resolveEarly) => {
+      const child = spawn(process.execPath, [fixture.workerPath, '--duration-ms', '900'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let output = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { output += chunk; });
+      setTimeout(() => resolveEarly({ at: Date.now(), output }), 350);
+      child.on('exit', () => {});
+    });
+    assert.equal(early.output.includes(COMPLETION_MARKER), false, 'the marker must not appear before the requested duration');
+    const result = await spawnWorker(fixture.workerPath, ['--duration-ms', '900']);
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout.includes(COMPLETION_MARKER), true);
+    assert.ok(Date.now() - startedAt >= 900, 'the worker must actually wait the requested duration');
+  });
+});
+
+test('the fixture worker noise output never contains the completion marker', { timeout: 20_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fixture = await buildWaitRouteFixture({ outputDir: await newRunDirectory(parent), serverPath: serverModulePath });
+    const result = await spawnWorker(fixture.workerPath, ['--duration-ms', '1200', '--noise-interval-ms', '100']);
+    assert.equal(result.code, 0);
+    const lines = result.stdout.split('\n').filter((line) => line.length > 0);
+    const noiseLines = lines.filter((line) => !line.includes(COMPLETION_MARKER));
+    assert.ok(noiseLines.length >= 5, `expected noisy output, got ${noiseLines.length} noise lines`);
+    for (const line of noiseLines) {
+      assert.equal(line.includes(COMPLETION_MARKER), false, 'a noise line must never contain the completion marker');
+    }
+    assert.equal(lines.filter((line) => line.includes(COMPLETION_MARKER)).length, 1, 'exactly one completion marker line');
+    assert.equal(lines.at(-1)?.includes(COMPLETION_MARKER), true, 'the marker is the terminal line');
+    const { records } = await readWorkerLaunchRecords(join(dirname(fixture.workerPath), 'worker-launches.jsonl'));
+    assert.equal(records.length, 1, 'exactly one launch record: the noisy worker must not launch twice');
+    assert.equal(records[0].pid, result.pid, 'the launch record carries the exact spawned process identity');
+  });
+});
+
+for (const [signalName, expectedCode] of [['SIGTERM', 143], ['SIGINT', 130]]) {
+  test(`the fixture worker handles ${signalName} gracefully with a distinct signal marker`, { timeout: 20_000 }, async (t) => {
+    if (skipFakeHostOnWindows(t)) return;
+    await withTempDirectory(async (parent) => {
+      const fixture = await buildWaitRouteFixture({ outputDir: await newRunDirectory(parent), serverPath: serverModulePath });
+      const child = spawn(process.execPath, [fixture.workerPath, '--duration-ms', '30000'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let stdout = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      await sleep(300);
+      const signalAt = Date.now();
+      child.kill(signalName);
+      /** @type {number|null} */
+      let code = null;
+      await new Promise((resolveExit) => { child.once('exit', (exitCode) => { code = exitCode; resolveExit(null); }); });
+      assert.ok(code === expectedCode, `expected graceful exit code ${expectedCode}, got ${code}`);
+      assert.ok(Date.now() - signalAt < 5000, 'the worker must exit promptly on the signal, never run to its duration');
+      assert.ok(stdout.includes(`${WORKER_SIGNALLED_MARKER_PREFIX} ${signalName}`), 'the worker must record the signal distinctly');
+      assert.equal(stdout.includes(COMPLETION_MARKER), false, 'an interrupted run must never print the completion marker');
+    });
+  });
+}
+
+test('the fixture worker rejects invalid profile arguments', { timeout: 20_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const fixture = await buildWaitRouteFixture({ outputDir: await newRunDirectory(parent), serverPath: serverModulePath });
+    const result = await spawnWorker(fixture.workerPath, ['--duration-ms', 'not-a-number']);
+    assert.equal(result.code, 2, 'invalid profile arguments must fail closed');
+    assert.equal(result.stdout.includes(COMPLETION_MARKER), false);
+  });
+});
+
+test('the fixture config can declare a raised background terminal cap', async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const codexHome = join(parent, 'codex-home-a');
+    await mkdir(codexHome, { mode: 0o700 });
+    const { configPath } = await writeFixtureConfig({ codexHome, backgroundTerminalMaxTimeoutMs: 3_600_000 });
+    const body = await readFile(configPath, 'utf8');
+    assert.match(body, /background_terminal_max_timeout = 3600000/, 'the raised cap must be declared');
+    assert.match(body, /\[features\]\nhooks = true/, 'the hooks feature stays enabled');
+    const codexHomeDefault = join(parent, 'codex-home-b');
+    await mkdir(codexHomeDefault, { mode: 0o700 });
+    const defaultConfig = await writeFixtureConfig({ codexHome: codexHomeDefault });
+    const defaultBody = await readFile(defaultConfig.configPath, 'utf8');
+    assert.doesNotMatch(defaultBody, /background_terminal_max_timeout/, 'the default fixture config must not declare a cap');
+  });
+});
+
+test('the fixture config rejects invalid cap and role options', async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const codexHome = join(parent, 'codex-home');
+    await mkdir(codexHome, { mode: 0o700 });
+    for (const cap of [4999, 3_600_001, 1500.5, Number.NaN]) {
+      await expectErrorCode(
+        writeFixtureConfig({ codexHome, backgroundTerminalMaxTimeoutMs: cap }),
+        'WAIT_ROUTE_FIXTURE_CONFIG_CAP_INVALID',
+      );
+    }
+    await expectErrorCode(
+      writeFixtureConfig({ codexHome, agentRoles: [{ name: 'x', description: '', configPath: '/tmp/role.toml' }] }),
+      'WAIT_ROUTE_FIXTURE_CONFIG_ROLE_INVALID',
+    );
+    // Every rejection above must have refused to write anything.
+    const entries = await readdir(codexHome);
+    assert.deepEqual(entries, [], 'a rejected fixture config must not leave a config.toml behind');
+  });
+});
+
+test('the synthetic role fixture writes a clearly labeled probe-only role file', async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const built = await buildWaitRouteSyntheticRole({ outputDir: parent });
+    assert.equal(built.roleName, SYNTHETIC_ROLE_NAME);
+    const body = await readFile(built.rolePath, 'utf8');
+    assert.match(body, /background_terminal_max_timeout = 3600000/, 'the synthetic role declares the raised cap');
+    assert.match(body, new RegExp(`name = "${SYNTHETIC_ROLE_NAME}"`), 'the role file names the synthetic role');
+    assert.match(body, /SYNTHETIC PROBE-ONLY/, 'the role file is clearly labeled as a synthetic probe control');
+  });
+});
+
+test('the session summarizer counts model decisions from a bounded rollout', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions', '2026', '10', '01');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id: 'meta' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'PRIVATE ASSISTANT TEXT that must never be retained' }] } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: "PRIVATECMD 'node' 'worker'", yield_time_ms: 30000 }), call_id: 'call_a' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_a', output: '{"output":"PRIVATE OUTPUT","status":"timeout"}' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', arguments: JSON.stringify({ input: '', yield_time_ms: 60000 }), call_id: 'call_b' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_b', output: '{}' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'reasoning', summary: [] } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: join(parent, 'sessions') });
+    assert.equal(summary.present, true);
+    assert.equal(summary.files, 1);
+    assert.equal(summary.truncated, false);
+    assert.equal(summary.assistantMessages, 1);
+    assert.equal(summary.reasoningItems, 1);
+    assert.equal(summary.functionCalls, 2);
+    assert.equal(summary.functionCallOutputs, 2);
+    assert.equal(summary.initialExecCalls, 1);
+    assert.equal(summary.emptyPolls, 1);
+    assert.equal(summary.otherFunctionCalls, 0);
+    assert.deepEqual(summary.requestedYieldsMs, [30000, 60000]);
+    assert.equal(summary.parallelToolCallViolations, 0, 'a strict call/output alternation has no parallel poll');
+    assert.equal(summary.firstFunctionCallAtMs, Date.parse('2026-10-01T00:00:02.000Z'));
+    assert.equal(summary.firstEmptyPollAtMs, Date.parse('2026-10-01T00:00:33.000Z'));
+    assert.equal(summary.lastFunctionCallOutputAtMs, Date.parse('2026-10-01T00:01:33.000Z'));
+    const serialized = JSON.stringify(summary);
+    assert.equal(serialized.includes('PRIVATE'), false, 'the summary must retain no rollout content');
+    assert.deepEqual(summary.toolNames, { exec_command: 1, write_stdin: 1 });
+  });
+});
+
+test('the session summarizer flags a parallel second poll while the first is pending', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', arguments: JSON.stringify({ input: '', yield_time_ms: 60000 }), call_id: 'call_a' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', arguments: JSON.stringify({ input: '', yield_time_ms: 60000 }), call_id: 'call_b' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_a', output: '{}' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:04.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_b', output: '{}' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 2);
+    assert.equal(summary.parallelToolCallViolations, 1, 'the second poll while the first was pending must be flagged');
+  });
+});
+
+test('the session summarizer reports bounds and absent directories honestly', async () => {
+  await withTempDirectory(async (parent) => {
+    const absent = await summarizeCodexSessions({ sessionsDirectory: join(parent, 'missing') });
+    assert.equal(absent.present, false);
+    assert.equal(absent.files, 0);
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    for (const name of ['a.jsonl', 'b.jsonl']) {
+      await writeFile(join(sessions, name), `${JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [] } })}\n`, { encoding: 'utf8', mode: 0o600 });
+    }
+    const capped = await summarizeCodexSessions({ sessionsDirectory: sessions, maxFiles: 1 });
+    assert.equal(capped.files, 1, 'the file cap bounds the scan');
+    assert.equal(capped.truncated, true, 'crossing the file cap reports truncation');
+    await writeFile(join(sessions, 'big.jsonl'), `x${'y'.repeat(4096)}\n`, { encoding: 'utf8', mode: 0o600 });
+    const bounded = await summarizeCodexSessions({ sessionsDirectory: sessions, maxFiles: 16, maxLineBytes: 1024 });
+    assert.equal(bounded.truncated, true, 'an oversized rollout line reports truncation');
+  });
+});
+
+test('parseDriverArguments accepts the Task 3 profile flags with closed validation', async () => {
+  await withTempDirectory(async (parent) => {
+    const codex = join(parent, 'codex');
+    await writeFile(codex, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const output = await newRunDirectory(parent);
+    const parsed = parseDriverArguments([
+      '--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000',
+      '--worker-duration-ms', '420000', '--worker-noise-interval-ms', '2000',
+      '--exec-yield-ms', '30000', '--poll-yield-ms', '3600000',
+      '--background-terminal-max-timeout-ms', '3600000',
+    ]);
+    assert.equal(parsed.workerDurationMs, 420000);
+    assert.equal(parsed.workerNoiseIntervalMs, 2000);
+    assert.equal(parsed.execYieldMs, 30000);
+    assert.equal(parsed.pollYieldMs, 3600000);
+    assert.equal(parsed.backgroundTerminalMaxTimeoutMs, 3600000);
+    const bare = parseDriverArguments(['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000']);
+    assert.equal(bare.workerDurationMs, 0, 'absent profile flags default to the current immediate-worker behavior');
+    assert.equal(bare.backgroundTerminalMaxTimeoutMs, 0, 'absent cap flag keeps the fixture default configuration');
+    for (const argv of [
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--worker-duration-ms', '-1'],
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--worker-duration-ms', '1500.5'],
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--worker-noise-interval-ms', '60001'],
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--exec-yield-ms', '249'],
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--poll-yield-ms', '3600001'],
+      ['--case', 'shell-window', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--background-terminal-max-timeout-ms', '4999'],
+      ['--case', 'hook-entry', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--poll-yield-ms', '60000'],
+    ]) {
+      try {
+        parseDriverArguments(argv);
+        assert.fail(`expected ${JSON.stringify(argv)} to be rejected`);
+      } catch (error) {
+        assert.match(String(error.code ?? error.message), /WAIT_ROUTE_DRIVER_PROFILE_INVALID/);
+      }
+    }
+  });
+});
+
+test('the shell-window profile run classifies a noisy completed run and echoes its profile', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'shell-profile');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({
+      caseLabel: 'shell-window', codexPath: fakeCodex, outputDir: output, budgetMs: 30_000, sourceCodexHome: sourceHome,
+      workerDurationMs: 1200, workerNoiseIntervalMs: 100, execYieldMs: 30000, pollYieldMs: 60000,
+    });
+    assert.equal(summary.outcome, 'shell-smoke-completed', JSON.stringify(summary));
+    assert.equal(summary.trace.markerObserved, true, 'the marker is observed despite the noise');
+    assert.equal(summary.trace.workerLaunches, 1, 'noisy output must not cause a second launch');
+    assert.deepEqual(summary.requestedProfile, { workerDurationMs: 1200, workerNoiseIntervalMs: 100, execYieldMs: 30000, pollYieldMs: 60000 });
+    assert.equal(summary.fixture.backgroundTerminalMaxTimeoutMs, null, 'no cap declared without the flag');
+    assert.equal(summary.session.present, false, 'a fake host writes no session rollouts');
+    assert.equal(summary.session.files, 0);
+    assert.ok(!JSON.stringify(summary).includes(output), 'the summary must be redacted of private paths');
+  });
+});
+
+test('the noisy held run is budget-interrupted without a false completion', { timeout: 30_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'shell-profile');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({
+      caseLabel: 'shell-window', codexPath: fakeCodex, outputDir: output, budgetMs: 2_500, sourceCodexHome: sourceHome,
+      workerDurationMs: 30000, workerNoiseIntervalMs: 200, execYieldMs: 30000, pollYieldMs: 60000,
+    });
+    assert.equal(summary.outcome, 'budget-exhausted', JSON.stringify(summary));
+    assert.equal(summary.reason, 'observation-budget-exhausted');
+    assert.equal(summary.trace.markerObserved, false, 'interrupted noisy output must never be mistaken for the terminal marker');
+    assert.notEqual(summary.cleanup.workerExit, 'unresolved', 'the bounded interruption settles the recorded worker');
+  });
+});
+
+test('a launched worker whose own record disagrees with the requested profile is inconclusive', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // The fake host DROPS the requested --duration-ms: the worker records
+    // its actual (default) duration, and the case must not report a clean
+    // smoke under the requested profile's remaining-lifetime math.
+    const fakeCodex = await writeFakeCodex(parent, 'shell-profile-altered');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({
+      caseLabel: 'shell-window', codexPath: fakeCodex, outputDir: output, budgetMs: 30_000, sourceCodexHome: sourceHome,
+      workerDurationMs: 1200, workerNoiseIntervalMs: 0, execYieldMs: 30000, pollYieldMs: 60000,
+    });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'worker-profile-mismatch');
+  });
+});
+
+test('the role-control case prepares the synthetic role and completes under the fake host', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'role-control');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({
+      caseLabel: 'role-control', codexPath: fakeCodex, outputDir: output, budgetMs: 30_000, sourceCodexHome: sourceHome,
+      workerDurationMs: 1000, workerNoiseIntervalMs: 0, execYieldMs: 30000, pollYieldMs: 60000,
+    });
+    assert.equal(summary.outcome, 'role-control-completed', JSON.stringify(summary));
+    assert.equal(summary.fixture.agentRoles.includes(SYNTHETIC_ROLE_NAME), true, 'the synthetic role is registered in the fixture config');
+    assert.equal(summary.fixture.multiAgentFeature, true, 'the collab feature is enabled for the role control');
+    assert.equal(summary.trace.workerLaunches, 1);
+    assert.equal(summary.cleanup.isolatedHomeRemoved, true);
+    assert.ok(!JSON.stringify(summary).includes(output), 'the summary must be redacted of private paths');
+  });
+});
+
+test('the session summarizer classifies the custom exec tool calls of newer hosts', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: `const r = await tools.exec_command({cmd:"'node' 'worker' --duration-ms 420000",yield_time_ms:30000});text(r.output);\n` } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'Script completed\nWall time 0.0 seconds\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(r.output);\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'still running\n' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.functionCalls, 2);
+    assert.equal(summary.functionCallOutputs, 2);
+    assert.equal(summary.initialExecCalls, 1, 'the custom exec_command shape counts as the initial exec');
+    assert.equal(summary.emptyPolls, 1, 'the custom write_stdin shape with empty input counts as the empty poll');
+    assert.deepEqual(summary.requestedYieldsMs, [30000, 60000]);
+    assert.equal(summary.parallelToolCallViolations, 0);
+    assert.equal(summary.firstEmptyPollAtMs, Date.parse('2026-10-01T00:00:33.000Z'));
+    assert.equal(summary.lastFunctionCallOutputAtMs, Date.parse('2026-10-01T00:01:33.000Z'));
+    assert.equal(JSON.stringify(summary).includes('worker'), false, 'no command text is retained');
+  });
+});
+
+test('shell cases run the host with process inspection available, never the denied workspace sandbox', async () => {
+  // The installed 0.160.0 workspace-write sandbox denies /bin/ps (exit 126),
+  // so the worker's process-identity evidence is structurally unavailable
+  // under it. The shell cases must select the flag set that keeps the
+  // instrument's identity evidence working; this seam pins that choice.
+  const { EXEC_FLAG_SELECTIONS } = await import('../tools/wait-route-probe/driver.mjs');
+  assert.ok(EXEC_FLAG_SELECTIONS.shell.includes('--dangerously-bypass-approvals-and-sandbox'), 'shell cases bypass the sandbox that denies ps');
+  assert.equal(EXEC_FLAG_SELECTIONS.shell.includes('-s'), false, 'shell cases do not pass a conflicting -s mode');
+  assert.ok(EXEC_FLAG_SELECTIONS.hookEntry.includes('-s', 'workspace-write'), 'the hook case keeps its Task 2 flags');
+});
+
+test('the session summarizer samples per-call timing for clamp analysis', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:05:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'running' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:05:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:3600000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:10:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'still running' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.calls, [
+      { atMs: Date.parse('2026-10-01T00:00:02.000Z'), kind: 'initial-exec', name: 'exec', yieldTimeMs: 30000 },
+      { atMs: Date.parse('2026-10-01T00:05:03.000Z'), kind: 'empty-poll', name: 'exec', yieldTimeMs: 3600000 },
+    ], 'per-call samples carry the requested yield and the call time for clamp analysis');
+    assert.equal(summary.callsTruncated, false);
+  });
+});
+
+test('the session summarizer never classifies quoted or commented operation mentions as shell operations', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // The script PRINTS a write_stdin mention and COMMENTS an exec_command:
+      // neither is a shell operation, so neither may be classified as one
+      // and neither may supply child-execution evidence.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: `text('write_stdin({id:"s",input:""})');\n// exec_command({cmd:"echo fake"})\n` } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 0, 'a commented exec_command mention is not an initial exec');
+    assert.equal(summary.emptyPolls, 0, 'a quoted write_stdin mention is not an empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the unclassifiable script stays counted as other');
+  });
+});
+
+test('the session summarizer leaves indirect write_stdin arguments unclassified', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // Indirect argument shapes: a bare identifier or a spread object can
+      // carry a nonempty input the rollout never shows, so the absence of a
+      // literal `chars`/`input` key is NOT proof of an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin(pollArgs);text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({...pollArgs});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'ok' } }),
+      // The positive control: a self-contained literal object with an empty
+      // input IS an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:07.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'only the self-contained literal argument object counts as the empty poll');
+    assert.equal(summary.otherFunctionCalls, 2, 'indirect argument shapes stay unclassified');
+  });
+});
+
+test('the session summarizer keeps a yielded initial-exec script pending', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // The initial exec_command script YIELDS a cell: its inner operation
+      // is still outstanding, so an overlapping second poll is a violation.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'still running' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the overlapping poll while the yielded cell is outstanding is a violation');
+  });
+});
+
+test('the session summarizer preserves quoted yield keys (the documented @exec directive form)', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // The DOCUMENTED directive form quotes the key: the wrapper bound
+      // must survive the string-stripped view and govern the call sample.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: '// @exec: {"yield_time_ms": 3600000}\nconst r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A directive MENTION inside a cmd string VALUE is stripped content:
+      // it must never be recorded as a requested yield.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.exec_command({cmd:"echo // @exec: {\\"yield_time_ms\\": 120000}",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:31.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.requestedYieldsMs[0], 3600000, 'the quoted directive key survives stripping and records the wrapper bound');
+    assert.deepEqual(summary.calls[0].yieldTimeMs, 3600000, 'the first (directive) yield governs the call sample');
+    assert.equal(summary.requestedYieldsMs.includes(120000), false, 'a directive mention inside a cmd string value is stripped content');
+    assert.equal(summary.requestedYieldsMs.filter((ms) => ms === 30000).length, 2, 'the inner bare-key yields are still recorded');
+  });
+});
+
+test('role evidence requires the spawn arguments to name the synthetic role', async () => {  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const buildRoot = (agentType) => [
+      meta('root-t'),
+      wrap({ type: 'function_call', call_id: 'rc-spawn', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: agentType }) }),
+      wrap({ type: 'function_call_output', call_id: 'rc-spawn', output: 'ok' }),
+    ].join('\n');
+    // The child rollout carries the non-Root initial-exec evidence and the
+    // parent-thread link both variants need; only the spawn ARGUMENTS differ.
+    const childRollout = [
+      meta('child-t', 'root-t'),
+      wrap({ type: 'function_call', call_id: 'rc-exec', name: 'exec_command', arguments: JSON.stringify({ cmd: 'run the probe worker', yield_time_ms: 30000 }) }),
+      wrap({ type: 'function_call_output', call_id: 'rc-exec', output: 'done' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), buildRoot('default'), { encoding: 'utf8', mode: 0o600 });
+    // roleChildProven receives the WAIT-ROUTE summary whose `session` field
+    // carries the rollouts summary.
+    const wrongRole = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(wrongRole), false, 'a spawn for a different role must not corroborate the managed-child lifecycle');
+    await writeFile(join(sessions, 'rollout-root.jsonl'), buildRoot(SYNTHETIC_ROLE_NAME), { encoding: 'utf8', mode: 0o600 });
+    const rightRole = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(rightRole), true, 'a spawn naming the synthetic role corroborates the lifecycle');
+  });
+});
+
+test('child-execution attribution waits for Root resolution and the parent-linked child rollout', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: parentId === undefined ? { id } : { id, parent_thread_id: parentId } });
+    // A SINGLE Root rollout whose structured exec precedes its spawn_agent:
+    // no child rollout exists, so the run proves nothing.
+    const execThenSpawn = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: 'run the probe worker', yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'done' }),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: JSON.stringify({ task_name: 'probe' }) }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-root.jsonl'), execThenSpawn, { encoding: 'utf8', mode: 0o600 });
+    const noChild = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(noChild), false, 'a Root exec before the spawn marker must not become child-execution evidence');
+    // A child rollout WITHOUT the parent link proves nothing either.
+    const childNoMeta = [
+      line({ type: 'function_call', call_id: 'e2', name: 'exec_command', arguments: JSON.stringify({ cmd: 'run the probe worker', yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e2', output: 'done' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childNoMeta, { encoding: 'utf8', mode: 0o600 });
+    const unlinkedChild = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(unlinkedChild), false, 'a child rollout without the parent-thread link must not corroborate the lifecycle');
+    // With the parent link the run is proven (single synthetic spawn + its
+    // output + the linked child's initial exec).
+    await writeFile(join(sessions, 'rollout-child.jsonl'), `${meta('child-t', 'root-t')}\n${childNoMeta}`, { encoding: 'utf8', mode: 0o600 });
+    const linkedChild = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(linkedChild), true, 'the parent-linked child rollout corroborates the managed-child lifecycle');
+  });
+});
+
+test('role evidence never matches the synthetic role outside the role argument', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const rootRollout = [
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: 'default', message: `Please simulate ${SYNTHETIC_ROLE_NAME}` }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: JSON.stringify({ task_name: 'probe' }) }),
+    ].join('\n');
+    const childRollout = [
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: 'run the probe worker', yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'done' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(summary), false, 'a role mention in a non-role argument must not prove the synthetic spawn');
+  });
+});
+
+test('completion clears only its own cell, preserving an unrelated outstanding yield', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 1; overlapping B completes WITHOUT yielding; B's
+      // completion must not retire A. The subsequent poll C is therefore
+      // the SECOND violation.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 1\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'b1', input: 'const r = await tools.exec_command({cmd:"y",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'b1', output: 'done' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'still running' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 2, 'the non-yielding completion must not retire the outstanding cell');
+  });
+});
+
+test('a script carrying multiple observation operations reports the inner concurrency', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const [a, b] = await Promise.all([tools.write_stdin({id:"s1",input:"",yield_time_ms:60000}), tools.write_stdin({id:"s2",input:"",yield_time_ms:60000})]);text(a.output + b.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 2, 'each inner observation site is counted');
+    assert.equal(summary.parallelToolCallViolations, 1, 'two observations inside one script call are the forbidden concurrency');
+  });
+});
+
+test('receiver cardinality and longer key names stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A SINGLETON receiver: exactly one invocation, no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: '[17].map(async () => await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A longer property name ending in the yield key never overrides.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000,previous_yield_time_ms:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'a singleton receiver cannot overlap');
+    assert.deepEqual(summary.requestedYieldsMs, [60000, 60000], 'each poll records its own yield; the longer property name never overrides it');
+  });
+});
+
+test('computed cmd properties fail the invocation decode closed', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // A computed property can override the cmd at runtime: fail closed.
+    const computedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},["cmd"]: "echo ${COMPLETION_MARKER}"});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), computedChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const computed = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(computed), false, 'a computed cmd override voids the invocation decode');
+  });
+});
+
+test('helper dispatch attribution stays per-dispatch and recognizes named callbacks', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A polling helper dispatched through .map over two elements: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([1, 2].map(poll));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // Two SEQUENTIAL awaited dispatches of one invocation each: no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([poll()]);\nawait Promise.all([poll()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the .map(poll) dispatch overlaps; sequential single-invocation dispatches do not');
+  });
+});
+
+test('command decoding runs on the comment-stripped segment', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // A COMMENTED cmd with the real one commented OUT and another active:
+    // the commented invocation never satisfies correlation.
+    const commentedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({/* cmd: ${JSON.stringify(exactCommand)}, */ cmd: "echo done"});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), commentedChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const commented = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(commented), false, 'a commented-out cmd never satisfies correlation');
+    // A comment BETWEEN the key and its colon keeps the correlation.
+    const spacedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd /* invocation */ : ${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), spacedChild, { encoding: 'utf8', mode: 0o600 });
+    const spaced = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(spaced), true, 'a comment between the key and its colon keeps the invocation');
+  });
+});
+
+test('a profiled run whose marker arrives while the worker still runs is inconclusive', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // The fake host ignores the requested duration (spawning a LONG worker)
+    // and prints the marker immediately: the marker cannot be terminal
+    // evidence, and settlement kills the still-running worker.
+    // The recorded worker prints the marker at 300 ms and STAYS ALIVE (a
+    // 20 s keep-alive): on a profiled run the marker cannot be terminal
+    // evidence — settlement terminates the still-running worker.
+    const fakeCodex = await writeFakeCodex(parent, 'marker-then-late-noise');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    // The 1 s budget expires while the kept-alive worker still runs: the
+    // in-budget marker + terminated settlement must refuse the grant.
+    const summary = await runWaitRouteCase({
+      caseLabel: 'shell-window', codexPath: fakeCodex, outputDir: output, budgetMs: 1_000, sourceCodexHome: sourceHome,
+      workerDurationMs: 1200, workerNoiseIntervalMs: 0, execYieldMs: 30000, pollYieldMs: 60000,
+    });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'worker-still-running-at-marker', JSON.stringify(summary));
+  });
+});
+
+test('named callbacks outside combinators and non-polling helper sites stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A NAMED polling callback dispatched via forEach outside any
+      // combinator: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\n[1,2].forEach(poll);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // An unrelated non-polling helper dispatched twice must not flag the
+      // trailing sequential poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const f = async () => 1; await Promise.all([(async () => f())(), (async () => f())()]); await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the named forEach(poll) dispatch overlaps; the unrelated helper never does');
+  });
+});
+
+test('a command-shaped string value never satisfies correlation', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // Another argument's value contains a COMMAND-SHAPED object text; the
+    // actual cmd is "other" — the decode must select the real property.
+    const shapedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({justification:'{cmd: ${JSON.stringify(exactCommand)}}', cmd: "other"});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), shapedChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const shaped = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(shaped), false, 'a command-shaped string value is not the command property');
+  });
+});
+
+test('formatted cmd keys, anchored decode, and sliced gaps stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    // FORMATTED key (`{ cmd: ... }` with whitespace) and a comment between
+    // key and colon: correlation succeeds.
+    const formattedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({ cmd /* invocation */ : ${JSON.stringify(exactCommand)} });` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), formattedChild, { encoding: 'utf8', mode: 0o600 });
+    const formatted = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(formatted), true, 'a whitespace-formatted cmd key with a comment correlates');
+    // An expression tail (`"other" || "<expected>"`) passes "other": the
+    // anchored decode must not credit the second operand.
+    const tailChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd: "other" || ${JSON.stringify(exactCommand)}});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), tailChild, { encoding: 'utf8', mode: 0o600 });
+    const tail = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(tail), false, 'an expression tail passes its first operand');
+    // A long command literal must not shift the serialized-gap offsets.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const longLiteral = 'x'.repeat(400);
+    const gapRollout = [
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'd1', input: `const p = tools.write_stdin({id:"s1",input:"${longLiteral}",yield_time_ms:60000});const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});await p;await q;` }),
+      line({ type: 'custom_tool_call_output', call_id: 'd1', output: 'done' } ),
+      // Overlapping starts followed by LATER awaits: two violations.
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'd2', input: 'const p2 = tools.write_stdin({id:"s3",input:"",yield_time_ms:60000});const q2 = tools.write_stdin({id:"s4",input:"",yield_time_ms:60000});await p2;await q2;' } ),
+      line({ type: 'custom_tool_call_output', call_id: 'd2', output: 'done' } ),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), gapRollout, { encoding: 'utf8', mode: 0o600 });
+    const gapSummary = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.equal(gapSummary.parallelToolCallViolations, 2, 'both start-before-await shapes overlap; the long literal and later awaits never serialize them');
+  });
+});
+
+test('round-58 adversarial shapes stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    // An UNREADABLE rollout hides a second spawn: the scan fails closed.
+    const sealed = join(sessions, 'sealed.jsonl');
+    await writeFile(sealed, `${meta('x-t')}${line({ type: 'function_call', call_id: 'z1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) })}`, { encoding: 'utf8', mode: 0o600 });
+    await chmod(sealed, 0o000);
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // apply_patch is NOT the executable wrapper: its DSL text is data.
+    const patchChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'a1', name: 'apply_patch', input: '*** Add File: x.ts\n+await tools.exec_command({cmd:"boom",yield_time_ms:30000});' }),
+      line({ type: 'custom_tool_call_output', call_id: 'a1', output: 'ok' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), patchChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    try {
+      const sealedScan = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+      assert.equal(sealedScan.session.truncated, true, 'an unreadable rollout marks the scan incomplete');
+      assert.equal(roleChildProven(sealedScan), false, 'an incomplete scan cannot satisfy the exactly-one-spawn grant');
+      assert.equal(sealedScan.session.initialExecCalls, 0, 'apply_patch input is data, not an executable wrapper script');
+    } finally {
+      await chmod(sealed, 0o600);
+    }
+    // A plain (non-async) arrow helper dispatched twice: overlap.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const arrowRollout = [
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const poll = () => tools.write_stdin({session_id:17,chars:""}); await Promise.all([poll(),poll()]);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      // Helper calls wrapped in callbacks: multiplicity counts.
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const poll = () => tools.write_stdin({session_id:17,chars:""}); await Promise.all([1,2].map(() => poll()));' }),
+      line({ type: 'custom_tool_call_output', call_id: 'c2', output: 'done' }),
+      // Printed "await p" does not serialize; both polls start first.
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000}); text("await p"); const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000}); await p; await q;' }),
+      line({ type: 'custom_tool_call_output', call_id: 'c3', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), arrowRollout, { encoding: 'utf8', mode: 0o600 });
+    const arrowSummary = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.equal(arrowSummary.parallelToolCallViolations, 3, 'plain arrow helpers, callback-wrapped helper dispatches, and printed-await non-serialization all count');
+  });
+});
+
+test('the cmd decode locates the actual property lexically', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // Another argument's string VALUE mentions the expected command; the
+    // actual cmd is "other" — correlation must fail.
+    const decoyChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({justification: 'cmd: ${JSON.stringify(exactCommand)},', cmd: "other"});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), decoyChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const decoy = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(decoy), false, 'a string value mentioning the command is not the command');
+    // An unquoted computed yield key can evaluate to anything: fail closed.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const computedRollout = [
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const yield_time_ms = "max_tokens";\nconst r = await tools.write_stdin({session_id:1,chars:"",[yield_time_ms]:5000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), computedRollout, { encoding: 'utf8', mode: 0o600 });
+    const computed = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.deepEqual(computed.requestedYieldsMs, [], 'an identifier computed key never records a request');
+  });
+});
+
+test('awaited loop bodies stay sequential and busy-wait prefixes delay the poll start', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // An AWAITED loop body: one active observation at a time — no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'for (let i = 0; i < 2; i++) { const r = await tools.write_stdin({session_id:17, chars:"",yield_time_ms:60000});text(r.output); }' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A semicolon-free busy-wait before the poll delays its start past
+      // the call timestamp: the start stays unproven.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'while (Date.now() === 0) { break; }\ntext(await tools.write_stdin({id:"s",input:"",yield_time_ms:60000}))' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'the awaited loop body serializes its iterations');
+    assert.equal(summary.emptyPolls, 2, 'both polls are counted');
+    assert.equal(summary.firstEmptyPollAtMs, null, 'the busy-wait prefix leaves the poll start unproven');
+  });
+});
+
+test('named callback multiplicity follows the receiver', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A polling helper over a SINGLETON receiver: one invocation.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([1].map(poll));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // Over a TWO-element receiver: overlap (each script carries its own
+      // helper declaration — attribution is per-script).
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([1, 2].map(poll));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'only the two-element receiver overlaps');
+  });
+});
+
+test('loop bodies and non-async helper dispatches are repeated executions', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A for-loop re-executes its body poll N times: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'for (let i = 0; i < 2; i++) { tools.write_stdin({session_id:17, chars:"",yield_time_ms:60000}); }' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A NON-async promise-returning helper dispatched twice: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\nawait Promise.all([poll(), poll()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      // A DSL wait continuation records its own requested yield.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const r = await tools.wait({cell_id:7, yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 2, 'the loop body and the non-async helper dispatch both overlap');
+    assert.deepEqual(summary.requestedYieldsMs, [60000, 60000, 60000, 60000], 'the DSL wait continuation and the twice-dispatched helper record their requested yields');
+  });
+});
+
+test('conditional awaits never serialize; mixed exec+poll wrappers fail closed', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const mk = (callId, input, output) => [
+      line({ type: 'custom_tool_call', name: 'exec', call_id: callId, input }),
+      line({ type: 'custom_tool_call_output', call_id: callId, output }),
+    ].join('\n');
+    const inputs = [
+      'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\nconst p = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000}); const q = tools.write_stdin({id:"s3",input:"",yield_time_ms:60000}); await p; await q;',
+      'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\nconst a = poll(); await a; const b = poll(); await b;',
+    ];
+    // c1: an UNREACHABLE conditional await in the gap never serializes the
+    // two started polls.
+    const rollout1 = [mk('c1', inputs[0], 'done'), mk('c1b', inputs[1], 'done'), ''].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout1, { encoding: 'utf8', mode: 0o600 });
+    const s1 = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(s1.parallelToolCallViolations >= 1, true, 'a conditional gap await never serializes started polls');
+    // A mixed exec+poll wrapper's aggregate output is ambiguous: the chain
+    // is not credited.
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const line2 = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const rootRollout = [
+      meta('root-t'),
+      line2({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: 'wait-probe-synthetic' }) }),
+      line2({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    const COMPLETION_MARKER_VALUE = 'WAIT_ROUTE_PROBE_WORKER_DONE';
+    const mixedChild = [
+      meta('child-t', 'root-t'),
+      line2({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});\nconst r = await tools.write_stdin({session_id:999,chars:"",yield_time_ms:60000});text(r.output);` }),
+      line2({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER_VALUE }),
+    ].join('\n');
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    await writeFile(join(sessions2, 'rollout-child.jsonl'), mixedChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions2, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const mixed = { session: await summarizeCodexSessions({ sessionsDirectory: sessions2, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(mixed), false, "a mixed exec+poll wrapper's aggregate output is ambiguous");
+  });
+});
+
+test('vanished rollouts, free helper invocations, and opaque arguments stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const mk = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const inputs = [
+      'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\nconst a = poll(); const b = poll(); await a; await b;',
+      'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\nconst a = poll(); await a; const b = poll(); await b;',
+      'const r = await tools.write_stdin({session_id: (function () { while (Date.now() % 2 === 0) { return 17; } return 18; })(), chars:"",yield_time_ms:60000});text(r.output);',
+    ];
+    const rollout = [mk({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: inputs[0] }), mk({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }), mk({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: inputs[1] }), mk({ type: 'custom_tool_call_output', call_id: 'c2', output: 'done' }), mk({ type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: inputs[2] }), mk({ type: 'custom_tool_call_output', call_id: 'c3', output: 'done' }), ''].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const helperSummary = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.equal(helperSummary.parallelToolCallViolations, 1, 'free unawaited helper invocations overlap; awaited ones are sequential');
+    assert.equal(helperSummary.emptyPolls, 5, 'all five ACTUAL polls count (helper invocations count per multiplicity)');
+    assert.equal(helperSummary.firstEmptyPollAtMs, null, 'the opaque-argument poll start stays unproven');
+  });
+});
+
+test('over-cap scripts skip expensive passes; IIFE helpers execute once', { timeout: 60_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // 18k awaited polls: over the 512-site cap — the expensive serialization
+    // passes must be SKIPPED immediately (bounded time, truncation reported).
+    const polls = [];
+    for (let i = 0; i < 18000; i += 1) polls.push('await tools.write_stdin({id:"s' + i + '",input:"",yield_time_ms:60000});');
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const bigRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c0', input: polls.join('') }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c0', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-big.jsonl'), bigRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const big = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 30000, `over-cap analysis must be skipped immediately (took ${elapsed} ms)`);
+    assert.equal(big.truncated, true, 'an over-cap scan reports truncation');
+    // An IIFE helper executes its body ONCE at the declaration itself: the
+    // executed command and requested yield are recorded without any later
+    // `p()` call.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const iifeScript = 'const p = (async () => await tools.exec_command({cmd:' + JSON.stringify(exactCommand) + ',yield_time_ms:30000}))();\ntext((await p).output);';
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: 'wait-probe-synthetic' }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    const iifeChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: iifeScript }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'WAIT_ROUTE_PROBE_WORKER_DONE' }),
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-child.jsonl'), iifeChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions2, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const iife = { session: await summarizeCodexSessions({ sessionsDirectory: sessions2, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(iife), true, 'an immediately-invoked helper executes its body once');
+  });
+});
+
+test('analysis bounds, unconditional loop awaits, named callbacks, and printed mentions stay honest', { timeout: 60_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // 14k sequential awaited polls: the analysis must bound itself and
+    // report truncation rather than blocking cleanup indefinitely.
+    const polls = [];
+    for (let i = 0; i < 14000; i += 1) {
+      polls.push(`await tools.write_stdin({id:"s${i}",input:"",yield_time_ms:60000});`);
+    }
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const bigRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c0', input: polls.join('') }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c0', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-big.jsonl'), bigRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const big = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 30000, `oversized analysis must stay bounded (took ${elapsed} ms)`);
+    assert.equal(big.truncated, true, 'an analysis over its time budget reports truncation');
+    // Conditional loop-body awaits never serialize iterations.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const conditionalRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'for (let i = 0; i < 2; i++) { const p = tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); if (false) await p; }' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      // Named callback outside combinators: multiplicity counts.
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\n[1,2].forEach(poll);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } ),
+      // A printed poll() mention never fabricates an invocation.
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'async function poll() { return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\ntext("poll() runs later");' } ),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } ),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), conditionalRollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.ok(summary.parallelToolCallViolations >= 2, 'the conditional-await loop and the named forEach dispatch overlap');
+    assert.equal(summary.emptyPolls, 3, 'the named dispatch runs two polls and the loop body one; the printed mention never runs one');
+  });
+});
+
+test('conflicting structured handle aliases and pathological padding stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // CONFLICTING structured aliases (`session_id:999` + `id:17`): the
+    // effective handle is host-defined — the marker never credits.
+    const crossChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Script running with session ID 17\n' }),
+      line({ type: 'function_call', call_id: 'p1', name: 'write_stdin', arguments: JSON.stringify({ session_id: 999, id: 17, chars: '' }) }),
+      line({ type: 'function_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), crossChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const cross = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(cross), false, 'conflicting handle aliases leave the effective handle unproven');
+    // A heavily PADDED argument object must not make yield extraction
+    // quadratic: 10k padding spaces parse in bounded time.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const paddedInput = 'const r = await tools.write_stdin({' + ' '.repeat(10000) + 'session_id:1,chars:"",yield_time_ms:60000});text(r.output);';
+    const paddedRollout = [
+      line({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: paddedInput }),
+      line({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), paddedRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const padded = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    const elapsed = Date.now() - startedAt;
+    assert.equal(padded.emptyPolls, 1, 'the padded poll is still classified');
+    assert.ok(elapsed < 1000, `padded extraction must stay fast (took ${elapsed} ms)`);
+  });
+});
+
+test('awaited joins serialize; padded cmd keys stay linear', async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    // An awaited JOIN (`await Promise.all([p])`) settles the stored poll
+    // before the next observation: sequential, no overlap.
+    const joinRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000}); await Promise.all([p]); await tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), joinRollout, { encoding: 'utf8', mode: 0o600 });
+    const joinSummary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(joinSummary.parallelToolCallViolations, 0, 'the awaited join serializes the stored poll');
+    // A heavily padded cmd segment must decode in bounded (linear) time.
+    const paddedInput = 'const r = await tools.exec_command({' + ' '.repeat(40000) + 'cmd:"x",yield_time_ms:30000});text(r.output);';
+    const paddedRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: paddedInput }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c2', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-2.jsonl'), paddedRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const padded = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 1000, `padded cmd decoding must stay fast (took ${elapsed} ms)`);
+    assert.equal(padded.initialExecCalls, 1, 'the padded exec classifies as an initial exec');
+  });
+});
+
+test('over-cap scripts skip helper analysis; completed wrappers exposing live cells stay pending', { timeout: 60_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // A script with 3000 polling-helper DECLARATIONS: over the site cap,
+    // helper discovery/invocation/multiplicity analysis must be skipped
+    // immediately (bounded time, truncation reported).
+    const decls = [];
+    for (let i = 0; i < 3000; i += 1) {
+      decls.push('async function poll' + i + '() { return tools.write_stdin({id:"s' + i + '",input:"",yield_time_ms:60000}); }');
+    }
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const declRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c0', input: decls.join('\n') }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c0', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-big.jsonl'), declRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const big = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 15000, `over-cap helper analysis must be skipped (took ${elapsed} ms)`);
+    assert.equal(big.truncated, true, 'an over-cap scan reports truncation');
+    // A wrapped wait completing with a LIVE INNER CELL: the original pending
+    // call stays pending — a subsequent fresh poll counts as an overlap.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const liveCellRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd1', output: 'Script running with cell ID 7\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd2', input: 'const r = await tools.wait({cell_id:7, yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd2', output: 'Script completed\nProcess running with cell ID 7\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd3', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd3', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), liveCellRollout, { encoding: 'utf8', mode: 0o600 });
+    const liveCell = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.ok(liveCell.parallelToolCallViolations >= 1, 'a fresh poll while a live inner cell is pending counts as an overlap');
+  });
+});
+
+test('a wrapper completion restores pending state under the SURVIVING inner cell', async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // wait(cell 7) → wrapper cell 10 → cell 10 completes exposing live
+    // cell 7 → cell 7 itself completes: the retired pending state must
+    // come back under cell SEVEN (the surviving announced cell) so the
+    // surviving cell's own completion settles the chain and a later
+    // clean call reports NO violation. Restoring under the COMPLETED
+    // wrapper cell strands the ids forever (a false overlap afterwards).
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd1', output: 'Script running with cell ID 7\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd2', input: 'const r = await tools.wait({cell_id:7, yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd2', output: 'Script running with cell ID 10\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd3', input: 'const r = await tools.wait({cell_id:10, yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd3', output: 'Script completed\nProcess running with cell ID 7\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd4', input: 'const r = await tools.wait({cell_id:7, yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd4', output: 'Script completed\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'd5', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'd5', output: 'done' }),
+      '',
+    ].join('\n');
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'the surviving cell settles the chain at its own completion; a later clean call is not a false overlap');
+  });
+});
+
+test('helper invocations count toward the site cap', { timeout: 60_000 }, async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // 30k sequential `await poll()` calls: only ONE literal operation site
+    // exists (the helper body), but the INVOCATIONS enter the same
+    // serialization scans — they must count toward the site cap so the
+    // analysis truncates instead of blocking.
+    const script = 'async function poll(){ return tools.write_stdin({id:"s",input:"",yield_time_ms:60000}); }\n'
+      + Array.from({ length: 30000 }, () => 'await poll();').join('');
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const bigRollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c0', input: script }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c0', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-big.jsonl'), bigRollout, { encoding: 'utf8', mode: 0o600 });
+    const startedAt = Date.now();
+    const big = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 15000, `over-cap helper invocations must be skipped (took ${elapsed} ms)`);
+    assert.equal(big.truncated, true, 'a helper-invocation over-cap scan reports truncation');
+  });
+});
+
+test('golden recorded-shape samples: the real measured 0.160.0 rollout shapes classify correctly', async () => {
+  await withTempDirectory(async (parent) => {
+    // FIXTURE-TESTED golden samples: transcribed from the verbatim rollout
+    // lines recorded in report §7.0/§7.8 (the raw rollouts were deleted with
+    // their isolated homes, so these recordings are the surviving real
+    // material; handles/paths are placeholders). They pin the SUPPORTED
+    // grammar only — never future arbitrary scripts.
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // §7.8 initial exec: requested 30000 → Wall time 30.2 (host output).
+    const execBody = `const r = await tools.exec_command({cmd:"'node' '<worker-path>' --duration-ms 420000",yield_time_ms:30000});text(r.output);`;
+    // §7.8 decisive poll: leading @exec directive + one write_stdin
+    // requesting 3600000 → one 380.1 s observation to "Script completed".
+    const directivePoll = `// @exec: {"yield_time_ms": 3600000}\ntext(await tools.write_stdin({session_id:17,chars:"",yield_time_ms:3600000}));`;
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'g1', input: execBody }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'g1', output: 'Script running with cell ID 3\nWall time 30.2 seconds' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'g2', input: directivePoll }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'g2', output: 'Script completed\nWall time 380.1 seconds' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const decisive = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    // The §7.3/§7.8 raised-config decisive run: TWO tool decisions, the
+    // directive requests 3600000, one empty poll.
+    assert.equal(decisive.initialExecCalls, 1, 'the recorded exec body classifies as the initial exec');
+    assert.equal(decisive.emptyPolls, 1, 'the recorded directive poll classifies as one empty poll');
+    // Established counting semantics (pinned by the quoted-yield-keys test):
+    // a directive call records BOTH the directive bound (which governs the
+    // call sample) AND its argument yield — the §7.2 runs had no directive
+    // calls, so their arrays are exactly one-per-call.
+    assert.deepEqual(decisive.requestedYieldsMs, [30000, 3600000, 3600000], 'the recorded requested yields: exec 30000, then the directive bound and its argument');
+    assert.deepEqual(decisive.toolNames, { exec: 2 }, 'the recorded decisions are two exec-tool calls');
+    // NO parallelToolCallViolations assertion: the decisive run's recorded
+    // 0-violations fact (§7.2/§7.3 run-time summaries) was computed on the
+    // REAL rollouts, whose handle-linkage OUTPUT text is elided in §7.8 —
+    // this reconstruction's `Script running with cell ID 3` output makes the
+    // session_id poll a non-referencing second observation under the
+    // instrument's kind-binding (cell→wait, session→write_stdin), which is
+    // the DOCUMENTED semantic for the reconstructed text, not a defect. The
+    // zero-concurrency derivation therefore cannot be re-verified from
+    // surviving material and is recorded as such in §7.10.
+  });
+});
+
+test('regex literal contents are not shell operations', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'text(/write_stdin({session_id:17,chars:"",yield_time_ms:60000})/.source);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 0, 'regex contents are not an empty poll');
+    assert.equal(summary.initialExecCalls, 0, 'regex contents are not an initial exec');
+    assert.deepEqual(summary.requestedYieldsMs, [], 'regex contents never request a yield');
+  });
+});
+
+test('regex character-class slashes and quotes stay inside the literal', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // The class holds BOTH a slash and a quote (/[/"]/): the literal ends at
+    // its final slash — the in-class characters must not end it early and the
+    // `"]` remainder must not open a string that swallows the real poll.
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const sep = /[/"]/;\nconst r = await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'Script running with cell ID 7\n' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'the write_stdin after the regex literal is a real empty poll');
+    assert.deepEqual(summary.requestedYieldsMs, [60000], 'the poll after the regex literal still requests its yield');
+  });
+});
+
+test('function-form declarations end at their closing brace; same-line invocations are real', async () => {
+  await withTempDirectory(async (parent) => {
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    // Multiplicity loop: ONE invocation sharing the line after the body is a
+    // REAL invocation — the body's poll executes (and requests) exactly once,
+    // never swallowed into the declaration.
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const single = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll(){ const r = await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}); text(r.output); } poll();' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'Script running with cell ID 7\n' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), single, { encoding: 'utf8', mode: 0o600 });
+    const one = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(one.emptyPolls, 1, 'the same-line invocation runs the helper body once');
+    assert.deepEqual(one.requestedYieldsMs, [60000], 'the executed poll requests its yield');
+    // helperCallStarts loop: TWO unawaited same-line invocations overlap —
+    // the serialization scan must see both call positions.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const twin = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll(){ const r = await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}); text(r.output); } poll(); poll();' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), twin, { encoding: 'utf8', mode: 0o600 });
+    const two = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.equal(two.emptyPolls, 2, 'both invocations execute the helper body');
+    assert.equal(two.parallelToolCallViolations, 1, 'two unawaited same-line invocations overlap (exactly one violation)');
+    // Direct-site exclusion uses the SAME declaration boundary: a DIRECT
+    // poll sharing the line after the closing brace is NOT inside the
+    // helper body — it must stay in the serialization pairs and overlap
+    // the concurrent helper invocation.
+    const sessions3 = join(parent, 'sessions3');
+    await mkdir(sessions3, { recursive: true, mode: 0o700 });
+    const mixed = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll(){ await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}); } tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}); await poll();' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions3, 'rollout-1.jsonl'), mixed, { encoding: 'utf8', mode: 0o600 });
+    const mixedSummary = await summarizeCodexSessions({ sessionsDirectory: sessions3 });
+    assert.equal(mixedSummary.parallelToolCallViolations, 1, 'the direct same-line poll and the concurrent helper invocation overlap');
+    // Control: an AWAITED direct poll before the awaited helper invocation
+    // is sequential — the exclusion must still apply to real body sites.
+    const sessions4 = join(parent, 'sessions4');
+    await mkdir(sessions4, { recursive: true, mode: 0o700 });
+    const sequential = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll(){ await tools.write_stdin({session_id:18,chars:"",yield_time_ms:60000}); }\nawait tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000});\nawait poll();' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions4, 'rollout-1.jsonl'), sequential, { encoding: 'utf8', mode: 0o600 });
+    const sequentialSummary = await summarizeCodexSessions({ sessionsDirectory: sessions4 });
+    assert.equal(sequentialSummary.parallelToolCallViolations, 0, 'an awaited direct poll then an awaited helper invocation serialize');
+  });
+});
+
+test('live inner cells stay pending; loop awaits serialize; accessor yields fail closed', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const rollout = [
+      wrap({ type: "custom_tool_call", name: "exec", call_id: "c1", input: "const r = await tools.exec_command({cmd:\"x\",yield_time_ms:30000});text(r.output);" }),
+      wrap({ type: "custom_tool_call_output", call_id: "c1", output: "Script running with cell ID 7\n" }),
+      wrap({ type: "custom_tool_call", name: "exec", call_id: "c2", input: "for (let i = 0; i < 2; i++) { const p = tools.write_stdin({id:\"s\",input:\"\",yield_time_ms:60000}); await p; text(p.output); }" }),
+      wrap({ type: "custom_tool_call_output", call_id: "c2", output: "done" }),
+      wrap({ type: "custom_tool_call", name: "exec", call_id: "c3", input: "const r = await tools.write_stdin({session_id:17, chars:\"\",yield_time_ms:60000, get yield_time_ms(){ return 5000; }});text(r.output);" }),
+      wrap({ type: "custom_tool_call_output", call_id: "c3", output: "WAIT_ROUTE_PROBE_WORKER_DONE" }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    // c1 exec yields cell 7; c2's awaited loop is sequential (no overlap);
+    // c3's follow-up poll of the live cell chain is a continuation.
+    assert.equal(summary.parallelToolCallViolations, 2, 'the two awaited loop polls still overlap the live cell-7 observation (correctly flagged)');
+    // The accessor-overridden yield (c3) leaves its request unclassified:
+    // no yield is recorded for that call (the c2 loop polls legitimately
+    // request 60000; the accessor call records null).
+    const accessorCall = summary.calls[summary.calls.length - 1];
+    assert.equal(accessorCall.yieldTimeMs, null, 'an accessor-overridden yield stays unclassified');
+    assert.equal(summary.requestedYieldsMs.includes(5000), false, 'the accessor value never becomes a request');
+  });
+});
+
+test('ASI awaits serialize and completed cells retire despite live handles', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c0', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c0', output: 'Script running with cell ID 7\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.wait({cell_id:7, yield_time_ms:60000});text(r.output);' }),
+      // The awaited CELL completed; the SAME output announces the live
+      // session: the cell retires AND the live session becomes the new
+      // chain target.
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'Script completed\nProcess running with session ID 17\n' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:17, chars:"",yield_time_ms:60000});text(r.output);' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c2', output: 'Script completed\n' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'the completed cell retires; the live-session poll is a sequential chain continuation');
+  });
+});
+
+test('mixed helper and direct polls count their overlap', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const wrap = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const rollout = [
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll() { return tools.write_stdin({id:"s1",input:"",yield_time_ms:60000}); }\nconst p = poll(); await tools.write_stdin({id:"s2",input:"",yield_time_ms:60000}); await p;' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      wrap({ type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'async function poll() { return tools.write_stdin({id:"s1",input:"",yield_time_ms:60000}); }\nconst p = poll(); await p; await tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});' }),
+      wrap({ type: 'custom_tool_call_output', call_id: 'c2', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the helper-promise-overlap counts; the compliant mixed shape does not');
+  });
+});
+
+test('cross-observation polls never credit the chain; text-wrapped polls keep their start', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // The worker suspends in CELL 7; a write_stdin naming session 999 (with
+    // an inert cell_id:7 field) is a DIFFERENT observation — its marker
+    // never credits the chain.
+    const crossChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Script running with cell ID 7\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({session_id:999, cell_id:7, chars:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), crossChild, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const cross = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(cross), false, 'a write_stdin observing another session never credits a cell chain');
+    // The text()-wrapped awaited poll (the recorded continuation shape)
+    // keeps its immediate start timestamp.
+    const sessions2 = join(parent, 'sessions2');
+    await mkdir(sessions2, { recursive: true, mode: 0o700 });
+    const wrappedRollout = [
+      line({ type: "custom_tool_call", name: "exec", call_id: "c1", input: "// @exec: {\"yield_time_ms\": 3600000}\ntext(await tools.write_stdin({session_id:17, chars:\"\",yield_time_ms:60000}));" }),
+      line({ type: 'custom_tool_call_output', call_id: 'c1', output: 'done' }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions2, 'rollout-1.jsonl'), wrappedRollout, { encoding: 'utf8', mode: 0o600 });
+    const wrapped = await summarizeCodexSessions({ sessionsDirectory: sessions2 });
+    assert.equal(wrapped.emptyPolls, 1, 'the wrapped poll is counted');
+    assert.notEqual(wrapped.firstEmptyPollAtMs, null, 'the text()-wrapped immediate poll keeps its start timestamp');
+  });
+});
+
+test('a wrapped wait yielding a new cell stays a sequential continuation', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7; wait1 for cell 7 ITSELF yields cell 10; resuming
+      // cell 10 is a continuation (no overlap), and its completion settles
+      // the whole chain — the trailing sequential poll stays clean.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w1', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script running with cell ID 10\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w2', arguments: JSON.stringify({ cell_id: 10 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w2', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'the wrapped-wait chain is sequential end to end');
+  });
+});
+
+test('an arbitrary intervening await does not serialize two started polls', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // Poll A starts, an UNRELATED await runs, poll B starts before A is
+      // awaited: the observations overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});await Promise.resolve();const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});await p;await q;' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // The compliant shape: the await references the preceding poll's own
+      // promise — sequential.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});await p;const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});await q;' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'only the unrelated-await shape overlaps');
+  });
+});
+
+test('spaced computed yield keys participate in last-property-wins', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000, ["yield_time_ms"]:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A spaced DYNAMIC key could override unresolvably: fail closed.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000, [k]:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [5000], 'the spaced supported computed key resolves last-property-wins');
+    assert.deepEqual(summary.calls.map((call) => call.yieldTimeMs), [5000, null], 'the spaced dynamic key leaves the yield unclassified');
+  });
+});
+
+test('poll storage order and formatting helpers stay honest about concurrency', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // BOTH polls start before either is awaited: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});await p;await q;' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // One poll plus an UNRELATED map formatter: sequential, no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output.split("\\n").map(line => line.trim()).join("\\n"));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the start-before-await shape overlaps; the formatting map stays sequential');
+  });
+});
+
+test('computed yield keys resolve last-property-wins or fail closed', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A SUPPORTED computed key: last property wins (5000).
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000,["yield_time_ms"]:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // An UNRESOLVABLE computed key could override the yield: fail closed.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000,[k]:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [5000], 'the supported computed key participates in last-property-wins');
+    assert.deepEqual(summary.calls.map((call) => call.yieldTimeMs), [5000, null], 'an unresolvable computed key leaves the yield unclassified');
+  });
+});
+
+test('repeated non-combinator dispatches overlap; awaited promise variables stay sequential', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // [1,2].forEach(callback-with-poll): one lexical site, TWO polls.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: '[1,2].forEach(async () => await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000}));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // Each promise stored and awaited BEFORE the next poll: strictly
+      // sequential — no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const p = tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});await p;const q = tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});await q;' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the repeated forEach dispatch overlaps; awaited promise variables stay sequential');
+  });
+});
+
+test('delayed argument evaluation leaves the poll start unproven', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id: await new Promise(resolve => setTimeout(() => resolve(17), 60000)),chars:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'the poll is still counted');
+    assert.equal(summary.firstEmptyPollAtMs, null, 'an awaiting argument delays the poll past the call timestamp');
+  });
+});
+
+test('a nested yield key never overrides the outer request', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms: 60000 + ({yield_time_ms:5000}).yield_time_ms});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [], 'the expression request (with a nested key) stays unclassified');
+  });
+});
+
+test('command-string contents never void the exact worker invocation', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    // The exact command CONTAINS `...` and `cmd:` inside its quoted value:
+    // content, never executable syntax.
+    const exactCommand = "node '/tmp/run.../wait-route-worker.mjs' --duration-ms 1000 --flag 'cmd: not real'";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    const childRollout = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(summary), true, 'command-string contents are not executable syntax');
+  });
+});
+
+test('helper identifiers containing operation names and accessor properties stay honest', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A helper NAMED like an operation runs no shell tool.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const my_exec_command = (x) => x;\nmy_exec_command("a");' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'a' } }),
+      // A getter computes its value at read time: the effective stdin
+      // input is unprovable.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:17, get chars(){return "x"}, yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'ok' } }),
+      // The positive control: the REAL operation name still counts.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:36.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 1, 'only the real operation name counts as the initial exec');
+    assert.equal(summary.emptyPolls, 0, 'an accessor-property write is not an empty poll');
+    assert.equal(summary.parallelToolCallViolations, 0, 'no false concurrency from a helper name');
+  });
+});
+
+test('template-literal and block-comment operation mentions are not operations', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'text(`exec_command({cmd:"not executed"})`);\n/* write_stdin({id:"s",input:""}) */\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 0, 'a template-literal exec_command mention is not an initial exec');
+    assert.equal(summary.emptyPolls, 0, 'a block-commented write_stdin mention is not an empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the unclassifiable script stays counted as other');
+  });
+});
+
+test('a spread or duplicate key voids an explicit empty-input poll proof', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // An explicit literal empty input IS an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      // A trailing spread can override the earlier literal: not provable.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1,chars:"",...args});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'ok' } }),
+      // A duplicate key can override the first literal: not provable.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const r = await tools.write_stdin({chars:"",chars:"\\u0003"});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:07.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'only the unoverridden literal empty input counts as the empty poll');
+    assert.equal(summary.otherFunctionCalls, 2, 'overridden empties stay unclassified');
+  });
+});
+
+test('sequential awaited observations in one script are not concurrency', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const a = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(a.output);\nconst b = await tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});text(b.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // Comments and parens between `await` and the receiver are valid
+      // syntax: both calls remain sequential.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const a = await /* observation */ tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(a.output);\nconst b = await (tools.write_stdin({id:"s2",input:"",yield_time_ms:60000}));text(b.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 4, 'all sequential observations are counted');
+    assert.equal(summary.parallelToolCallViolations, 0, 'await-chained observations — including commented and parenthesized awaits — are sequential');
+  });
+});
+
+test('escaped quotes stay string contents during operation scanning', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.exec_command({cmd:"echo \\"write_stdin({id:\\"s\\",input:\\"\\"})\\" logged",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 1, 'the real exec_command is counted');
+    assert.equal(summary.emptyPolls, 0, 'an escaped-quote mention inside the cmd string is not an empty poll');
+    assert.equal(summary.parallelToolCallViolations, 0, 'no false concurrency from string contents');
+  });
+});
+
+test('ordinary comments never request a yield window', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: '// example: {yield_time_ms:3600000}\nconst r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [60000], 'a commented yield example is not a request; only the real parameter counts');
+  });
+});
+
+test('role evidence fails closed on a second spawn or a truncated scan', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    // TWO synthetic-role spawns: the executed child's identity is
+    // ambiguous, so the run proves nothing even with a linked child exec.
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+      line({ type: 'function_call', call_id: 's2', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's2', output: 'ok' }),
+    ].join('\n');
+    const childRollout = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: 'run the probe worker', yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'done' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const twoSpawns = { session: await summarizeCodexSessions({ sessionsDirectory: sessions }) };
+    assert.equal(roleChildProven(twoSpawns), false, 'a second spawn makes the executed child ambiguous');
+    // A truncated scan cannot establish the spawn count: fail closed.
+    await writeFile(join(sessions, 'rollout-root.jsonl'), [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n'), { encoding: 'utf8', mode: 0o600 });
+    const truncated = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, maxLineBytes: 64 }) };
+    assert.equal(roleChildProven(truncated), false, 'a truncated scan fails closed');
+  });
+});
+
+test('a second wait for an unanswered cell overlaps the first', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7; TWO waits for cell 7 are dispatched before either
+      // returns: the first is the continuation, the second overlaps it.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w1', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w2', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w2', output: 'Script completed' } }),
+      // After both waits settle, a sequential poll is clean.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the second concurrent wait overlaps the unanswered first');
+  });
+});
+
+test('a wait answered with a live handle retires its mapping for later sequential waits', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // Long observation: wait1 returns STILL RUNNING (its mapping must
+      // retire), then a SEQUENTIAL wait2 for the same cell — no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w1', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w2', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w2', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'a returned wait no longer occupies its cell; the sequential wait is clean');
+  });
+});
+
+test('the effective structured input field decides the poll classification', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // Both fields EMPTY: an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', call_id: 's1', arguments: JSON.stringify({ input: '', chars: '' }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 's1', output: '{}' } }),
+      // Legacy empty `input` with a NONEMPTY `chars` (Ctrl-C): the
+      // effective write is the interrupt — conflicting fields stay
+      // unclassified, never an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'function_call', name: 'write_stdin', call_id: 's2', arguments: JSON.stringify({ input: '', chars: '\\u0003' }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 's2', output: '{}' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'only the consistently empty write is an empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the conflicting interrupt write stays unclassified');
+  });
+});
+
+test('quoted strings inside template interpolations stay opaque', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'text(`${"exec_command({})"}`);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 0, 'a printed string inside an interpolation is not an initial exec');
+    assert.equal(summary.otherFunctionCalls, 1, 'the unclassifiable script stays counted as other');
+  });
+});
+
+test('structured waits resolve against every outstanding cell', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 1; overlapping B yields cell 2 (the ONE violation);
+      // then waits for BOTH cells — each is a continuation of its own
+      // cell, and each completion retires only that cell. The trailing
+      // sequential poll is clean.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 1\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'b1', input: 'const r = await tools.exec_command({cmd:"y",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'b1', output: 'Script running with cell ID 2\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w1', arguments: JSON.stringify({ cell_id: 1 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w2', arguments: JSON.stringify({ cell_id: 2 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w2', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'only the overlapping launch is flagged; waits for older cells are continuations that retire their own cell');
+  });
+});
+
+test('waits completing in reverse order still settle their own cells', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7; overlapping B yields cell 8 (violation #1). Their
+      // waits complete in REVERSE order: cell 8 first (clearing the
+      // latest-yield flag), then cell 7 — whose mapped completion must
+      // still retire A. The trailing sequential poll stays clean.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'b1', input: 'const r = await tools.exec_command({cmd:"y",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'b1', output: 'Script running with cell ID 8\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w8', arguments: JSON.stringify({ cell_id: 8 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w8', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'wait', call_id: 'w7', arguments: JSON.stringify({ cell_id: 7 }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w7', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the reverse-order completion must not strand cell 7; only the launch overlap counts');
+  });
+});
+
+test('a continuation script carrying its own fresh poll still overlaps', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7. The next script is a continuation of cell 7 BUT
+      // also launches a fresh poll: the poll part overlaps — the
+      // exemption covers the wait, never the additional observation.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'w1', input: 'const p = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(p.output);\nconst r = await tools.wait({cell_id:7});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'the fresh poll inside the continuation script overlaps cell 7');
+  });
+});
+
+test('a duplicate cell_id key makes the wait continuation unclassified', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7. `wait({cell_id:7,cell_id:999})` passes 999 in
+      // JavaScript: it is NOT cell 7's continuation (violation #1), and
+      // its completion must not retire cell 7 — the next poll overlaps
+      // again (violation #2).
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'w1', input: 'const r = await tools.wait({cell_id:7,cell_id:999});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'still running' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 2, 'the ambiguous wait is an overlap and its completion never retires cell 7');
+  });
+});
+
+test('content-item outputs feed observation state and the completion marker', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    // The linked child's exec result arrives as CONTENT ITEMS (the pinned
+    // code-mode rollout shape): the marker must still credit, and the
+    // yielded-script completion must still settle pending state.
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const childRollout = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: [{ type: 'input_text', text: 'Script running with cell ID 5\n' }] }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.wait({cell_id:5});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: [{ type: 'input_text', text: COMPLETION_MARKER }] }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(summary), true, 'content-item outputs carry the marker and the live handle');
+  });
+});
+
+test('a Promise.allSettled dispatch counts the overlapping polls', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'await Promise.allSettled([1,2].map(async () => await tools.write_stdin({id:"s",chars:"",yield_time_ms:60000})));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'allSettled is a concurrent dispatch like all');
+  });
+});
+
+test('a diagnostic sample overflow does not reject valid role evidence', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    // A LONG root run: the spawn + 70 wait_agent calls overflow the 64-call
+    // diagnostic sample, but the FULL-scan facts (spawn count, spawn
+    // answer) remain complete.
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+      ...Array.from({ length: 70 }, (_, i) => line({ type: 'function_call', call_id: `w${i}`, name: 'wait_agent', arguments: JSON.stringify({ wait_ms: 1000 }) })),
+    ].join('\n');
+    const childRollout = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), childRollout, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(summary.session.callsTruncated, true, 'the diagnostic sample overflows as constructed');
+    assert.equal(roleChildProven(summary), true, 'sample truncation is diagnostic; the role proof stands on the full-scan facts');
+  });
+});
+
+test('role evidence requires the linked child exec to reference the probe worker', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'response_item', payload });
+    const meta = (id, parentId) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id, parent_thread_id: parentId } });
+    const rootRollout = [
+      meta('root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-root.jsonl'), rootRollout, { encoding: 'utf8', mode: 0o600 });
+    // The EXACT invocation the driver built (a private-path shape) is the
+    // evidence token.
+    const exactCommand = "node '/tmp/run/wait-route-worker.mjs' --duration-ms 1000";
+    // A mere MENTION (`echo` of the basename and flags) is a printer, not
+    // a runner: it must never qualify as the child's worker execution.
+    const mentionChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: 'echo wait-route-worker.mjs --duration-ms 1000', yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'hello' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), mentionChild, { encoding: 'utf8', mode: 0o600 });
+    const mention = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(mention), false, 'a basename mention (echo) is not the worker invocation');
+    const exactChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), exactChild, { encoding: 'utf8', mode: 0o600 });
+    const exact = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(exact), true, 'the exact worker invocation in the linked child — with its own completion result — corroborates the lifecycle');
+    // An exact-command match whose own result is an error (invalid
+    // argument) is an ATTEMPT, never execution: no credit.
+    const failedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 99999999 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Error: invalid yield_time_ms' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), failedChild, { encoding: 'utf8', mode: 0o600 });
+    const failed = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(failed), false, 'an exact-command attempt without a completion result proves nothing');
+    // A LONG-RUNING observation: the matched exec returns a LIVE session
+    // handle, and the completion marker arrives in a LATER poll OF THAT
+    // HANDLE — the child IS proven through its poll chain.
+    const longRunningChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Process running with session ID s1\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p2', name: 'exec', input: 'const r = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p2', output: `${COMPLETION_MARKER}\nWall time 0.0 seconds\n` }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), longRunningChild, { encoding: 'utf8', mode: 0o600 });
+    const longRunning = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(longRunning), true, 'the marker arriving in a poll OF THE RETURNED HANDLE proves the long-running child');
+    // A cell-handle variant: the exec yields cell 3 and a wait continuation
+    // OF THAT CELL carries the marker.
+    const cellChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Script running with cell ID 3\n' }),
+      line({ type: 'custom_tool_call', call_id: 'w1', name: 'exec', input: 'const r = await tools.wait({cell_id:3});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'w1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), cellChild, { encoding: 'utf8', mode: 0o600 });
+    const cellChain = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(cellChain), true, 'the marker arriving in a wait OF THE YIELDED CELL proves the child');
+    // A wait for a DIFFERENT cell whose output echoes the marker is an
+    // unrelated observation — it never credits this chain.
+    const unrelatedWaitChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Script running with cell ID 3\n' }),
+      line({ type: 'custom_tool_call', call_id: 'w1', name: 'exec', input: 'const r = await tools.wait({cell_id:999});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'w1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), unrelatedWaitChild, { encoding: 'utf8', mode: 0o600 });
+    const unrelatedWait = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(unrelatedWait), false, 'a wait for a different handle never credits this chain');
+    // Concatenated or duplicated cmd properties have a different EFFECTIVE
+    // command: neither credits the exact invocation.
+    const concatenatedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)} + " && echo extra",yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), concatenatedChild, { encoding: 'utf8', mode: 0o600 });
+    const concatenated = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(concatenated), false, 'a concatenated cmd has a different effective command');
+    const duplicatedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)}, cmd: replacement,yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), duplicatedChild, { encoding: 'utf8', mode: 0o600 });
+    const duplicated = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(duplicated), false, 'a duplicated cmd property is ambiguous');
+    // A quoted MENTION of the handle (`text("id:17")`) never ties a later
+    // poll of a DIFFERENT handle to the chain.
+    const quotedHandleChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'w1', name: 'exec', input: 'text("id:17");\nconst r = await tools.write_stdin({id:"999",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'w1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), quotedHandleChild, { encoding: 'utf8', mode: 0o600 });
+    const quotedHandle = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(quotedHandle), false, 'a quoted handle mention cannot tie an unrelated poll to the chain');
+    // The structured session_id shape: a function-call host polls the
+    // long-running worker with {session_id, chars} — the chain continues.
+    const structuredPollChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'function_call', call_id: 'p1', name: 'write_stdin', arguments: JSON.stringify({ session_id: 17, chars: '' }) }),
+      line({ type: 'function_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), structuredPollChild, { encoding: 'utf8', mode: 0o600 });
+    const structuredPoll = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(structuredPoll), true, 'a structured {session_id} poll continues the worker chain');
+    // A numeric EXPRESSION polls a different handle: `session_id:17 + 1`
+    // is 18, never 17 — its marker output cannot credit the chain.
+    const expressionPollChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({session_id:17 + 1,chars:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), expressionPollChild, { encoding: 'utf8', mode: 0o600 });
+    const expressionPoll = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(expressionPoll), false, 'a numeric expression (`17 + 1`) polls a different handle');
+    // A multi-exec script shares ONE outer call id: a failed worker attempt
+    // followed by an inner echo of the marker must not be attributed to the
+    // worker.
+    const multiExecChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});\ntools.exec_command({cmd:"echo failed",yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: `Error: spawn failed\n${COMPLETION_MARKER}` }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), multiExecChild, { encoding: 'utf8', mode: 0o600 });
+    const multiExec = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(multiExec), false, "a multi-exec script's aggregate output cannot prove the matched invocation");
+    // A spread can override the literal cmd at runtime: fail closed.
+    const spreadCmdChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)}, ...opts,yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), spreadCmdChild, { encoding: 'utf8', mode: 0o600 });
+    const spreadCmd = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(spreadCmd), false, 'a spread can override the literal cmd');
+    // A `role` alias is NOT the host's role field: agent_type is the
+    // source-pinned SpawnAgentArgs field, and a default agent_type with a
+    // synthetic-looking role alias never exercises the synthetic config.
+    const aliasRoleChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 's1', name: 'spawn_agent', arguments: JSON.stringify({ agent_type: 'default', role: SYNTHETIC_ROLE_NAME }) }),
+      line({ type: 'function_call_output', call_id: 's1', output: 'ok' }),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), aliasRoleChild, { encoding: 'utf8', mode: 0o600 });
+    const aliasRole = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(aliasRole), false, "a `role` alias cannot make a default agent_type the synthetic role");
+    // A digit-only handle passed as a STRING still continues the chain.
+    const quotedNumericChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({id:"17",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), quotedNumericChild, { encoding: 'utf8', mode: 0o600 });
+    const quotedNumeric = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(quotedNumeric), true, 'a quoted numeric handle continues the chain');
+    // The COMPLETE observation chain with QUOTED keys: the poll's own
+    // `{"session_id":17}` key must correlate like the bare form.
+    const quotedKeysChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({"session_id":17,"chars":"","yield_time_ms":60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), quotedKeysChild, { encoding: 'utf8', mode: 0o600 });
+    const quotedKeys = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(quotedKeys), true, 'quoted property keys correlate the observation chain');
+    // The handle KIND is preserved: a CELL handle (suspended script) is
+    // referenced only through cell_id — a poll of session_id 7 observes a
+    // DIFFERENT process, and its marker never credits the chain.
+    const crossNamespaceChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Script running with cell ID 7\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({session_id:7,chars:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), crossNamespaceChild, { encoding: 'utf8', mode: 0o600 });
+    const crossNamespace = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(crossNamespace), false, 'a session-namespace poll never credits a cell handle');
+    // A script whose own text prints the marker fabricates the aggregate
+    // output: attribution is ambiguous, so it fails closed.
+    const fabricatedChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});text("${COMPLETION_MARKER}");` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Error: spawn failed' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), fabricatedChild, { encoding: 'utf8', mode: 0o600 });
+    const fabricated = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(fabricated), false, 'a script printing its own marker cannot fabricate completion');
+    // A STRUCTURED JSON running result carries the handle in `session_id`:
+    // the chain continues and a matching poll's marker proves the child.
+    const structuredHandleChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000}));` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: '{"status":"running","session_id":"s9"}' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({id:"s9",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), structuredHandleChild, { encoding: 'utf8', mode: 0o600 });
+    const structuredHandle = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(structuredHandle), true, 'a structured JSON process handle keeps the chain alive');
+    // A STRUCTURED yield return with NO running text is still live: the
+    // handle's presence without a completed/exited status keeps the chain.
+    const structuredSilentChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000}));` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: '{"session_id":17,"output":"","wall_time_seconds":30}' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({id:"17",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), structuredSilentChild, { encoding: 'utf8', mode: 0o600 });
+    const structuredSilent = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(structuredSilent), true, 'a structured yield return without running text keeps the chain alive');
+    // A structured result declaring COMPLETION ends the chain: a later
+    // poll's marker cannot resurrect it.
+    const structuredDoneChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000}));` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: '{"session_id":17,"status":"completed"}' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({id:"17",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), structuredDoneChild, { encoding: 'utf8', mode: 0o600 });
+    const structuredDone = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(structuredDone), false, 'a structured completed status ends the chain');
+    // A completed WRAPPER over a LIVE inner result: the header does not
+    // decide liveness — the inner structured result does.
+    const wrappedLiveChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000}));` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Script completed\n{"session_id":21,"output":"","wall_time_seconds":30}' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({id:"21",input:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), wrappedLiveChild, { encoding: 'utf8', mode: 0o600 });
+    const wrappedLive = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(wrappedLive), true, 'an inner live result survives the outer Script-completed header');
+    // A continuation script that PRINTS the marker fabricates completion:
+    // registration refuses it.
+    const fabricatedPollChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID s1\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: `const r = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text("${COMPLETION_MARKER}");` }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), fabricatedPollChild, { encoding: 'utf8', mode: 0o600 });
+    const fabricatedPoll = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(fabricatedPoll), false, 'a continuation script printing its own marker cannot fabricate completion');
+    // A DUPLICATE handle key polls the LAST value: `{session_id:17,
+    // session_id:999}` polls 999 — its marker never credits handle 17.
+    const duplicateHandleChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const r = await tools.write_stdin({session_id:17,session_id:999,chars:"",yield_time_ms:60000});text(r.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), duplicateHandleChild, { encoding: 'utf8', mode: 0o600 });
+    const duplicateHandle = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(duplicateHandle), false, 'a duplicate handle key polls the last value, not the matched one');
+    // A multi-poll script (worker handle AND an unrelated handle) has an
+    // unattributable aggregate output: fail closed.
+    const multiPollChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({cmd:${JSON.stringify(exactCommand)},yield_time_ms:30000});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: 'Process running with session ID 17\n' }),
+      line({ type: 'custom_tool_call', call_id: 'p1', name: 'exec', input: 'const a = await tools.write_stdin({id:"17",input:"",yield_time_ms:60000});text(a.output);\nconst b = await tools.write_stdin({id:"999",input:"",yield_time_ms:60000});text(b.output);' }),
+      line({ type: 'custom_tool_call_output', call_id: 'p1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), multiPollChild, { encoding: 'utf8', mode: 0o600 });
+    const multiPoll = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(multiPoll), false, "a multi-poll script's aggregate output cannot prove the matched observation");
+    // An output carrying the marker BEFORE the matched exec proves nothing
+    // about THAT invocation.
+    const earlyMarkerChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call_output', call_id: 'old', output: COMPLETION_MARKER }),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Error: validation failed' }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), earlyMarkerChild, { encoding: 'utf8', mode: 0o600 });
+    const earlyMarker = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(earlyMarker), false, 'a marker output preceding the matched invocation never credits it');
+    // A FAILED matched exec followed by an echo of the marker: the echo's
+    // output is not the observation's result — no credit.
+    const echoMarkerChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'function_call', call_id: 'e1', name: 'exec_command', arguments: JSON.stringify({ cmd: exactCommand, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e1', output: 'Error: spawn failed' }),
+      line({ type: 'function_call', call_id: 'e2', name: 'exec_command', arguments: JSON.stringify({ cmd: `echo ${COMPLETION_MARKER}`, yield_time_ms: 30000 }) }),
+      line({ type: 'function_call_output', call_id: 'e2', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), echoMarkerChild, { encoding: 'utf8', mode: 0o600 });
+    const echoMarker = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(echoMarker), false, 'an echo of the marker after a failed exec is not the observation result');
+    // A comment mentioning the command, with the EFFECTIVE cmd an echo:
+    // the commented cmd is not the executed one.
+    const commentCmdChild = [
+      meta('child-t', 'root-t'),
+      line({ type: 'custom_tool_call', call_id: 'e1', name: 'exec', input: `tools.exec_command({/* cmd: ${JSON.stringify(exactCommand)} */ cmd: "echo done"});` }),
+      line({ type: 'custom_tool_call_output', call_id: 'e1', output: COMPLETION_MARKER }),
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-child.jsonl'), commentCmdChild, { encoding: 'utf8', mode: 0o600 });
+    const commentCmd = { session: await summarizeCodexSessions({ sessionsDirectory: sessions, workerEvidenceToken: exactCommand }) };
+    assert.equal(roleChildProven(commentCmd), false, 'a commented-out cmd is not the executed command');
+  });
+});
+
+test('a failed discovery subtree fails the scan closed', { skip: !posix }, async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const unreadable = join(sessions, 'sealed');
+    await mkdir(unreadable, { mode: 0o700 });
+    await chmod(unreadable, 0o000);
+    await mkdir(join(sessions, 'open'), { mode: 0o700 });
+    await writeFile(join(sessions, 'open', 'rollout.jsonl'), `${JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id: 't' } })}\n`, { encoding: 'utf8', mode: 0o600 });
+    try {
+      const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+      assert.equal(summary.truncated, true, 'an unreadable subtree makes the scan incomplete');
+    } finally {
+      await chmod(unreadable, 0o700);
+    }
+  });
+});
+
+test('computed property keys keep the effective stdin input unproven', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:17, ["chars"]:"\\u0003"});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 0, 'a computed-key interrupt is not an empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the computed-key shape stays unclassified');
+  });
+});
+
+test('discovery bounds the inspected tree and reports truncation', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    // A hostile model-writable tree: more entries than the discovery cap.
+    await Promise.all(Array.from({ length: 600 }, (_, i) => writeFile(join(sessions, `noise-${i}.txt`), 'x', { encoding: 'utf8', mode: 0o600 })));
+    await writeFile(join(sessions, 'rollout.jsonl'), `${JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id: 't' } })}\n`, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions, maxFiles: 1 });
+    assert.equal(summary.present, true);
+    assert.equal(summary.truncated, true, 'a tree beyond the discovery cap reports truncation');
+  });
+});
+
+test('a concurrent dispatch scope makes locally awaited polls concurrent', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'await Promise.all([ (async () => { const a = await tools.write_stdin({id:"s1",input:"",yield_time_ms:60000});text(a.output); })(), (async () => { const b = await tools.write_stdin({id:"s2",input:"",yield_time_ms:60000});text(b.output); })() ]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // ONE lexical site dispatched N times concurrently is still overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'await Promise.all([1,2].map(async () => await tools.write_stdin({id:"s",chars:"",yield_time_ms:60000})));' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      // Mentions in comments or strings are NOT dispatch constructs: a
+      // single awaited poll stays sequential.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: '// Example: Promise.all(async callback)\nconst a = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(a.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c4', input: 'text("Promise.all with an async callback planned");\nconst b = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(b.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:04:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c4', output: 'done' } }),
+      // A dispatch that FINISHES before the polls cannot overlap them.
+      JSON.stringify({ timestamp: '2026-10-01T00:04:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c5', input: 'await Promise.all([1].map(async (x) => x + 1));\nconst c = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(c.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:05:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c5', output: 'done' } }),
+      // An ASYNC HELPER dispatched N times inside a span runs its poll N
+      // times concurrently.
+      JSON.stringify({ timestamp: '2026-10-01T00:05:07.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c6', input: 'const poll = async () => await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});\nawait Promise.all([poll(), poll()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:06:07.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c6', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 3, 'real overlap counts: two dispatch shapes plus the dispatched async helper; mentions and finished dispatches stay sequential');
+  });
+});
+
+test('a delayed inner poll has no proven start timestamp', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'await sleep(60000);\nconst r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A HELPER-BODIED poll: the site sits inside `async function poll()`,
+      // invoked long after the call started — its start is unproven even
+      // though the definition text has it as the first await.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait sleep(120000);\nawait poll();' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:04:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 2, 'both delayed polls are still counted');
+    assert.equal(summary.firstEmptyPollAtMs, null, 'neither delayed poll start is proven (helper body or preceding await)');
+  });
+});
+
+test('yields are extracted from the directive and effective tool arguments only', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // An UNRELATED object literal requests nothing; the poll's own 5000
+      // governs.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const unused = {yield_time_ms:3600000};\nconst r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:5000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // Duplicate yield keys: the LAST value is effective.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:7000,yield_time_ms:9000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:30.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      // A duplicate whose LAST value is an unsupported expression overrides
+      // the earlier literal: the effective request is unclassified.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:7000,yield_time_ms:60*1000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:30.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } }),
+      // A spread AFTER the yield key can override it: unclassified.
+      JSON.stringify({ timestamp: '2026-10-01T00:03:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c4', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:5000,...opts});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:30.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c4', output: 'done' } }),
+      // An interpolation EXECUTES its expression: the poll inside counts.
+      JSON.stringify({ timestamp: '2026-10-01T00:04:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c5', input: 'text(`${await tools.write_stdin({session_id:17,chars:"",yield_time_ms:60000})}`);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:05:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c5', output: 'done' } }),
+      // A TRAILING directive comment is not a request: the poll's own
+      // 60000 governs the call sample.
+      JSON.stringify({ timestamp: '2026-10-01T00:06:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c6', input: 'const r = await tools.write_stdin({session_id:1,chars:"",yield_time_ms:60000});text(r.output);\n// @exec: {"yield_time_ms":3600000}' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:06:30.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c6', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [5000, 9000, 60000, 60000], 'only effective tool-argument yields count; overridden values stay unclassified; interpolation polls are sampled');
+    assert.equal(summary.emptyPolls, 5, 'explicit literal empty inputs are empty polls even when their YIELD is ambiguous; the spread shape stays unclassified');
+    assert.deepEqual(summary.calls[summary.calls.length - 1].yieldTimeMs, 60000, 'a trailing directive comment never governs the call sample');
+    assert.equal(summary.parallelToolCallViolations, 0, 'the sequential shape stays clean');
+  });
+});
+
+test('dispatched helper concurrency requires a polling helper body', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A FUNCTION-DECLARATION polling helper dispatched N times: overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([poll(), poll()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      // A NON-polling helper dispatched and fully awaited before a single
+      // sequential poll: no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const f = async () => 1;\nawait Promise.all([f(), f()]);\nconst r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'done' } }),
+      // ONE direct call in the range executes once: no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:02:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c3', input: 'await Promise.all([tools.write_stdin({session_id:8,chars:"",yield_time_ms:60000})]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:03:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c3', output: 'done' } }),
+      // TWO awaited polls inside ONE callback are sequential: no overlap.
+      JSON.stringify({ timestamp: '2026-10-01T00:03:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c4', input: 'await Promise.all([async () => { const a = await tools.write_stdin({id:"s1",chars:"",yield_time_ms:60000});text(a.output); const b = await tools.write_stdin({id:"s2",chars:"",yield_time_ms:60000});text(b.output); }()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:04:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c4', output: 'done' } }),
+      // A SINGLE polling-helper invocation cannot overlap anything.
+      JSON.stringify({ timestamp: '2026-10-01T00:04:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c5', input: 'async function poll() { const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output); }\nawait Promise.all([poll()]);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:05:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c5', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 1, 'only the dispatched polling helper (twice) overlaps; single calls, one-callback awaits, and a single helper invocation stay sequential');
+  });
+});
+
+test('a comment between a key and its colon keeps the stdin effective value', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({session_id:1, chars /* interrupt */: "\\u0003"});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 0, 'an interrupt written across a comment is not an empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the comment-separated key stays unclassified');
+  });
+});
+
+test('an inner poll after an awaited exec has no independently observed start time', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // One script: await exec, THEN poll. The poll's start is not the
+      // call timestamp — timing stays unproven while the poll still counts.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'await tools.exec_command({cmd:"x",yield_time_ms:30000});\nconst r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 1);
+    assert.equal(summary.emptyPolls, 1, 'the inner poll is still counted');
+    assert.equal(summary.firstEmptyPollAtMs, null, 'the inner poll start is unproven (the call timestamp is the exec start)');
+  });
+});
+
+test('an unassociated completion never settles a pending cell', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 1; an unrelated text-only call returns 'Script
+      // completed' — it referenced no cell, so A must stay pending and
+      // the next poll must count as overlapping.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 1\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 't1', input: 'text("hello");' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 't1', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'still running' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 2, 'the outstanding cell survives: both the text call and the later poll overlap it');
+  });
+});
+
+test('shorthand and computed properties keep the effective stdin input unproven', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // Shorthand property: the variable may hold nonempty input.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const chars = "x"; const r = await tools.write_stdin({session_id:1, chars});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'ok' } }),
+      // The positive control: a literal empty value IS an empty poll.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: 'const r = await tools.write_stdin({session_id:1, chars:""});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'ok' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.emptyPolls, 1, 'only the literal empty value counts as the empty poll');
+    assert.equal(summary.otherFunctionCalls, 1, 'the shorthand property stays unclassified');
+  });
+});
+
+test('block comments never request a yield window', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: '/* example: {yield_time_ms:3600000} */\nconst r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.deepEqual(summary.requestedYieldsMs, [60000], 'a block-commented example is not a request; only the real parameter counts');
+  });
+});
+
+test('a quoted wait mention never establishes continuation identity', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7; then a script that only PRINTS a wait mention and
+      // a fresh poll: the poll OVERLAPS the outstanding cell — a violation.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'm1', input: "text('wait({cell_id:7})');" } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'm1', output: 'ok' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:35.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'still running' } }),
+      // An EXPRESSION cell reference (`3 + 1` = cell 4) is not a
+      // continuation of cell 3: a completed output for it must not retire
+      // cell 3's pending calls.
+      JSON.stringify({ timestamp: '2026-10-01T00:01:36.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'w1', input: 'const r = await tools.wait({cell_id:3 + 1});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:36.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 3, 'the mention call, the fresh poll, AND the expression wait all overlap; none retires the outstanding cell');
+  });
+});
+
+test('a commented operation mention in a continuation script never yields', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      // A yields cell 7; the wait continuation's comment mentions
+      // write_stdin — the script is still ONLY a wait: its completion must
+      // settle cell 7 through the wait-cell handler, and the trailing
+      // sequential poll stays clean.
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a1', input: 'const r = await tools.exec_command({cmd:"x",yield_time_ms:30000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:32.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'a1', output: 'Script running with cell ID 7\n' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:00:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'w1', input: '// Resume the write_stdin observation\nconst r = await tools.wait({cell_id:7});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:33.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'w1', output: 'Script completed' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'const r = await tools.write_stdin({id:"s",input:"",yield_time_ms:60000});text(r.output);' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:02:34.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.parallelToolCallViolations, 0, 'the commented mention never registers a yield; the completion settles cell 7');
+  });
+});
+
+test('whitespace before the call paren keeps awaited chains sequential', async () => {
+  await withTempDirectory(async (parent) => {
+    const sessions = join(parent, 'sessions');
+    await mkdir(sessions, { recursive: true, mode: 0o700 });
+    const rollout = [
+      JSON.stringify({ timestamp: '2026-10-01T00:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: 'await tools.exec_command ({cmd:"x",yield_time_ms:30000}); await tools.write_stdin ({session_id:1,chars:"",yield_time_ms:60000});' } }),
+      JSON.stringify({ timestamp: '2026-10-01T00:01:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' } }),
+      '',
+    ].join('\n');
+    await writeFile(join(sessions, 'rollout-1.jsonl'), rollout, { encoding: 'utf8', mode: 0o600 });
+    const summary = await summarizeCodexSessions({ sessionsDirectory: sessions });
+    assert.equal(summary.initialExecCalls, 1, 'the spaced-paren exec is counted');
+    assert.equal(summary.emptyPolls, 1, 'the spaced-paren poll is counted');
+    assert.equal(summary.parallelToolCallViolations, 0, 'await-chained observations with spaced parens are sequential');
   });
 });
