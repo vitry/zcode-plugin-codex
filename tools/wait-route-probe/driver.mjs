@@ -126,7 +126,7 @@ const HOOK_ENTRY_PROMPT = 'Reply with exactly: ok';
  * @property {{backgroundTerminalMaxTimeoutMs: number|null, multiAgentFeature: boolean, agentRoles: string[]}} fixture
  * @property {{workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}} requestedProfile
  * @property {SessionSummary|null} session
- * @property {{shape: string, holdMs: number, hookTimeoutSec: number, toolTimeoutSec: number, dispatches: number, enteredAtMs: number|null, settledAtMs: number|null, settlement: string|null, effectiveHoldMs: number|null, effectiveBoundMs: number|null, decisionsDuringHold: number|null, firstDecisionAtMs: number|null, overlappingDispatches: boolean|null}|undefined} [hook]
+ * @property {{shape: string, holdMs: number, hookTimeoutSec: number, toolTimeoutSec: number, dispatches: number, enteredAtMs: number|null, settledAtMs: number|null, settlement: string|null, effectiveHoldMs: number|null, effectiveBoundMs: number|null, interruptedAfterMs: number|null, interruptSignalAtMs: number|null, decisionsDuringHold: number|null, firstDecisionAtMs: number|null, overlappingDispatches: boolean|null}|undefined} [hook]
  * @property {{marketplaceRemoved: boolean, isolatedHomeRemoved: boolean, serverExit: string, workerExit: string, failures: string[]}} cleanup
  * @property {number} budgetMs
  */
@@ -189,7 +189,7 @@ export function validateShellProfile(profile, caseLabel) {
  * Parses the driver arguments. The four documented flags are required; the
  * Task 3 profile flags are optional and validated with closed codes.
  * @param {string[]} argv
- * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number, hookShape: string, hookHoldMs: number, hookTimeoutSec: number, hookToolTimeoutSec: number}}
+ * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number, hookShape: string, hookHoldMs: number, hookTimeoutSec: number, hookToolTimeoutSec: number, interruptAfterMs: number}}
  */
 export function parseDriverArguments(argv) {
   /** @type {Record<string, string>} */
@@ -197,7 +197,7 @@ export function parseDriverArguments(argv) {
   const valueFlags = new Set([
     '--case', '--codex', '--output-dir', '--budget-ms',
     '--worker-duration-ms', '--worker-noise-interval-ms', '--exec-yield-ms', '--poll-yield-ms', '--background-terminal-max-timeout-ms',
-    '--hook-shape', '--hook-hold-ms', '--hook-timeout-sec', '--hook-tool-timeout-sec',
+    '--hook-shape', '--hook-hold-ms', '--hook-timeout-sec', '--hook-tool-timeout-sec', '--interrupt-after-ms',
   ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -241,7 +241,11 @@ export function parseDriverArguments(argv) {
   if (!Number.isSafeInteger(hookToolTimeoutSec) || hookToolTimeoutSec < 2 || hookToolTimeoutSec > 300) {
     throw driverError('WAIT_ROUTE_DRIVER_HOOK_TOOL_TIMEOUT_INVALID', '--hook-tool-timeout-sec must be an integer of 2 to 300.');
   }
-  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs, ...profile, hookShape, hookHoldMs, hookTimeoutSec, hookToolTimeoutSec };
+  const interruptAfterMs = parsed['--interrupt-after-ms'] === undefined ? 0 : Number(parsed['--interrupt-after-ms']);
+  if (!Number.isSafeInteger(interruptAfterMs) || interruptAfterMs < 0 || interruptAfterMs > 600_000) {
+    throw driverError('WAIT_ROUTE_DRIVER_INTERRUPT_INVALID', '--interrupt-after-ms must be an integer of 0 to 600000.');
+  }
+  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs, ...profile, hookShape, hookHoldMs, hookTimeoutSec, hookToolTimeoutSec, interruptAfterMs };
 }
 
 /**
@@ -4447,7 +4451,7 @@ export function buildShellWorkerCommand(nodePath, workerPath, platform = process
 /**
  * Runs the host exec for the selected case. The returned stdout is bounded;
  * stderr is a count only. The observation budget kills the child on expiry.
- * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number, profile: {workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}, hookShape?: string}} input
+ * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number, profile: {workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}, hookShape?: string, interruptAfterMs?: number, interruptSignalAtMs?: number}} input
  */
 async function runHostExec(input) {
   const { caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline, profile } = input;
@@ -4494,7 +4498,7 @@ async function runHostExec(input) {
   }
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
-    return { exitCode: 0, stdout: '', timedOut: true, overflow: false, hostExit: { state: 'killed', code: null }, hostFlags: flagsOf(args), lastOutputAtMs: null, markerAtMs: null, deadlineAtMs: deadline };
+    return { exitCode: 0, stdout: '', timedOut: true, overflow: false, hostExit: { state: 'killed', code: null }, hostFlags: flagsOf(args), lastOutputAtMs: null, markerAtMs: null, deadlineAtMs: deadline, interruptedAfterMs: null, interruptSignalAtMs: null };
   }
   // While the shell case runs, poll the fixture's launch log: each recorded
   // worker group (the real macOS shape puts the worker in its OWN group) is
@@ -4522,23 +4526,83 @@ async function runHostExec(input) {
         });
       }
     : undefined;
+  // Task 6: an optional SCHEDULED interrupt of the host group mid-run (the
+  // hook-hold cancellation probe). The timer arms at spawn; firing signals
+  // the host's WHOLE owned group with SIGINT (the same boundary the
+  // interactive interrupt path uses), and the scheduled fact is returned so
+  // classification can distinguish a scheduled probe interrupt from budget
+  // expiry. The timer never fires after the observation settles.
+  /** The scheduled mid-run interrupt, armed at spawn. @type {NodeJS.Timeout|null} */
+  let interruptTimer = null;
+  let interruptedAfterMs = null;
+  let interruptSignalAtMs = null;
+  let observationSettled = false;
+  /** @type {((child: import('node:child_process').ChildProcess) => void)[]} */
+  const spawnCallbacks = [];
+  if (caseLabel === 'hook-hold' && (input.interruptAfterMs ?? 0) > 0) {
+    spawnCallbacks.push((child) => {
+      const scheduledAfterMs = input.interruptAfterMs ?? 0;
+      interruptTimer = setTimeout(async () => {
+        // Ownership revalidation BEFORE delivery (round-83 review finding):
+        // the scheduled interrupt fires only while the observation is still
+        // open and the ORIGINAL host registration is still alive — a host
+        // that already exited (its group possibly forgotten or recycled) is
+        // never signaled, and the interruption is recorded only after a
+        // SUCCESSFUL delivery.
+        // The ORIGINAL child-handle registration must still be the live
+        // handle for this pid and UNEXITED — pid liveness alone would let a
+        // recycled pid receive the group signal (round-85 review finding).
+        if (child.pid == null) return;
+        if (ownedChildHandles.get(child.pid) !== child || child.exitCode !== null || child.signalCode !== null) return;
+        if (observationSettled) return;
+        const hostSettled = await isProcessSettled(child.pid);
+        if (observationSettled || hostSettled) return;
+        let delivered = false;
+        if (child.pid > 0 && process.platform !== 'win32') {
+          try {
+            process.kill(-child.pid, 'SIGINT');
+            delivered = true;
+          } catch { /* the group is already gone */ }
+        }
+        if (!delivered) {
+          // child.kill reports false without throwing when the handle is
+          // dead: record delivery ONLY when it actually returned true
+          // (round-85 review finding).
+          delivered = child.kill('SIGINT') === true;
+        }
+        if (!delivered) return;
+        interruptedAfterMs = scheduledAfterMs;
+        interruptSignalAtMs = Date.now();
+      }, scheduledAfterMs);
+    });
+  }
   const result = await runBoundedSubprocess(codexPath, args, {
     cwd: workspace,
     env: { ...hostEnvironment(isolatedTmp, isolatedHome, codexHome), WAIT_ROUTE_PROBE_TRACE: join(traceDirectory, 'events.jsonl'), WAIT_ROUTE_PROBE_NONCE: runNonce },
     deadlineMs: remaining,
     stdoutMaxBytes: HOST_STDOUT_MAX_BYTES,
     markerText: COMPLETION_MARKER,
-    ...(onPoll ? { pollMs: 250, onPoll, onSpawn: (child) => { trustedHostPid = child.pid ?? null; }, onSettled: () => { discoveryClosed = true; } } : {}),
+    onSpawn: (child) => {
+      trustedHostPid = child.pid ?? null;
+      for (const callback of spawnCallbacks) callback(child);
+    },
+    onSettled: () => {
+      observationSettled = true;
+      discoveryClosed = true;
+      if (interruptTimer !== null) clearTimeout(interruptTimer);
+    },
+    ...(onPoll ? { pollMs: 250, onPoll } : {}),
   });
+  if (interruptTimer !== null) clearTimeout(interruptTimer);
   const hostExit = result.timedOut ? { state: 'killed', code: null } : { state: result.code === 0 ? 'exit-0' : 'exit-nonzero', code: result.code };
-  return { exitCode: result.code ?? -1, stdout: result.stdout, timedOut: result.timedOut, overflow: result.overflow, hostExit, hostFlags: flagsOf(args), lastOutputAtMs: result.lastOutputAtMs, markerAtMs: result.markerAtMs, deadlineAtMs: result.deadlineAtMs, hostPid: result.child?.pid ?? null, workerCommand };
+  return { exitCode: result.code ?? -1, stdout: result.stdout, timedOut: result.timedOut, overflow: result.overflow, hostExit, hostFlags: flagsOf(args), lastOutputAtMs: result.lastOutputAtMs, markerAtMs: result.markerAtMs, deadlineAtMs: result.deadlineAtMs, hostPid: result.child?.pid ?? null, workerCommand, interruptedAfterMs, interruptSignalAtMs };
 }
 
 /**
  * Runs one selected wait-route probe case to a bounded, redacted summary.
  * Instrument failures throw closed codes; every bounded conclusion (including
  * inconclusive ones naming the missing prerequisite) returns a summary.
- * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string, workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number, hookShape?: string, hookHoldMs?: number, hookTimeoutSec?: number, hookToolTimeoutSec?: number}} input
+ * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string, workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number, hookShape?: string, hookHoldMs?: number, hookTimeoutSec?: number, hookToolTimeoutSec?: number, interruptAfterMs?: number}} input
  * @returns {Promise<WaitRouteSummary>}
  */
 export async function runWaitRouteCase(input) {
@@ -4548,6 +4612,7 @@ export async function runWaitRouteCase(input) {
   const hookHoldMs = input.hookHoldMs ?? 2_000;
   const hookTimeoutSec = input.hookTimeoutSec ?? 15;
   const hookToolTimeoutSec = input.hookToolTimeoutSec ?? 30;
+  const interruptAfterMs = input.interruptAfterMs ?? 0;
   const profile = validateShellProfile({
     workerDurationMs: input.workerDurationMs,
     workerNoiseIntervalMs: input.workerNoiseIntervalMs,
@@ -4686,7 +4751,7 @@ export async function runWaitRouteCase(input) {
     }
 
     summary.stage = 'exec';
-    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline, profile, ...(caseLabel === 'hook-hold' ? { hookShape } : {}) });
+    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline, profile, ...(caseLabel === 'hook-hold' ? { hookShape, interruptAfterMs } : {}) });
     summary.hostExit = exec.hostExit;
     summary.hostFlags = exec.hostFlags;
     // The durable trace facts are read on EVERY post-exec path: observed
@@ -4794,10 +4859,14 @@ export async function runWaitRouteCase(input) {
       summary.reason = 'output-overflow';
       return summary;
     }
-    if (exec.exitCode !== 0) {
+    if (exec.exitCode !== 0 && !(caseLabel === 'hook-hold' && exec.interruptedAfterMs !== null)) {
       // A host failure after a completed handler is an honest combination:
       // the outcome stays host-error while the trace facts above keep the
-      // observed entry visible.
+      // observed entry visible. EXCEPTION: the hook-hold SCHEDULED interrupt
+      // probe — the signal-induced exit IS the observed cancellation, and
+      // the hook-hold classification below builds the hook block from the
+      // durable trace (the round-79 review finding: the diagnostics must be
+      // preserved past the early return).
       summary.outcome = 'host-error';
       summary.reason = 'exec-failed';
       return summary;
@@ -4840,18 +4909,29 @@ export async function runWaitRouteCase(input) {
       // inconclusive rather than granting.
       let decisionsDuringHold = null;
       let firstDecisionAtMs = null;
-      let rolloutsPresent = false;
       let rolloutsComplete = false;
       if (summary.session !== null && summary.session.present === true) {
-        rolloutsPresent = true;
         // Fail closed on coverage: a TRUNCATED or sample-truncated rollout
         // cannot assert zero decisions — the interval counts only over
         // complete coverage (the round-78 review finding).
-        rolloutsComplete = summary.session.truncated === false && summary.session.callsTruncated === false;
+        // Usable coverage: at least one rollout file carrying at least one
+        // record — an empty sessions directory or an empty rollout file is
+        // present-but-unusable evidence, never a zero-decision proof (the
+        // round-78 review finding).
+        const rolloutRecordCount = (summary.session.perFile ?? []).reduce((total, file) => total + (typeof file.records === 'number' ? file.records : 0), 0);
+        rolloutsComplete = summary.session.truncated === false && summary.session.callsTruncated === false
+          && (typeof summary.session.files === 'number' ? summary.session.files >= 1 : false)
+          && rolloutRecordCount >= 1;
         if (rolloutsComplete && facts.hookEnteredAtMs !== null && facts.hookSettledAtMs !== null) {
           decisionsDuringHold = 0;
           for (const call of summary.session.calls ?? []) {
-            if (typeof call.atMs !== 'number') continue;
+            if (typeof call.atMs !== 'number' || !Number.isFinite(call.atMs)) {
+              // A supported call with an UNKNOWN timestamp cannot be
+              // attributed to (or excluded from) the interval — the
+              // zero-decision proof refuses it (round-79 review finding).
+              decisionsDuringHold = null;
+              break;
+            }
             if (firstDecisionAtMs === null || call.atMs < firstDecisionAtMs) firstDecisionAtMs = call.atMs;
             if (call.atMs > facts.hookEnteredAtMs && call.atMs < facts.hookSettledAtMs) decisionsDuringHold += 1;
           }
@@ -4869,6 +4949,8 @@ export async function runWaitRouteCase(input) {
         settlement: facts.hookSettlement,
         effectiveHoldMs: intervalMs,
         effectiveBoundMs: hookShape === 'timeout' ? intervalMs : null,
+        interruptedAfterMs: exec.interruptedAfterMs ?? null,
+        interruptSignalAtMs: exec.interruptSignalAtMs ?? null,
         decisionsDuringHold,
         firstDecisionAtMs,
         overlappingDispatches: facts.hookOverlappingDispatches,
@@ -4876,6 +4958,45 @@ export async function runWaitRouteCase(input) {
       if (exec.overflow) {
         summary.outcome = 'host-error';
         summary.reason = 'output-overflow';
+      } else if (facts.truncated) {
+        // A TRUNCATED hook trace cannot establish exactly-one dispatch or
+        // any interval attribution: no qualification verdict from
+        // incomplete hook evidence (round-81 review finding).
+        summary.outcome = 'inconclusive';
+        summary.reason = 'hook-trace-truncated';
+      } else if (exec.interruptedAfterMs !== null && hookShape === 'hold') {
+        // The SCHEDULED cancellation probe: the host group was signaled
+        // mid-hold. The observation is the durable hook state — an
+        // interrupted hold never reports its own deadline settlement.
+        // Attribution (round-80 review finding): the hold must have been
+        // PENDING at the recorded signal time — a hold that settled at its
+        // own deadline BEFORE the signal is a completion, never interruption
+        // credit. No settlement evidence at all (a signal-killed pending
+        // hold) still attributes: the observation never ended on its own.
+        // Attribution (rounds 80-82): interruption credit requires the
+        // dispatch to have ENTERED before the recorded signal time, and
+        // rejects EVERY natural deadline settlement (before OR after the
+        // signal — a hold that completes naturally was never cancelled by
+        // it) plus every settlement at or before the signal.
+        const dispatchedBeforeSignal = facts.hookEnteredAtMs !== null
+          && exec.interruptSignalAtMs != null
+          && facts.hookEnteredAtMs < exec.interruptSignalAtMs;
+        const settledBeforeSignal = facts.hookSettledAtMs !== null
+          && exec.interruptSignalAtMs != null
+          && facts.hookSettledAtMs <= exec.interruptSignalAtMs;
+        if (facts.hookDispatches !== 1) {
+          summary.outcome = 'inconclusive';
+          summary.reason = 'hook-dispatch-missing';
+        } else if (!dispatchedBeforeSignal) {
+          summary.outcome = 'inconclusive';
+          summary.reason = 'hold-dispatched-after-interrupt';
+        } else if (facts.hookSettlement === 'deadline' || settledBeforeSignal) {
+          summary.outcome = 'inconclusive';
+          summary.reason = facts.hookSettlement === 'deadline' ? 'hold-completed-naturally' : 'hold-settled-before-interrupt';
+        } else {
+          summary.outcome = 'hook-interrupt-observed';
+          summary.reason = 'ok';
+        }
       } else if (exec.hostExit.state !== 'exit-0') {
         summary.outcome = 'host-error';
         summary.reason = 'exec-failed';
@@ -4883,20 +5004,35 @@ export async function runWaitRouteCase(input) {
         if (facts.hookDispatches !== 1 || !holdCompletedNaturally || !settledWithinBudget) {
           summary.outcome = 'inconclusive';
           summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'hook-hold-incomplete';
-        } else if (rolloutsPresent && (decisionsDuringHold === null || !rolloutsComplete)) {
+        } else if (decisionsDuringHold !== 0) {
+          // FAIL CLOSED on every non-zero shape: absent rollouts (null),
+          // present-but-unusable coverage, and observed decisions are all
+          // inconclusive — the zero-decision grant exists ONLY over complete
+          // coverage (the round-78 review finding).
           summary.outcome = 'inconclusive';
-          summary.reason = 'hold-interval-evidence-missing';
-        } else if (decisionsDuringHold !== null && decisionsDuringHold > 0) {
-          summary.outcome = 'inconclusive';
-          summary.reason = 'model-decisions-during-hold';
+          summary.reason = decisionsDuringHold === null ? 'hold-interval-evidence-missing'
+            : !rolloutsComplete ? 'hold-interval-evidence-missing'
+              : 'model-decisions-during-hold';
         } else {
           summary.outcome = 'hook-hold-completed';
           summary.reason = 'ok';
         }
       } else if (hookShape === 'timeout') {
-        if (facts.hookDispatches !== 1 || holdCompletedNaturally) {
+        // Attribution (round-80 review finding): only a CANCELLED call
+        // (signal-abort) landing within the configured hook budget is
+        // timeout evidence — a transport loss or missing settlement is
+        // recorded as unattributed, never as timeout credit.
+        // The cut must land AT the configured budget (±2 s): a signal-abort
+        // far from the budget is an unrelated cancellation, never timeout
+        // evidence (round-83 review finding).
+        const withinHookBudget = facts.hookSettledAtMs !== null && facts.hookEnteredAtMs !== null
+          && Math.abs((facts.hookSettledAtMs - facts.hookEnteredAtMs) - hookTimeoutSec * 1000) <= 2_000;
+        if (facts.hookDispatches !== 1 || holdCompletedNaturally
+          || facts.hookSettlement !== 'signal-abort' || !withinHookBudget) {
           summary.outcome = 'inconclusive';
-          summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'hook-timeout-not-observed';
+          summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing'
+            : holdCompletedNaturally ? 'hook-timeout-not-observed'
+              : 'hook-cut-unattributed';
         } else {
           summary.outcome = 'hook-timeout-observed';
           summary.reason = 'ok';

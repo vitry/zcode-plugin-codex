@@ -175,8 +175,17 @@ Expected: fixture and existing focused tests pass. These tests prove shared-seam
 
 **Files:** Probe/test/report only; reuse existing lifecycle, job controller, stop-intent and reconciliation seams.
 
-- [ ] Only trigger cancellation after independently persisted handler hold and synthetic worker acceptance. An unentered handler or absent active turn is not a cancellation result. The held invocation has exact operation/executor ownership; keep an unrelated sentinel alive.
-- [ ] Test these cases with real shared lifecycle code and small live fixtures:
+- [x] Only trigger cancellation after independently persisted handler hold and synthetic worker acceptance. — §10: the fixture-tested interrupt probe requires the durable prompt-hold interval first; the INSTALLED runs hit the recorded host-side early-exit anomaly (two reproductions, control clean) → installed cancellation into a pending hook is not-proven with its exact reason. An unentered handler or absent active turn is not a cancellation result. The held invocation has exact operation/executor ownership; keep an unrelated sentinel alive.
+- [x] Test these cases with real shared lifecycle code and small live fixtures: — per-case classification at close-out (§10; the qualified candidate is unqualified per §9.2, so candidate-dependent rows end not-proven/dependency-skipped with their reasons, which §10 records):
+      - Root explicit interrupt: existing driver interruption/settlement regressions (§6.1) + installed §7.4 interrupt runs — MEASURED on the shell surface; hook-pending variant not-proven (§10 anomaly).
+      - Rescue Child interrupt with Root awaiting: production reconciliation suites cited (§9.3); live managed Child = not-proven (§7.5, ZCode-host prerequisite) — DEPENDENCY-SKIPPED.
+      - Child interrupt after Root returned: same production coverage; live = not-proven (same prerequisite) — DEPENDENCY-SKIPPED.
+      - Later same-child continuation and concurrent Child: production suites; no new observation — existing coverage stands.
+      - Status --wait interrupt: production cancellation suites green (§9.4 parity gate) — existing coverage stands.
+      - Host abrupt loss / surviving-host connection loss / graceful stop: driver loss/settlement regressions (§6.1) — fixture-covered; installed re-observation not run (no candidate).
+      - Hook/server configured timeout: §8.3 — MEASURED negative (neither configured timeout enforced by the installed wrapper).
+      - Completion versus cancel race: covered by the driver's completion-marker/interruption discipline tests (§6.1) — fixture-covered; hook-pending variant not-proven (§10).
+      - 100-hour ceiling: NOT-PROVEN — the cited lifecycle test schedules a real timer and asserts < 100 h without injecting the ceiling into the production branch, and the injected-ceiling test exercises a research server; the actual production ceiling branch was not driven with an injected clock this round.
 
 | Case | Required observation |
 | --- | --- |
@@ -190,10 +199,10 @@ Expected: fixture and existing focused tests pass. These tests prove shared-seam
 | Completion versus cancel race | One authoritative public terminal election and no false success. |
 | 100-hour ceiling | Short injected clock enters the actual production lifecycle branch; no 100-hour real sleep or new six-hour cap. |
 
-- [ ] Investigate Interrupt as a bounded stop-intent writer only. Verify trust/loading, root-only scope, three-second budget and durable acknowledgement before relying on it. Evaluate existing SubagentStop/reconciliation as a distinct Child route; do not assume SubagentStop fires on interruption because it fires on normal completion.
-- [ ] Observe worker exit, tracked state, lease/guard release and result election separately from host/tool settlement. Test timeout/loss during preparation, after consumption, after acceptance and before final delivery with a small number of shared-seam negative controls.
-- [ ] Reuse production cancellation semantics for read-only Review/adversarial-review and observational Status; do not apply writable Rescue stop policy to every command.
-- [ ] Run `node --test tests/wait-route-probe.test.mjs tests/mcp-lifecycle-controller.test.mjs`; record focused results plus live evidence. Repeat only the decisive installed lifecycle result with a fresh fixture and unrelated sentinel.
+- [x] Investigate Interrupt as a bounded stop-intent writer only. — Fixture-tested classification (`hook-interrupt-observed` records the durable settlement, never the hold's own deadline); installed verdict not-proven per §10; SubagentStop/reconciliation treated as the distinct Child route via the cited production suites. Verify trust/loading, root-only scope, three-second budget and durable acknowledgement before relying on it. Evaluate existing SubagentStop/reconciliation as a distinct Child route; do not assume SubagentStop fires on interruption because it fires on normal completion.
+- [x] Observe worker exit, tracked state, lease/guard release and result election separately from host/tool settlement. Test timeout/loss during preparation, after consumption, after acceptance and before final delivery with a small number of shared-seam negative controls. — Worker exit/tracked state/lease-guard release: the driver's settlement regressions (§6.1, `cleanup.workerExit` honest labels) + production job/lifecycle suites; result election: mcp-result categories (§9.3). The four timeout/loss negative controls through the UNQUALIFIED candidate: not-proven/dependency-skipped (§9.2, §10) — recorded rather than forced.
+- [x] Reuse production cancellation semantics for read-only Review/adversarial-review and observational Status; — production cancellation suites green in the focused gates; no writable Rescue stop policy generalized. do not apply writable Rescue stop policy to every command.
+- [x] Run `node --test tests/wait-route-probe.test.mjs tests/mcp-lifecycle-controller.test.mjs`; — green within the §14 gates; the decisive installed repeat ended not-proven with the recorded anomaly (§10). record focused results plus live evidence. Repeat only the decisive installed lifecycle result with a fresh fixture and unrelated sentinel.
 
 **Exit:** all required lifecycle branches demonstrated for the candidate, or precise not-proven/rejected branches. A remaining Child cancellation gap blocks that MCP recommendation, not the independent shell finding.
 
@@ -201,9 +210,9 @@ Expected: fixture and existing focused tests pass. These tests prove shared-seam
 
 **Files:** Complete `docs/qualification/source-guided-foreground-wait.md`; update checkboxes in this plan with actual evidence references. Use inline self-checks and any independent review authorized by the user.
 
-- [ ] Build a compact comparison for configured shell, host-executed MCP hook and retained direct-RPC route. For each R1-R8 requirement name the source fact, fixture assertion, installed observation and remaining gap; label untested branches not-proven. Link existing baseline tests instead of recreating them.
-- [ ] Self-check privacy, exact authority, same-event ordering, Child lifecycle, background distinction, lossless control results and whether the recommendation follows observed scope. Do not revise frozen old records or claim a structural validator performs live qualification.
-- [ ] Verify probe tests remain research-only and production tests remain routine. Run:
+- [x] Build a compact comparison for configured shell, host-executed MCP hook and retained direct-RPC route. — §11 (per-area evidence labels; the not-proven register in §12). For each R1-R8 requirement name the source fact, fixture assertion, installed observation and remaining gap; label untested branches not-proven. Link existing baseline tests instead of recreating them.
+- [x] Self-check privacy, exact authority, same-event ordering, Child lifecycle, background distinction, lossless control results and whether the recommendation follows observed scope. — §12 inline self-check; no frozen record revised; no structural validator claimed as live qualification. Do not revise frozen old records or claim a structural validator performs live qualification.
+- [x] Verify probe tests remain research-only and production tests remain routine. — the research-entry selection (five MCP research tests) unchanged; §14 gates green. Run:
 
 ```bash
 node --test tests/test-selection.test.mjs tests/wait-route-probe.test.mjs
@@ -216,8 +225,8 @@ git status --short
 ```
 
 Expected: research suite explicitly includes the new probe, skips are labeled and are not qualification; static checks pass. Live opt-in measurements are recorded separately. For a final research-code PR, also run `npm test` once on the final code revision and report any unrelated baseline failure instead of fixing it silently.
-- [ ] Recommend the smallest subsequent action: configured-shell production delta, focused qualified MCP-hook adapter design, or no viable hook with the exact missing host capability. Preserve original release gates and human canonical-switch decision. No production work is implicitly unlocked by this plan.
-- [ ] Provide a handoff containing worktree, branch/base, exact completed cases, commands, report/spec/plan paths, remaining not-proven requirements and any needed new authority. Do not push/create a PR until requested; if PR #64 remains open, identify this as stacked work or rebase onto its merged main before a separate PR.
+- [x] Recommend the smallest subsequent action: configured-shell production delta, focused qualified MCP-hook adapter design, or no viable hook with the exact missing host capability. Preserve original release gates and human canonical-switch decision. No production work is implicitly unlocked by this plan. — §11 closing paragraph: SHELL = the §7.7 pair, held for the human decision; MCP = no adapter design recommended, the missing capability (per-invocation authority channel + lossless terminal route) is the recorded prerequisite; no production work unlocked.
+- [x] Provide a handoff containing worktree, branch/base, exact completed cases, commands, report/spec/plan paths, remaining not-proven requirements and any needed new authority. Do not push/create a PR until requested; if PR #64 remains open, identify this as stacked work or rebase onto its merged main before a separate PR. — §12 (worktree/branch/base, cases+commands, not-proven register, no new authority needed); PR #64 was merged before this branch started (base = merged main); the PR was created at the user's explicit request.
 
 **Exit:** complete evidence-backed investigation, not necessarily a qualified MCP route. Human review can then decide production scope without relaying undocumented implementation questions between agents.
 
