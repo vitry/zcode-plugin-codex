@@ -27,7 +27,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { CAPTURE_HOLD_MS, DEPENDENCY_TOOL_NAME, HOLD_TOOL_NAME, CAPTURE_TOOL_NAME, SERVER_NAME, fixtureError, errorCode, parseProcessIdentityLine } from './fixture.mjs';
+import { CAPTURE_HOLD_MS, DEPENDENCY_TOOL_NAME, HOLD_TOOL_NAME, CAPTURE_TOOL_NAME, MAXIMUM_PROMPT_HOLD_MS, PROMPT_HOLD_TOOL_NAME, SERVER_NAME, fixtureError, errorCode, parseProcessIdentityLine } from './fixture.mjs';
 
 /** The closed trace vocabulary; unknown kinds are instrument failures. */
 export const TRACE_EVENT_KINDS = new Set(Object.freeze([
@@ -37,6 +37,8 @@ export const TRACE_EVENT_KINDS = new Set(Object.freeze([
   'handler-completed',
   'hold-started',
   'hold-settled',
+  'prompt-hold-started',
+  'prompt-hold-settled',
   'dependency-prepared',
   'case-started',
   'case-finished',
@@ -312,6 +314,16 @@ export function createWaitRouteServer(input) {
       _meta: MODEL_HIDDEN_META,
     }),
     Object.freeze({
+      name: PROMPT_HOLD_TOOL_NAME,
+      description: `Fixture-only bounded UserPromptSubmit hold of 1 to ${MAXIMUM_PROMPT_HOLD_MS} ms; settles exactly once through a durable event.`,
+      inputSchema: Object.freeze({
+        type: 'object',
+        properties: Object.freeze({ ms: Object.freeze({ type: 'integer', minimum: 1, maximum: MAXIMUM_PROMPT_HOLD_MS }) }),
+        additionalProperties: false,
+      }),
+      _meta: MODEL_HIDDEN_META,
+    }),
+    Object.freeze({
       name: DEPENDENCY_TOOL_NAME,
       description: 'Fixture-only: records a synthetic bounded invocation dependency for a later viable hook candidate.',
       inputSchema: Object.freeze({
@@ -336,6 +348,7 @@ export function createWaitRouteServer(input) {
     try {
       if (name === CAPTURE_TOOL_NAME) return await captureEntry(request.params?._meta, extra);
       if (name === HOLD_TOOL_NAME) return await holdOpen(args, extra);
+      if (name === PROMPT_HOLD_TOOL_NAME) return await promptHold(args, extra);
       return await prepareDependency(args);
     } catch (error) {
       return errorResult(`Probe tool failed: ${errorCode(error) || 'error'}`);
@@ -411,6 +424,57 @@ export function createWaitRouteServer(input) {
     clearTimeout(deadline);
     await appendImpl({ runDirectory, runNonce, event: { kind: 'hold-settled', callNonce, settlement } });
     return { content: [{ type: 'text', text: 'wait-route-probe fixture-only: held' }] };
+  }
+
+  /**
+   * The Task 4 UserPromptSubmit hold: a bounded hold far above the capture
+   * hold, recorded through its own durable events so the driver can measure
+   * the exact pending interval and whichever settlement actually occurred.
+   * Settles on the caller's abort signal, the declared deadline, or a
+   * transport close, exactly once (the same pendingHolds machinery).
+   * @param {Record<string, unknown>} args @param {{signal?: AbortSignal}} extra
+   */
+  async function promptHold(args, extra) {
+    const callNonce = randomBytes(16).toString('hex');
+    let requestedMs;
+    if (args.ms === undefined) requestedMs = 1_000;
+    else if (typeof args.ms !== 'number') throw fixtureError('WAIT_ROUTE_PROBE_PROMPT_HOLD_INVALID', 'ms must be a number of milliseconds.');
+    else requestedMs = args.ms;
+    if (!Number.isSafeInteger(requestedMs) || requestedMs < 1 || requestedMs > MAXIMUM_PROMPT_HOLD_MS) {
+      throw fixtureError('WAIT_ROUTE_PROBE_PROMPT_HOLD_INVALID', `ms must be an integer of 1 to ${MAXIMUM_PROMPT_HOLD_MS}.`);
+    }
+    // ENTRY FIRST, then the hold interval, then the settlement — the durable
+    // handler-entered/handler-completed pair keeps the Task 2 entry semantics
+    // while the prompt-hold events carry the interval bounds.
+    await appendImpl({ runDirectory, runNonce, event: { kind: 'handler-entered', callNonce } });
+    /** @type {(value: string) => void} */
+    let resolveSettlement = () => {};
+    /** @type {{callNonce: string, finish: (settlement: string) => void}} */
+    const entry = {
+      callNonce,
+      finish: (settlement) => {
+        if (!pendingHolds.has(entry)) return;
+        pendingHolds.delete(entry);
+        resolveSettlement(settlement);
+      },
+    };
+    const settlementPromise = new Promise((resolve) => { resolveSettlement = resolve; });
+    pendingHolds.add(entry);
+    if (extra.signal?.aborted) entry.finish('signal-abort');
+    else extra.signal?.addEventListener('abort', () => entry.finish('signal-abort'), { once: true });
+    const deadline = setTimeout(() => entry.finish('deadline'), requestedMs);
+    deadline.unref?.();
+    try {
+      await appendImpl({ runDirectory, runNonce, event: { kind: 'prompt-hold-started', callNonce, ms: requestedMs } });
+    } catch (error) {
+      pendingHolds.delete(entry);
+      throw error;
+    }
+    const settlement = await settlementPromise;
+    clearTimeout(deadline);
+    await appendImpl({ runDirectory, runNonce, event: { kind: 'prompt-hold-settled', callNonce, settlement } });
+    await appendImpl({ runDirectory, runNonce, event: { kind: 'handler-completed', callNonce, settlement: settlement === 'deadline' ? 'completed' : settlement } });
+    return { content: [{ type: 'text', text: 'WAIT_ROUTE_PROBE_HOOK_HOLD_SETTLED' }] };
   }
 
   /**
@@ -499,7 +563,7 @@ export async function runWaitRouteServerExecutable() {
     // parent pid, and command name together. It is retained only as a
     // per-run-salted fingerprint — the raw string can carry the Node
     // installation's user-home path, and the trace is retained.
-    event: { kind: 'server-started', serverPid: process.pid, identityHash: fingerprintProcessIdentity(trace.runNonce, captureProcessIdentity(process.pid) ?? '') },
+    event: { kind: 'server-started', serverPid: process.pid, parentPid: process.ppid, identityHash: fingerprintProcessIdentity(trace.runNonce, captureProcessIdentity(process.pid) ?? '') },
   });
   const server = createWaitRouteServer({ runDirectory: trace.runDirectory, runNonce: trace.runNonce });
   installStdinDisconnectWatcher({

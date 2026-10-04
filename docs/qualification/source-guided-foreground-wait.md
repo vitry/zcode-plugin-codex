@@ -1198,7 +1198,50 @@ Recorded per the 2026-10-03 independent evaluation (handoff §11.2 step 4): each
 
 Relation of the four §6.2 pending P2s (all four now fixed, §6.2 round-73 addendum) to the recorded conclusions: the recorded decisive runs' scripts — as far as the verbatim §7.0/§7.8 call lines and the retained decision counts show — used NO helper declarations, NO regex literals, and NO wrapper-completion-hiding-a-surviving-inner-cell shape, so none of the four defects could have altered those recorded counts. This bound rests on the recorded call lines and counts, not on the deleted raw rollouts. The independent evaluation's boundary stands: measured cap behavior, managed-Child questions, and role-cap propagation keep their §7.3/§7.5 not-proven labels unchanged.
 
-## 8. Hook dispatch, readiness and sequencing (later task placeholder)
+## 8. Hook dispatch, readiness and sequencing (Task 4)
+
+All work below ran 2026-10-04 against the installed **codex-cli 0.160.0** (the pinned source at `67727e7c` supplies the schema/trust facts below and is NOT matched to the binary; installed behavior governs). Isolation per Task 3 (private output dir, fixture-only `CODEX_HOME` with read-only auth copy, isolated `HOME`/`TMPDIR`, exact cleanup on every run). Evidence labels: `fixture-tested` for instrument behavior, `installed-observed` for the live runs.
+
+### 8.0 Pinned source facts (schema and trust)
+
+- `hooks.json` schema: `{hooks: {"UserPromptSubmit": [{matcher?, hooks: [{type: "mcp_tool", server, tool, input?, timeout (SECONDS), statusMessage?}]}]}}` (`codex-rs/config/src/hook_config.rs`, `hooks_tests.rs`).
+- Dispatch gate: a hook handler is pushed only when `enabled && (bypass_hook_trust || Managed|Trusted)`; plugin hooks are `is_managed: false` (`hooks/src/engine/discovery.rs`).
+- `bypass_hook_trust` is a RUNTIME-ONLY invocation override — the CLI flag `--dangerously-bypass-hook-trust` — never a config file setting (`core/src/config/mod.rs`, startup warning on use).
+- Trust state persists in config `[state."<source>:<event>:<group>:<hook-idx>"] {enabled, trusted_hash}`; a non-managed hook without a matching hash is `Untrusted`.
+- `[features] hooks = false` retains ONLY builtin hooks — plugin hooks are dropped entirely (`hooks/src/engine/mod.rs`).
+- Matching same-event handlers run CONCURRENTLY; the source's stated aggregate bound is the maximum configured timeout (`hooks/src/registry.rs`), default per-hook timeout 5 s (`engine/mod.rs`).
+
+### 8.1 Instrument delta (fixture-tested, RED → GREEN)
+
+- New server tool `prompt_hold` (bounded 1–200000 ms, closed invalid-argument failure): records `handler-entered`, `prompt-hold-started {ms}`, `prompt-hold-settled {settlement}`, `handler-completed` — the pending interval and its settlement are durable; settles exactly once through the same deadline/abort/transport-close machinery as `hold_open`, returning a fixed marker.
+- New driver case `hook-hold` with a `--hook-shape` selector: `hold` (trusted: fixture-local trust bypass, NO `--ephemeral` so rollouts persist), `untrusted` (same WITHOUT the bypass flag), `disabled` (fixture `[features] hooks = false`), `unavailable` (the descriptor points at a nonexistent module), `ordering` (TWO same-event hook groups: instant capture + delayed publisher), `timeout` (hook/tool timeout below the hold). `--hook-hold-ms`, `--hook-timeout-sec`, `--hook-tool-timeout-sec` configure the probe.
+- The summary gains a bounded `hook` block (dispatches, entered/settled stamps, settlement, effective hold/bound, `decisionsDuringHold` — the bounded interval-level count of rollout-recorded model decisions inside the pending interval; `null` when rollouts are absent, never a silent zero) and `trace.serverParentOfHost` (`in-host` when the fixture server's recorded startup ppid equals the spawned host pid — the local-versus-executor question OBSERVED, raw pids never retained).
+- Fake-host regressions: fixture shapes (hooks.json variants, broken descriptor, feature off), argument bounds, `prompt_hold` bounds + exactly-once settlement, the trusted hold classification, the three controls, the timeout classification, the ordering classification.
+
+### 8.2 Installed results (installed-observed, codex-cli 0.160.0)
+
+| Run | Shape | Outcome | Key facts |
+| --- | --- | --- | --- |
+| 1 | disabled | `hook-control-disabled` | 0 dispatches; the plugin's MCP server STILL started (`serverStarted: true` — the hooks feature gates hook discovery, not descriptor loading); turn exit-0; rollout: 1 assistant message, 0 tool calls. |
+| 2 | untrusted | `hook-control-untrusted` | 0 dispatches WITHOUT `--dangerously-bypass-hook-trust` — the installed build ENFORCES plugin-hook trust exactly as the source pins; turn proceeded normally. |
+| 3 | unavailable | `hook-control-server-unavailable` | 0 dispatches, server absent; turn exit-0 (fail-open classification). |
+| 4 | ordering | `hook-ordering-concurrent` | The two same-event UserPromptSubmit hooks dispatched CONCURRENTLY (delayed publisher's interval overlapped the instant capture's) — repeated once, consistent. Declaration-order re-sorting is not a fix: the risk is structural. |
+| 5 | timeout (hook 5 s) | inconclusive `hook-timeout-not-observed` | The hook's own `timeout: 5` did NOT cut the hold: it ran its full **30002 ms** and settled at its own deadline. |
+| 6 | timeout (tool 4 s) | inconclusive `hook-timeout-not-observed` | The descriptor's `tool_timeout_sec: 4` did NOT cut the hold either: **30001 ms**. |
+| 7 | decisive 130 s hold | `hook-hold-completed` | ONE dispatch; held exactly **130003 ms**; **`decisionsDuringHold: 0`** (rollout-derived interval check); server `in-host`; cleanup exact (`serverExit: verified-exited`). |
+| 8 | repeats | — | 130 s hold repeat: **129986 ms**, 0 decisions during hold; ordering repeat: overlap true. |
+| 9 | executor scoping | — | `serverParentOfHost: 'in-host'` on a live hold run — the hook server runs as a DIRECT CHILD of the host process (observed, not inferred from the handler label). |
+
+### 8.3 The effective bound (the honest negative)
+
+On the installed 0.160.0 build, NEITHER the per-hook `timeout` (5 s configured) NOR the descriptor's `tool_timeout_sec` (4 s configured) hard-cut a UserPromptSubmit hook's MCP tool call: both holds ran to their tool-declared duration (30002/30001 ms, settlements `deadline`). The Task 1 sketch's source-pinned join `min(hook timeout, server tool timeout)` is therefore NOT what this installed wrapper delivers on this path — the same wrapper-versus-pinned-source divergence Task 3 measured for the shell yields. Consequence for the candidate: the effective wait bound is whatever the hook's TOOL itself bounds (the fixture tool self-bounds at 200000 ms and settles exactly once); a production hold must carry its own explicit deadline and must not rely on either configured timeout. The 130-second awaited hold demonstrates the pending interval is real and bounded by the tool's declaration alone.
+
+### 8.4 Candidate assessment (Task 4 exit)
+
+- **Candidate U (UserPromptSubmit `mcp_tool` hook) is the selected viable entry candidate**: host-dispatched at turn start on the owning session (one dispatch per prompt, zero model involvement — the controls and the in-host server relation pin this), a 130-second awaited hold is supported with ZERO model decisions during the pending interval, and the output receipt is the hook's own settled return feeding the turn's additionalContext (source-pinned route; the turn began only after settlement in every run).
+- **Trust boundary (recorded caveat)**: every dispatching run used the session-flag trust bypass `--dangerously-bypass-hook-trust`. WITHOUT it the installed build classifies the plugin hook `Untrusted` and does not dispatch it (run 2). The persisted-trust approval flow (the `[state]` trusted_hash path) was NOT exercised end-to-end: reproducing the installed build's hash for a fixture hook was judged fragile source-coupling; the bypass is a per-invocation session flag, not a user-config change.
+- Candidates P and O remain at their Task 1 sketches — not advanced (the plan selects at most one candidate), with their authority objections unchanged.
+- **Still open (handed to Tasks 5–6)**: exact per-invocation authority (hook channel provenance vs model-authored inputs), lossless terminal/control result routes, cancellation semantics of a pending hook, and the managed Rescue Child surface (still not-proven, ZCode-host prerequisite). The deploy recommendation of §7.7 is unchanged and remains a human decision.
 
 To be filled by plan Task 4: installed fixture hook discovery/trust, ready-server observation, disabled/untrusted and unavailable-server controls, concurrent same-event ordering demonstration, one 130-second awaited hold on at most one viable candidate, and the measured effective timeout bound (source fact: `min(hook timeout, server tool timeout)`).
 

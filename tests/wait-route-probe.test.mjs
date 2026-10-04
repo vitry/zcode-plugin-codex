@@ -716,6 +716,33 @@ async function writeFakeCodex(directory, mode) {
     '    process.stdout.write(JSON.stringify({ final: ' + JSON.stringify(COMPLETION_MARKER) + ' }) + "\\n");',
     '    process.exit(0);',
     '  }',
+    '  if (mode === "hook-hold" || mode === "hook-hold-abandon" || mode === "hook-ordering") {',
+    `    const { Client } = await import(${JSON.stringify(sdkClientUrl)});`,
+    `    const { StdioClientTransport } = await import(${JSON.stringify(sdkStdioUrl)});`,
+    '    const transport = new StdioClientTransport({',
+    '      command: process.execPath,',
+    '      args: [' + JSON.stringify(serverModulePath) + '],',
+    '      env: { WAIT_ROUTE_PROBE_TRACE: process.env.WAIT_ROUTE_PROBE_TRACE, WAIT_ROUTE_PROBE_NONCE: process.env.WAIT_ROUTE_PROBE_NONCE },',
+    '    });',
+    '    const client = new Client({ name: "wait-route-fake-host", version: "0.0.0" });',
+    '    await client.connect(transport);',
+    '    if (mode === "hook-hold") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: Number(process.env.WAIT_ROUTE_FAKE_HOLD_MS || 1500) } });',
+    '    } else if (mode === "hook-hold-abandon") {',
+    '      const abandoned = client.callTool({ name: "prompt_hold", arguments: { ms: 30000 } });',
+    '      abandoned.catch(() => {});',
+    '      await new Promise((resolve) => setTimeout(resolve, 600));',
+    '      await client.close();',
+    '      process.exit(0);',
+    '    } else {',
+    '      const delayedPublisher = client.callTool({ name: "prompt_hold", arguments: { ms: 2500 } });',
+    '      delayedPublisher.catch(() => {});',
+    '      await client.callTool({ name: "capture_entry", arguments: {} });',
+    '      await delayedPublisher;',
+    '    }',
+    '    await client.close();',
+    '    process.exit(0);',
+    '  }',
     '  if (mode === "entry" || mode === "entry-late-completion" || mode === "entry-then-fail") {',
     `    const { Client } = await import(${JSON.stringify(sdkClientUrl)});`,
     `    const { StdioClientTransport } = await import(${JSON.stringify(sdkStdioUrl)});`,
@@ -1361,7 +1388,7 @@ test('prepare_dependency records a bounded synthetic invocation dependency', asy
 
 test('the driver accepts exactly the documented case labels and bounds', async () => {
   await withTempDirectory(async (parent) => {
-    assert.deepEqual([...CASE_LABELS], ['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control']);
+    assert.deepEqual([...CASE_LABELS], ['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control', 'hook-hold']);
     const codex = join(parent, 'codex');
     await writeFile(codex, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const output = await newRunDirectory(parent);
@@ -1484,6 +1511,187 @@ test('a host error after a completed handler still reports the observed entry fa
     assert.equal(summary.trace.handlerEntered, true, 'the durable handler entry must not be suppressed');
     assert.equal(summary.trace.handlerCompleted, true, 'the durable handler completion must not be suppressed');
     assert.equal(summary.cleanup.isolatedHomeRemoved, true);
+  });
+});
+
+test('the hook-hold fixture shapes write the documented hook and descriptor variants', async () => {
+  await withTempDirectory(async (parent) => {
+    /** A fresh empty output directory for one fixture build. */
+    const newOutput = async (name) => {
+      const dir = join(parent, name);
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    };
+    // The 130 s hold shape: the hook calls prompt_hold with the requested ms
+    // and its own timeout; the descriptor keeps the server tool timeout.
+    const hold = await buildWaitRouteFixture({ outputDir: await newOutput('hold-out'), serverPath: serverModulePath, hookTool: 'prompt_hold', hookTimeoutSec: 200, holdMs: 130_000 });
+    const hooksShape = JSON.parse(await readFile(hold.hooksPath, 'utf8'));
+    const holdHandler = hooksShape.hooks.UserPromptSubmit[0].hooks[0];
+    assert.equal(holdHandler.type, 'mcp_tool');
+    assert.equal(holdHandler.server, 'zcode-wait-route-probe');
+    assert.equal(holdHandler.tool, 'prompt_hold');
+    assert.equal(holdHandler.timeout, 200);
+    assert.equal(holdHandler.input.ms, 130_000);
+    // The ordering shape: TWO matcher groups on the same event — an instant
+    // capture and a delayed publisher — whose dispatches can overlap.
+    const ordering = await buildWaitRouteFixture({ outputDir: await newOutput('ordering-out'), serverPath: serverModulePath, orderingHooks: true });
+    const orderingGroups = JSON.parse(await readFile(ordering.hooksPath, 'utf8')).hooks.UserPromptSubmit;
+    assert.equal(orderingGroups.length, 2);
+    assert.equal(orderingGroups[0].hooks[0].tool, 'capture_entry');
+    assert.equal(orderingGroups[1].hooks[0].tool, 'prompt_hold');
+    // The unavailable-server shape: the descriptor points at a module that
+    // cannot exist, so the server never starts.
+    const unavailable = await buildWaitRouteFixture({ outputDir: await newOutput('unavailable-out'), serverPath: serverModulePath, serverAvailable: false });
+    const descriptor = JSON.parse(await readFile(unavailable.mcpDescriptorPath, 'utf8'));
+    const serverArgs = descriptor.mcpServers['zcode-wait-route-probe'].args;
+    assert.ok(serverArgs[0].endsWith('.missing'), 'the unavailable shape must reference a nonexistent module');
+    // The disabled-hook control: the fixture config turns the hooks feature
+    // OFF (the host then retains only builtin hooks and drops plugin hooks).
+    const home = join(parent, 'home-disabled');
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    const disabled = await writeFixtureConfig({ codexHome: home, hooksFeature: false });
+    assert.match(await readFile(disabled.configPath, 'utf8'), /hooks = false/);
+  });
+});
+
+test('the driver accepts the hook-hold case with its shape and bounds', async () => {
+  await withTempDirectory(async (parent) => {
+    assert.ok(CASE_LABELS.includes('hook-hold'), 'the hook-hold case label is documented');
+    const codex = join(parent, 'codex');
+    await writeFile(codex, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const output = await newRunDirectory(parent);
+    const parsed = parseDriverArguments(['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '200000', '--hook-shape', 'hold', '--hook-hold-ms', '130000', '--hook-timeout-sec', '200', '--hook-tool-timeout-sec', '240']);
+    assert.equal(parsed.caseLabel, 'hook-hold');
+    assert.equal(parsed.hookShape, 'hold');
+    assert.equal(parsed.hookHoldMs, 130_000);
+    assert.equal(parsed.hookTimeoutSec, 200);
+    assert.equal(parsed.hookToolTimeoutSec, 240);
+    for (const argv of [
+      ['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--hook-shape', 'surprise'],
+      ['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--hook-hold-ms', '0'],
+      ['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--hook-hold-ms', '500000'],
+      ['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--hook-timeout-sec', '0'],
+      ['--case', 'hook-hold', '--codex', codex, '--output-dir', output, '--budget-ms', '60000', '--hook-tool-timeout-sec', '1'],
+    ]) {
+      try {
+        parseDriverArguments(argv);
+        assert.fail(`expected ${JSON.stringify(argv)} to be rejected`);
+      } catch (error) {
+        assert.match(String(error.code ?? error.message), /WAIT_ROUTE_DRIVER_/);
+      }
+    }
+  });
+});
+
+test("the server's prompt_hold records bounded hold events and settles exactly once", { timeout: 20_000 }, async () => {
+  const traceDirectory = await mkdtemp(join(tmpdir(), 'wrp-prompt-hold-'));
+  await chmod(traceDirectory, 0o700);
+  const require = createRequire(import.meta.url);
+  const { Client } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/index.js')).href);
+  const { StdioClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [serverModulePath], env: { WAIT_ROUTE_PROBE_TRACE: join(traceDirectory, 'events.jsonl'), WAIT_ROUTE_PROBE_NONCE: HEX_NONCE } });
+  const client = new Client({ name: 'prompt-hold-test', version: '0.0.0' });
+  try {
+    await client.connect(transport);
+    // Tool-level failures resolve as isError results (the MCP tool-error
+    // shape), never as rejections: bounds fail closed without a hold.
+    for (const invalid of [0, 500_000]) {
+      const bad = await client.callTool({ name: 'prompt_hold', arguments: { ms: invalid } });
+      assert.equal(bad.isError, true, `ms=${invalid} must be a tool error`);
+    }
+    // A bounded hold settles exactly once through the durable event.
+    const result = await client.callTool({ name: 'prompt_hold', arguments: { ms: 400 } });
+    assert.notEqual(result.isError, true);
+    assert.ok(JSON.stringify(result).includes('WAIT_ROUTE_PROBE_HOOK_HOLD_SETTLED'), 'the settled hold returns its marker');
+  } finally {
+    await client.close();
+  }
+  const { records } = await readTraceEvents({ runDirectory: traceDirectory });
+  const started = records.filter((record) => record.kind === 'prompt-hold-started');
+  const settled = records.filter((record) => record.kind === 'prompt-hold-settled');
+  assert.equal(started.length, 1, 'exactly one prompt-hold-started for the valid call');
+  assert.equal(settled.length, 1, 'exactly one prompt-hold-settled');
+  assert.equal(settled[0].settlement, 'deadline');
+  assert.equal(started[0].ms, 400);
+  await rm(traceDirectory, { recursive: true, force: true });
+});
+
+test('the hook-hold case classifies a trusted hold against a fake host', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 1_500, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'hook-hold-completed', JSON.stringify(summary));
+    assert.equal(summary.hook.dispatches, 1, 'exactly one hook dispatch of the hold tool');
+    assert.equal(summary.hook.settlement, 'deadline', 'the hold settled at its own declared deadline (the natural full-hold settle)');
+    assert.ok(summary.hook.settledAtMs !== null && summary.hook.enteredAtMs !== null, 'both hold stamps recorded');
+    assert.ok(summary.hook.effectiveHoldMs >= 1_500, 'the hold lasted at least the requested ms');
+    assert.notEqual(summary.hostFlags.includes('--ephemeral'), true, 'the hold case persists rollouts (no ephemeral)');
+    assert.ok(summary.hostFlags.includes('--dangerously-bypass-hook-trust'), 'the trusted shape keeps the fixture-local trust bypass');
+    assert.equal(summary.cleanup.serverExit, 'verified-exited');
+    assert.equal(summary.cleanup.isolatedHomeRemoved, true);
+    // Local versus executor-scoped dispatch is OBSERVED, not inferred from
+    // the handler label: the fixture server's recorded parent pid IS the
+    // (fake) host process that spawned it.
+    assert.equal(summary.trace.serverParentOfHost, 'in-host', 'the hook server runs as a direct child of the host process');
+    assert.ok(!JSON.stringify(summary).includes(output), 'the summary must be redacted of private paths');
+  });
+});
+
+test('the hook-hold controls classify without dispatch', { timeout: 60_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const sourceHome = await newSourceHome(parent);
+    for (const [shape, expectedOutcome] of [
+      ['disabled', 'hook-control-disabled'],
+      ['untrusted', 'hook-control-untrusted'],
+      ['unavailable', 'hook-control-server-unavailable'],
+    ]) {
+      const fakeCodex = await writeFakeCodex(parent, 'hook-plain');
+      const shapeParent = join(parent, `shape-${shape}`);
+      await mkdir(shapeParent, { recursive: true, mode: 0o700 });
+      const output = await newRunDirectory(shapeParent);
+      const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 30_000, sourceCodexHome: sourceHome, hookShape: shape, hookHoldMs: 1_000, hookTimeoutSec: 30 });
+      assert.equal(summary.outcome, expectedOutcome, `${shape}: ${JSON.stringify(summary)}`);
+      assert.equal(summary.hook.dispatches, 0, `${shape}: no synthetic work accepted`);
+      // The FAKE host never spawns the fixture server at all (only the real
+      // host loads the plugin's MCP descriptor), so serverStarted is false in
+      // every fixture control; the INSTALLED runs record the real server
+      // presence per shape (the report carries those observations).
+      assert.equal(summary.trace.serverStarted, false, `${shape}: the fake host starts no server`);
+      if (shape === 'untrusted') {
+        assert.ok(!summary.hostFlags.includes('--dangerously-bypass-hook-trust'), 'the untrusted control runs WITHOUT the trust bypass');
+      }
+    }
+  });
+});
+
+test('the hook-hold timeout shape classifies the hook-budget cut', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-abandon');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'timeout', hookHoldMs: 30_000, hookTimeoutSec: 60 });
+    assert.equal(summary.outcome, 'hook-timeout-observed', JSON.stringify(summary));
+    assert.equal(summary.hook.dispatches, 1, 'the hook dispatched once');
+    assert.notEqual(summary.hook.settlement, 'completed', 'an abandoned hold never reports completed');
+    assert.ok(summary.hook.effectiveBoundMs !== null && summary.hook.effectiveBoundMs < 30_000, 'the effective bound is recorded and far below the requested hold');
+  });
+});
+
+test('the hook-hold ordering shape classifies concurrent same-event dispatch', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    const fakeCodex = await writeFakeCodex(parent, 'hook-ordering');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'ordering', hookHoldMs: 2_500, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'hook-ordering-concurrent', JSON.stringify(summary));
+    assert.equal(summary.hook.dispatches, 1, 'one hold dispatch');
+    assert.equal(summary.hook.overlappingDispatches, true, 'the same-event dispatches overlapped in time');
   });
 });
 

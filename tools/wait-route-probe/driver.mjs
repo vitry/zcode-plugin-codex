@@ -44,7 +44,9 @@ import {
 } from './server.mjs';
 
 /** The documented case labels; the runner accepts exactly these. */
-export const CASE_LABELS = Object.freeze(['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control']);
+export const CASE_LABELS = Object.freeze(['shell-window', 'hook-entry', 'authority', 'lifecycle', 'role-control', 'hook-hold']);
+/** The hook-hold case shapes (Task 4): the trusted hold, its controls, the ordering probe, and the timeout probe. */
+export const HOOK_SHAPES = Object.freeze(['hold', 'untrusted', 'disabled', 'unavailable', 'ordering', 'timeout']);
 /** The custom-tool wrappers whose DSL input is EXECUTED as code (the observed installed shapes); other custom tools' input is data. */
 export const WRAPPER_TOOL_NAMES = Object.freeze(['exec', 'shell']);
 export const BUDGET_MIN_MS = 1_000;
@@ -120,10 +122,11 @@ const HOOK_ENTRY_PROMPT = 'Reply with exactly: ok';
  * @property {string} stage
  * @property {{state: string, code: number|null}} hostExit
  * @property {string[]} hostFlags
- * @property {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, markerObserved: boolean|null, workerLaunches: number|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}} trace
+ * @property {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, markerObserved: boolean|null, workerLaunches: number|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean, serverParentOfHost: string|null}} trace
  * @property {{backgroundTerminalMaxTimeoutMs: number|null, multiAgentFeature: boolean, agentRoles: string[]}} fixture
  * @property {{workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}} requestedProfile
  * @property {SessionSummary|null} session
+ * @property {{shape: string, holdMs: number, hookTimeoutSec: number, toolTimeoutSec: number, dispatches: number, enteredAtMs: number|null, settledAtMs: number|null, settlement: string|null, effectiveHoldMs: number|null, effectiveBoundMs: number|null, decisionsDuringHold: number|null, firstDecisionAtMs: number|null, overlappingDispatches: boolean|null}|undefined} [hook]
  * @property {{marketplaceRemoved: boolean, isolatedHomeRemoved: boolean, serverExit: string, workerExit: string, failures: string[]}} cleanup
  * @property {number} budgetMs
  */
@@ -186,7 +189,7 @@ export function validateShellProfile(profile, caseLabel) {
  * Parses the driver arguments. The four documented flags are required; the
  * Task 3 profile flags are optional and validated with closed codes.
  * @param {string[]} argv
- * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number}}
+ * @returns {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number, backgroundTerminalMaxTimeoutMs: number, hookShape: string, hookHoldMs: number, hookTimeoutSec: number, hookToolTimeoutSec: number}}
  */
 export function parseDriverArguments(argv) {
   /** @type {Record<string, string>} */
@@ -194,6 +197,7 @@ export function parseDriverArguments(argv) {
   const valueFlags = new Set([
     '--case', '--codex', '--output-dir', '--budget-ms',
     '--worker-duration-ms', '--worker-noise-interval-ms', '--exec-yield-ms', '--poll-yield-ms', '--background-terminal-max-timeout-ms',
+    '--hook-shape', '--hook-hold-ms', '--hook-timeout-sec', '--hook-tool-timeout-sec',
   ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -222,7 +226,22 @@ export function parseDriverArguments(argv) {
     pollYieldMs: parsed['--poll-yield-ms'] === undefined ? 0 : Number(parsed['--poll-yield-ms']),
     backgroundTerminalMaxTimeoutMs: parsed['--background-terminal-max-timeout-ms'] === undefined ? 0 : Number(parsed['--background-terminal-max-timeout-ms']),
   }, parsed['--case']);
-  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs, ...profile };
+  // Task 4 hook-hold shape options (defaults keep the single-flag shape).
+  const hookShape = parsed['--hook-shape'] ?? 'hold';
+  if (!HOOK_SHAPES.includes(hookShape)) throw driverError('WAIT_ROUTE_DRIVER_HOOK_SHAPE_INVALID', `--hook-shape must be one of: ${HOOK_SHAPES.join(', ')}.`);
+  const hookHoldMs = parsed['--hook-hold-ms'] === undefined ? 2_000 : Number(parsed['--hook-hold-ms']);
+  if (!Number.isSafeInteger(hookHoldMs) || hookHoldMs < 1_000 || hookHoldMs > 180_000) {
+    throw driverError('WAIT_ROUTE_DRIVER_HOOK_HOLD_INVALID', '--hook-hold-ms must be an integer of 1000 to 180000.');
+  }
+  const hookTimeoutSec = parsed['--hook-timeout-sec'] === undefined ? 15 : Number(parsed['--hook-timeout-sec']);
+  if (!Number.isSafeInteger(hookTimeoutSec) || hookTimeoutSec < 1 || hookTimeoutSec > 600) {
+    throw driverError('WAIT_ROUTE_DRIVER_HOOK_TIMEOUT_INVALID', '--hook-timeout-sec must be an integer of 1 to 600.');
+  }
+  const hookToolTimeoutSec = parsed['--hook-tool-timeout-sec'] === undefined ? 30 : Number(parsed['--hook-tool-timeout-sec']);
+  if (!Number.isSafeInteger(hookToolTimeoutSec) || hookToolTimeoutSec < 2 || hookToolTimeoutSec > 300) {
+    throw driverError('WAIT_ROUTE_DRIVER_HOOK_TOOL_TIMEOUT_INVALID', '--hook-tool-timeout-sec must be an integer of 2 to 300.');
+  }
+  return { caseLabel: parsed['--case'], codexPath: parsed['--codex'], outputDir: parsed['--output-dir'], budgetMs, ...profile, hookShape, hookHoldMs, hookTimeoutSec, hookToolTimeoutSec };
 }
 
 /**
@@ -4428,7 +4447,7 @@ export function buildShellWorkerCommand(nodePath, workerPath, platform = process
 /**
  * Runs the host exec for the selected case. The returned stdout is bounded;
  * stderr is a count only. The observation budget kills the child on expiry.
- * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number, profile: {workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}}} input
+ * @param {{caseLabel: string, codexPath: string, fixture: {workerPath: string}, workspace: string, isolatedTmp: string, isolatedHome: string, codexHome: string, traceDirectory: string, runNonce: string, deadline: number, profile: {workerDurationMs: number, workerNoiseIntervalMs: number, execYieldMs: number, pollYieldMs: number}, hookShape?: string}} input
  */
 async function runHostExec(input) {
   const { caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline, profile } = input;
@@ -4445,6 +4464,14 @@ async function runHostExec(input) {
     // is where the bounded model-decision counting reads from. The rollout
     // never leaves the private run directory (cleanup removes it).
     args = [...EXEC_BASE_FLAGS, ...EPHEMERAL_FLAG, ...EXEC_FLAG_SELECTIONS.hookEntry, ...HOOK_ONLY_FLAGS, '-C', workspace, HOOK_ENTRY_PROMPT];
+  } else if (caseLabel === 'hook-hold') {
+    // Task 4: the hook-hold case runs WITHOUT --ephemeral so the rollouts
+    // persist for the bounded interval-level model-decision check. The
+    // TRUSTED shape keeps the fixture-local trust bypass; the UNTRUSTED
+    // control deliberately drops it (the installed discovery then lists the
+    // hook as Untrusted and does NOT dispatch it).
+    const hookFlags = input.hookShape === 'untrusted' ? [] : HOOK_ONLY_FLAGS;
+    args = [...EXEC_BASE_FLAGS, ...EXEC_FLAG_SELECTIONS.hookEntry, ...hookFlags, '-C', workspace, HOOK_ENTRY_PROMPT];
   } else {
     const workerPath = join(workspace, WORKER_FILE_NAME);
     await writeFile(workerPath, await readFixtureWorker(fixture), { encoding: 'utf8', mode: 0o755 });
@@ -4511,11 +4538,16 @@ async function runHostExec(input) {
  * Runs one selected wait-route probe case to a bounded, redacted summary.
  * Instrument failures throw closed codes; every bounded conclusion (including
  * inconclusive ones naming the missing prerequisite) returns a summary.
- * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string, workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number}} input
+ * @param {{caseLabel: string, codexPath: string, outputDir: string, budgetMs: number, sourceCodexHome?: string, workerDurationMs?: number, workerNoiseIntervalMs?: number, execYieldMs?: number, pollYieldMs?: number, backgroundTerminalMaxTimeoutMs?: number, hookShape?: string, hookHoldMs?: number, hookTimeoutSec?: number, hookToolTimeoutSec?: number}} input
  * @returns {Promise<WaitRouteSummary>}
  */
 export async function runWaitRouteCase(input) {
   const { caseLabel, outputDir, budgetMs } = input;
+  /** Task 4 hook-hold shape options (programmatic defaults match the CLI defaults). */
+  const hookShape = input.hookShape ?? 'hold';
+  const hookHoldMs = input.hookHoldMs ?? 2_000;
+  const hookTimeoutSec = input.hookTimeoutSec ?? 15;
+  const hookToolTimeoutSec = input.hookToolTimeoutSec ?? 30;
   const profile = validateShellProfile({
     workerDurationMs: input.workerDurationMs,
     workerNoiseIntervalMs: input.workerNoiseIntervalMs,
@@ -4555,7 +4587,7 @@ export async function runWaitRouteCase(input) {
     trace: {
       serverStarted: false, handlerEntered: false, handlerCompleted: false, handlerCompletedAtMs: null,
       markerObserved: null, workerLaunches: null, possibleDuplicateLaunch: null, workerLaunchAtMs: null,
-      events: 0, truncated: false,
+      events: 0, truncated: false, serverParentOfHost: null,
     },
     fixture: { backgroundTerminalMaxTimeoutMs: profile.backgroundTerminalMaxTimeoutMs > 0 ? profile.backgroundTerminalMaxTimeoutMs : null, multiAgentFeature: caseLabel === 'role-control', agentRoles: [] },
     requestedProfile: { workerDurationMs: profile.workerDurationMs, workerNoiseIntervalMs: profile.workerNoiseIntervalMs, execYieldMs: profile.execYieldMs, pollYieldMs: profile.pollYieldMs },
@@ -4624,14 +4656,27 @@ export async function runWaitRouteCase(input) {
       codexHome,
       ...(profile.backgroundTerminalMaxTimeoutMs > 0 ? { backgroundTerminalMaxTimeoutMs: profile.backgroundTerminalMaxTimeoutMs } : {}),
       ...(caseLabel === 'role-control' ? { multiAgentFeature: true, agentRoles: syntheticRoles } : {}),
+      // The disabled-hook control turns the discovery feature OFF.
+      ...(caseLabel === 'hook-hold' ? { hooksFeature: hookShape !== 'disabled' } : {}),
     });
 
     const serverModulePath = join(dirname(fileURLToPath(import.meta.url)), 'server.mjs');
-    const fixture = await buildWaitRouteFixture({ outputDir: marketplaceDirectory, serverPath: serverModulePath });
+    const fixture = await buildWaitRouteFixture({
+      outputDir: marketplaceDirectory,
+      serverPath: serverModulePath,
+      ...(caseLabel === 'hook-hold' ? {
+        hookTool: 'prompt_hold',
+        hookTimeoutSec,
+        holdMs: hookHoldMs,
+        toolTimeoutSec: hookToolTimeoutSec,
+        serverAvailable: hookShape !== 'unavailable',
+        orderingHooks: hookShape === 'ordering',
+      } : {}),
+    });
 
     summary.stage = 'install';
     const hostEnv = hostEnvironment(isolatedTmp, isolatedHome, codexHome);
-    if (caseLabel === 'hook-entry') {
+    if (caseLabel === 'hook-entry' || caseLabel === 'hook-hold') {
       const installed = await installProbePlugin(codexPath, marketplaceDirectory, installState, hostEnv, stageDeadline);
       if (!installed) {
         summary.outcome = 'inconclusive';
@@ -4641,18 +4686,30 @@ export async function runWaitRouteCase(input) {
     }
 
     summary.stage = 'exec';
-    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline, profile });
+    const exec = await runHostExec({ caseLabel, codexPath, fixture, workspace, isolatedTmp, isolatedHome, codexHome, traceDirectory, runNonce, deadline: stageDeadline, profile, ...(caseLabel === 'hook-hold' ? { hookShape } : {}) });
     summary.hostExit = exec.hostExit;
     summary.hostFlags = exec.hostFlags;
     // The durable trace facts are read on EVERY post-exec path: observed
     // entry is never suppressed by a host failure, an output overflow, or an
     // expired budget.
     const facts = await readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, exec.hostPid ?? null, profile);
-    summary.trace = { ...summary.trace, ...facts, markerObserved: caseLabel === 'shell-window' || caseLabel === 'role-control' ? exec.stdout.includes(COMPLETION_MARKER) : null };
+    // Local versus executor-scoped dispatch, OBSERVED: the fixture server's
+    // recorded startup ppid compared against the spawned host's pid. An
+    // 'in-host' relation means the server is a direct child of the host
+    // process; raw pids are never retained in the summary (the relation
+    // only).
+    const serverParentOfHost = exec.hostPid != null && facts.serverParentPid != null
+      ? (facts.serverParentPid === exec.hostPid ? 'in-host' : 'other')
+      : null;
+    // The summary carries the RELATION only — the raw server ppid stays in
+    // the durable trace, never in the redacted summary.
+    const { serverParentPid: rawServerParentPid, ...summaryFacts } = facts;
+    void rawServerParentPid;
+    summary.trace = { ...summary.trace, ...summaryFacts, serverParentOfHost, markerObserved: caseLabel === 'shell-window' || caseLabel === 'role-control' ? exec.stdout.includes(COMPLETION_MARKER) : null };
     // Bounded model-decision counting over the isolated home's session
     // rollouts (the shell cases run WITHOUT --ephemeral exactly so this
     // durable record exists); diagnostic only — never a classification gate.
-    if (caseLabel === 'shell-window' || caseLabel === 'role-control') {
+    if (caseLabel === 'shell-window' || caseLabel === 'role-control' || caseLabel === 'hook-hold') {
       summary.session = await summarizeCodexSessions({
         sessionsDirectory: join(codexHome, 'sessions'),
         // The EXACT built worker invocation is the bounded evidence token
@@ -4764,6 +4821,101 @@ export async function runWaitRouteCase(input) {
         summary.reason = 'observation-budget-exhausted';
       } else {
         summary.outcome = 'entry-observed';
+        summary.reason = 'ok';
+      }
+      return summary;
+    }
+    if (caseLabel === 'hook-hold') {
+      // Task 4 classification: the trusted hold, its controls, the ordering
+      // probe, and the timeout probe — each judged from the DURABLE trace
+      // facts and the bounded interval-level model-decision count.
+      const settledWithinBudget = facts.hookSettledAtMs !== null && facts.hookSettledAtMs <= stageDeadline;
+      // The hold's NATURAL completion settles at its own deadline timer
+      // ('deadline'); 'signal-abort' and 'transport-close' are CUT holds.
+      const holdCompletedNaturally = facts.hookSettlement === 'deadline';
+      // Bounded interval-level model-decision count over the persisted
+      // rollouts: decisions timestamped INSIDE the pending hold interval.
+      // Absent rollouts (the fake-host harness) report null — never a
+      // silent zero; present-but-unreadable rollouts downgrade to
+      // inconclusive rather than granting.
+      let decisionsDuringHold = null;
+      let firstDecisionAtMs = null;
+      let rolloutsPresent = false;
+      if (summary.session !== null && summary.session.present === true) {
+        rolloutsPresent = true;
+        if (facts.hookEnteredAtMs !== null && facts.hookSettledAtMs !== null) {
+          decisionsDuringHold = 0;
+          for (const call of summary.session.calls ?? []) {
+            if (typeof call.atMs !== 'number') continue;
+            if (firstDecisionAtMs === null || call.atMs < firstDecisionAtMs) firstDecisionAtMs = call.atMs;
+            if (call.atMs > facts.hookEnteredAtMs && call.atMs < facts.hookSettledAtMs) decisionsDuringHold += 1;
+          }
+        }
+      }
+      const intervalMs = facts.hookEnteredAtMs !== null && facts.hookSettledAtMs !== null ? facts.hookSettledAtMs - facts.hookEnteredAtMs : null;
+      summary.hook = {
+        shape: hookShape,
+        holdMs: hookHoldMs,
+        hookTimeoutSec,
+        toolTimeoutSec: hookToolTimeoutSec,
+        dispatches: facts.hookDispatches,
+        enteredAtMs: facts.hookEnteredAtMs,
+        settledAtMs: facts.hookSettledAtMs,
+        settlement: facts.hookSettlement,
+        effectiveHoldMs: intervalMs,
+        effectiveBoundMs: hookShape === 'timeout' ? intervalMs : null,
+        decisionsDuringHold,
+        firstDecisionAtMs,
+        overlappingDispatches: facts.hookOverlappingDispatches,
+      };
+      if (exec.overflow) {
+        summary.outcome = 'host-error';
+        summary.reason = 'output-overflow';
+      } else if (exec.hostExit.state !== 'exit-0') {
+        summary.outcome = 'host-error';
+        summary.reason = 'exec-failed';
+      } else if (hookShape === 'hold') {
+        if (facts.hookDispatches !== 1 || !holdCompletedNaturally || !settledWithinBudget) {
+          summary.outcome = 'inconclusive';
+          summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'hook-hold-incomplete';
+        } else if (rolloutsPresent && decisionsDuringHold === null) {
+          summary.outcome = 'inconclusive';
+          summary.reason = 'hold-interval-evidence-missing';
+        } else if (decisionsDuringHold !== null && decisionsDuringHold > 0) {
+          summary.outcome = 'inconclusive';
+          summary.reason = 'model-decisions-during-hold';
+        } else {
+          summary.outcome = 'hook-hold-completed';
+          summary.reason = 'ok';
+        }
+      } else if (hookShape === 'timeout') {
+        if (facts.hookDispatches !== 1 || holdCompletedNaturally) {
+          summary.outcome = 'inconclusive';
+          summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'hook-timeout-not-observed';
+        } else {
+          summary.outcome = 'hook-timeout-observed';
+          summary.reason = 'ok';
+        }
+      } else if (hookShape === 'ordering') {
+        if (facts.hookDispatches !== 1 || facts.hookOverlappingDispatches !== true) {
+          summary.outcome = 'inconclusive';
+          summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'same-event-dispatchs-serialized';
+        } else {
+          summary.outcome = 'hook-ordering-concurrent';
+          summary.reason = 'ok';
+        }
+      } else if (facts.hookDispatches !== 0) {
+        // The controls accept NO synthetic work: any dispatch is a failure
+        // of the control, not a pass.
+        summary.outcome = 'inconclusive';
+        summary.reason = `control-dispatched-${hookShape}`;
+      } else if (hookShape === 'unavailable' && facts.serverStarted) {
+        summary.outcome = 'inconclusive';
+        summary.reason = 'unavailable-server-started';
+      } else {
+        summary.outcome = hookShape === 'disabled' ? 'hook-control-disabled'
+          : hookShape === 'untrusted' ? 'hook-control-untrusted'
+            : 'hook-control-server-unavailable';
         summary.reason = 'ok';
       }
       return summary;
@@ -4905,17 +5057,20 @@ export async function runWaitRouteCase(input) {
  * paths. The marker observation is the caller's (it comes from the bounded
  * host stdout, not the trace).
  * @param {string} caseLabel @param {string} traceDirectory @param {string} workspace @param {string} runNonce @param {number|null} caseHostPid @param {{workerDurationMs: number, workerNoiseIntervalMs: number}} profile
- * @returns {Promise<{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}>}
+ * @returns {Promise<{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean, hookDispatches: number, hookEnteredAtMs: number|null, hookSettledAtMs: number|null, hookSettlement: string|null, hookOverlappingDispatches: boolean|null, serverParentPid: number|null}>}
  */
 async function readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, caseHostPid, profile) {
   const { records, truncated } = await readTraceEvents({ runDirectory: traceDirectory, runNonce });
   let handlerCompletedAtMs = null;
+  let serverParentPid = null;
   for (const record of records) {
     if (record.kind === 'handler-completed' && typeof record.at === 'number') handlerCompletedAtMs = record.at;
+    if (record.kind === 'server-started' && typeof record.parentPid === 'number') serverParentPid = record.parentPid;
   }
-  /** @type {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean}} */
+  /** @type {{serverStarted: boolean, handlerEntered: boolean, handlerCompleted: boolean, handlerCompletedAtMs: number|null, workerLaunches: number|null, workerLaunchesTruncated: boolean, workerLaunchesIncomplete: boolean, workerProfileMatches: boolean|null, possibleDuplicateLaunch: boolean|null, workerLaunchAtMs: number|null, events: number, truncated: boolean, hookDispatches: number, hookEnteredAtMs: number|null, hookSettledAtMs: number|null, hookSettlement: string|null, hookOverlappingDispatches: boolean|null, serverParentPid: number|null}} */
   const facts = {
     serverStarted: records.some((record) => record.kind === 'server-started'),
+    serverParentPid,
     handlerEntered: records.some((record) => record.kind === 'handler-entered'),
     handlerCompleted: records.some((record) => record.kind === 'handler-completed'),
     handlerCompletedAtMs,
@@ -4927,7 +5082,44 @@ async function readTraceFacts(caseLabel, traceDirectory, workspace, runNonce, ca
     workerLaunchAtMs: null,
     events: records.length,
     truncated,
+    hookDispatches: 0,
+    hookEnteredAtMs: null,
+    hookSettledAtMs: null,
+    hookSettlement: null,
+    hookOverlappingDispatches: null,
   };
+  // Task 4 hook facts: per-call entered/completed intervals by callNonce,
+  // the prompt-hold dispatch and settlement stamps, and whether two
+  // same-event dispatch intervals OVERLAPPED in time (the concurrency probe).
+  const enteredByNonce = new Map();
+  /** @type {{enteredAtMs: number|null, completedAtMs: number|null}[]} */
+  const hookIntervals = [];
+  for (const record of records) {
+    if (record.kind === 'handler-entered' && typeof record.callNonce === 'string') {
+      enteredByNonce.set(record.callNonce, typeof record.at === 'number' ? record.at : null);
+    } else if (record.kind === 'handler-completed' && typeof record.callNonce === 'string' && enteredByNonce.has(record.callNonce)) {
+      hookIntervals.push({ enteredAtMs: enteredByNonce.get(record.callNonce) ?? null, completedAtMs: typeof record.at === 'number' ? record.at : null });
+    } else if (record.kind === 'prompt-hold-started') {
+      facts.hookDispatches += 1;
+      if (facts.hookEnteredAtMs === null && typeof record.at === 'number') facts.hookEnteredAtMs = record.at;
+    } else if (record.kind === 'prompt-hold-settled') {
+      if (typeof record.at === 'number') facts.hookSettledAtMs = record.at;
+      if (typeof record.settlement === 'string') facts.hookSettlement = record.settlement;
+    }
+  }
+  if (hookIntervals.length >= 2) {
+    facts.hookOverlappingDispatches = hookIntervals.some((left, leftIndex) => hookIntervals.some((right, rightIndex) => leftIndex !== rightIndex
+      && left.enteredAtMs !== null && left.completedAtMs !== null
+      && right.enteredAtMs !== null && right.completedAtMs !== null
+      && right.enteredAtMs < left.completedAtMs && left.enteredAtMs < right.completedAtMs));
+  }
+  // The interval stamps come from the handler pair (the dispatch itself),
+  // which brackets the prompt-hold events.
+  if (hookIntervals.length > 0) {
+    const first = hookIntervals[0];
+    if (facts.hookEnteredAtMs === null) facts.hookEnteredAtMs = first.enteredAtMs;
+    if (facts.hookSettledAtMs === null) facts.hookSettledAtMs = first.completedAtMs;
+  }
   if (caseLabel === 'shell-window' || caseLabel === 'role-control') {
     const { records: launchRecords, truncated: workerLaunchesTruncated, incomplete: workerLaunchesIncomplete } = await readWorkerLaunchRecords(join(workspace, 'worker-launches.jsonl'));
     // Own each recorded worker's separate group from the moment it is known,

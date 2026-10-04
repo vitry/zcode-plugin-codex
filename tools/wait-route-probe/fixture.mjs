@@ -22,6 +22,13 @@ export const SERVER_NAME = 'zcode-wait-route-probe';
 export const CAPTURE_TOOL_NAME = 'capture_entry';
 export const HOLD_TOOL_NAME = 'hold_open';
 export const DEPENDENCY_TOOL_NAME = 'prepare_dependency';
+/**
+ * The Task 4 hook-hold tool: a bounded hold used as the UserPromptSubmit
+ * hook's pending work. Its bound is far above the shell lifetimes (the
+ * decisive 130-second awaited hold) but still a CLOSED fixture bound.
+ */
+export const PROMPT_HOLD_TOOL_NAME = 'prompt_hold';
+export const MAXIMUM_PROMPT_HOLD_MS = 200_000;
 /** The fixed completion marker printed by the harmless fixture worker. */
 export const COMPLETION_MARKER = 'WAIT_ROUTE_PROBE_WORKER_DONE';
 /**
@@ -141,7 +148,7 @@ async function validateServerPath(server) {
  *     <outputDir>/plugins/<PLUGIN_NAME>/skills/wait-route/{SKILL.md,agents/openai.yaml}
  *     <outputDir>/plugins/<PLUGIN_NAME>/workers/<WORKER_FILE_NAME>
  *
- * @param {{outputDir: string, serverPath: string, toolTimeoutSec?: number}} input
+ * @param {{outputDir: string, serverPath: string, toolTimeoutSec?: number, hookTool?: string, hookTimeoutSec?: number, holdMs?: number, serverAvailable?: boolean, orderingHooks?: boolean}} input
  * @returns {Promise<{outputDir: string, pluginRoot: string, marketplacePath: string, pluginDescriptorPath: string, mcpDescriptorPath: string, hooksPath: string, skillPath: string, workerPath: string}>}
  */
 export async function buildWaitRouteFixture(input) {
@@ -150,6 +157,21 @@ export async function buildWaitRouteFixture(input) {
   if (!Number.isSafeInteger(toolTimeoutSec) || toolTimeoutSec < 2 || toolTimeoutSec > 300) {
     throw fixtureError('WAIT_ROUTE_FIXTURE_TOOL_TIMEOUT_INVALID', 'toolTimeoutSec must be an integer of 2 to 300 seconds.');
   }
+  // Task 4 hook-shape options (all fixture-only):
+  const hookTool = input.hookTool ?? CAPTURE_TOOL_NAME;
+  if (hookTool !== CAPTURE_TOOL_NAME && hookTool !== PROMPT_HOLD_TOOL_NAME) {
+    throw fixtureError('WAIT_ROUTE_FIXTURE_HOOK_TOOL_INVALID', 'hookTool must be capture_entry or prompt_hold.');
+  }
+  const hookTimeoutSec = input.hookTimeoutSec ?? HOOK_TIMEOUT_SEC;
+  if (!Number.isSafeInteger(hookTimeoutSec) || hookTimeoutSec < 1 || hookTimeoutSec > 600) {
+    throw fixtureError('WAIT_ROUTE_FIXTURE_HOOK_TIMEOUT_INVALID', 'hookTimeoutSec must be an integer of 1 to 600 seconds.');
+  }
+  const holdMs = input.holdMs ?? CAPTURE_HOLD_MS;
+  if (!Number.isSafeInteger(holdMs) || holdMs < 1 || holdMs > MAXIMUM_PROMPT_HOLD_MS) {
+    throw fixtureError('WAIT_ROUTE_FIXTURE_HOLD_INVALID', `holdMs must be an integer of 1 to ${MAXIMUM_PROMPT_HOLD_MS}.`);
+  }
+  const serverAvailable = input.serverAvailable !== false;
+  const orderingHooks = input.orderingHooks === true;
   await validateServerPath(serverPath);
   await validateOutputDirectory(outputDir);
   const pluginRoot = join(outputDir, 'plugins', PLUGIN_NAME);
@@ -196,7 +218,9 @@ export async function buildWaitRouteFixture(input) {
     mcpServers: {
       [SERVER_NAME]: {
         command: process.execPath,
-        args: [serverPath],
+        // The unavailable-server control points at a module that cannot
+        // exist: the spawn fails and the server never starts.
+        args: [serverAvailable ? serverPath : `${serverPath}.missing`],
         cwd: '.',
         enabled: true,
         env_vars: [...TRACE_ENV_NAMES],
@@ -205,12 +229,24 @@ export async function buildWaitRouteFixture(input) {
       },
     },
   };
+  /** One mcp_tool hook handler bound to the fixture server. @param {string} tool */
+  const hookHandler = (tool) => ({
+    type: 'mcp_tool',
+    server: SERVER_NAME,
+    tool,
+    ...(tool === PROMPT_HOLD_TOOL_NAME ? { input: { ms: holdMs } } : { input: {} }),
+    timeout: hookTimeoutSec,
+  });
+  // The ordering shape declares TWO matcher groups on the same event: the
+  // matching handlers run CONCURRENTLY (source-pinned engine semantics), so
+  // a delayed synthetic authority publisher can overlap the instant capture.
+  const userPromptSubmitGroups = orderingHooks
+    ? [{ hooks: [hookHandler(CAPTURE_TOOL_NAME)] }, { hooks: [hookHandler(PROMPT_HOLD_TOOL_NAME)] }]
+    : [{ hooks: [hookHandler(hookTool)] }];
   const hooks = {
     description: 'Disposable fixture-only wait-route probe hook. Never installed outside the private probe marketplace.',
     hooks: {
-      UserPromptSubmit: [
-        { hooks: [{ type: 'mcp_tool', server: SERVER_NAME, tool: CAPTURE_TOOL_NAME, input: {}, timeout: HOOK_TIMEOUT_SEC }] },
-      ],
+      UserPromptSubmit: userPromptSubmitGroups,
     },
   };
   const marketplacePath = join(outputDir, '.agents', 'plugins', 'marketplace.json');
@@ -451,7 +487,7 @@ export async function buildWaitRouteFixture(input) {
  *
  * Refuses to overwrite an existing config so a real user config can never be
  * touched through this seam.
- * @param {{codexHome: string, backgroundTerminalMaxTimeoutMs?: number, multiAgentFeature?: boolean, agentRoles?: {name: string, description: string, configPath: string}[]}} input
+ * @param {{codexHome: string, backgroundTerminalMaxTimeoutMs?: number, multiAgentFeature?: boolean, agentRoles?: {name: string, description: string, configPath: string}[], hooksFeature?: boolean}} input
  * @returns {Promise<{configPath: string, backgroundTerminalMaxTimeoutMs: number|null, multiAgentFeature: boolean, agentRoles: string[]}>}
  */
 export async function writeFixtureConfig(input) {
@@ -483,9 +519,10 @@ export async function writeFixtureConfig(input) {
     // is written before the [features] and [agents.*] tables.
     ...(cap !== null ? ['# Raised empty-poll ceiling (fixture-only; the runtime floor is 5000 ms).', `background_terminal_max_timeout = ${cap}`] : []),
     '',
-    '# This enables the host feature that discovers plugin hooks.',
+    '# This controls the host feature that discovers plugin hooks (the',
+    '# disabled-hook control writes false: the host retains only builtin hooks).',
     '[features]',
-    'hooks = true',
+    `hooks = ${input.hooksFeature === false ? 'false' : 'true'}`,
     ...(input.multiAgentFeature ? ['multi_agent = true'] : []),
     ...roles.flatMap((role) => [
       '',
