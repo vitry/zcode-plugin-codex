@@ -1062,6 +1062,8 @@ The driver owns exactly: its own spawned host commands (each spawned detached in
 
 Task 3 can proceed independently: the shell smoke passed with exact cleanup, and the driver already supports `--case shell-window --budget-ms 600000` for the 420-second profiles. The hook-entry result enables Task 4's MCP work (installed `mcp_tool` hook dispatch to a model-hidden capture tool on the owning session is proven at transport/entry level); it does not by itself qualify ordering, readiness controls, authority, terminal delivery, or timeouts.
 
+Seventy-seventh codex round (contract-scoped adversarial review of the Task 4 commit `47addbf`; one medium finding, IN-CONTRACT, fixed 2026-10-04): the interval `decisionsDuringHold` counter ignored `session.truncated`/`callsTruncated` — a present-but-torn rollout (present with zero readable calls) recorded ZERO decisions and GRANTED `hook-hold-completed` (reviewer's read-only reproduction). GREEN — the grant now requires COMPLETE rollout and sample coverage; truncated coverage is `hold-interval-evidence-missing` (regression: the fake host writes a torn rollout; the case is inconclusive). Also record here: the round's re-review of the Task 4+5 state follows in §6.2's next entry.
+
 ## 7. Configured-shell measurements (Task 3)
 
 All work below ran 2026-10-02 in the dedicated worktree. Evidence labels: instrument behavior is `fixture-tested`; the runs against the installed CLI are `installed-observed`; the managed-Child and role-propagation questions end `not-proven` with their exact reasons. Nothing was applied to user configuration or shipped Skills.
@@ -1215,7 +1217,7 @@ All work below ran 2026-10-04 against the installed **codex-cli 0.160.0** (the p
 
 - New server tool `prompt_hold` (bounded 1–200000 ms, closed invalid-argument failure): records `handler-entered`, `prompt-hold-started {ms}`, `prompt-hold-settled {settlement}`, `handler-completed` — the pending interval and its settlement are durable; settles exactly once through the same deadline/abort/transport-close machinery as `hold_open`, returning a fixed marker.
 - New driver case `hook-hold` with a `--hook-shape` selector: `hold` (trusted: fixture-local trust bypass, NO `--ephemeral` so rollouts persist), `untrusted` (same WITHOUT the bypass flag), `disabled` (fixture `[features] hooks = false`), `unavailable` (the descriptor points at a nonexistent module), `ordering` (TWO same-event hook groups: instant capture + delayed publisher), `timeout` (hook/tool timeout below the hold). `--hook-hold-ms`, `--hook-timeout-sec`, `--hook-tool-timeout-sec` configure the probe.
-- The summary gains a bounded `hook` block (dispatches, entered/settled stamps, settlement, effective hold/bound, `decisionsDuringHold` — the bounded interval-level count of rollout-recorded model decisions inside the pending interval; `null` when rollouts are absent, never a silent zero) and `trace.serverParentOfHost` (`in-host` when the fixture server's recorded startup ppid equals the spawned host pid — the local-versus-executor question OBSERVED, raw pids never retained).
+- The summary gains a bounded `hook` block (dispatches, entered/settled stamps, settlement, effective hold/bound, `decisionsDuringHold` — the bounded interval-level count of rollout-recorded model decisions inside the pending interval; `null` when rollouts are absent, never a silent zero; asserted only over COMPLETE rollout and sample coverage — a truncated or sample-truncated rollout is fail-closed inconclusive, the round-77 review finding) and `trace.serverParentOfHost` (`in-host` when the fixture server's recorded startup ppid equals the spawned host pid — the local-versus-executor question OBSERVED, raw pids never retained).
 - Fake-host regressions: fixture shapes (hooks.json variants, broken descriptor, feature off), argument bounds, `prompt_hold` bounds + exactly-once settlement, the trusted hold classification, the three controls, the timeout classification, the ordering classification.
 
 ### 8.2 Installed results (installed-observed, codex-cli 0.160.0)
@@ -1245,7 +1247,44 @@ On the installed 0.160.0 build, NEITHER the per-hook `timeout` (5 s configured) 
 
 To be filled by plan Task 4: installed fixture hook discovery/trust, ready-server observation, disabled/untrusted and unavailable-server controls, concurrent same-event ordering demonstration, one 130-second awaited hold on at most one viable candidate, and the measured effective timeout bound (source fact: `min(hook timeout, server tool timeout)`).
 
-## 9. Authority join (later task placeholder)
+## 9. Authority join (Task 5)
+
+Recorded 2026-10-04, against the REAL production identity/preparation/binding stores (no weakening of any atomic check) and the installed 0.160.0 facts of §8. Evidence labels: `fixture-tested` for the store/transport controls, `installed-observed` where an installed run carried the fact, **not-proven** where no seam exists.
+
+### 9.1 Store-level negative admission (fixture-tested, through the locked consumption seam)
+
+One exhaustive block drives the REAL `createRescuePreparationStore` through every mismatched admission shape; each refusal carries its closed code and leaves the preparation UNCONSUMED — a later exact-admission consume still succeeds, proving no refusal ever consumed or reserved anything:
+
+| Plan shape | Seam behavior (real store) | Result |
+| --- | --- | --- |
+| Missing issuer / unknown identity | The preparation is KEYED by the exact (session, turn, workspace) identity: a consume presenting a different session finds NO record (`RESCUE_PREPARATION_NOT_FOUND`). | Rejected, not-proven-free |
+| Mismatched thread/session join | The turn is part of the storage key: a foreign/stale turn is record-invisible (`RESCUE_PREPARATION_NOT_FOUND`). | Rejected |
+| Cross-workspace | Storage is per-workspace: a consume from another workspace finds nothing (`RESCUE_PREPARATION_NOT_FOUND`). | Rejected |
+| Changed permissions | Same key, different permission mode → `RESCUE_PREPARATION_MISMATCH`. | Rejected |
+| Wrong foregroundAdapter | Transport revalidation INSIDE the lock, before every reservation → `RESCUE_FOREGROUND_ADAPTER_MISMATCH`, non-consuming. | Rejected |
+| Wrong Child | The activation-bound executor id is required; a different executor → `RESCUE_PREPARATION_MISMATCH`. | Rejected |
+| Stale issuing turn | Past expiry (with everything else exact) → `RESCUE_PREPARATION_EXPIRED`. | Rejected |
+| Duplicate / concurrent consume | The second consume → `RESCUE_PREPARATION_CONSUMED`. | Rejected |
+
+Sibling production coverage is retained and cited, not recreated: `tests/rescue-preparation.test.mjs` (1727 lines: single-consume, adapter binding, expiry, pending-fresh replan, activation proofs), `tests/rescue-binding.test.mjs` (2514 lines: binding/partition/authority records, executor binding), `tests/mcp-result.test.mjs` (all result categories through `formatDirectInvocationSuccess`/`formatDirectInvocationError`: terminal, PluginError, status snapshot, queued background, needs-choice, parent-replan).
+
+### 9.2 Non-hook impersonation control (fixture-tested) and the authority verdict
+
+The bounded control delivers otherwise-matching identity/event arguments through a distinct NON-hook ingress (a direct MCP tool call) carrying FORGED host thread/turn metadata: the transport layer records the identical handler-entry and identity evidence either way — nothing in the delivered fields can prove hook provenance (test: `a non-hook ingress carrying forged host identity is indistinguishable at the transport`).
+
+The replay to the candidate's REAL admission boundary is impossible: the admission boundary for hook dispatch lives inside the installed CLI (the hook executor and its trust gate, §8.0), and reaching it with a non-hook ingress would require writing NEW production admission code — which this investigation must not do. Per the plan's own rule ("if the replay cannot be delivered to the same candidate so only a parser mock was tested, mark that authority requirement not-proven and do not qualify the candidate"):
+
+**The exact per-invocation authority requirement for Candidate U is NOT-PROVEN, and Candidate U is therefore NOT qualified as a production direct-invocation route.** Matching threadId/turn_id metadata, caller-supplied `_meta`, or the model-hidden discovery policy alone must not — and in the production seams above, cannot — establish admission. What remains demonstrated: the hook channel's entry/hold/zero-decision behavior (§8), and the production stores' exact one-shot admission for the channels that DO present the full join.
+
+### 9.3 Result route and placement citations
+
+- Lossless terminal/control delivery through the hook channel is NOT demonstrated: the UserPromptSubmit route is text-only additionalContext (source-pinned; §5.1) — no terminal result, no control continuity. Candidate U stays unqualified on the presentation half as well.
+- The four Rescue placement branches, Review/adversarial-review background semantics, and Status `--wait` targeting are covered by the existing production suites (`tests/rescue-route-planner.test.mjs`, `tests/rescue-launcher*.test.mjs`, `tests/background-*.test.mjs` equivalents in the routine list, `tests/rescue-lifecycle.test.mjs`, `tests/mcp-lifecycle-controller.test.mjs`); the shared-seam parity gate for this task ran green (§9.4). Private task content stays out of process argv, hook output, agent messages, and retained logs by the existing redaction tests.
+- **Task 5 exit (as the plan defines it): a clearly recorded authority/presentation limitation.** No production admission seam was weakened; no new binding format was invented; the candidate is unqualified rather than the check relaxed.
+
+### 9.4 Focused parity gate (fixture-tested)
+
+`node --test tests/wait-route-probe.test.mjs tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/mcp-result.test.mjs` — all pass at the Task 5 commit (counts in §14).
 
 To be filled by plan Task 5: negative controls on real identity/preparation/binding stores, the non-hook ingress impersonation control, locked consumption seam, result-category parity through the existing formatter, and the four Rescue placement branches.
 

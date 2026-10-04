@@ -66,6 +66,7 @@ import {
   settleOwnedTarget,
   summarizeCodexSessions,
 } from '../tools/wait-route-probe/driver.mjs';
+import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 
 const HEX_NONCE = 'a'.repeat(64);
 const posix = process.platform !== 'win32';
@@ -716,7 +717,7 @@ async function writeFakeCodex(directory, mode) {
     '    process.stdout.write(JSON.stringify({ final: ' + JSON.stringify(COMPLETION_MARKER) + ' }) + "\\n");',
     '    process.exit(0);',
     '  }',
-    '  if (mode === "hook-hold" || mode === "hook-hold-abandon" || mode === "hook-ordering") {',
+    '  if (mode === "hook-hold" || mode === "hook-hold-abandon" || mode === "hook-ordering" || mode === "hook-hold-torn-rollout") {',
     `    const { Client } = await import(${JSON.stringify(sdkClientUrl)});`,
     `    const { StdioClientTransport } = await import(${JSON.stringify(sdkStdioUrl)});`,
     '    const transport = new StdioClientTransport({',
@@ -728,6 +729,16 @@ async function writeFakeCodex(directory, mode) {
     '    await client.connect(transport);',
     '    if (mode === "hook-hold") {',
     '      await client.callTool({ name: "prompt_hold", arguments: { ms: Number(process.env.WAIT_ROUTE_FAKE_HOLD_MS || 1500) } });',
+    '    } else if (mode === "hook-hold-torn-rollout") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 1200 } });',
+    '      await client.close();',
+    '      // A TORN rollout in the isolated home: present but unreadable — the',
+    '      // interval decision count must refuse to assert zero from it.',
+    '      const { mkdir, writeFile } = await import("node:fs/promises");',
+    '      const dir = process.env.CODEX_HOME + "/sessions";',
+    '      await mkdir(dir, { recursive: true });',
+    '      await writeFile(dir + "/rollout-torn.jsonl", \'{"timestamp":"2026-10-04T00:00:00Z","type":"response_item","payload":{"type":"cu\', "utf8");',
+    '      process.exit(0);',
     '    } else if (mode === "hook-hold-abandon") {',
     '      const abandoned = client.callTool({ name: "prompt_hold", arguments: { ms: 30000 } });',
     '      abandoned.catch(() => {});',
@@ -1616,6 +1627,46 @@ test("the server's prompt_hold records bounded hold events and settles exactly o
   await rm(traceDirectory, { recursive: true, force: true });
 });
 
+test('a non-hook ingress carrying forged host identity is indistinguishable at the transport', { timeout: 20_000 }, async () => {
+  // Task 5 impersonation control: deliver OTHERWISE MATCHING identity/event
+  // arguments through a distinct NON-hook ingress (a direct MCP tool call —
+  // no hook channel, no per-invocation authority) with FORGED host thread/turn
+  // metadata. The transport layer records the identical handler-entry and
+  // identity evidence either way: nothing in the delivered fields can prove
+  // hook provenance. The REAL admission boundary is host-side (the hook
+  // executor inside the installed CLI) and cannot be reached by a replay
+  // without production changes, so the exact-authority requirement for the
+  // hook candidate is recorded NOT-PROVEN (report §9) — this control is the
+  // transport-layer demonstration supporting that verdict.
+  const traceDirectory = await mkdtemp(join(tmpdir(), 'wrp-impersonation-'));
+  await chmod(traceDirectory, 0o700);
+  const require = createRequire(import.meta.url);
+  const { Client } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/index.js')).href);
+  const { StdioClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [serverModulePath], env: { WAIT_ROUTE_PROBE_TRACE: join(traceDirectory, 'events.jsonl'), WAIT_ROUTE_PROBE_NONCE: HEX_NONCE } });
+  const client = new Client({ name: 'non-hook-impersonation', version: '0.0.0' });
+  try {
+    await client.connect(transport);
+    // The same _meta shape the host hook template expands — here authored by
+    // the caller, not the host.
+    const result = await client.callTool({
+      name: 'capture_entry',
+      arguments: {},
+      _meta: { threadId: 'forged-thread', 'x-codex-turn-metadata': { thread_id: 'forged-thread', turn_id: 'forged-turn' } },
+    });
+    assert.notEqual(result.isError, true, 'the direct non-hook call succeeds identically');
+  } finally {
+    await client.close();
+  }
+  const { records } = await readTraceEvents({ runDirectory: traceDirectory });
+  const identity = records.find((record) => record.kind === 'handler-identity');
+  assert.ok(identity, 'the forged identity was recorded as handler evidence');
+  assert.match(identity.threadHash, /^[0-9a-f]{64}$/, 'the forged thread id is fingerprinted like a genuine one');
+  assert.match(identity.turnHash, /^[0-9a-f]{64}$/, 'the forged turn id is fingerprinted like a genuine one');
+  assert.ok(identity.metaFieldNames.includes('x-codex-turn-metadata'), 'the forged metadata shape reaches the transport layer');
+  await rm(traceDirectory, { recursive: true, force: true });
+});
+
 test('the hook-hold case classifies a trusted hold against a fake host', { timeout: 40_000 }, async (t) => {
   if (skipFakeHostOnWindows(t)) return;
   await withTempDirectory(async (parent) => {
@@ -1637,6 +1688,21 @@ test('the hook-hold case classifies a trusted hold against a fake host', { timeo
     // (fake) host process that spawned it.
     assert.equal(summary.trace.serverParentOfHost, 'in-host', 'the hook server runs as a direct child of the host process');
     assert.ok(!JSON.stringify(summary).includes(output), 'the summary must be redacted of private paths');
+  });
+});
+
+test('a torn rollout never qualifies the hold interval', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // The interval zero-decision assertion requires COMPLETE rollout and
+    // sample coverage: a present-but-torn rollout is fail-closed evidence —
+    // inconclusive, never a granted hook-hold-completed.
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-torn-rollout');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 2_000, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hold-interval-evidence-missing');
   });
 });
 
@@ -1692,6 +1758,65 @@ test('the hook-hold ordering shape classifies concurrent same-event dispatch', {
     assert.equal(summary.outcome, 'hook-ordering-concurrent', JSON.stringify(summary));
     assert.equal(summary.hook.dispatches, 1, 'one hold dispatch');
     assert.equal(summary.hook.overlappingDispatches, true, 'the same-event dispatches overlapped in time');
+  });
+});
+
+test('the real preparation store refuses every mismatched admission shape without consuming', async () => {
+  await withTempDirectory(async (parent) => {
+    // Task 5 negative admission block, driven through the REAL production
+    // preparation store (the locked consumption seam): every mismatched
+    // shape is rejected with its closed code, and each rejection leaves the
+    // preparation UNCONSUMED — a later exact-admission consume still
+    // succeeds, proving no reservation happened on any refusal.
+    const store = createRescuePreparationStore({ dataRoot: join(parent, 'plugin-data') });
+    const now = new Date('2026-10-04T00:00:00.000Z');
+    // The store resolves workspaces through realpath: both probe workspaces
+    // must exist.
+    await mkdir(join(parent, 'ws-a'), { recursive: true, mode: 0o700 });
+    await mkdir(join(parent, 'ws-b'), { recursive: true, mode: 0o700 });
+    // Every consume presents the consuming Child's executor id (part of the
+    // caller identity); the save binds it through the activation.
+    const base = { sessionId: 'probe-parent', turnId: 'probe-turn', workspace: join(parent, 'ws-a'), permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue probe task', now, executorAgentId: 'rescue-child' };
+    const envelope = {
+      version: 5,
+      source: 'explicit',
+      task: 'probe admission negative',
+      options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'resume' },
+      continuationTarget: null,
+    };
+    await store.save({ ...base, envelope, activation: { kind: 'reactivate', executorAgentId: 'rescue-child', agentPathDigest: 'b'.repeat(64) } });
+    /** A refusal must carry the exact closed code. */
+    const refused = async (promise, code) => {
+      await assert.rejects(promise, (error) => error.code === code);
+    };
+    // Unknown key (the 'missing issuer' shape): the preparation is keyed by
+    // the exact (session, turn, workspace) identity, so a consume presenting
+    // a different session finds NO record at all.
+    await refused(store.consume({ ...base, sessionId: 'probe-other' }), 'RESCUE_PREPARATION_NOT_FOUND');
+    // Mismatched turn identity: the turn is part of the storage key, so a
+    // stale or foreign turn is record-invisible (never a silent pass).
+    await refused(store.consume({ ...base, turnId: 'probe-other-turn' }), 'RESCUE_PREPARATION_NOT_FOUND');
+    // Cross-workspace: the preparation is stored per-workspace, so a
+    // consume from another workspace finds NOTHING (record-invisible).
+    await refused(store.consume({ ...base, workspace: join(parent, 'ws-b') }), 'RESCUE_PREPARATION_NOT_FOUND');
+    await refused(store.consume({ ...base, permissionMode: 'bypassPermissions' }), 'RESCUE_PREPARATION_MISMATCH');
+    // Wrong foreground adapter: the transport revalidation precedes every
+    // reservation and is NON-consuming.
+    await refused(store.consume({ ...base, expectedForegroundAdapter: 'mcp' }), 'RESCUE_FOREGROUND_ADAPTER_MISMATCH');
+    // Wrong Child: the required executor id does not match the presented one.
+    await refused(store.consume({ ...base, executorAgentId: 'rescue-child-other' }), 'RESCUE_PREPARATION_MISMATCH');
+    // Stale issuing turn: past the preparation's expiry the admission refuses.
+    await refused(store.consume({ ...base, now: new Date('2026-10-05T00:00:00.000Z'), activationProof: { kind: 'reactivate', agentPathDigest: 'b'.repeat(64) } }), 'RESCUE_PREPARATION_EXPIRED');
+    // The decisive positive control: after ALL those refusals the exact
+    // admission still consumes exactly once — no refusal above consumed or
+    // reserved anything.
+    const consumed = await store.consume({ ...base, activationProof: { kind: 'reactivate', agentPathDigest: 'b'.repeat(64) } });
+    assert.equal(consumed.envelope.task, 'probe admission negative');
+    assert.notEqual(consumed.consumedAt, null);
+    // Duplicate consumption (the concurrent-Child shape): the second consume
+    // of the SAME turn is refused as already consumed.
+    await refused(store.consume({ ...base }), 'RESCUE_PREPARATION_CONSUMED');
+    await rm(join(parent, 'plugin-data'), { recursive: true, force: true });
   });
 });
 

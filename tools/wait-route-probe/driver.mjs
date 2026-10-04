@@ -4841,9 +4841,14 @@ export async function runWaitRouteCase(input) {
       let decisionsDuringHold = null;
       let firstDecisionAtMs = null;
       let rolloutsPresent = false;
+      let rolloutsComplete = false;
       if (summary.session !== null && summary.session.present === true) {
         rolloutsPresent = true;
-        if (facts.hookEnteredAtMs !== null && facts.hookSettledAtMs !== null) {
+        // Fail closed on coverage: a TRUNCATED or sample-truncated rollout
+        // cannot assert zero decisions — the interval counts only over
+        // complete coverage (the round-78 review finding).
+        rolloutsComplete = summary.session.truncated === false && summary.session.callsTruncated === false;
+        if (rolloutsComplete && facts.hookEnteredAtMs !== null && facts.hookSettledAtMs !== null) {
           decisionsDuringHold = 0;
           for (const call of summary.session.calls ?? []) {
             if (typeof call.atMs !== 'number') continue;
@@ -4878,7 +4883,7 @@ export async function runWaitRouteCase(input) {
         if (facts.hookDispatches !== 1 || !holdCompletedNaturally || !settledWithinBudget) {
           summary.outcome = 'inconclusive';
           summary.reason = facts.hookDispatches === 0 ? 'hook-dispatch-missing' : 'hook-hold-incomplete';
-        } else if (rolloutsPresent && decisionsDuringHold === null) {
+        } else if (rolloutsPresent && (decisionsDuringHold === null || !rolloutsComplete)) {
           summary.outcome = 'inconclusive';
           summary.reason = 'hold-interval-evidence-missing';
         } else if (decisionsDuringHold !== null && decisionsDuringHold > 0) {
