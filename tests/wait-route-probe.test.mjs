@@ -717,7 +717,7 @@ async function writeFakeCodex(directory, mode) {
     '    process.stdout.write(JSON.stringify({ final: ' + JSON.stringify(COMPLETION_MARKER) + ' }) + "\\n");',
     '    process.exit(0);',
     '  }',
-    '  if (mode === "hook-hold" || mode === "hook-hold-abandon" || mode === "hook-ordering" || mode === "hook-hold-torn-rollout") {',
+    '  if (mode === "hook-hold" || mode === "hook-hold-abandon" || mode === "hook-ordering" || mode === "hook-hold-torn-rollout" || mode === "hook-hold-empty-rollout" || mode === "hook-hold-abandon-long" || mode === "hook-hold-untimestamped-call" || mode === "hook-hold-completes-early" || mode === "hook-hold-trace-torn" || mode === "hook-hold-abandon-linger") {',
     `    const { Client } = await import(${JSON.stringify(sdkClientUrl)});`,
     `    const { StdioClientTransport } = await import(${JSON.stringify(sdkStdioUrl)});`,
     '    const transport = new StdioClientTransport({',
@@ -729,6 +729,57 @@ async function writeFakeCodex(directory, mode) {
     '    await client.connect(transport);',
     '    if (mode === "hook-hold") {',
     '      await client.callTool({ name: "prompt_hold", arguments: { ms: Number(process.env.WAIT_ROUTE_FAKE_HOLD_MS || 1500) } });',
+    '      await client.close();',
+    '      // A MINIMAL REAL rollout (meta + one assistant message), like the',
+    '      // real host persists: the interval gate requires usable coverage.',
+    '      const { mkdir, writeFile } = await import("node:fs/promises");',
+    '      const dir = process.env.CODEX_HOME + "/sessions";',
+    '      await mkdir(dir, { recursive: true });',
+    '      const line = (payload) => JSON.stringify({ timestamp: "2026-10-04T00:00:00Z", type: payload.type === "session_meta" ? "session_meta" : "response_item", payload }) + String.fromCharCode(10);',
+    '      await writeFile(dir + "/rollout-fake.jsonl", line({ type: "session_meta", id: "fake-thread" }) + line({ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }), "utf8");',
+    '      process.exit(0);',
+    '    } else if (mode === "hook-hold-empty-rollout") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 1200 } });',
+    '      await client.close();',
+    '      // An EXISTING sessions directory whose only rollout is EMPTY:',
+    '      // present but unusable — never a zero-decision proof.',
+    '      const { mkdir, writeFile } = await import("node:fs/promises");',
+    '      const dir = process.env.CODEX_HOME + "/sessions";',
+    '      await mkdir(dir, { recursive: true });',
+    '      await writeFile(dir + "/rollout-empty.jsonl", "", "utf8");',
+    '      process.exit(0);',
+    '    } else if (mode === "hook-hold-trace-torn") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 1200 } });',
+    '      await client.close();',
+    '      // A TORN record appended to the DURABLE TRACE: the trace reader',
+    '      // reports truncation and the classifier must refuse every verdict.',
+    '      const { appendFile } = await import("node:fs/promises");',
+    '      const torn = JSON.stringify({ at: Date.now(), kind: "prompt-hold-star" }).slice(0, -1);',
+    '      await appendFile(process.env.WAIT_ROUTE_PROBE_TRACE, torn, "utf8");',
+    '      process.exit(0);',
+    '    } else if (mode === "hook-hold-abandon-linger") {',
+    '      // The SDK request timeout CANCELS the call (server signal-abort)',
+    '      // long before the driver signal; the host then lingers.',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 30000 } }, { timeout: 800 }).catch(() => {});',
+    '      await new Promise((resolve) => setTimeout(resolve, 20000));',
+    '    } else if (mode === "hook-hold-completes-early") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 500 } });',
+    '      await new Promise((resolve) => setTimeout(resolve, 3000));',
+    '    } else if (mode === "hook-hold-abandon-long") {',
+    '      const held = client.callTool({ name: "prompt_hold", arguments: { ms: 30000 } });',
+    '      held.catch(() => {});',
+    '      await new Promise((resolve) => setTimeout(resolve, 20000));',
+    '    } else if (mode === "hook-hold-untimestamped-call") {',
+    '      await client.callTool({ name: "prompt_hold", arguments: { ms: 1200 } });',
+    '      await client.close();',
+    '      // A SUPPORTED call shape (function_call) whose record carries NO',
+    '      // timestamp: interval attribution is impossible — fail closed.',
+    '      const { mkdir, writeFile } = await import("node:fs/promises");',
+    '      const dir = process.env.CODEX_HOME + "/sessions";',
+    '      await mkdir(dir, { recursive: true });',
+    '      const line = (payload) => JSON.stringify({ type: "response_item", payload }) + String.fromCharCode(10);',
+    '      await writeFile(dir + "/rollout-fake.jsonl", line({ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }) + line({ type: "function_call", name: "wait", arguments: "{}" }), "utf8");',
+    '      process.exit(0);',
     '    } else if (mode === "hook-hold-torn-rollout") {',
     '      await client.callTool({ name: "prompt_hold", arguments: { ms: 1200 } });',
     '      await client.close();',
@@ -1706,6 +1757,83 @@ test('a torn rollout never qualifies the hold interval', { timeout: 40_000 }, as
   });
 });
 
+test('an empty sessions directory never qualifies the hold interval', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // An empty rollout (an existing but empty sessions directory) is
+    // present-but-unusable: the zero-decision assertion refuses it.
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-empty-rollout');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 2_000, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hold-interval-evidence-missing');
+  });
+});
+
+test('a mid-hold interrupt is observed through the durable hook state', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // Task 6's cancellation probe: the driver signals the host group
+    // mid-hold; the durable trace records WHICH hook state actually resulted
+    // (a signal-induced death never settles the hold at its own deadline).
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-abandon-long');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 30_000, hookTimeoutSec: 120, interruptAfterMs: 900 });
+    assert.equal(summary.outcome, 'hook-interrupt-observed', JSON.stringify(summary));
+    assert.equal(summary.hook.interruptedAfterMs, 900);
+    assert.equal(summary.hook.dispatches, 1, 'the hook had dispatched');
+    assert.notEqual(summary.hook.settlement, 'deadline', 'an interrupted hold never settles at its own deadline');
+  });
+});
+
+test('an unsupported call with a missing timestamp refuses the zero-decision proof', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // A supported function_call record whose timestamp is missing cannot be
+    // attributed to (or excluded from) the pending interval: the zero-decision
+    // grant refuses it (round-79 review finding).
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-untimestamped-call');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 2_000, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hold-interval-evidence-missing');
+  });
+});
+
+test('a hold that settles before the scheduled signal is a completion, not an interruption', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // Completion-versus-interrupt attribution (round 80): the hold settles
+    // at its own deadline BEFORE the driver's scheduled signal fires — the
+    // later signal must not earn interruption credit.
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-completes-early');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 500, hookTimeoutSec: 120, interruptAfterMs: 1_500 });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hold-completed-naturally');
+    assert.equal(summary.hook.settlement, 'deadline');
+  });
+});
+
+test('a truncated hook trace never earns a qualification verdict', { timeout: 40_000 }, async (t) => {
+  if (skipFakeHostOnWindows(t)) return;
+  await withTempDirectory(async (parent) => {
+    // A TORN record appended to the durable trace: the reader reports
+    // truncation and the classifier refuses every hook verdict (the
+    // incomplete trace cannot establish exactly-one dispatch).
+    const fakeCodex = await writeFakeCodex(parent, 'hook-hold-trace-torn');
+    const sourceHome = await newSourceHome(parent);
+    const output = await newRunDirectory(parent);
+    const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'hold', hookHoldMs: 1_200, hookTimeoutSec: 120 });
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hook-trace-truncated');
+  });
+});
+
 test('the hook-hold controls classify without dispatch', { timeout: 60_000 }, async (t) => {
   if (skipFakeHostOnWindows(t)) return;
   await withTempDirectory(async (parent) => {
@@ -1741,10 +1869,12 @@ test('the hook-hold timeout shape classifies the hook-budget cut', { timeout: 40
     const sourceHome = await newSourceHome(parent);
     const output = await newRunDirectory(parent);
     const summary = await runWaitRouteCase({ caseLabel: 'hook-hold', codexPath: fakeCodex, outputDir: output, budgetMs: 35_000, sourceCodexHome: sourceHome, hookShape: 'timeout', hookHoldMs: 30_000, hookTimeoutSec: 60 });
-    assert.equal(summary.outcome, 'hook-timeout-observed', JSON.stringify(summary));
+    // Attribution (round 80): a transport loss is NOT timeout credit — the
+    // abandonment records its settlement but the cut stays unattributed.
+    assert.equal(summary.outcome, 'inconclusive', JSON.stringify(summary));
+    assert.equal(summary.reason, 'hook-cut-unattributed');
     assert.equal(summary.hook.dispatches, 1, 'the hook dispatched once');
-    assert.notEqual(summary.hook.settlement, 'completed', 'an abandoned hold never reports completed');
-    assert.ok(summary.hook.effectiveBoundMs !== null && summary.hook.effectiveBoundMs < 30_000, 'the effective bound is recorded and far below the requested hold');
+    assert.notEqual(summary.hook.settlement, 'deadline', 'an abandoned hold never reports a natural settle');
   });
 });
 

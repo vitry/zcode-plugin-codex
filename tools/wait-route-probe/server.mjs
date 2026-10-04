@@ -449,12 +449,17 @@ export function createWaitRouteServer(input) {
     await appendImpl({ runDirectory, runNonce, event: { kind: 'handler-entered', callNonce } });
     /** @type {(value: string) => void} */
     let resolveSettlement = () => {};
-    /** @type {{callNonce: string, finish: (settlement: string) => void}} */
+    // The ACTUAL settlement moment is captured inside finish() — never
+    // after the awaited start-append — so a delayed trace write cannot move
+    // a real settlement past a later reference point (round-82 finding).
+    /** @type {{callNonce: string, settledAt: number|null, finish: (settlement: string) => void}} */
     const entry = {
       callNonce,
+      settledAt: null,
       finish: (settlement) => {
         if (!pendingHolds.has(entry)) return;
         pendingHolds.delete(entry);
+        entry.settledAt = Date.now();
         resolveSettlement(settlement);
       },
     };
@@ -472,7 +477,7 @@ export function createWaitRouteServer(input) {
     }
     const settlement = await settlementPromise;
     clearTimeout(deadline);
-    await appendImpl({ runDirectory, runNonce, event: { kind: 'prompt-hold-settled', callNonce, settlement } });
+    await appendImpl({ runDirectory, runNonce, event: { kind: 'prompt-hold-settled', callNonce, settlement, ...(entry.settledAt !== null ? { at: entry.settledAt } : {}) } });
     await appendImpl({ runDirectory, runNonce, event: { kind: 'handler-completed', callNonce, settlement: settlement === 'deadline' ? 'completed' : settlement } });
     return { content: [{ type: 'text', text: 'WAIT_ROUTE_PROBE_HOOK_HOLD_SETTLED' }] };
   }
