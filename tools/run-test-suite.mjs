@@ -9,6 +9,7 @@ const researchEntries = Object.freeze([
   'tests/e2e/codex-direct-mcp-feasibility.test.mjs',
   'tests/e2e/codex-mcp-context-e2e.test.mjs',
   'tests/mcp-context-probe.test.mjs',
+  'tests/wait-route-probe.test.mjs',
 ]);
 const researchSet = new Set(researchEntries);
 const testExtension = /\.(?:cjs|mjs|js)$/;
