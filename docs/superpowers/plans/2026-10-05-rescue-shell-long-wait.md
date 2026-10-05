@@ -40,7 +40,7 @@ Do not import the old `tools/wait-route-probe/driver.mjs` summarizer/verdict mac
 
 **Files:** Create the report; read the spec's source index and the listed production seams.
 
-- [ ] Record current base, worktree status and actual executable without modifying any other checkout:
+- [x] Record current base, worktree status and actual executable without modifying any other checkout:
 
 ```bash
 git status --short
@@ -55,11 +55,11 @@ node --test tests/test-selection.test.mjs
 
 Expected: selection tests pass; source/installed provenance are recorded separately. `scripts/lib/tool-launch.mjs` defaults to the package's pinned 0.147.0 Codex unless `CODEX_BINARY` is supplied. Every live case must explicitly use the recorded installed executable; a dependency version is not the current host.
 
-- [ ] Trace actual native spawn → Child config derivation → Role overlay → session process manager → empty-poll clamp. Start with `agent/child_config.rs`, `agent/role.rs`, `session/session.rs`, `config/mod.rs`, `unified_exec/process_manager.rs`. Read relevant source tests; cite exact commit/path. Discover renamed files. Do not rebuild Codex or claim binary equivalence from its checkout.
-- [ ] Trace current `skills/rescue/SKILL.md`, rendered managed Role, `hooks/subagent-hook.mjs`, preparation/binding and native follow-up route. Distinguish named and schema-supported generic paths, fresh/choice/prepared continuation, Root `wait_agent`, private preparation TTY writes and Child empty observations.
-- [ ] Identify an available native interaction capable of interrupting the exact pending Child turn, and separately the Root Status observation. Establish ownership and target from the same host session. `turn/interrupt` is useful only on a verified connection owning that live target; a separate diagnostic app-server is not the running CLI session. Root SIGINT or probe-budget expiry alone is not exact Child interruption.
-- [ ] Document existing harness limitations: the old E2E qualifier pins supported Codex lines, old v4 prepared expectations and 60000-ms observation policy. Do not edit/relax that canonical oracle; use current v5 production preparation and a separate research observer. Reuse real stores and launchers, not manually manufactured authority records.
-- [ ] Record a narrow source-backed hypothesis, effective unraised/default configuration cap if observable, and the first discriminating live trial. This reference cap is not the deliberately raised cap in Task 4's instruction comparison. Cap placement remains open: test fixture session/user configuration first; do not put the cap in the managed Role file merely because the awaiter asset contains it.
+- [x] Trace actual native spawn → Child config derivation → Role overlay → session process manager → empty-poll clamp. Start with `agent/child_config.rs`, `agent/role.rs`, `session/session.rs`, `config/mod.rs`, `unified_exec/process_manager.rs`. Read relevant source tests; cite exact commit/path. Discover renamed files. Do not rebuild Codex or claim binary equivalence from its checkout.
+- [x] Trace current `skills/rescue/SKILL.md`, rendered managed Role, `hooks/subagent-hook.mjs`, preparation/binding and native follow-up route. Distinguish named and schema-supported generic paths, fresh/choice/prepared continuation, Root `wait_agent`, private preparation TTY writes and Child empty observations.
+- [x] Identify an available native interaction capable of interrupting the exact pending Child turn, and separately the Root Status observation. Establish ownership and target from the same host session. `turn/interrupt` is useful only on a verified connection owning that live target; a separate diagnostic app-server is not the running CLI session. Root SIGINT or probe-budget expiry alone is not exact Child interruption.
+- [x] Document existing harness limitations: the old E2E qualifier pins supported Codex lines, old v4 prepared expectations and 60000-ms observation policy. Do not edit/relax that canonical oracle; use current v5 production preparation and a separate research observer. Reuse real stores and launchers, not manually manufactured authority records.
+- [x] Record a narrow source-backed hypothesis, effective unraised/default configuration cap if observable, and the first discriminating live trial. This reference cap is not the deliberately raised cap in Task 4's instruction comparison. Cap placement remains open: test fixture session/user configuration first; do not put the cap in the managed Role file merely because the awaiter asset contains it.
 
 **Exit:** Q1 source/control-path findings, with unverified installed steps named explicitly. Lack of an interrupt interaction stops interrupt qualification only, not shell timing or Root-command work.
 
