@@ -67,7 +67,7 @@ Expected: selection tests pass; source/installed provenance are recorded separat
 
 **Files:** Create `tests/shell-wait-probe.test.mjs`; modify selector, selection test and package script.
 
-- [ ] Add a selection regression to `tests/test-selection.test.mjs` that initially fails because `shell-research` is unknown:
+- [x] Add a selection regression to `tests/test-selection.test.mjs` that initially fails because `shell-research` is unknown:
 
 ```js
 test('shell qualification is separate from routine and unchanged MCP research', async () => {
@@ -85,8 +85,8 @@ test('shell qualification is separate from routine and unchanged MCP research', 
 });
 ```
 
-- [ ] Add the shell research test file with one fast import/shape test, not a live runner. Run `node --test tests/test-selection.test.mjs` and observe the intended RED selection failure before implementing the selector.
-- [ ] Preserve the current five-entry `researchEntries`. Add the distinct list and update only selection/CLI messaging:
+- [x] Add the shell research test file with one fast import/shape test, not a live runner. Run `node --test tests/test-selection.test.mjs` and observe the intended RED selection failure before implementing the selector.
+- [x] Preserve the current five-entry `researchEntries`. Add the distinct list and update only selection/CLI messaging:
 
 ```js
 const shellResearchEntries = Object.freeze(['tests/shell-wait-probe.test.mjs']);
@@ -102,13 +102,13 @@ return entries.filter((entry) => suite === 'routine'
 ```
 
 Recognize exactly `routine`, `mcp-research`, `shell-research`; keep `Unknown test suite` failure for others. Update the existing routine test's expected union instead of weakening it. Include missing-shell and cross-suite duplicate/disjoint assertions.
-- [ ] Add only this script; do not change `test`, `check` or `test:mcp-research`:
+- [x] Add only this script; do not change `test`, `check` or `test:mcp-research`:
 
 ```json
 "test:shell-research": "node tools/run-test-suite.mjs shell-research"
 ```
 
-- [ ] Run `node --test tests/test-selection.test.mjs` and `npm run test:shell-research`. Expected: green, no credentials or host launches, same five MCP entries and all existing functional entries preserved. No commits unless separately authorized.
+- [x] Run `node --test tests/test-selection.test.mjs` and `npm run test:shell-research`. Expected: green, no credentials or host launches, same five MCP entries and all existing functional entries preserved. No commits unless separately authorized.
 
 **Exit:** the new research instrument is explicitly selectable and excluded from routine tests without relabelling MCP research.
 
