@@ -8,9 +8,10 @@ const researchEntries = [
   'tests/e2e/codex-direct-mcp-feasibility.test.mjs',
   'tests/e2e/codex-mcp-context-e2e.test.mjs',
   'tests/mcp-context-probe.test.mjs',
+  'tests/wait-route-probe.test.mjs',
 ];
 
-test('routine selection excludes only the four MCP research tests', async () => {
+test('routine selection excludes only the five MCP research tests', async () => {
   const discovered = await discoverTestEntries();
   const routine = selectTestEntries(discovered, 'routine');
   const research = selectTestEntries(discovered, 'mcp-research');
@@ -30,6 +31,12 @@ test('test selection fails closed for missing or duplicate research entries', ()
   assert.throws(() => selectTestEntries(complete.slice(1), 'routine'), /missing MCP research test/i);
   assert.throws(() => selectTestEntries([...complete, researchEntries[0]], 'routine'), /duplicate test entry/i);
   assert.throws(() => selectTestEntries(complete, 'unknown'), /unknown test suite/i);
+});
+
+test('the wait-route probe research test stays out of routine selection', async () => {
+  const entries = await discoverTestEntries();
+  assert.equal(selectTestEntries(entries, 'routine').includes('tests/wait-route-probe.test.mjs'), false);
+  assert.equal(selectTestEntries(entries, 'mcp-research').includes('tests/wait-route-probe.test.mjs'), true);
 });
 
 test('discovery recognizes Node test filenames without selecting ordinary fixtures', () => {
