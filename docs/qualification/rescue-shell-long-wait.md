@@ -7,7 +7,8 @@ under the spec
 Worktree base commit `703fdcee958f4729a83d1a978c3b0e5cfa25f90a` (branch base `6638878e910154d7d1bc4effd4c9aa62f149f23a`, merged PR #65).
 This document authorizes **no production change**: canonical Skills, Role template, Companion stores, hooks,
 packaging, user configuration and `../codex` are untouched. Only §7–§9 and §11 are placeholder skeletons for
-later tasks and are explicitly **not yet executed**; §3–§6 and §10 record Task 1's delivered findings.
+later tasks and are explicitly **not yet executed**; §3–§6 and §10 record Task 1's delivered findings, and §12
+records Task 3's fixture instrument facts (no live claims).
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -438,3 +439,211 @@ Every unverified installed step is named here explicitly:
 Not yet drafted. Placeholder for the smallest adoption delta scoped to qualified surfaces only (configuration
 location per the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup
 guidance, version/latency limits), separated from release-blocking findings.
+
+## 12. Fixture (Task 3) — instrument facts only, no live claims
+
+This section records what the Task 3 instrument does, at which seams it is tested, which of its behaviors are
+fail-closed, and what it deliberately does **not** claim. Everything here is labelled `fixture-tested` (fast
+Node test regressions in `tests/shell-wait-probe.test.mjs`); nothing in this section is `installed-observed`,
+and no statement in §1–§11 is re-derived or weakened by it.
+
+### 12.1 Modules and public interfaces
+
+| Module | Responsibility |
+| --- | --- |
+| `tools/shell-wait-probe/fixture.mjs` | `createShellWaitFixture({ sourceRoot, sourceSha, codexBinary, output, variant, capMs })` → `{ workspace, codexHome, installedRoot, env, dispose, record }`. Also exports the exact process-identity primitives (`captureVerifiedProcessIdentity`, `inspectVerifiedProcessIdentity`, `terminateVerifiedProcess`, `validateProcessMarker`, `releaseCompletionGate`) used by the driver's bounded lifecycle; every captured identity carries one canonical `nonce` field shared by capture, re-verification, and termination. |
+| `tools/shell-wait-probe/driver.mjs` | `parseShellWaitArguments(argv)` → validated closed case input; `runShellWaitCase(input, dependencies?)` → bounded redacted case record; `runHeldHostTurn(input)` → the bounded host/gate lifecycle record; closed-case CLI (9 labels, shared duration arguments, `--help` prints usage and launches nothing). Importing any module launches nothing. |
+| `tools/shell-wait-probe/evidence.mjs` | `inspectShellWaitEvidence(input)` → supported facts or an explicit inconclusive reason (with `manualAdjudicationRequired` and one sanitized excerpt for unsupported shapes). |
+
+Two deliberate interface additions beyond the plan's arrow shapes, both recorded here: (1) the fixture returns a
+sixth `record` property carrying the fixture-tested provenance (instruction hashes, applied artifact digests and
+modes, cap placement, owned worktree path) because the plan also requires capturing those values and the five
+documented handles are all paths/env/ functions; (2) `createShellWaitFixture` accepts an optional second
+`dependencies` argument (mirroring the plan's own `runShellWaitCase(input, dependencies?)` pattern) that injects
+fast fakes for the snapshot build, plugin install, credential copy, and owned-worktree removal. The documented single-argument call shape
+is unchanged.
+
+### 12.2 What the fixture does (fixture-tested)
+
+- Clears every inherited `GIT_*` variable for **every fixture Git invocation** (including validation,
+  workspace init/add/commit, clone/worktree creation and disposal) and for the **builder/installed environment**.
+  This covers repository, worktree, common-directory, index, object/alternate-object, namespace,
+  graft/shallow/replace and discovery overrides, plus config paths/parameters/count and numbered config
+  keys/values; future Git overrides are cleared too. A hostile-environment regression verifies an unrelated
+  repository remains byte-for-byte untouched, its staged content and prunable worktree canary survive, and
+  fixture creation, builder Git selection and disposal succeed.
+- Creates a fixture-owned temporary **isolated clone** (`git clone --shared --no-checkout`) and adds a
+  **clean detached source worktree** at `sourceSha` through that clone's Git metadata (`git worktree add
+  --detach`). The production `buildMarketplaceSnapshot` runs against this clean worktree; its staging
+  registrations and failure-path `worktree prune --expire=now` are confined to the clone's metadata. Only
+  read-only Git objects are shared with the caller. The caller's registrations and uncommitted docs and
+  progress files remain untouched, and nothing is committed to obtain a clean tree.
+- Installs through the **exact chosen binary** (`env.CODEX_BINARY` is set to the caller's absolute executable;
+  `codexLaunch` dispatches native binaries directly and `.js` entry points through Node) into an isolated
+  `CODEX_HOME` plus isolated `HOME`/`USERPROFILE`, with `ZCODE_PATH` pointing at the repository's
+  `tests/fixtures/fake-zcode-cli.mjs` and `FAKE_ZCODE_GATE_RESULT` fixed to the harmless public sentinel
+  `ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C`. Real `codex plugin marketplace add` + `plugin add` were exercised
+  headlessly with the pinned dependency CLI (no auth needed, ≈0.3 s).
+- Applies the variant **before** any isolated setup: `baseline` keeps the installed
+  `agents/zcode-rescue.toml.template` and `skills/rescue/SKILL.md` byte-identical; `candidate` replaces exactly
+  the one waiting-policy paragraph (unique single line in both artifacts — pinned by test) in the temporary
+  installed named Role template and generic assignment skill with the directive-led long-window request
+  (`// @exec: {"yield_time_ms": <pollMs>}` plus the same `yield_time_ms` argument), leaving every authority
+  sentence, fixed command line, initial/choice assignment literal, and terminal rule byte-identical (test walks
+  the line diff and the preserved literals). `background_terminal_max_timeout` never enters the Role template.
+- Writes the cap as a **prepended top-level key** `background_terminal_max_timeout = <capMs>` in the fixture
+  `CODEX_HOME/config.toml` (fresh installs contain TOML table headers, so appending would silently land inside a
+  table). `capMs: null` (the parser default) writes no key — the unraised-cap Case 0 shape.
+- Records provenance without private paths: before/after SHA-256 and file modes of the two touched artifacts,
+  rendered named Role hash via the production `renderManagedRescueRole`, extracted generic-message fence hash,
+  plugin version, and the owned clean-source worktree path (inside the fixture's own temporary root).
+- Disposal is attempted on **every** path after fixture creation: a live-executor failure disposes the fixture
+  before the error propagates (aggregated with any disposal failure), and disposal completes **before** the record
+  is persisted so the case record carries the ACTUAL disposal outcome — `cleanup.fixtureDisposed: true | false`
+  plus a path-scrubbed `disposalError` on failure, never a hardcoded claim. The CLI exits nonzero when disposal
+  failed.
+- `dispose()` attempts both cleanup outcomes independently: the exact owned detached worktree registration
+  (`worktree remove --force` through the clone's metadata) **and** the whole fixture temporary root, including
+  the clone root and all its Git metadata — the credential home's parent, so copied
+  `auth.json` bytes are destroyed even when the worktree-removal outcome fails — and both failures are surfaced
+  to the caller (AggregateError when both fail). Registration removal is restricted to the verified owned entry
+  in the clone: fixture disposal never runs `worktree prune`, and a failed targeted removal is surfaced rather
+  than pruned away, and a failed registration listing is treated as an unknown/failure state, never as successful
+  disposal. Registration verification compares canonical paths (`git worktree list` reports `/private/var/...`
+  for a `/var/...` registration on macOS; the first commit's literal comparison was vacuous there and is
+  corrected in this amendment). A real-builder regression forces its targeted staging removal to fail,
+  verifies that the resulting prune uses only clone metadata, and confirms an unrelated prunable registration
+  in the shared source repository survives unchanged. The suite-wide ownership canary remains in place and
+  also verifies that the entire shared registration listing is unchanged after the suite. The production
+  builder remains unmodified.
+- `runShellWaitCase` writes the redacted case record into the caller's private output directory and asserts that
+  directory stays outside the fixture credential homes before writing.
+
+### 12.3 Instrument seams and the fast/real test split (measured, recorded honestly)
+
+- Most fixture tests inject `buildSnapshot`/`installPlugin` fakes (the installer materializes the two installed
+  files plus a config.toml with real TOML table headers, exactly the shape the real install produces) while the
+  **git worktree add/remove and its registration discipline run for real in every fast fixture test**.
+- Exactly one focused test exercises the real `buildMarketplaceSnapshot` + real `codex plugin add` path end to
+  end (≈22 s including the build): provenance `sourceSha` matches, installed artifacts received the candidate
+  paragraph, the cap key is prepended, and dispose removes the registration. The real path was measured fast
+  enough (~10 s) to keep the whole suite a fast regression; the suite currently completes in ≈24 s wall time.
+- `runHeldHostTurn` accepts injected `launch`, `waitForGate`, `waitForObservation`, identity capture/read/
+  terminate, `waitForProcessExit`, `sleep`, `now`, and `releaseGate`. The observation budget is **polled against
+  the injectable clock**, so instrument tests drive budget expiry deterministically instead of waiting wall time.
+- The identity primitive is tested against a real spawned Node child carrying `FAKE_ZCODE_PROCESS_NONCE`
+  (double-read `ps`/`/proc` start identity plus environment marker), and against injected readers for the stale,
+  reparented, restarted, and nonce-mismatched cases.
+
+### 12.4 Fail-closed behaviors (fixture-tested)
+
+- **Launch observation gate.** Uses the evidence observer's shared bounded call parser and compares the
+  extracted `exec_command` `cmd` **exactly**. Direct calls, const-r wrappers and inline wrappers have identical
+  recognition, including single-quoted JavaScript literals with raw double quotes in the command. Quoted
+  command text in another property, another tool, a command suffix or an unsupported script cannot open
+  the gate. Both single-quoted wrapper forms and these false-positive cases have regressions.
+- **Live gate.** `runShellWaitCase` without `ZCODE_SHELL_WAIT_E2E=1` and without an injected live executor
+  returns a `refused` record, creates no fixture, and launches nothing (the injected-fixture spy is asserted
+  uncalled).
+- **Closed CLI.** Unknown case labels, unknown options, duplicate options, relative or `.cmd`/`.bat` executables,
+  malformed SHAs, non-positive durations, and a contradictory baseline `--poll-ms` all fail closed; the CLI exits
+  1 with the usage text; `--help` exits 0 without launching.
+- **Output privacy.** `output` must be a real (non-symlink), empty, group/other-inaccessible directory; the record
+  writer rejects an output inside the fixture credential homes; the record contains no fixture-private absolute
+  paths (asserted by pattern in tests) and caps decisive excerpts at 64 with explicit truncation flags.
+- **Evidence observer.** Supports only three observed call shapes — direct `function_call` tools
+  (`exec_command`/`write_stdin`/`wait`), the simple bounded code-mode wrapper (`const r = await tools.<tool>({…});
+  text(JSON.stringify(r))`, optionally led by one `// @exec: {…}` directive), and the linked outer continuation
+  whose `wait` output resolves a pending `Script running with cell ID` cell. An outer continuation is accepted —
+  and the pending inner observation cleared — ONLY when its canonical `cell_id` string matches the EXACT pending
+  cell of the original handle; alias fields never substitute for it, any alias that disagrees with the pending
+  cell or with the canonical `cell_id` is a conflicting linkage, and missing, foreign, conflicting, or ambiguous
+  linkage is recorded as a violation, leaves the observation pending, and can never qualify completion — so an
+  unrelated `wait` returning the sentinel cannot fabricate terminal linkage, a foreign `cell_id` cannot be
+  smuggled in through a matching alias, and reference values are compared at their original types with no string
+  coercion: a non-string canonical `cell_id` or a non-string alias (array, object) is a malformed reference that
+  retains pending state. Completion further requires every original-handle observation to be settled: a pending or
+  unresolved poll tail after the terminal record blocks qualification. Any other or truncated call — an
+  unparsable wrapper, a direct `function_call` whose bounded arguments fail JSON.parse, or an argument value of an
+  unsupported shape — makes the whole inspection `inconclusive` with `manualAdjudicationRequired: true` and one
+  scrubbed bounded excerpt — never a zero count. Invocation is never inferred from quoted message text. Missing
+  metadata, missing fake-peer records, unattributable child rollouts, and rollout-collection failures all stay
+  `null`/inconclusive with their own reason, never zero. An unavailable or malformed fake-peer record blocks
+  qualification explicitly: the single-send requirement must be established, never skipped, so degraded evidence
+  cannot qualify. Every free-text reason that can embed a raw error passes the private-path scrubber before it
+  enters the persisted record.
+- **Preparation exception.** Exactly one nonempty write to the original launcher handle is sanctioned, before
+  any terminal observation (including a poll that returns nonterminal output). Its complete version-5 envelope
+  must pass the production `validateRescuePreparation` contract: exact required keys, a nonempty bounded task,
+  closed source/options enums and types, required placement and adapter selectors, and valid continuation-target
+  semantics. Both direct and wrapped writes must carry the envelope followed by exactly one LF with no additional
+  input. Raw preparation frames also undergo the production reader's pre-parse duplicate-key scan: repeated
+  top-level or nested keys (including escaped spellings of the same key) are rejected before `JSON.parse` can
+  discard them. The observer mirrors the private `rejectDuplicateObjectKeys` scanner in
+  `scripts/lib/rescue-preparation.mjs`, including its depth bound and per-object decoded-key comparisons.
+  The observed `JSON.stringify(envelope)+"\n"` wrapper reconstructs string `chars`; it adds no preparation
+  metadata to tool arguments, and caller-supplied `preparation: true` never grants an exemption or changes poll
+  counts. The sanctioned write exempts only its nonempty input and poll count; its response still passes through
+  the original-handle pending-cell and event-order machinery. Missing/unparseable responses remain unresolved,
+  pending cells require a correctly linked continuation, and a poll issued before preparation or continuation
+  resolution is an overlap that blocks qualification. Incomplete envelopes, object-valued `chars`, trailing input,
+  late frames, foreign handles, and second frames cannot qualify completion. A wrapper with an unsupported
+  suffix stays inconclusive with manual
+  adjudication; a parsed invalid frame or input-injection write records a violation. Regressions retain the valid
+  one-shot positive and duplicate-frame negative alongside missing, pending and delayed preparation responses,
+  a correctly linked continuation, duplicate top-level/nested keys, and the earlier framing/validation bypasses.
+- **Decisive wall time.** The observer extracts the tool-reported wall time from the last completed output on the
+  original handle — including a cap return that carries no exit code, which is exactly the decisive observation the
+  measured-M discriminator needs — and falls back to the harness-provided value only when the host reported none;
+  `null` when neither exists. Both pinned header forms are matched (`source-confirmed` at `67727e7c…`): the direct
+  unified-exec header `Wall time: <seconds> seconds` (`codex-rs/core/src/tools/context.rs` `response_header`) and
+  the code-mode wrapper/cell header `<status>\nWall time <seconds> seconds\nOutput:` (no colon,
+  `codex-rs/core/src/tools/code_mode/output.rs`). Residual limitation: the installed 0.160.0 build's exact header
+  form may differ from both pinned forms; on that build the extraction returns `null` (with the harness override
+  still available) until Task 4 observes the installed shape, and this never blocks the fail-closed counts above.
+- **Linkage and completion negatives.** Incomplete or wrong Child linkage (missing/duplicated spawn or start
+  events, child metadata not retaining the parent id or agent path), duplicate launcher invocations, foreign-handle
+  polls, overlapping inner polls (a poll is resolved only by a completed host result), a live pending cell at the
+  end, and a yield expiry while the worker is still alive each block completion qualification with an explicit
+  reason. A qualified completion additionally requires a byte-for-byte public-result match and a terminal exit on
+  the original handle.
+- **Process identity.** `terminateVerifiedProcess` re-verifies PID, PPID, start identity, and nonce before every
+  signal and re-validates whatever its reader returns — a stale, reparented, restarted, or nonce-mismatched PID is
+  never signalled (asserted with a kill spy). An unavailable process marker during cleanup means nothing is
+  signalled; the host-controlled Codex process is still terminated.
+- **Cleanup labelling.** Budget expiry releases the gate, terminates only the verified exact process, labels the
+  cleanup `budget-cleanup`, and never claims native interruption (`nativeInterruptionClaimed: false` in every
+  cleanup path). Early host exit is labelled `early-exit`; a completed observation is labelled `observation`. The
+  bounded lifecycle wraps its entire post-timer body in one cancellation finally: the budget/observation signal
+  aborts on EVERY exit path — early exit, completion, rejection (including a rejecting host result), failure, and
+  budget expiry — so losing gate or observation polls settle instead of reading and sleeping indefinitely,
+  including after fixture deletion, and the CLI can always terminate after completed cleanup. Exact-process
+  termination returns an explicit outcome (`attempted`/`signalled`/`exited`/`failure`) instead of resolving
+  silently: a thrown signal is never a success while the process is still live, escalation verifies exit after
+  SIGKILL within a bounded deadline, and a surviving process is reported as a failure that lands in the cleanup
+  errors. The mapped case record persists that outcome on every branch — redacted cleanup-error reasons, the
+  verified-process and host termination fields, and an explicit `cleanupComplete` verdict — so after fixture
+  deletion it is still clear WHICH cleanup obligation failed, and an incomplete cleanup makes the CLI exit
+  nonzero instead of leaving a possibly-surviving owned process behind an exit-0 record. Captured process
+  identities carry one canonical nonce-bearing shape shared by capture, re-verification, and termination
+  (`captureVerifiedProcessIdentity`), so a live observation's re-check and its exact-process cleanup accept the
+  inspector's actual return shape.
+
+### 12.5 What this instrument deliberately does NOT claim
+
+- No live Codex trial ran in this task. Every live-run path requires `ZCODE_SHELL_WAIT_E2E=1`, and the suite
+  green above is instrument correctness, not host behavior.
+- The driver's default live executor (per-case Root prompts, gate files, rollout collection, evidence mapping) is
+  implemented but **not yet live-validated**; its first real execution belongs to Task 4, which may surface
+  bounded fixture corrections. Its observation poll retries a bounded number of consecutive transient rollout
+  read/parse failures of an actively appended rollout instead of aborting the held turn; the final post-run load
+  keeps its own distinguished, private-path-scrubbed failure reason.
+- The unraised-default cap M is not measured, no instruction delivery into a real Child was observed, and the
+  rendered/delivered hash comparison the fixture prepares (repository vs running Role) is a Task 4 measurement.
+- `rescue-interrupt` records the interrupt as requested-but-not-delivered with the missing prerequisite named:
+  the exact native interrupt delivery interaction is bound by the Task 5 live path. This run shape can never be
+  counted as interruption evidence.
+- The fixture's hook-trust/approval bypass and credential copy are fixture controls inside the disposable
+  temporary root. They are not persisted production-trust qualification and authorize nothing outside the run.
+- The `review-wait`, `adversarial-review-wait`, `status-wait`, and `background` case prompts approximate the
+  installed Skill entry points; Task 6 pins their exact live command surfaces before any Root-command conclusion.
