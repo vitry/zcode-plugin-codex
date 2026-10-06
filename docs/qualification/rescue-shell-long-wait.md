@@ -575,11 +575,78 @@ amendment, and no second shell-research run was used to erase failures. Gate log
 Only the tracked report and plan are updated by this amendment; `git add -u` preserves untracked
 `task_plan.md`, `findings.md`, `progress.md`. No push or production change is part of this task.
 
-## 8. Lifecycle, results, placement, Status sidecar (Task 5) — not yet executed
+## 8. Lifecycle, results, placement, Status sidecar (Task 5)
 
-Not yet executed. Placeholder for: noise case, native interrupt delivery and settlement (via the §3.1 surface,
-if the installed family exposes it), stop/reconciliation checks, exact no-argument Child Status intents and
-sidecar latency, background compatibility case, and focused production regressions.
+Executed 2026-10-07 at source `074fb07` (instrument as amended through the Task 4 gate fixes), installed
+Codex `0.160.1`, same resolved executable `/Users/zhangzikai/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex`.
+Three live cases ran once each; no case was retried out of the record. Model nonadherence dominated this
+task: two of three cases ended before the observation flow the case prompts for, which the plan records as
+an outcome rather than a retry trigger.
+
+### 8.1 `rescue-interrupt`: qualified pending observation, delivery not exercised (`installed-observed` / delivery `not-proven`)
+
+Record: `/tmp/shell-wait-t5-interrupt.aQ5gyF/rescue-interrupt.record.json`. The pending long observation
+QUALIFIED end to end: route `named`; `companionLaunchCount: 1`, `companionSendCount: 1`,
+`originalHandleChecked: true`; `outerReturns: 0`, `modelCalls: 2`, single decisive observation
+`decisiveWallMs: 387100` with `remainingLifetimeMs: 32900`; `processExit: 0`, `hostExit: 0`,
+`publicResultMatchedSentinel: true`; cleanup `observation`/complete with 0 errors; `inconclusive: null`.
+
+The interrupt record itself is honest about its boundary: `requested: true`, `delivered: null`,
+`missingPrerequisite: "the exact native interrupt delivery interaction is bound by the Task 5 live path;
+this run only qualifies the pending observation"`. The driver's interrupt case does not yet deliver a
+native exact-Child interrupt during the pending window, so per the plan's own rule this is **not** native
+interruption proof: delivery, target, pending interval, delivery-to-settlement latency and collateral
+cancellation all remain **`not-proven`** (§3.1's surface and §10's register). No probe-budget kill is
+presented as interruption; the cleanup label is `observation`.
+
+### 8.2 `rescue-noise`: inconclusive — model nonadherence (`installed-observed` outcome, checks `not-proven`)
+
+Record: `/tmp/shell-wait-t5-noise.o7vg44/rescue-noise.record.json` (worker 130000 ms, raised cap,
+budget 360000 ms). The model left the prompted flow before the observation phase and the observer retained
+an `unsupported-call-shape` cell for manual adjudication, so the same-handle/no-replacement-Status/no-relay/
+exact-stdout checks could not be observed. This is recorded as model nonadherence; the instrument's
+fail-closed verdict (`inconclusive`, never zero) behaved correctly. The existing conversation/progress
+output remains the only sanctioned progress surface; no heartbeat protocol was added.
+
+### 8.3 `background` compatibility: inconclusive — host ended before the boundary (`installed-observed` outcome)
+
+Record: `/tmp/shell-wait-t5-background.ty0i87/background.record.json`. Route selected `named`, but
+`companionLaunchCount: 0`, `modelCalls: 0`, and the host exited before the held completion boundary
+(`inconclusive: "the host ended before the held completion boundary; the pending-observation claim is
+inconclusive"`). The model never performed the explicit `--background` flow, so the new installed evidence
+for the background placement branch is not established. The placement matrix's inherited contract coverage
+(small no-flag, complex detached, Review/Adversarial enqueue-only, same-child choices, owner-only queries)
+remains with the current functional tests and is not claimed as new installed evidence.
+
+### 8.4 Status sidecar: structural coverage only (`fixture-tested`/inherited; latency `not-proven`)
+
+The exact no-argument Child Status intents and the between-polls, at-most-once, observation-only sidecar
+policy remain covered structurally by the existing production suites recorded below. The native interface
+did not permit a safe live steering observation in this campaign, so sidecar response delay under a long
+wait stays a recorded usability limitation, not a measured value.
+
+### 8.5 Focused production regressions (recorded at `074fb07`)
+
+Exact file presence checked first (`rg --files tests`); no seam was renamed, so the plan's file list ran
+verbatim, with `rescue-binding-repair.test.mjs` present as an additional existing neighbor (not required by
+the plan, not run here):
+
+```text
+node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs
+  → 417 tests, 417 pass, 0 fail, 0 skipped
+node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs
+  → 126 tests, 126 pass, 0 fail, 0 skipped
+node --test tests/job-control.test.mjs tests/mcp-result.test.mjs
+  → 213 tests, 213 pass, 0 fail, 0 skipped
+```
+
+### 8.6 Task 5 coverage
+
+S5's pending-observation side gained a second qualified long observation with identical linkage facts
+(independent of Case B), while actual native interrupt delivery, stop/reconciliation-live checks, noise
+observations and installed background placement remain **`not-proven`** with the exact causes above and in
+§10. Budget/failure cleanup is still never labelled native interruption (`nativeInterruptionClaimed` stays
+a literal `false` in every record).
 
 ## 9. Root waiting commands (Task 6) — not yet executed
 
@@ -596,9 +663,9 @@ their real entry points, decision cadence, ownership and cancellation behavior.
 | Case A qualified completion | **`not-proven`**: consecutive `wait cell_id` linkage unresolved in observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed` | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
 | Repeat qualification | **`not-proven`**: repeat1 instrument natural-exit verification failure; repeat2 unsupported inline preparation/model nonadherence, not retried (§7.4) | Diagnose lifecycle failure separately; any new live repeat requires explicit scope, and cannot erase these records |
 | Generic route and broader instruction support | **`not-proven`** installed; only named was observed. Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed` | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
-| Exact native interrupt/tool-family availability and pending-inner cancellation | **`not-proven`**: Root `wait_agent` joins were counted, but retained records do not establish full tool exposure, delivery, feature/backend behavior or settlement | Deliver through the owning native session to the exact pending Child and measure settlement; turn interrupt alone is insufficient (Task 5) |
+| Exact native interrupt/tool-family availability and pending-inner cancellation | **`not-proven`**: Task 5's `rescue-interrupt` (§8.1) qualified the pending observation but the driver never DELIVERED a native interrupt (`delivered: null` with the prerequisite recorded), so delivery, target, interval, settlement and collateral cancellation are unmeasured; retained records do not establish full tool exposure | Wire the §3.1 surface into the owning native session, deliver to the exact pending Child and measure settlement; turn interrupt alone is insufficient (Task 7 follow-up) |
 | Installed `multi_agent_v2` configuration/bounds | **`not-proven`**: no installed configuration inventory or timeout-bound measurement | Record actual reachable family and bounds during Task 5/6; source defaults are separate |
-| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed Task 4 evidence; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Execute the scoped Task 5 checks; budget/failure cleanup is not native user interruption |
+| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` ended in model nonadherence before the observation flow (§8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Any new campaign must first address the model-adherence flakiness these two cases exposed; budget/failure cleanup is not native user interruption |
 | Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 not executed | Qualify each real command independently, including Status observation cancellation without cancelling its job |
 | Production release/version generalization/token savings | **`not-proven`**: single named fixture invocation on 0.160.1, disposable sandbox/hook bypass, no token measurements; auto-update limits attribution to the earlier 0.160.0 record | Finish Tasks 5–7 and obtain separate adoption decision; no production rollout implied |
 
