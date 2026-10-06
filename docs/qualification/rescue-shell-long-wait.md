@@ -705,11 +705,72 @@ The earlier absence of managed-Child wrapper observations is resolved **only wit
 Case B's single long observation and Case A's outer continuation cadence are `installed-observed`.
 The fail-closed M discriminator and every independent release dimension above remain intact.
 
-## 11. Proposed delta (Task 7) — not yet drafted
+## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
-Not yet drafted. Placeholder for the smallest adoption delta scoped to qualified surfaces only (configuration
-location per the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup
-guidance, version/latency limits), separated from release-blocking findings.
+### 11.1 Spec coverage mapping
+
+| Spec item | Task and evidence |
+| --- | --- |
+| S1 preparation/binding authority | 1 (§4 four-stage chain, repository-text facts); 3 (§12.1 fixture uses production preparation/launcher/binding); 4 (§7.1 Case B: launch 1 / send 1 / original handle checked, `installed-observed`); production mismatch/one-shot tests re-recorded §8.5 |
+| S2 original-handle/outer-cell ownership | 3 (§12.4 fail-closed observer: empty-chars discipline, single launch, exact-cell linkage, event-order overlap, pending headers); 4 (§7.1/§7.2: Case B 0 overlaps + Case A 15 re-entries, `installed-observed`) |
+| S3 exact public/terminal/control outcomes | 4 (§7.1: byte-exact sentinel present in linked terminal output, `processExit: 0`); production result/choice/error suites re-recorded §8.5 |
+| S4 placement/background/Status observation-only | 5 (§8.3 background case inconclusive — model nonadherence; §8.4 sidecar structural-only); inherited placement matrix suites §8.5; **`not-proven` as new installed evidence** |
+| S5 interruption/loss/timeouts/ceiling | 5 (§8.1: pending observation qualified; native interrupt delivery NOT exercised — `not-proven`); budget cleanup never labelled interruption; 100-hour ceiling untouched (production semantics unchanged) |
+| S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced) |
+| S7 isolation/no production changes | 2 (§ selection isolation), 3 (§12 fixture-owned clone/homes/cleanup), 7 (§1 provenance; final diff = docs + probe files only; production Skills/Role/Companion/config/packaging untouched) |
+| Q1/Q2 effective Child configuration/instructions | 1 (§2 config layers), 4 (§7.3: M `not-proven`; §7.1: candidate instructions delivered and followed on the named route) |
+| Q3 cadence and repeat | 4 (§7.2 A 15 returns vs §7.1 B 0, `installed-observed`; repeat `not-proven` §7.4) |
+| Q4 noise/native interruption/sidecar latency | 5 (§8.1–§8.4: all `not-proven` except the qualified interrupt-case pending observation) |
+| Q5 other waiting commands | 6 (§9: all three `not-proven`; error-path public results observed; root-family contract gap recorded) |
+| Q6 version scope and smallest adoption delta | 7 (§11.2 below; single-version scope 0.160.1, auto-update caveat §7.1) |
+
+No missing evidence is silently marked passed: every row above names its label, and §10 carries the full
+`not-proven` register with causes and next steps.
+
+### 11.2 Proposed next delta (scoped; no production rollout recommended yet)
+
+The spec's positive managed-Rescue recommendation requires the actual Child route (met: `named`),
+a discriminating long observation **and repeat** (repeat `not-proven`), reduced re-entry (met:
+15 → 0), exact handle/terminal linkage (met), and observed native interruption/settlement
+(`not-proven`). The adoption decision therefore stays open, and the smallest useful next delta is a
+**scoped follow-up campaign**, not a production change:
+
+1. Measure M (unraised installed Child cap) with a case whose model flow completes — the four §7.3
+   attempts each failed for a different recorded cause; the instrument is now grammar-complete and
+   retains terminal stdout on mismatch, so the next attempt is diagnostic by construction.
+2. Establish cap propagation against the measured M (raised-config Case B pair), then one fresh repeat.
+3. Wire the §3.1 native interrupt surface into the driver and measure delivery-to-settlement during a
+   pending observation.
+4. Build the reviewed root-family observation contract (§9.2) before re-attempting Review /
+   Adversarial Review / Status `--wait`.
+
+If those close positive, the smallest production adoption would be: session/user-level
+`background_terminal_max_timeout` configuration guidance (never a Role field — §2 whitelist), the
+candidate directive-led waiting paragraph in the named Role and generic assignment **only after** generic
+parity is demonstrated, and version-scoped setup notes — each requiring a separate human-approved
+production plan. No wrapper pragma is claimed universal; no token-savings claim is made (no measurements).
+
+### 11.3 Execution handoff
+
+- Provenance: all live runs on installed `0.160.1` (auto-updated mid-pipeline from `0.160.0`; §1), source
+  pins recorded per run in §7/§8/§9; scratch files `task_plan.md`/`findings.md`/`progress.md` remained
+  untracked throughout.
+- Gates: Tasks 1–3 closed at codex zero-findings (rounds 5 / 4 / 17). Tasks 4–7 artifacts were produced
+  under a recorded double-quota deviation (both reviewer channels exhausted — ZCode 2026-10-08 23:22,
+  codex 2026-10-10 05:11): the Task 4 gate ran once (`needs-attention`, 3 findings) and all three were
+  fixed with regressions at `074fb07`; the re-review and the Task 5/6/7 + overall reviews are
+  **pending backfill** and must run before any merge decision.
+- Final verification at `4352796` (tree fully committed — commits authorized by the user's PR
+  requirement): `npm test` exit 0 with the routine suite at **3397 tests / 3394 pass / 0 fail / 3
+  skipped** (the three skips are the inherited opt-in E2E guards, not win32) and the marketplace
+  snapshot build **2/2**; plus `npm run test:shell-research` **177/177**, selection **6/6**, lint,
+  typecheck, line endings and `git diff --check` clean, zero probe worktree registrations. The three
+  untracked planning scratch files were parked outside the tree for the clean-source check and restored
+  afterwards (spec §2 method, documented here).
+- Records: the seven Task 4 records, three Task 5 records and three Task 6 records live under
+  `/tmp/shell-wait-t4-*` and `/tmp/shell-wait-t5-*`, `/tmp/shell-wait-t6-*` (OS-temporary; the report's
+  tables are the durable summaries, as the plan intends).
+- Human decisions open: PR merge, the §11.2 follow-up campaign, and any eventual production adoption.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 

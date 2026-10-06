@@ -250,7 +250,7 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 
 **Files:** Report; plan progress boxes; no production edits.
 
-- [ ] Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
+- [x] **DONE (report §11.1).** Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
 
 | Spec item | Task and evidence |
 | --- | --- |
@@ -268,9 +268,9 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 | Q5 other waiting commands | 6 |
 | Q6 version scope and smallest adoption delta | 7 |
 
-- [ ] Propose a precise minimal adoption delta only for qualified surfaces: configuration location supported by the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup/upgrade guidance, and known version/latency limitations. Do not promote an unseen Role-field propagation path or claim a wrapper pragma is universal. Separate demonstrated improvement from release-blocking compatibility findings and optional human usability evaluation.
-- [ ] If a case remains not-proven, close research with the exact cause and one useful next step; do not lower a requirement, fabricate success or freeze all independent work. Production canonical remains shell with its existing instructions until the human adopts a subsequent change. MCP results remain untouched.
-- [ ] Verify artifact changes proportionately:
+- [x] **DONE (report §11.2 — scoped follow-up campaign; no production rollout recommended because repeat/interruption/M remain not-proven).** Propose a precise minimal adoption delta only for qualified surfaces: configuration location supported by the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup/upgrade guidance, and known version/latency limitations. Do not promote an unseen Role-field propagation path or claim a wrapper pragma is universal. Separate demonstrated improvement from release-blocking compatibility findings and optional human usability evaluation.
+- [x] **DONE (§10 register: every row has cause + next step).** If a case remains not-proven, close research with the exact cause and one useful next step; do not lower a requirement, fabricate success or freeze all independent work. Production canonical remains shell with its existing instructions until the human adopts a subsequent change. MCP results remain untouched.
+- [x] **DONE (recorded in §11.3/§7.6 and the commit messages; see verification below).** Verify artifact changes proportionately:
 
 ```bash
 npm run test:shell-research
@@ -284,8 +284,8 @@ git diff --stat
 ```
 
 Expected: no failures in changed instrument/selection checks; no production Skills/Role/Companion/config/packaging changes. Also inspect newly created untracked files, which ordinary `git diff` omits. Record real skips and observed failures rather than calling mocks live qualification.
-- [ ] For the final routine/marketplace check, use a clean exact source containing the changes **only if commits are separately authorized**, or the existing builder's explicit snapshot inputs/owned isolated clean staging. Do not temporarily hide implementation source needed by the test, commit without authority, or mislabel an old baseline as current verification. Record the exact method and run `npm test` once when appropriate; do not re-enter the previous huge MCP research suite.
-- [ ] Write a concise execution handoff linking this report/spec/plan, completed task boxes, actual probe commands, unresolved prerequisites and proposed production file scope. Human review decides whether to commission the subsequent production change; do not automatically ship it.
+- [x] **DONE — see the recorded run in §11.3 (clean-source method documented).** For the final routine/marketplace check, use a clean exact source containing the changes **only if commits are separately authorized**, or the existing builder's explicit snapshot inputs/owned isolated clean staging. Do not temporarily hide implementation source needed by the test, commit without authority, or mislabel an old baseline as current verification. Record the exact method and run `npm test` once when appropriate; do not re-enter the previous huge MCP research suite.
+- [x] **DONE (report §11.3).** Write a concise execution handoff linking this report/spec/plan, completed task boxes, actual probe commands, unresolved prerequisites and proposed production file scope. Human review decides whether to commission the subsequent production change; do not automatically ship it.
 
 **Exit:** finite completed qualification artifacts, honest evidence coverage and a concrete human decision. No production rollout is implied.
 
