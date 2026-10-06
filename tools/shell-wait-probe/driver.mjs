@@ -24,7 +24,7 @@ import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-c
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
-import { inspectShellWaitEvidence, parseCallEvent } from './evidence.mjs';
+import { inspectShellWaitEvidence, parseCallStatements } from './evidence.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -396,7 +396,13 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       cleanupComplete: typeof liveFacts.held?.cleanupComplete === 'boolean' ? liveFacts.held.cleanupComplete : null,
       cleanupErrorCount: Array.isArray(liveFacts.held?.cleanupErrors?.reasons) ? liveFacts.held.cleanupErrors.reasons.length : 0,
     },
-    evidence: evidenceExcerpts(liveFacts.excerpts),
+    evidence: {
+      ...evidenceExcerpts(liveFacts.excerpts),
+      // Excerpt count and collection count answer different questions.
+      rolloutCount: liveFacts.collection?.rolloutCount ?? null,
+      childToolCallCount: liveFacts.collection?.childToolCallCount ?? null,
+      truncated: evidenceExcerpts(liveFacts.excerpts).truncated || liveFacts.collection?.truncated === true,
+    },
     inconclusive: liveFacts.inconclusive ?? null,
   };
 }
@@ -773,7 +779,7 @@ const CODEX_EXEC_COMMON_ARGUMENTS = Object.freeze([
  * file size, parsed with the shared bounded JSONL parser.
  * @param {string} codexHome
  */
-async function loadShellWaitRollouts(codexHome) {
+export async function loadShellWaitRollouts(codexHome) {
   const sessionsRoot = join(codexHome, 'sessions');
   const pending = [{ path: sessionsRoot, depth: 0 }];
   const files = [];
@@ -860,8 +866,8 @@ export async function waitForLauncherObservation(codexHome, command, signal, dep
       const rollouts = await loadRollouts(codexHome);
       consecutiveFailures = 0;
       observed = rollouts.some((events) => events.some((/** @type {any} */ event) => {
-        const call = parseCallEvent(event);
-        return call?.kind === 'exec_command' && call.value.cmd === command;
+        const statements = parseCallStatements(event);
+        return statements?.some((call) => call.kind === 'exec_command' && call.value.cmd === command) ?? false;
       }));
     } catch (error) {
       consecutiveFailures += 1;
@@ -1037,13 +1043,19 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   /** @type {unknown[]} */
   let excerpts = [];
   if (rolloutsFailureReason !== null) {
-    inconclusive = { reason: `rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
+    inconclusive = { reason: `rollouts-unavailable: rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
   } else if (evidence.status === 'inconclusive') {
     inconclusive = { reason: `${evidence.inconclusive.reason}: ${evidence.inconclusive.detail}` };
     if (evidence.inconclusive.excerpt) excerpts.push({ kind: 'unsupported-call-shape', ...evidence.inconclusive.excerpt });
   } else {
     const completion = /** @type {any} */ (evidence.facts).completion;
     const linkage = /** @type {any} */ (evidence.facts).linkage;
+    const collection = /** @type {any} */ (evidence.facts).collection;
+    // Retain the mismatch first so excerpt capping cannot hide the decisive
+    // diagnostic. Copy only the observer's bounded, already scrubbed excerpts.
+    if (completion?.terminalStdoutExcerpt) excerpts.push(completion.terminalStdoutExcerpt);
+    excerpts.push(...(/** @type {any} */ (evidence.facts).companion?.preLaunchDiagnostics?.excerpts ?? []));
+    excerpts.push(...(collection?.excerpts ?? []));
     if (held.endedBeforeGate) inconclusive = { reason: 'the host ended before the held completion boundary; the pending-observation claim is inconclusive for this run' };
     else if (held.budgetExpired) inconclusive = { reason: 'the probe budget expired (budget cleanup; never native interruption)' };
     else if (completion?.qualified !== true) inconclusive = { reason: completion?.reason ?? 'completion could not be qualified' };
@@ -1052,6 +1064,11 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       : null;
     const liveFacts = {
       codexVersion,
+      collection: {
+        rolloutCount: collection?.rolloutCount ?? null,
+        childToolCallCount: collection?.childToolCallCount ?? null,
+        truncated: collection?.truncated === true || /** @type {any} */ (evidence.facts).companion?.preLaunchDiagnostics?.truncated === true,
+      },
       route: { requested: caseRoute(input.case), actual: route },
       hostResult: {
         exitCode: held.result?.code ?? null,
@@ -1113,6 +1130,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   }
   return {
     codexVersion,
+    collection: { rolloutCount: null, childToolCallCount: null, truncated: false },
     route: { requested: caseRoute(input.case), actual: null },
     // A PRE-TURN failure (gate setup, version probe) never reached the held
     // lifecycle: every held fact stays unknown (null) instead of dereferencing
@@ -1160,7 +1178,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   interrupt: Record<string, unknown>,
  *   held: Record<string, unknown>,
  *   cleanup: { label: string | null, nativeInterruptionClaimed: false, fixtureDisposed: boolean | null, disposalError: string | null, cleanupComplete: boolean | null, cleanupErrorCount: number },
- *   evidence: { count: number, truncated: boolean, excerpts: unknown[] },
+ *   evidence: { count: number, truncated: boolean, excerpts: unknown[], rolloutCount: number | null, childToolCallCount: number | null },
  *   inconclusive: { reason: string } | null,
  * }} ShellWaitCaseRecord
  * @typedef {{
@@ -1201,6 +1219,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *     processTermination?: { verifiedTerminated?: boolean | null, codexTerminated?: boolean | null },
  *     cleanupComplete?: boolean | null,
  *   },
+ *   collection?: { rolloutCount?: number | null, childToolCallCount?: number | null, truncated?: boolean },
  *   excerpts?: unknown[],
  *   inconclusive?: { reason: string } | null,
  * }} ShellWaitLiveFacts

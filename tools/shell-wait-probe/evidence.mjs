@@ -2,7 +2,7 @@
 /**
  * Bounded fail-closed evidence observer for the native shell long-wait
  * qualification (research-only). It inspects only actually observed host call
- * shapes — direct function calls, simple code-mode script wrapper calls, and
+ * shapes — direct function calls, bounded consecutive code-mode statements, and
  * the linked outer continuation that resolves a pending yielded cell — and
  * never infers an invocation from quoted message text.
  *
@@ -19,10 +19,13 @@ const MAX_COMMAND_BYTES = 4096;
 const MAX_WRAPPER_ARGUMENT_CHARS = 4096;
 const MAX_EXCERPT_CHARS = 2048;
 const MAX_EVENTS_PER_ROLLOUT = 20_000;
+const MAX_STATEMENTS_PER_CELL = 16;
+const MAX_DIAGNOSTIC_EXCERPTS = 64;
 // The const-r wrapper's tail has two observed forms: the pinned
 // `text(JSON.stringify(r))` and the installed 0.160.1 `text(r)` (Task 4 Case 0
-// launch call, single-quoted JavaScript literals). Both are supported.
-const WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{[\s\S]{1,4096}?\})\); text\((?:JSON\.stringify\(r\)|r)\)\n?$/u;
+// launch call, single-quoted JavaScript literals). Both are supported, with
+// an optional terminal semicolon as observed in the second Case 0 record.
+const WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{[\s\S]{1,4096}?\})\);\s*text\((?:JSON\.stringify\(r\)|r)\);?\n?$/u;
 // The installed 0.160.1 host additionally observes the inline wrapper form
 // `text(await tools.<tool>({...}));` (first live observation 2026-10-06, Task 4
 // Case 0: `text(await tools.exec_command({cmd:"cat …",max_output_tokens:20000}));`).
@@ -81,14 +84,42 @@ function scrubExcerpt(text, redactions) {
   return { text: scrubbed, truncated };
 }
 
-/** @param {string} input */
-function acceptsCustomToolCallInput(input) {
-  const preparationMatch = PREPARATION_PATTERN.exec(input);
-  if (preparationMatch) {
-    const envelope = parseWrapperArguments(preparationMatch[2]);
-    return envelope !== null && typeof envelope.version === 'number';
+/**
+ * Parse each consecutive line using the existing single-statement parsers.
+ * One optional cell directive applies to every statement. Never accept a
+ * partial prefix: a bad line or the statement bound rejects the whole cell.
+ * @param {any} event
+ * @returns {NonNullable<ReturnType<typeof parseCallEvent>>[] | null}
+ */
+export function parseCallStatements(event) {
+  const payload = event?.payload;
+  if (payload?.type !== 'custom_tool_call') {
+    const call = parseCallEvent(event);
+    return call ? [call] : null;
   }
-  return parseWrappedToolInput(input) !== null;
+  if (typeof payload.input !== 'string') return null;
+  let source = payload.input;
+  let prefix = '';
+  const directive = DIRECTIVE_PATTERN.exec(source);
+  if (directive) { prefix = directive[0]; source = source.slice(prefix.length); }
+  const lines = source.replace(/\n$/u, '').split('\n');
+  if (lines.length === 0 || lines.length > MAX_STATEMENTS_PER_CELL) return null;
+  const calls = [];
+  for (const line of lines) {
+    // Preparation's existing parser accepts no directive; attach the parsed
+    // directive separately after validating it through the wrapper parser.
+    // Only discard padding at a statement line's boundary. Empty/whitespace
+    // lines still reach the strict parser and reject the entire cell.
+    const call = parseCallEvent({ payload: { ...payload, input: line.trim() } });
+    if (!call) return null;
+    if (prefix) {
+      const framed = parseWrappedToolInput(`${prefix}text(await tools.wait({cell_id:"directive"}));`);
+      if (!framed) return null;
+      call.directive = framed.directive;
+    }
+    calls.push(call);
+  }
+  return calls;
 }
 
 /**
@@ -374,7 +405,7 @@ export function inspectShellWaitEvidence(input) {
     for (const event of /** @type {any[]} */ (events)) {
       const payload = event?.payload;
       if (payload?.type === 'custom_tool_call') {
-        if (typeof payload.input === 'string' && acceptsCustomToolCallInput(payload.input)) continue;
+        if (parseCallStatements(event) !== null) continue;
         const excerpt = scrubExcerpt(typeof payload.input === 'string' ? payload.input : JSON.stringify(payload.input), redactions);
         return inconclusive('unsupported-call-shape',
           'A collected tool call does not match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual adjudication.',
@@ -409,8 +440,8 @@ export function inspectShellWaitEvidence(input) {
 
   const linkage = inspectLinkage(rollouts);
   const calls = linkage.childEvents ? collectCalls(linkage.childEvents) : null;
-  const companion = inspectCompanion(calls, command, input.zcodeCalls);
-  const sequence = calls === null ? null : analyzeCallSequence(calls);
+  const companion = inspectCompanion(calls, command, input.zcodeCalls, redactions);
+  const sequence = calls === null ? null : analyzeCallSequence(calls, command);
   const handle = {
     originalHandleId: sequence?.originalHandleId ?? null,
     pollCount: sequence?.pollCount ?? null,
@@ -425,7 +456,24 @@ export function inspectShellWaitEvidence(input) {
   return {
     status: 'supported',
     inconclusive: null,
-    facts: { linkage: linkage.facts, companion, handle, observations, completion },
+    facts: {
+      linkage: linkage.facts, companion, handle, observations, completion,
+      collection: {
+        rolloutCount: rollouts.length,
+        childToolCallCount: calls?.length ?? null,
+        truncated: (calls?.length ?? 0) > MAX_DIAGNOSTIC_EXCERPTS,
+        // Pre-launch diagnostics already have their own excerpt kind. Keep
+        // successful launch/observation evidence too; count is not an excerpt
+        // count. Never retain a private preparation prompt in call arguments.
+        excerpts: (calls ?? []).slice(0, MAX_DIAGNOSTIC_EXCERPTS)
+          .filter((entry) => !(entry.call.kind === 'exec_command' && entry.call.value.cmd !== command
+            && entry.callIndex < (calls?.find((call) => call.call.kind === 'exec_command' && call.call.value.cmd === command)?.callIndex ?? -1)))
+          .map(({ call }) => ({ kind: 'rollout-tool-call', ...scrubExcerpt(JSON.stringify({
+            tool: call.kind,
+            arguments: { ...call.value, ...(typeof call.value.chars === 'string' && call.value.chars.length > 0 ? { chars: '<private-input>' } : {}) },
+          }), redactions) })),
+      },
+    },
   };
 }
 
@@ -519,38 +567,79 @@ function inspectLinkage(rollouts) {
  * @param {any[]} events
  */
 function collectCalls(events) {
-  // ONE pass in EVENT ORDER: every call carries the event index it was issued
-  // at (callIndex) and the index its own response arrived at (outputIndex), so
-  // the sequence analysis can tell a resolved observation from one that was
-  // still outstanding when a later call was issued. Pre-attaching outputs from
-  // the whole rollout first would hide exactly that ordering.
-  /** @type {Map<string, { output: ReturnType<typeof parseToolOutput>, index: number }>} */
-  const earlyOutputs = new Map();
-  /** @type {{ callId: string, call: { kind: string, value: Record<string, unknown>, directive: Record<string, unknown> | null, wrapped: boolean }, output: ReturnType<typeof parseToolOutput>, callIndex: number, outputIndex: number | null }[]} */
-  const calls = [];
+  /** @type {Map<string, { output: unknown, index: number }>} */
+  const outputs = new Map();
   for (const [index, event] of events.entries()) {
     const payload = event?.payload;
     if (payload?.type === 'custom_tool_call_output' || payload?.type === 'function_call_output') {
-      const callId = String(payload.call_id);
-      const parsed = parseToolOutput(payload.output);
-      const existing = calls.find((entry) => entry.callId === callId);
-      if (existing) {
-        existing.output = parsed;
-        existing.outputIndex = index;
-      } else {
-        earlyOutputs.set(callId, { output: parsed, index });
-      }
-      continue;
+      outputs.set(String(payload.call_id), { output: payload.output, index });
     }
-    if (payload?.type !== 'custom_tool_call' && payload?.type !== 'function_call') continue;
-    const call = parseCallEvent(event);
-    if (!call) continue;
-    const callId = String(payload.call_id);
-    const early = earlyOutputs.get(callId);
-    earlyOutputs.delete(callId);
-    calls.push({ callId, call, output: early?.output ?? null, callIndex: index, outputIndex: early ? early.index : null });
+  }
+  /** @type {{ callId: string, call: NonNullable<ReturnType<typeof parseCallEvent>>, output: ReturnType<typeof parseToolOutput>, callIndex: number, outputIndex: number | null, cellWallTimeMs: number | null }[]} */
+  const calls = [];
+  for (const [index, event] of events.entries()) {
+    const parsed = parseCallStatements(event);
+    if (!parsed) continue;
+    const callId = String(event.payload.call_id);
+    const response = outputs.get(callId);
+    const results = parseStatementOutputs(response?.output, parsed.length);
+    // A multi-statement cell's host wall time covers every awaited statement,
+    // so it is recorded at cell scope (on the cell's last entry) and never
+    // attributed to one observation's duration.
+    const cellWallTimeMs = parsed.length > 1 && Array.isArray(response?.output)
+      ? extractWallTimeMs(response.output)
+      : null;
+    for (const [statementIndex, call] of parsed.entries()) {
+      const output = results[statementIndex] ?? null;
+      const callIndex = index + statementIndex / MAX_STATEMENTS_PER_CELL;
+      // Completed earlier statements in a strict awaited sequence resolve
+      // before the next line. The last result resolves at the host response;
+      // missing/ambiguous results retain their actual outstanding position.
+      const resolvedInline = parsed.length > 1 && statementIndex < parsed.length - 1
+        && output?.state === 'completed' && response && response.index > index;
+      calls.push({ callId, call, output, callIndex,
+        outputIndex: resolvedInline ? callIndex + 1 / (2 * MAX_STATEMENTS_PER_CELL) : response?.index ?? null,
+        cellWallTimeMs: statementIndex === parsed.length - 1 ? cellWallTimeMs : null });
+    }
   }
   return calls;
+}
+
+/**
+ * A cell prints one JSON object per completed awaited statement in order.
+ * Refuse incomplete/extra completed result lists instead of assigning the last
+ * object to every call. A yielded cell's completed prefix precedes its pending
+ * statement; unexecuted suffixes stay unresolved and cannot qualify completion.
+ * @param {unknown} output
+ * @param {number} count
+ * @returns {ReturnType<typeof parseToolOutput>[]}
+ */
+function parseStatementOutputs(output, count) {
+  if (count === 1) return [parseToolOutput(output)];
+  if (!Array.isArray(output)) return [];
+  /** @type {ReturnType<typeof parseToolOutput>[]} */
+  const results = [];
+  for (const item of output) {
+    if (item?.type !== 'input_text' || typeof item.text !== 'string' || item.text.length > 65536) continue;
+    try {
+      const result = JSON.parse(item.text);
+      if (result && typeof result === 'object' && !Array.isArray(result)) {
+        results.push({ state: /** @type {const} */ ('completed'), result, wallTimeMs: null });
+      }
+    } catch { /* bounded header text */ }
+  }
+  const pending = parseToolOutput(output);
+  // The pending header is authoritative regardless of how many completed
+  // result objects accompany it: a cell that reports every statement's result
+  // while its pending header stands has NOT completed its last awaited
+  // statement. Full results plus a pending status is contradictory evidence,
+  // so nothing in the cell resolves and completion stays blocked.
+  if (pending?.state === 'pending') {
+    if (results.length < count) return [...results, pending];
+    return [];
+  }
+  if (results.length !== count) return [];
+  return results;
 }
 
 /**
@@ -558,8 +647,9 @@ function collectCalls(events) {
  * @param {ReturnType<typeof collectCalls> | null} calls
  * @param {string} command
  * @param {unknown} zcodeCalls
+ * @param {readonly string[]} redactions
  */
-function inspectCompanion(calls, command, zcodeCalls) {
+function inspectCompanion(calls, command, zcodeCalls, redactions) {
   const launchCount = calls === null ? null : calls.filter(({ call }) => call.kind === 'exec_command' && call.value.cmd === command).length;
   // The fake peer's record holds the Companion's JSON-RPC requests: plain
   // objects with a non-empty bounded string `method` (session/*,
@@ -584,7 +674,17 @@ function inspectCompanion(calls, command, zcodeCalls) {
     : malformedCount > 0
       ? `${String(malformedCount)} of ${String(entries.length)} recorded peer entries do not match a supported JSON-RPC request shape`
       : null;
+  const launch = calls?.find(({ call }) => call.kind === 'exec_command' && call.value.cmd === command);
+  const diagnostics = launch ? calls?.filter((entry) => entry.call.kind === 'exec_command'
+    && entry.call.value.cmd !== command && entry.callIndex < launch.callIndex) ?? [] : [];
   return {
+    preLaunchDiagnostics: calls === null ? null : {
+      count: diagnostics.length,
+      truncated: diagnostics.length > MAX_DIAGNOSTIC_EXCERPTS,
+      excerpts: diagnostics.slice(0, MAX_DIAGNOSTIC_EXCERPTS).map(({ call }) => ({
+        kind: 'pre-launch-diagnostic', ...scrubExcerpt(JSON.stringify(call.value), redactions),
+      })),
+    },
     launchCount,
     duplicateLaunch: launchCount !== null && launchCount > 1,
     sendCount,
@@ -602,9 +702,10 @@ function inspectCompanion(calls, command, zcodeCalls) {
  * foreign, or ambiguous linkage is rejected — pending state stays pending, the
  * output never qualifies completion, and a violation is recorded.
  * @param {ReturnType<typeof collectCalls>} calls
+ * @param {string} command
  */
-function analyzeCallSequence(calls) {
-  const launch = calls.find(({ call }) => call.kind === 'exec_command');
+function analyzeCallSequence(calls, command) {
+  const launch = calls.find(({ call }) => call.kind === 'exec_command' && call.value.cmd === command);
   const originalHandleId = launch && launch.output?.state === 'completed' ? readHandleId(launch.output.result.session_id) : null;
   let pollCount = 0;
   let preparationWrites = 0;
@@ -638,9 +739,17 @@ function analyzeCallSequence(calls) {
   const outerLinkageViolations = [];
   /** @type {string[]} */
   const disciplineViolations = [];
-  const execCommandCalls = calls.filter(({ call }) => call.kind === 'exec_command');
-  if (execCommandCalls.length > 1) {
-    disciplineViolations.push(`${String(execCommandCalls.length - 1)} additional exec_command process launch(es) beyond the single authorized companion command`);
+  const additionalExecs = calls.filter((entry) => entry.call.kind === 'exec_command' && entry !== launch
+    && (entry.call.value.cmd === command || (launch && entry.callIndex > launch.callIndex)));
+  if (additionalExecs.length > 0) {
+    disciplineViolations.push(`${String(additionalExecs.length)} additional exec_command process launch(es) beyond the single authorized companion command`);
+  }
+  const overlappingDiagnostics = launch ? calls.filter((entry) => entry.call.kind === 'exec_command'
+    && entry.callIndex < launch.callIndex && entry.call.value.cmd !== command
+    && (entry.outputIndex === null || entry.outputIndex > launch.callIndex || entry.output?.state !== 'completed'
+      || !Number.isSafeInteger(entry.output.result.exit_code) || readHandleId(entry.output.result.session_id) !== null)) : [];
+  if (overlappingDiagnostics.length > 0) {
+    disciplineViolations.push(`${String(overlappingDiagnostics.length)} pre-launch diagnostic exec_command call(s) overlap the companion observation window or have unresolved lifetime`);
   }
   // Only the observational tool family is sanctioned inside the identified
   // child rollout; the spawn_agent/wait_agent family lives in the PARENT
@@ -655,7 +764,7 @@ function analyzeCallSequence(calls) {
   for (const [index, entry] of calls.entries()) {
     const { call, output } = entry;
     if (call.kind === 'exec_command') {
-      if (output?.state === 'completed' && originalHandleId !== null && readHandleId(output.result.session_id) === originalHandleId) {
+      if (entry === launch && output?.state === 'completed' && originalHandleId !== null && readHandleId(output.result.session_id) === originalHandleId) {
         lastCompletedOnHandle = { result: output.result, wallTimeMs: output.wallTimeMs, index };
       }
       continue;
@@ -848,6 +957,11 @@ function inspectObservations(linkage, calls, input, /** @type {any} */ sequence)
     return payload?.type === 'function_call' || payload?.type === 'custom_tool_call';
   }).length;
   const pendingInnerAtEnd = calls === null ? null : sequence.pendingInnerAtEnd;
+  // Whole-cell host wall time (cell scope, not one observation's duration):
+  // the terminal multi-statement cell's total, when the host reported one.
+  const cellWallTimeMs = calls === null ? null
+    : /** @type {any[]} */ (calls).reduce((/** @type {number | null} */ last, entry) => (
+      typeof entry?.cellWallTimeMs === 'number' ? entry.cellWallTimeMs : last), null);
   // Decisive wall times are filled in by the caller once the terminal tool
   // output is known (tool-reported value first, harness override as fallback).
   const decisiveWallMs = typeof input.observedWallMs === 'number' && Number.isSafeInteger(input.observedWallMs) ? input.observedWallMs : null;
@@ -855,7 +969,7 @@ function inspectObservations(linkage, calls, input, /** @type {any} */ sequence)
   const remainingLifetimeMs = decisiveWallMs !== null && workerDurationMs !== null && workerDurationMs >= decisiveWallMs
     ? workerDurationMs - decisiveWallMs
     : null;
-  return { outerReturns, rootJoins, modelCalls, pendingInnerAtEnd, decisiveWallMs, remainingLifetimeMs };
+  return { outerReturns, rootJoins, modelCalls, pendingInnerAtEnd, cellWallTimeMs, decisiveWallMs, remainingLifetimeMs };
 }
 
 /**
@@ -872,8 +986,14 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
   const terminal = sequence?.lastCompletedOnHandle ?? null;
   const terminalResult = terminal?.result ?? null;
   const processExit = terminalResult && Number.isSafeInteger(terminalResult.exit_code) ? /** @type {number} */ (terminalResult.exit_code) : null;
-  const publicResultMatched = typeof input.publicResult === 'string' && terminalResult
-    ? terminalResult.output === input.publicResult
+  // The sentinel is the fake peer's result body, not the entire rendered
+  // companion stdout (which includes LF and resumability text). Compare its
+  // bytes only in the linked terminal output, never host JSONL or messages.
+  const publicResultMatched = typeof input.publicResult === 'string' && input.publicResult.length > 0 && terminalResult
+    ? typeof terminalResult.output === 'string' && terminalResult.output.includes(input.publicResult)
+    : null;
+  const terminalStdoutExcerpt = publicResultMatched === false && processExit !== null && typeof terminalResult?.output === 'string'
+    ? { kind: 'terminal-stdout-mismatch', ...scrubExcerpt(terminalResult.output, input.redactions ?? []) }
     : null;
   const decisiveEnd = processExit !== null
     ? 'process-exit'
@@ -910,6 +1030,7 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
     reason: qualified ? null : `completion cannot be qualified: ${violations.join('; ')}.`,
     processExit,
     publicResultMatched,
+    terminalStdoutExcerpt,
     decisiveEnd,
     decisiveWallMs,
     remainingLifetimeMs,

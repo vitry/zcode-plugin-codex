@@ -147,17 +147,24 @@ Recognize exactly `routine`, `mcp-research`, `shell-research`; keep `Unknown tes
 
 **Files:** Report Child/config/wait sections; only bounded fixture fixes in new probe files if evidence identifies them.
 
-- [ ] Resolve the actual installed executable once, set `CODEX_BINARY` to that absolute path, and record its real version. Do not use `node_modules/@openai/codex` accidentally. Each output is a newly created private OS-temporary directory; raw path values must not enter public results.
-- [ ] Run one **cap-matched current-instruction control** and one candidate with the same cap/profile/permissions to isolate the instruction policy. The case label `rescue-baseline` below means that instruction control, not a completely unmodified production-runtime baseline: both cases raise the fixture cap. Record the current unraised/default cap separately and do not infer configuration causality from this A/B comparison alone. The example uses the prior one-hour cap and a 420-second worker; adapt duration only if Task 1/current observations establish a different effective default cap:
+- [x] Resolve the actual installed executable once, set `CODEX_BINARY` to that absolute path, and record its real version. Do not use `node_modules/@openai/codex` accidentally. Each output is a newly created private OS-temporary directory; raw path values must not enter public results.
+- [x] Run one **cap-matched current-instruction control** and one candidate with the same cap/profile/permissions to isolate the instruction policy. The case label `rescue-baseline` below means that instruction control, not a completely unmodified production-runtime baseline: both cases raise the fixture cap. Record the current unraised/default cap separately and do not infer configuration causality from this A/B comparison alone. The example uses the prior one-hour cap and a 420-second worker; adapt duration only if Task 1/current observations establish a different effective default cap:
 
 ```bash
-shell_codex_binary=$(command -v codex)
+shell_codex_binary=$(readlink -f "$(command -v codex)")
 shell_source_sha=$(git rev-parse HEAD)
 shell_case_output=$(mktemp -d)
 ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-probe/driver.mjs \
   --case rescue-baseline --codex "$shell_codex_binary" --source-sha "$shell_source_sha" \
   --output "$shell_case_output" --worker-duration-ms 420000 --cap-ms 3600000 --poll-ms 60000 --budget-ms 720000
 ```
+
+Task 4 execution: Case A and B used `--budget-ms 1200000` (the commands above are design examples).
+Both used the regular installed `0.160.1` executable after the pipeline auto-update from `0.160.0`;
+Case A/B source pin is `7edb8adb1781404301f0a29bcc3bd7de6ab45972`.
+See report [§1 and §7](../../qualification/rescue-shell-long-wait.md) for the actual records,
+earlier Case 0 pins, exact call excerpts and evidence labels. The comparative A/B execution is complete;
+the separately recorded unraised cap remains `not-proven`.
 
 Expected baseline is an observation, not an assumed 31-second return. Record what this actual Child did; cap configuration alone is not improvement proof.
 
@@ -169,11 +176,34 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 ```
 
 - [ ] Verify actual native Child parent/thread/path linkage and production preparation/binding admission; one Companion launch and one fake session/send; exact original process handle; actual directive/inner yield; terminal exit and byte-for-byte sentinel; no routine progress relay to Root. The cap-discrimination poll must begin with at least measured unraised/default configuration cap + 30000 ms remaining. A short run, gate released too soon or slow model leaving too little lifetime is inconclusive for that claim; an unestablished default cap must not be guessed from an unmatched source snapshot.
-- [ ] Run `rescue-repeat` once with the same candidate flags and a fresh output. Do not retry model nonadherence out of the record. Compare outer re-entry counts over comparable remaining work intervals; separately report Root native child joins. One long held observation has no intervening model return; whole-operation decisions need not be zero. Do not claim token savings without actual token measurements.
-- [ ] Record named versus generic route as actually selected by the host. If only one route is reachable, retain the other as unavailable/not-proven with structural parity checks. Never force a generic fallback after a recognized Role-value rejection. A positive conclusion is scoped to the observed route; claiming both requires actual evidence for both.
-- [ ] If the Child cap is ineffective or instructions are not followed, inspect the one concrete configuration/delivery cause established by the trace and perform at most one cause-directed follow-up per failed/inconclusive case. No second engine, generic interpreter, synthetic authority or mutable latest-state lookup. Record Root timing separately; do not relaunch old MCP cases.
 
-**Exit:** Q1–Q3 installed facts, repeat outcome and precise limits. Child completion proves only the current invocation, not automatic production release.
+**Still open (verification/discriminator):** Case B qualifies named-route linkage, one launch/send, original
+handle, terminal exit and byte-exact sentinel. Case A completion linkage is an instrument limitation; M and
+the M + 30000 poll-start condition are not established. Routine progress-relay absence is not established
+by retained call excerpts. This complete verification box remains unchecked.
+
+- [ ] Run `rescue-repeat` once with the same candidate flags and a fresh output. Do not retry model nonadherence out of the record. Compare outer re-entry counts over comparable remaining work intervals; separately report Root native child joins. One long held observation has no intervening model return; whole-operation decisions need not be zero. Do not claim token savings without actual token measurements.
+
+**Still open (repeat):** Both attempts are retained: repeat1 failed instrument natural-exit verification
+(cleanup complete), repeat2 was model nonadherence/unsupported inline preparation and was not retried.
+No comparable qualified repeat or interval comparison was obtained; this deliverable remains unchecked.
+
+- [x] Record named versus generic route as actually selected by the host. If only one route is reachable, retain the other as unavailable/not-proven with structural parity checks. Never force a generic fallback after a recognized Role-value rejection. A positive conclusion is scoped to the observed route; claiming both requires actual evidence for both.
+- [x] If the Child cap is ineffective or instructions are not followed, inspect the one concrete configuration/delivery cause established by the trace and perform at most one cause-directed follow-up per failed/inconclusive case. No second engine, generic interpreter, synthetic authority or mutable latest-state lookup. Record Root timing separately; do not relaunch old MCP cases.
+
+**Recorded completion:** Named selected for Cases A/B and Case 0 run3; generic remains installed
+`not-proven`, with `fixture-tested` artifact parity (§12), no forced fallback. Case 0 follow-ups addressed
+distinct established grammar/terminal-rule causes in `9b2bbcd`, `cede2d8`, `7edb8ad`; all four outcomes
+remain in the record. No host-behavior outcome or repeat2 nonadherence was retried out of the record.
+
+**Amendment gates:** selection 6/6, lint/typecheck/diff-check exit 0. The requested one shell-research
+run: 173 tests, 169 pass, 4 fail, 0 skipped; all four are sandbox artifacts (two npm-cache `open EPERM`,
+two macOS process-inspection `spawn EPERM`), not host-behavior rejection. Report §7.6 records the details.
+
+**Exit (partial):** Q1 configuration propagation and M are `not-proven`; Q2 named candidate behavior is
+`installed-observed`; Q3 cadence is `installed-observed` (A 15 outer returns vs B 0), repeat `not-proven`.
+Report §7.5 fills the Task 4-owned S1/S2/S3 partial and Q1/Q2/Q3 coverage rows; full Task 7 coverage and
+Task 5/6 work remain open. Child completion proves only the current invocation, not automatic production release.
 
 ## Task 5: Preserve lifecycle, results, placement and Status sidecar semantics
 
@@ -224,15 +254,16 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 
 | Spec item | Task and evidence |
 | --- | --- |
-| S1 preparation/binding authority | 1, 3, 4; production path linkage plus existing mismatch/one-shot tests |
-| S2 original-handle/outer-cell ownership | 3, 4, 5; observer negatives and actual tool/process linkage |
-| S3 exact public/terminal/control outcomes | 4–6; actual terminal output plus existing choice/error/result regressions |
+| S1 preparation/binding authority | **Partial**: Tasks 1/3/4; Task 4 `installed-observed` Case B production linkage/one launch/send, §12 `fixture-tested` negatives. Full production mismatch/one-shot regression coverage still open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
+| S2 original-handle/outer-cell ownership | **Partial**: Task 4 `installed-observed` Case B exact original handle and settled long observation; §12 `fixture-tested` negatives. Case A completion linkage `not-proven` (instrument); Task 5 open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
+| S3 exact public/terminal/control outcomes | **Partial**: Task 4 `installed-observed` Case B terminal/host exit 0 and byte-exact sentinel in linked output; §12 `fixture-tested` sentinel negatives. Tasks 5/6 choice/error/command checks remain open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
 | S4 placement/background/Status observation-only | 5, 6; one short installed background case and current matrix/Status tests |
 | S5 interruption/loss/timeouts/ceiling | 5, 6; actual native delivery separated from controlled tests and cleanup |
 | S6 named/generic parity and no fallback weakening | 1, 3, 4; actual route plus structural parity and explicit unavailable labels |
 | S7 isolation/no production changes | 2, 3, 7; suite selection, installed-fixture cleanup and final diff |
-| Q1/Q2 effective Child configuration/instructions | 1, 3, 4 |
-| Q3 cadence and repeat | 4 |
+| Q1 effective Child configuration | Tasks 1/3/4: **`not-proven`** propagation/M; `installed-observed` ≥386.6-s ceiling is insufficient for causality; [report §7.3](../../qualification/rescue-shell-long-wait.md#73-case-0-unraised-child-cap-m-not-established-not-proven) |
+| Q2 effective Child instructions | Task 4: **`installed-observed`**, named candidate invocation only; directive-led long request, 0 outer returns vs baseline 15. Generic remains `not-proven`; artifact parity `fixture-tested`; [report §7.1–§7.2](../../qualification/rescue-shell-long-wait.md#71-case-b-qualified-named-route-long-observation-installed-observed) |
+| Q3 cadence and repeat | Task 4: **`installed-observed`** A/B outer returns 15/0, Child calls 23/2, Root joins 7/1; repeat **`not-proven`** with both attempts retained; [report §7.4](../../qualification/rescue-shell-long-wait.md#74-repeat-outcome-not-proven) |
 | Q4 noise/native interruption/sidecar latency | 5 |
 | Q5 other waiting commands | 6 |
 | Q6 version scope and smallest adoption delta | 7 |
@@ -262,4 +293,8 @@ Expected: no failures in changed instrument/selection checks; no production Skil
 
 - Spec independent review: `shell_wait_spec_review`, 2026-10-05, no blocking P1/P2 findings; nonblocking Status-sidecar clarification incorporated.
 - Plan independent review: separate read-only `shell_wait_plan_review`, 2026-10-05, no blocking P1/P2 findings. Its optional clarification was incorporated: the raised-cap baseline is explicitly a cap-matched current-instruction control, with default-cap/configuration claims recorded separately. Spec terminology was aligned without adding a new experiment or weakening requirements. The same reviewer narrowly rechecked the final changed paragraphs and confirmed no contradictions or blocking findings.
-- All execution boxes above are intentionally unchecked: no probe implementation, live trials or production changes have been executed by the planning session.
+- The planning session initially left all execution boxes unchecked. Tasks 1–3 and the completed Task 4
+  deliverables are now checked; incomplete Task 4 verification/repeat and Tasks 5–7 remain open with the
+  recorded limits. Production changes remain unauthorized. The current user explicitly authorized amending
+  the Task 4 commit with report/plan changes using `git add -u`, preserving the three untracked scratch files;
+  this does not authorize push, PR, merge or rollout.

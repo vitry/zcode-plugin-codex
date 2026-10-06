@@ -1,14 +1,14 @@
 # Rescue Native Shell Long-Wait Qualification
 
-Status: **research-only**. Executed 2026-10-05 as Task 1 of the plan
+Status: **research-only**. Task 1 executed 2026-10-05; Task 4 live measurements recorded 2026-10-06 under the plan
 [2026-10-05-rescue-shell-long-wait](../superpowers/plans/2026-10-05-rescue-shell-long-wait.md)
 under the spec
 [2026-10-05-rescue-shell-long-wait-design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md).
 Worktree base commit `703fdcee958f4729a83d1a978c3b0e5cfa25f90a` (branch base `6638878e910154d7d1bc4effd4c9aa62f149f23a`, merged PR #65).
 This document authorizes **no production change**: canonical Skills, Role template, Companion stores, hooks,
-packaging, user configuration and `../codex` are untouched. Only §7–§9 and §11 are placeholder skeletons for
-later tasks and are explicitly **not yet executed**; §3–§6 and §10 record Task 1's delivered findings, and §12
-records Task 3's fixture instrument facts (no live claims).
+packaging, user configuration and `../codex` are untouched. §7 records Task 4 installed observations and
+precise limits; §8–§9 and §11 remain unexecuted Task 5–7 skeletons. §2–§6 retain the source/design findings,
+§10 is the current not-proven register, and §12 records fixture-tested instrument behavior and its limits.
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -32,7 +32,24 @@ labels, and no source/binary mapping is claimed anywhere in this report.
 | --- | --- |
 | `command -v codex` | `/Users/zhangzikai/.local/bin/codex` |
 | `codex --version` | `codex-cli 0.160.0` (recorded fresh on 2026-10-05) |
-| Package dependency | `scripts/lib/tool-launch.mjs` defaults to `node_modules/@openai/codex/bin/codex.js` (the repo's pinned dependency) unless `CODEX_BINARY` names an absolute native executable. Every live case must set `CODEX_BINARY=/Users/zhangzikai/.local/bin/codex`; a dependency version is not the current host. |
+| Package dependency | `scripts/lib/tool-launch.mjs` defaults to `node_modules/@openai/codex/bin/codex.js` (the repo's pinned dependency) unless `CODEX_BINARY` names an absolute native executable. Task 4 uses the resolved regular executable below; the symlink is not accepted by the driver. |
+
+### 1.2.1 Task 4 installed-run provenance (`installed-observed`)
+
+| Fact | Value |
+| --- | --- |
+| Installed executable | `/Users/zhangzikai/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex` |
+| Resolution | `readlink -f /Users/zhangzikai/.local/bin/codex`; the driver requires a regular executable, so `--codex` and `CODEX_BINARY` use this absolute target rather than the symlink or package dependency |
+| Version/platform | `codex-cli 0.160.1`, macOS arm64 (`Darwin arm64`); **auto-updated from 0.160.0 during the pipeline**. The Task 1 version above remains historical |
+| Main Task 4 source | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` — Case B, Case A, Case 0 run4 and both repeats |
+| Earlier Case 0 source pins | run1 `b580e78952d72e95fda1f5bae98100728a39c656`; run2 `9b2bbcdbd1bd3db1081b7fd75d048fc14a871930`; run3 `cede2d84e1b91881a7a61750e429fb62a6922025`. These are the records' actual pins; not all runs used `7edb8ad` |
+| Recorded CLI versions | Every collected Case 0/A/B/repeat2 record says `0.160.1`; repeat1 has `codexVersion: null` because lifecycle failure preceded evidence collection, so its version is not independently established by that record |
+| Fixture/permissions | `zcode@vitry` `0.1.0`, isolated installed setup, real preparation/binding/launcher with fake ZCode; sandbox and hook trust bypassed as disposable fixture controls, **not persisted production-trust qualification** |
+| Setup/config | Records report session established, launcher descriptor published, role ready, two setup attempts; A/B/repeats report fixture cap verified. Case 0 writes no override (`requestedCapMs: null`). Fixture key verification alone is not Child cap-propagation proof |
+| Evidence retention | Fresh private OS-temporary output directories outside credential homes; redacted records retained after fixture disposal. Raw fixture paths/private preparation input are not public results |
+
+The source SHA above pins the plugin/instrument snapshot, not the separate Codex source revision in §1.3.
+The documentation amendment changes this worktree's final HEAD; it does not rewrite historical case pins.
 
 ### 1.3 Codex source checkout (read-only; not matched to any binary)
 
@@ -129,8 +146,9 @@ citation `agent/role.rs` L36 reproduces as
 | Built-in awaiter Role | **No** (`source-confirmed`) | Registration commented out (role.rs L382–399); asset declaration only. |
 | Spawn-time runtime overrides (approval/cwd/permissions) and model/reasoning/service-tier overrides | **No effect on the cap** (`source-confirmed`) | Disjoint config fields (child_config.rs L62–94, L171–194). |
 
-Whether this inheritance actually holds on the **installed** 0.160.0 build is exactly what Task 4's trial
-measures — `not-proven` until then (the prior record's `scripts/lib/codex-config.mjs` caveat is preserved:
+Whether this inheritance actually holds on the **installed** build remains `not-proven` after Task 4
+(0.160.1; §7.3): no cap-limited unraised Child measurement M was established (the prior record's
+`scripts/lib/codex-config.mjs` caveat is preserved:
 setup/inspection clients never prove managed-Child inheritance).
 
 ## 3. Exact Child interruption surface and Root Status observation
@@ -328,7 +346,7 @@ This task edits and relaxes nothing. Research uses the current **v5 production p
 small research observer (Task 3); the canonical oracle keeps its pins. Launch authority is always the real
 stores/launcher — no manually manufactured authority records.
 
-## 6. Narrow hypothesis and first discriminating trial (design only; Task 4 executes)
+## 6. Narrow hypothesis and first discriminating trial (design; Task 4 outcomes in §7)
 
 ### 6.1 Hypothesis (source-backed, narrow)
 
@@ -347,10 +365,10 @@ file merely because the awaiter asset contains it: the whitelist drops it (`sour
 awaiter registration is commented out — the asset's 3600000 is a declaration only, verified here as
 unregistered at the pin.
 
-### 6.2 First discriminating live trial (design; `not-proven` until run)
+### 6.2 First discriminating live trial (design; propagation remains `not-proven`)
 
 - **Fixture**: Task 3's isolated installed-plugin fixture; exact installed executable
-  (`CODEX_BINARY=/Users/zhangzikai/.local/bin/codex`, 0.160.0); fake-ZCode hold; worker duration and probe
+  (resolved regular executable in §1.2.1, 0.160.1 at live execution); fake-ZCode hold; worker duration and probe
   budget are sized from the measured unraised default (Case 0 below), not from a hard-coded 420000 ms.
 - **Case 0 — unraised-cap control, M measurement (runs FIRST)**: fixture WITHOUT the raised cap, running the
   **same candidate long-request waiting paragraph as Case B** — identical long inner request (the `// @exec`
@@ -388,12 +406,174 @@ unregistered at the pin.
   `spawn_agent`/`wait_agent`/`interrupt_agent`) — this records the installed interrupt-surface verdict for §3.1
   without a separate campaign.
 
-## 7. A/B measurements (Tasks 4) — not yet executed
+## 7. Managed Child live measurements (Task 4)
 
-Not yet executed. Placeholder for: cap-matched current-instruction control and candidate runs, requested vs
-actual directives/yields, outer-return and pending-inner counts, exact handle linkage, remaining lifetime,
-process exit, route actually selected (named/generic), repeat outcome, and the recorded unraised/default cap
-measurements on the actual Child.
+### 7.1 Case B: qualified named-route long observation (`installed-observed`)
+
+**Zero outer re-entries: one long observation through process exit instead of the baseline cadence.**
+The candidate invocation is **QUALIFIED** for this observed named route on installed 0.160.1.
+This is current-invocation completion and reduced re-entry evidence; cap propagation and repeatability
+remain `not-proven` (§7.3–§7.4).
+
+Record: [Case B](/tmp/shell-wait-t4-rescue-long.TNpWiR/rescue-long.record.json).
+Executed `rescue-long --cap-ms 3600000 --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000`
+through `tools/shell-wait-probe/driver.mjs`, with `ZCODE_SHELL_WAIT_E2E=1`, the resolved installed executable
+in both `--codex` and `CODEX_BINARY`, `--source-sha 7edb8adb1781404301f0a29bcc3bd7de6ab45972`, and a fresh
+private output. The candidate changes only the fixture waiting paragraphs; production launch authority remains
+preparation/binding plus the admitted original launcher command.
+
+| Recorded fact | Case B |
+| --- | --- |
+| Route actually selected | **named** |
+| Native Child linkage | `childLinkageChecked: true`; child `01a111c2-af71-7f40-a924-7b86a0538a36`, parent `01a111c2-1fe5-7341-a2f0-6218615d0048` |
+| Companion | `companionLaunchCount: 1`, `companionSendCount: 1` |
+| Original handle | `originalHandleChecked: true`; poll `session_id: 5648` |
+| Child cadence | `outerReturns: 0`, `modelCalls: 2` |
+| Decisive observation | `decisiveWallMs: 386600`: **one 386.6-second observation spanning to process exit**, not a sum of polls |
+| Other observation fields | `remainingLifetimeMs: 33400`, `pendingInnerAtEnd: false` |
+| Root joins | `rootJoins: 1`, separately counted from Child calls and outer returns |
+| Terminal result | `processExit: 0`, `hostExit: 0`, `publicResultMatchedSentinel: true`, `terminalStdoutChecked: true` |
+| Cleanup | `label: observation`, `fixtureDisposed: true`, `cleanupComplete: true`, `cleanupErrorCount: 0` |
+| Inconclusive | `null` |
+
+The two retained, untruncated Child call excerpts are the initial `invoke-prepared rescue`
+`exec_command` (`yield_time_ms: 30000`) and the original-handle empty `write_stdin`
+(`session_id: 5648`, `chars: ""`, `yield_time_ms: 3600000`, `max_output_tokens: 10000`). The candidate requests
+both a directive-led long outer window (`// @exec: {"yield_time_ms": 3600000}`) and that long inner yield.
+The redacted excerpts normalize tool arguments rather than retaining the wrapper source; the single completed
+386.6-second observation and absence of outer continuations are the measured outcomes.
+
+The sentinel `ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C` occurs **byte-exactly in the linked terminal public output**.
+As defined in §12.4, this checks unchanged sentinel bytes within the existing renderer's output, not equality
+of the whole rendered stdout with a bare result body or an assistant-message echo. Two Child model calls are
+not zero whole-operation decisions; zero describes only outer re-entries during the held observation.
+No token savings were measured.
+
+`remainingLifetimeMs` is the instrument's arithmetic residual, `workerDurationMs - decisiveWallMs`
+(`420000 - 386600 = 33400`), not a directly measured poll-start lifetime. The record cannot establish the
+§6.2 M + 30000 poll-start validity precondition because M is unknown.
+
+### 7.2 Case A: cap-matched current-instruction control (`installed-observed`)
+
+Record: [Case A](/tmp/shell-wait-t4-baseline2.sq14ox/rescue-baseline.record.json).
+Executed `rescue-baseline --cap-ms 3600000 --worker-duration-ms 420000 --poll-ms 60000 --budget-ms 1200000`
+with the same source pin, installed executable, sandbox/hook controls and permissions as Case B, in a fresh
+fixture. Its baseline named Role/Skill hashes are unchanged from the installed production artifacts;
+Case B's record separately retains the applied candidate hashes (§1.2.1, §12.2).
+
+Actual route **named**; Child linkage checked; child `01a111d7-ae3f-7fc1-824c-dd588b9a7b38`, parent
+`01a111d7-0ebd-7b02-bc7d-15c23cf8e7fd`. Launch **1**, send **1**, `outerReturns: 15`, `modelCalls: 23`,
+`rootJoins: 7`. Terminal facts: `processExit: 0`, `hostExit: 0`, sentinel **true**, stdout checked **true**;
+cleanup `observation`, complete, fixture disposed, **0** errors.
+
+**Completion remains `not-proven` under the observer:** `originalHandleChecked: false` and
+`pendingInnerAtEnd: true`. The observer could not link the consecutive wrapper polls and their
+`wait cell_id` continuations to its tracked pending cell. Its inconclusive reason records unresolved or
+ambiguous outer continuations and a pending inner tail. This is an **instrument linkage limitation**,
+not an installed host rejection or proof of overlapping live polls. Recorded `decisiveWallMs: 0` and
+`remainingLifetimeMs: 420000` do not establish a qualified decisive duration or measured poll-start lifetime.
+
+Per-call excerpt evidence (23 retained excerpts, untruncated) includes this sequence:
+
+```json
+{"tool":"write_stdin","arguments":{"session_id":22258,"chars":"","yield_time_ms":60000}}
+{"tool":"wait","arguments":{"cell_id":"2","yield_time_ms":10000}}
+{"tool":"wait","arguments":{"cell_id":"2","yield_time_ms":10000}}
+{"tool":"write_stdin","arguments":{"session_id":22258,"chars":"","yield_time_ms":60000}}
+{"tool":"wait","arguments":{"cell_id":"3","yield_time_ms":10000}}
+{"tool":"wait","arguments":{"cell_id":"3","yield_time_ms":10000}}
+```
+
+The complete excerpt list contains seven empty 60000-ms polls on handle `22258`; two continuations each for
+cells `2`, `3`, `4`, and three each for `5`, `6`, `7`: **15 outer re-entries over the same requested
+420-second hold versus 0 for Case B**. These observable call/cadence facts stand despite the completion
+linkage limitation. Root joins remain separate; per-call wall durations and cap causality are not inferred.
+
+### 7.3 Case 0: unraised Child cap M not established (`not-proven`)
+
+Run-level facts below are `installed-observed`; the M verdict remains `not-proven`.
+All four candidate-policy runs omit `--cap-ms`, request `--poll-ms 3600000`, and use a 420000-ms worker.
+Run1 budget is 720000 ms; runs2–4 use 1200000 ms. No run satisfies the cap-limited completed-inner-poll
+rule in §6.2. Unknown counts in unsupported-shape records remain **null**, never zero.
+
+| Run / retained record | Actual source pin | Recorded outcome and distinct cause |
+| --- | --- | --- |
+| [run1](/tmp/shell-wait-t4-case0.CsuXgR/rescue-long.record.json) | `b580e78952d72e95fda1f5bae98100728a39c656` | Inconclusive `unsupported-call-shape`: multi-statement diagnostic cell exceeded the then one-statement grammar. Instrument gap fixed in `9b2bbcd`; budget cleanup complete, 0 errors |
+| [run2](/tmp/shell-wait-t4-case0b.bJLmLH/rescue-long.record.json) | `9b2bbcdbd1bd3db1081b7fd75d048fc14a871930` | Inconclusive `unsupported-call-shape`: compact no-space wrapper tail (including terminal semicolon). Distinct grammar gap fixed in `cede2d8`; budget cleanup complete, 0 errors |
+| [run3](/tmp/shell-wait-t4-case0c.Lj2npB/rescue-long.record.json) | `cede2d84e1b91881a7a61750e429fb62a6922025` | Full production flow observed: named route, exact Child/handle, launch 1, send 1, process/host exit 0, outer returns 0, model calls 3, Root joins 7, decisive 82400 ms, pending inner false. Inconclusive under the then-strict whole-stdout sentinel rule (`publicResultMatchedSentinel: false`); rule and retention fixed in `7edb8ad`. Observation cleanup complete, 0 errors |
+| [run4](/tmp/shell-wait-t4-case0d.jHqZlH/rescue-long.record.json) | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` | Model went off-script and never launched the Companion; unsupported inline private preparation variant. Host exit 0, route/linkage/counts unknown; observation cleanup complete, 0 errors. Model nonadherence, retained without further retry |
+
+Run3's `evidence.count: 0` is the old excerpt-retention defect, not absence of collected calls (§12.4).
+Its 82.4-second decisive observation ended with process exit, not a cap-limited return while the worker
+remained running. It cannot establish M even after the sentinel rule correction, and its disposed stdout
+cannot be retrospectively requalified. Each follow-up addressed one distinct established cause;
+**no host-behavior outcome was retried out of the record**.
+
+**M: `not-proven`. Raised-cap propagation onto the Child: `not-proven`.** The Case B observation of
+**386.6 seconds exceeds the source-pinned 300000-ms default**, establishing an effective observation ceiling
+on that Child of **at least 386.6 seconds** (`installed-observed`). This bound does not establish that the
+fixture override caused it: an unknown installed unraised default could also allow that observation.
+The spec requires discrimination against measured M, not against the unmatched source default. The A/B
+instruction comparison is still useful independently of this configuration-causality gap.
+
+### 7.4 Repeat outcome (`not-proven`)
+
+The recorded failure outcomes are `installed-observed`; repeat qualification remains `not-proven`.
+Both attempts requested `rescue-repeat --cap-ms 3600000 --worker-duration-ms 420000 --poll-ms 3600000
+--budget-ms 1200000` at source `7edb8adb1781404301f0a29bcc3bd7de6ab45972` with fresh outputs.
+
+- [repeat1](/tmp/shell-wait-t4-rescue-repeat.LX9ij8/rescue-repeat.record.json): `status: failed`;
+  **instrument lifecycle failure** before evidence collection: the exact fake-ZCode process remained alive
+  during natural-exit verification. The retained reason is truncated after “during natural”. Route,
+  cadence, terminal result and CLI version remain null. Failure cleanup verified exact-process and host
+  termination; fixture disposed, cleanup complete, 0 errors. The requested path
+  `/tmp/shell-wait-t4-repeat.LX9ij8` is absent; this is the actual retained record directory.
+- [repeat2](/tmp/shell-wait-t4-repeat2.9hJDAp/rescue-repeat.record.json): first action wrote the private
+  preparation envelope in an unsupported inline variant. **Model nonadherence**, recorded and not retried;
+  inconclusive `unsupported-call-shape`, host exit 0, unknown Child/count/result facts; observation cleanup
+  complete, fixture disposed, 0 errors.
+
+No comparable successful repeat interval or repeat cadence was established. Neither failure is evidence
+against the installed long-wait mechanism, nor does either count as repeat qualification.
+
+### 7.5 Task 4 coverage (partial report closure; Task 7 mapping)
+
+| Spec item | Evidence label and Task 4 scope |
+| --- | --- |
+| S1 preparation/binding authority | **Partial — `installed-observed`**: Case B exact native Child/parent linkage, production preparation/binding admission, one launcher invocation/send. Unsupported preparation cases retained. **`fixture-tested`**: §12 observer/preparation negatives. Full mismatch/one-shot production regression coverage belongs to Tasks 5/7 |
+| S2 original-handle/outer-cell ownership | **Partial — `installed-observed`**: Case B original handle `5648`, one settled long observation, no pending inner tail. **`fixture-tested`**: §12 foreign/overlap/continuation negatives. Case A completion linkage is **`not-proven`** due to instrument limitation; noise/interruption ownership remains Task 5 |
+| S3 exact public/terminal/control outcomes | **Partial — `installed-observed`**: Case B terminal/host exit 0, byte-exact sentinel in linked terminal output; Case A exit/sentinel facts. **`fixture-tested`**: renderer/sentinel negatives in §12. Choice/error and other waiting-command outcomes remain **`not-proven`** in this task (Tasks 5/6) |
+| Q1 effective Child configuration | **`not-proven`**: fixture cap key verified, Child observation ceiling at least 386.6 s (`installed-observed`), but M missing; propagation cannot be distinguished from unknown installed default |
+| Q2 effective Child instructions | **`installed-observed`**, named-route invocation only: candidate long empty-poll request yields one 386.6-s observation; current instruction control yields 15 continuations. **`fixture-tested`**: named/generic artifact paragraph synchronization. Generic installed behavior and universal directive support remain **`not-proven`** |
+| Q3 cadence and repeat | **`installed-observed`**: Case A 15 outer returns/23 Child calls/7 Root joins; Case B 0/2/1. **`not-proven`**: comparable repeat, per-token savings and reproducibility beyond this invocation |
+
+The host selected the named route wherever a route was established. Generic installed-route qualification
+remains `not-proven`; there was no forced generic fallback. Structural paragraph parity is only
+`fixture-tested` (§12), not evidence of a second installed route. Native interrupt delivery, full tool-family
+exposure, routine progress relay absence and long-wait Status responsiveness are not established by these
+retained call excerpts; those dimensions remain open for Task 5.
+
+### 7.6 Documentation-amendment gates
+
+Fresh gates for this report/plan amendment (`fixture-tested`; no new authenticated live run):
+
+| Command | Result |
+| --- | --- |
+| `node --test tests/test-selection.test.mjs` | **6/6 pass**, 0 fail, 0 skipped |
+| `npm run lint` | Exit 0 |
+| `npm run typecheck` | Exit 0 |
+| `git diff --check` | Exit 0 |
+| `npm run test:shell-research` (one run) | **173 tests, 169 pass, 4 fail, 0 skipped**, 10 suites, exit 1; 16.37 s |
+
+All four shell-research failures are the recorded **sandbox artifacts**, not host long-wait outcomes:
+real-builder failure-path prune and real marketplace-install tests hit npm-cache `open EPERM` outside the
+writable roots; the two real macOS process-identity/lifecycle tests hit process-inspection `spawn EPERM`.
+The observer regressions passed; no test expectation or instrument code was changed for this documentation
+amendment, and no second shell-research run was used to erase failures. Gate log:
+`/tmp/rescue-shell-long-wait-task4-gates.log`. The suite is not reported as fully green.
+
+Only the tracked report and plan are updated by this amendment; `git add -u` preserves untracked
+`task_plan.md`, `findings.md`, `progress.md`. No push or production change is part of this task.
 
 ## 8. Lifecycle, results, placement, Status sidecar (Task 5) — not yet executed
 
@@ -406,33 +586,25 @@ sidecar latency, background compatibility case, and focused production regressio
 Not yet executed. Placeholder for: `review-wait`, `adversarial-review-wait`, `status-wait` observations with
 their real entry points, decision cadence, ownership and cancellation behavior.
 
-## 10. Limitations and unresolved prerequisites (Task 1 scope)
+## 10. Not-proven register (updated after Task 4)
 
-Every unverified installed step is named here explicitly:
+| Unresolved claim | Evidence and reason | Useful next step / owner |
+| --- | --- | --- |
+| Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to installed 0.160.1; 0.160.0 was the historical Task 1/Root version | Keep source facts separate; qualify any later installed version independently (Task 7) |
+| Installed unraised Child cap M | **`not-proven`**: four Case 0 records (§7.3); two grammar gaps, one terminal-rule mismatch/process-exit ender, then model nonadherence. None is a cap-limited inner completion on a still-running worker | A separately commissioned discriminating Case 0 must preserve the rule and leave enough measured worker lifetime; no further retry is claimed here |
+| Raised fixture cap propagation onto the Child | **`not-proven`**: M absent. Case B's ≥386.6-s ceiling is `installed-observed`, beyond the source's 300000 ms, but cannot distinguish fixture override from unknown installed default | Establish M before causality or adoption guidance; never promote a Role cap field (§2 whitelist, Task 7) |
+| Case A qualified completion | **`not-proven`**: consecutive `wait cell_id` linkage unresolved in observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed` | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
+| Repeat qualification | **`not-proven`**: repeat1 instrument natural-exit verification failure; repeat2 unsupported inline preparation/model nonadherence, not retried (§7.4) | Diagnose lifecycle failure separately; any new live repeat requires explicit scope, and cannot erase these records |
+| Generic route and broader instruction support | **`not-proven`** installed; only named was observed. Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed` | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
+| Exact native interrupt/tool-family availability and pending-inner cancellation | **`not-proven`**: Root `wait_agent` joins were counted, but retained records do not establish full tool exposure, delivery, feature/backend behavior or settlement | Deliver through the owning native session to the exact pending Child and measure settlement; turn interrupt alone is insufficient (Task 5) |
+| Installed `multi_agent_v2` configuration/bounds | **`not-proven`**: no installed configuration inventory or timeout-bound measurement | Record actual reachable family and bounds during Task 5/6; source defaults are separate |
+| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed Task 4 evidence; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Execute the scoped Task 5 checks; budget/failure cleanup is not native user interruption |
+| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 not executed | Qualify each real command independently, including Status observation cancellation without cancelling its job |
+| Production release/version generalization/token savings | **`not-proven`**: single named fixture invocation on 0.160.1, disposable sandbox/hook bypass, no token measurements; auto-update limits attribution to the earlier 0.160.0 record | Finish Tasks 5–7 and obtain separate adoption decision; no production rollout implied |
 
-1. **No source/binary mapping**: pinned source `67727e7c` vs installed `codex-cli 0.160.0`. All §2–§3 claims
-   are about the pinned source; the installed build may differ (the prior record already proved the installed
-   wrapper layer differs from the pinned source's plain function-call shape).
-2. **Installed wrapper behavior on the Child**: the ≈30 s plain-yield clamp and the `@exec` directive are
-   `installed-observed` Root behaviors from the prior record (§7.3); they are **not** source-derived and have
-   never been observed on the managed Rescue Child.
-3. **Installed cap propagation to the Child**: the §2.6 inheritance chain is source-confirmed; the installed
-   equivalent is the exact object of Task 4's trial — `not-proven` now.
-4. **Installed collab tool family (V1 vs V2) and `interrupt_agent` presence**: not observed in this task; the
-   prior role-control run did not record it. Interrupt qualification stops until a live Root session shows the
-   tool (or the precise gap, if absent). Per §3.1, whether a Child turn interrupt cancels the pending inner
-   observation (feature/backend/continuation shape, including the installed script wrapper) is separately
-   **not-proven** and must be measured, not assumed, in Task 5.
-5. **Effective default cap on the installed build**: source default 300000 ms (source fact, §2.5); no fresh
-   Child-level measurement exists. Both the trial's remaining-lifetime validity requirement AND the
-   configuration-propagation verdict threshold must use the measured installed unraised Child cap (§6.2
-   Case 0 — the unraised-cap control run carrying the SAME long requests as Case B, so the cap configuration
-   is the only difference) — never the source-confirmed 300000 ms value. M is assigned only after a
-   cap-limited completed inner poll on a still-running worker; every other ender (requested-yield expiry,
-   outer continuation, process exit, interruption, budget expiry) leaves M not-proven with only the observed
-   duration recorded, and until M is established configuration propagation stays **not-proven**.
-6. **`multi_agent_v2` configuration of the installed host** (wait_agent gating `wait_agent_enabled`, timeout
-   bounds overrides): unknown; affects Root `wait_agent` bounds and V2 tool exposure.
+The earlier absence of managed-Child wrapper observations is resolved **only within §7's scope**:
+Case B's single long observation and Case A's outer continuation cadence are `installed-observed`.
+The fail-closed M discriminator and every independent release dimension above remain intact.
 
 ## 11. Proposed delta (Task 7) — not yet drafted
 
@@ -443,9 +615,10 @@ guidance, version/latency limits), separated from release-blocking findings.
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
 This section records what the Task 3 instrument does, at which seams it is tested, which of its behaviors are
-fail-closed, and what it deliberately does **not** claim. Everything here is labelled `fixture-tested` (fast
-Node test regressions in `tests/shell-wait-probe.test.mjs`); nothing in this section is `installed-observed`,
-and no statement in §1–§11 is re-derived or weakened by it.
+fail-closed, and what it deliberately does **not** claim. Instrument behavior and Node regressions in
+`tests/shell-wait-probe.test.mjs` are `fixture-tested`. The Task 4 diagnosis entries cite historical
+`installed-observed` records collected in §7; their fixes do not retroactively qualify those cases.
+No source/design discriminator or production contract is weakened by instrument evidence.
 
 ### 12.1 Modules and public interfaces
 
@@ -537,6 +710,79 @@ is unchanged.
 
 ### 12.4 Fail-closed behaviors (fixture-tested)
 
+- **Pending multi-statement cells never qualify on their own results (Task 4 gate fix).** A cell whose
+  output carries the pending `Script running with cell ID …` header is unresolved regardless of how many
+  per-statement result objects accompany it: full results plus a standing pending header is contradictory
+  evidence, so nothing in the cell resolves (`parseStatementOutputs` refuses the cell) and completion stays
+  blocked until an exact-cell terminal continuation settles it.
+- **Whole-cell wall time is cell-scoped, never an observation duration (Task 4 gate fix).** A
+  multi-statement cell's host wall time (e.g. two 60000-ms polls inside one 120-second cell) is recorded as
+  `observations.cellWallTimeMs` on the cell's last entry and never attributed to a single observation:
+  individual statement `wallTimeMs` stays `null` unless the host measured it per observation, so the
+  decisive-observation ceiling cannot be inflated by shared cell timing. Single-statement cells keep the
+  pinned per-observation header semantics.
+- **The launch-observation gate shares the bounded whole-cell parser (Task 4 gate fix).**
+  `waitForLauncherObservation` recognizes the exact launcher command inside multi-statement cells through
+  the same `parseCallStatements` grammar the observer uses, so a valid launcher-plus-poll cell opens the
+  gate instead of holding the worker until budget cleanup; malformed suffixes still reject the whole cell.
+
+- **Third Case 0 collection diagnosis and retention (Task 4).** Read
+  `/tmp/shell-wait-t4-case0c.Lj2npB/rescue-long.record.json` (source `cede2d8`, installed Codex
+  `0.160.1`). Its `evidence.count: 0` counts **retained excerpts**, not collected calls.
+  `mapShellWaitLiveFacts` initialized an empty excerpt list and copied neither successful call evidence
+  nor `companion.preLaunchDiagnostics.excerpts`; only unsupported-call or early-exit diagnostics could
+  populate it. This was a retention/mapping bug, **not** a directory, filename, ID-matching or JSON-parse
+  failure. The named route, child/parent IDs, launch count, original-handle check, terminal process exit
+  and 82400-ms wall time all originate in `inspectShellWaitEvidence` over parsed rollouts; held-turn
+  tracking supplies host exit, gate/process-liveness and cleanup facts, not those rollout facts.
+  The loader recursively scans the fixture's `CODEX_HOME/sessions` (depth 6, at most 64 JSONL files,
+  16 MiB/file). The inspected Codex checkout at `67727e7c` uses
+  `sessions/YYYY/MM/DD/rollout-<timestamp>-<thread_id>[_<rollout_id>].jsonl`
+  (`codex-rs/rollout/src/recorder.rs`, `precompute_new_rollout_path`, and `rollout_file_name.rs`).
+  It assigns `session_meta.id` from the thread/conversation ID separately from `session_id`.
+  This matches the observer's successful collection; the installed `0.160.1` standalone package has a
+  native `bin/codex` entrypoint, no JS rollout-path wrapper. The child is matched by **metadata ID**
+  against the parent's `SubAgentActivity.agent_thread_id`, then checked against `parent_thread_id`
+  and the exact agent path. The Case 0c IDs are child `01a111a3-0ef3-7892-930f-58d3775f6e3b`
+  and parent `01a111a2-66f2-7b53-8101-7c784edce02e`; filenames and `session_id` are not match keys.
+  A filesystem regression exercises that dated layout with those IDs, a distinct session ID and a
+  suffixed filename; no speculative layout rewrite was necessary.
+  The persisted record now carries `evidence.rolloutCount` and `evidence.childToolCallCount` separately
+  from excerpt `count`, plus scrubbed `rollout-tool-call` and `pre-launch-diagnostic` excerpts.
+  Private preparation input is replaced with `<private-input>` before retaining call arguments.
+  Counts remain complete while excerpt lists/strings stay capped at 64/2048 with explicit truncation.
+  Missing directories/files already yielded `rollouts-unavailable` inconclusive rather than completion
+  with zero calls; parse/discovery exceptions now use that same explicit classification. Unavailable
+  collection counts remain `null`. Both absence and invalid JSON have regressions.
+- **Third Case 0 terminal mismatch and sentinel interpretation (Task 4).** The sentinel is exactly
+  `ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C`, the fake peer's result body. The old comparison was
+  `lastCompletedOnHandle.result.output === input.publicResult`: the **entire companion terminal
+  output** against that bare body, not the child assistant's final message and not the host's
+  `held.result.stdout`. The production `formatDirectInvocationSuccess` calls `renderOutput`, whose
+  result branch appends LF, a `Resumable: yes/no` indicator when known, and a resume hint when applicable.
+  Those bytes alone invalidate whole-output equality. The host is launched with `exec --json`; Codex's
+  inspected JSONL processor emits serialized events on stdout, whereas its human-output processor uses
+  `println!("{message}")` for a final assistant message. Neither host framing is the compared field.
+  Case 0c's exact extra bytes cannot be recovered: its fixture was disposed and terminal output was
+  not retained. Production rendering is a concrete reproducible cause of this overly strict comparison,
+  rather than a claim about the unavailable live bytes.
+  `publicResultMatchedSentinel` now means the **nonempty sentinel occurs byte-for-byte in the linked
+  companion terminal public output**. It performs no trimming, case conversion, re-rendering or
+  summarization; quoted assistant messages, host JSONL and foreign-handle results cannot supply the match.
+  This accepts the existing renderer's framing while retaining S3's byte-preservation requirement and
+  all linkage, terminal-exit and observation checks. It checks sentinel identity, not equality of the
+  entire child assistant echo; the production stdout renderer/forwarder contract remains unchanged.
+  A mismatch retains a `terminal-stdout-mismatch` excerpt of the actual linked terminal output,
+  with private-path redaction, control-character scrubbing, a 2048-character cap and an explicit truncation
+  flag. It is retained **first**, so list capping cannot hide it. A regression uses the real production
+  formatter; altered sentinel bytes still fail even when a quoted message contains the correct sentinel.
+  No existing test expectation changed. Eight new regressions first failed 0/8 before implementation;
+  the final baseline replay with only the loader export enabled passed the layout control and failed
+  seven assertions (RED 1/8), then passed 8/8 with the fixes. Observer and record-mapping tests passed
+  108/108; selection passed 6/6 and lint/typecheck/diff checks passed. The one shell-research run
+  passed 169/173: all eight added tests passed, and the 165 original expectations stayed unchanged
+  (161 passed, four sandbox artifacts: two npm-cache `open EPERM`, two macOS process-inspection
+  `spawn EPERM`). No authenticated live turn was run and this correction does not requalify Case 0c.
 - **Launch observation gate.** Uses the evidence observer's shared bounded call parser and compares the
   extracted `exec_command` `cmd` **exactly**. Direct calls, const-r wrappers and inline wrappers have identical
   recognition, including single-quoted JavaScript literals with raw double quotes in the command. Quoted
@@ -572,6 +818,49 @@ is unchanged.
   qualification explicitly: the single-send requirement must be established, never skipped, so degraded evidence
   cannot qualify. Every free-text reason that can embed a raw error passes the private-path scrubber before it
   enters the persisted record.
+- **Consecutive statement cells (Task 4 Case 0 correction).** The first live Case 0 record at
+  `/tmp/shell-wait-t4-case0.CsuXgR/rescue-long.record.json` retained a single cell containing consecutive
+  inline `cat` and `role-status rescue` wrappers; the one-statement observer rejected it as
+  `unsupported-call-shape`. The observer now accepts **1–16 consecutive statement lines**, with at most one
+  leading `// @exec: {…}` directive. Each line must independently pass an existing inline wrapper, const-r
+  wrapper (both `text(r)` and `text(JSON.stringify(r))` tails), or preparation-frame parser. A blank,
+  unsupported or malformed line, or a seventeenth statement, rejects the **entire** cell; no supported prefix
+  is counted. One final LF is allowed. Ordered printed result objects are linked individually to statements;
+  a missing or extra completed result list cannot lend its terminal result to another statement. A yielded
+  cell's completed prefix is resolved before its pending statement, which still requires an exact-cell outer
+  continuation. Unresolved suffixes block qualification. Same-cell awaited statements resolve in statement
+  order; calls in other cells retain their actual call/response event order for overlap checks.
+- **Statement whitespace boundaries (Task 4 second Case 0 correction).** The const-r call-to-`text`
+  boundary now accepts zero or more whitespace characters in place of the pinned single space, with the
+  same tool names, bounded arguments and two exact tails.
+  Consecutive statement lines now discard surrounding whitespace before independent parsing, preserving
+  blank-line rejection, the 16-line bound and rejection of the entire cell on any unsupported line.
+  The inline and preparation patterns already accept compact tails and have no single-space statement
+  boundary to change; directive and token spacing remain unchanged.
+  The second retained record at `/tmp/shell-wait-t4-case0b.bJLmLH/rescue-long.record.json` also ends its
+  const-r tail with a semicolon, so both exact tails (`text(r)` and `text(JSON.stringify(r))`) now accept
+  one optional terminal semicolon, while a different tail, extra semicolon or extra statement remains
+  unsupported.
+- **Pre-launch diagnostics and the observation window (S2).** The original companion handle comes from the
+  `exec_command` whose `cmd` exactly equals the authorized `invoke-prepared rescue` launcher invocation,
+  using the gate's exact-match discipline. Earlier unrelated `exec_command` calls are pre-launch diagnostics,
+  not additional companion launches. They remain recorded in observer facts under
+  `companion.preLaunchDiagnostics`: the full count plus at most 64 scrubbed argument excerpts, each bounded
+  to 2048 characters with explicit excerpt/list truncation flags. Model-call counts still include their cells.
+  A diagnostic whose response or process lifetime remains unresolved at launch overlaps the companion window
+  and blocks qualification. Every duplicate exact launcher invocation and every unrelated `exec_command`
+  issued after the authorized launch blocks qualification, including calls after terminal observation.
+  This applies S2's observation discipline to the companion observation window while retaining pre-launch
+  diagnostics as evidence; diagnostics are never silently dropped. The existing unrelated `npm test` launch
+  regression already occurs after the authorized launch and keeps its original failure expectation.
+  **No existing test expectation changed** for this correction. The added regressions first produced RED
+  (3/13 passed, 10 failed against the original observer), then GREEN (13/13); they cover the live diagnostic
+  cell, the bound and per-line rejection, preparation/result linkage, pending continuation, duplicate and
+  post-launch commands, and an overlapping pre-launch diagnostic. Observer tests passed 75/75, selection
+  passed 6/6, and lint/typecheck/whitespace gates passed. The single shell-research run passed 148/152:
+  all four failures were sandbox artifacts (two npm-cache `open EPERM`, two macOS process-inspection
+  `spawn EPERM`); the 139 original tests retained every expectation. These are instrument fixture facts;
+  this correction does not itself qualify a new live run.
 - **Preparation exception.** Exactly one nonempty write to the original launcher handle is sanctioned, before
   any terminal observation (including a poll that returns nonterminal output). Its complete version-5 envelope
   must pass the production `validateRescuePreparation` contract: exact required keys, a nonempty bounded task,
@@ -631,15 +920,16 @@ is unchanged.
 
 ### 12.5 What this instrument deliberately does NOT claim
 
-- No live Codex trial ran in this task. Every live-run path requires `ZCODE_SHELL_WAIT_E2E=1`, and the suite
-  green above is instrument correctness, not host behavior.
+- No live Codex trial ran during Task 3. Task 4 installed observations are in §7. Every live-run path requires
+  `ZCODE_SHELL_WAIT_E2E=1`; fixture regression results above remain instrument correctness, not host behavior.
 - The driver's default live executor (per-case Root prompts, gate files, rollout collection, evidence mapping) is
-  implemented but **not yet live-validated**; its first real execution belongs to Task 4, which may surface
-  bounded fixture corrections. Its observation poll retries a bounded number of consecutive transient rollout
+  implemented and exercised by Task 4 within §7's limited scope; unsupported preparation and baseline
+  continuation shapes still fail closed. Task 4 surfaced the bounded corrections recorded in §12.4. Its observation poll retries a bounded number of consecutive transient rollout
   read/parse failures of an actively appended rollout instead of aborting the held turn; the final post-run load
   keeps its own distinguished, private-path-scrubbed failure reason.
-- The unraised-default cap M is not measured, no instruction delivery into a real Child was observed, and the
-  rendered/delivered hash comparison the fixture prepares (repository vs running Role) is a Task 4 measurement.
+- The unraised-default cap M remains unmeasured after Task 4. Named Child candidate behavior and fixture
+  artifact hashes are recorded in §7; these do not prove an effective Child cap or generic delivery. The
+  stored rendered Role hash is fixture provenance, not a runtime introspection of the Child config.
 - `rescue-interrupt` records the interrupt as requested-but-not-delivered with the missing prerequisite named:
   the exact native interrupt delivery interaction is bound by the Task 5 live path. This run shape can never be
   counted as interruption evidence.

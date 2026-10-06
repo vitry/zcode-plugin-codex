@@ -723,7 +723,7 @@ if (process.env[selfTestGuard] === '1') {
   });
 
   describe('inspectShellWaitEvidence', async () => {
-    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectShellWaitEvidence, parseCallEvent } = await import('../tools/shell-wait-probe/evidence.mjs');
 
     const PARENT = 'parent-thread-1';
     const CHILD = 'child-thread-1';
@@ -817,6 +817,256 @@ if (process.env[selfTestGuard] === '1') {
       ]];
       const result = inspectShellWaitEvidence({ ...evidenceInput(), rollouts });
       assert.equal(result.status, 'supported', 'the observed inline wrapper must be a supported shape, not manual adjudication');
+    });
+
+    function statementCell(callId, lines) {
+      return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `${lines.join('\n')}\n` } };
+    }
+    const inlineStatement = (kind, value) => `text(await tools.${kind}(${JSON.stringify(value)}));`;
+    function cellOutput(callId, results) {
+      return callOutput(callId, [{ type: 'input_text', text: 'Script completed\n' },
+        ...results.map((result) => ({ type: 'input_text', text: JSON.stringify(result) }))]);
+    }
+
+    test('boundary regression: the exact second live Case 0 const-r launch parses', () => {
+      // Verbatim sanitized excerpt from shell-wait-t4-case0b.bJLmLH/rescue-long.record.json.
+      const input = `const r = await tools.exec_command({cmd:'node "/private<redacted>/codex-home/plugins/cache/vitry/zcode/0.1.0/skills/rescue/launcher.mjs" invoke-prepared rescue',yield_time_ms:30000});text(r);\n`;
+      const event = statementCell('launch-1', []);
+      event.payload.input = input;
+      const command = 'node "/private<redacted>/codex-home/plugins/cache/vitry/zcode/0.1.0/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      assert.deepEqual(parseCallEvent(event), {
+        kind: 'exec_command', value: { cmd: command, yield_time_ms: 30000 }, directive: null, wrapped: true,
+      });
+      const rollouts = fullRollouts();
+      rollouts[1][1] = event;
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts, command }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.companion.launchCount, 1);
+      assert.equal(result.facts.completion.qualified, true);
+    });
+
+    for (const separator of ['', ' \t  ', '\n']) {
+      test(`boundary regression: const-r exact tails allow separator ${JSON.stringify(separator)}`, () => {
+        for (const tail of ['text(r)', 'text(JSON.stringify(r))', 'text(r);', 'text(JSON.stringify(r));']) {
+          const event = statementCell('poll', []);
+          event.payload.input = `const r = await tools.write_stdin({session_id:91,chars:''});${separator}${tail}\n`;
+          assert.deepEqual(parseCallEvent(event), {
+            kind: 'write_stdin', value: { session_id: HANDLE, chars: '' }, directive: null, wrapped: true,
+          });
+        }
+      });
+    }
+
+    test('boundary regression: the compact inline form already supports the no-space tail', () => {
+      const event = statementCell('launch-1', [inlineStatement('exec_command', { cmd: LAUNCHER })]);
+      assert.deepEqual(parseCallEvent(event), {
+        kind: 'exec_command', value: { cmd: LAUNCHER }, directive: null, wrapped: true,
+      });
+    });
+
+    test('boundary regression: padded multi-statement lines preserve sequential linkage', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('observe', [
+        ` \t${preparationCall().payload.input.trimEnd()}  `,
+        `  ${wrappedCall('write_stdin', 'unused', { session_id: HANDLE, chars: '' }).payload.input.trimEnd().replace('; text(', ';\t  text(')} \t`,
+      ]), cellOutput('observe', [{ output: '', session_id: HANDLE }, { output: SENTINEL, session_id: HANDLE, exit_code: 0 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.handle.preparationFrameWrites, 1);
+      assert.equal(result.facts.handle.pollCount, 1);
+      assert.equal(result.facts.completion.qualified, true);
+    });
+
+    for (const badLine of ['text(x)', '', 'text(r);console.log("extra");', 'text(r);;']) {
+      test(`boundary regression: a different const-r tail fails closed ${JSON.stringify(badLine)}`, () => {
+        const event = statementCell('bad', [`const r = await tools.exec_command({cmd:"cat skill.md"});${badLine}`]);
+        assert.equal(parseCallEvent(event), null);
+        const rollouts = fullRollouts();
+        rollouts[1].splice(1, 0, event);
+        const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      });
+    }
+
+    for (const badLine of [' \t ', '  console.log("extra");  ', '  text(await tools.exec_command({cmd: @broken}));  ']) {
+      test(`boundary regression: padded cells reject every unsupported line ${JSON.stringify(badLine)}`, () => {
+        const rollouts = fullRollouts();
+        rollouts[1].splice(1, 0, statementCell('bad', [` \t${inlineStatement('exec_command', { cmd: 'cat skill.md' })}  `, badLine]));
+        const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      });
+    }
+
+    test('multi-statement live cat and role-status diagnostics qualify before the exact launcher', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(1, 0, statementCell('diagnostics', [
+        inlineStatement('exec_command', { cmd: 'cat /private/skill.md' }),
+        inlineStatement('exec_command', { cmd: 'node /private/launcher.mjs role-status rescue' }),
+      ]), cellOutput('diagnostics', [{ output: 'skill', exit_code: 0 }, { output: 'ready', exit_code: 0 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts, redactions: ['/private'] }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.companion.launchCount, 1);
+      assert.equal(result.facts.companion.preLaunchDiagnostics.count, 2);
+      assert.equal(result.facts.companion.preLaunchDiagnostics.excerpts.length, 2);
+      assert.doesNotMatch(JSON.stringify(result.facts.companion.preLaunchDiagnostics), /\/private/);
+    });
+
+    test('separate direct pre-launch diagnostics qualify and retain bounded excerpts', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(1, 0, fnCall('exec_command', 'cat', { cmd: `cat /private/${'x'.repeat(2500)}` }),
+        fnOutput('cat', completedOutput({ output: '', exit_code: 0 })));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts, redactions: ['/private'] }));
+      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.companion.preLaunchDiagnostics.count, 1);
+      assert.equal(result.facts.companion.preLaunchDiagnostics.excerpts[0].truncated, true);
+      assert.doesNotMatch(result.facts.companion.preLaunchDiagnostics.excerpts[0].text, /\/private/);
+    });
+
+    test('multi-statement preparation and const-r poll preserve sequential result linkage', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('observe', [
+        preparationCall().payload.input.trimEnd(),
+        wrappedCall('write_stdin', 'unused', { session_id: HANDLE, chars: '' }).payload.input.trimEnd(),
+      ]), cellOutput('observe', [{ output: '', session_id: HANDLE }, { output: SENTINEL, session_id: HANDLE, exit_code: 0 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.handle.preparationFrameWrites, 1);
+      assert.equal(result.facts.handle.pollCount, 1);
+      assert.equal(result.facts.handle.overlappingInnerPolls, 0);
+      assert.equal(result.facts.completion.qualified, true);
+    });
+
+    test('multi-statement launcher and terminal poll keep their own ordered outputs', () => {
+      const rollouts = fullRollouts();
+      rollouts[1] = [childMeta(), statementCell('launch-observe', [
+        inlineStatement('exec_command', { cmd: LAUNCHER }),
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+      ]), cellOutput('launch-observe', [{ output: '', session_id: HANDLE }, { output: SENTINEL, session_id: HANDLE, exit_code: 0 }])];
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.handle.originalHandleId, HANDLE);
+    });
+
+    test('multi-statement last pending observation requires an exact outer continuation', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('observe', [preparationCall().payload.input.trimEnd(),
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '' })]),
+      callOutput('observe', [...pendingOutput('multi-cell'), { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) }]),
+      fnCall('wait', 'continue', { cell_id: 'multi-cell' }),
+      fnOutput('continue', completedOutput({ output: SENTINEL, session_id: HANDLE, exit_code: 0 })));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, true);
+      rollouts[1][5].payload.arguments = JSON.stringify({ cell_id: 'foreign-cell' });
+      assert.equal(inspectShellWaitEvidence(evidenceInput({ rollouts })).facts.completion.qualified, false);
+    });
+
+    test('multi-statement missing result never borrows a later terminal result', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('observe', [preparationCall().payload.input.trimEnd(),
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '' })]),
+      cellOutput('observe', [{ output: SENTINEL, session_id: HANDLE, exit_code: 0 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, false);
+    });
+
+    test('a pending multi-statement cell with every result present stays unresolved', () => {
+      const rollouts = fullRollouts();
+      const output = [
+        { type: 'input_text', text: 'Script running with cell ID live-cell\n' },
+        { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) },
+        { type: 'input_text', text: JSON.stringify({ output: SENTINEL, session_id: HANDLE, exit_code: 0 }) },
+      ];
+      rollouts[1] = [childMeta(),
+        wrappedCall('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+        callOutput('launch-1', completedOutput({ output: '', session_id: HANDLE })),
+        statementCell('observe', [
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+        ]), callOutput('observe', output)];
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, false,
+        'a cell that reports every result while its pending header stands must never qualify');
+      assert.equal(result.facts.observations.pendingInnerAtEnd, true);
+    });
+
+    test('whole-cell wall time is recorded separately, never as one observation duration', () => {
+      const rollouts = fullRollouts();
+      const output = [
+        { type: 'input_text', text: 'Wall time 120.0 seconds\n' },
+        { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) },
+        { type: 'input_text', text: JSON.stringify({ output: SENTINEL, session_id: HANDLE, exit_code: 0 }) },
+      ];
+      rollouts[1] = [childMeta(),
+        wrappedCall('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+        callOutput('launch-1', completedOutput({ output: '', session_id: HANDLE })),
+        statementCell('observe', [
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+        ]), callOutput('observe', output)];
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.observations.decisiveWallMs, null,
+        'two 60000-ms polls in one 120-second cell must not report a 120-second observation');
+      assert.equal(result.facts.observations.cellWallTimeMs, 120000);
+    });
+
+    for (const badLine of ['console.log("extra");', 'text(await tools.exec_command({cmd: @broken}));', '']) {
+      test(`multi-statement cell fails closed for unsupported line ${JSON.stringify(badLine)}`, () => {
+        const rollouts = fullRollouts();
+        rollouts[1].splice(1, 0, statementCell('bad', [inlineStatement('exec_command', { cmd: 'cat skill.md' }), badLine]));
+        const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      });
+    }
+
+    test('multi-statement cell supports exactly 16 statements and rejects 17', () => {
+      for (const count of [16, 17]) {
+        const rollouts = fullRollouts();
+        rollouts[1].splice(1, 0, statementCell('diagnostics', Array.from({ length: count }, () => inlineStatement('exec_command', { cmd: 'cat skill.md' }))),
+          cellOutput('diagnostics', Array.from({ length: count }, () => ({ output: '', exit_code: 0 }))));
+        const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+        assert.equal(result.status, count === 16 ? 'supported' : 'inconclusive');
+        if (count === 16) assert.equal(result.facts.completion.qualified, true);
+      }
+    });
+
+    test('duplicate launcher in a multi-statement cell violates the single launch rule', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(1, 2, statementCell('duplicates', [inlineStatement('exec_command', { cmd: LAUNCHER }), inlineStatement('exec_command', { cmd: LAUNCHER })]),
+        cellOutput('duplicates', [{ output: '', session_id: HANDLE }, { output: '', session_id: 92 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.companion.launchCount, 2);
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /additional|2 times/);
+    });
+
+    test('post-launch unrelated exec in the same cell remains a violation', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(1, 2, statementCell('pollution', [inlineStatement('exec_command', { cmd: LAUNCHER }), inlineStatement('exec_command', { cmd: 'npm test' })]),
+        cellOutput('pollution', [{ output: '', session_id: HANDLE }, { output: 'ok', exit_code: 0 }]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /additional/);
+    });
+
+    test('pre-launch diagnostic whose response overlaps the launcher remains a violation', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(1, 0, fnCall('exec_command', 'diagnostic', { cmd: 'cat skill.md' }));
+      rollouts[1].push(fnOutput('diagnostic', completedOutput({ output: '', exit_code: 0 })));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /overlap/);
     });
 
     test('an inline directive-led single-quoted write_stdin poll parses through the literal fallback', () => {
@@ -2570,6 +2820,138 @@ process.exit(result.status ?? 1);
       record: { variant: 'baseline', capMs: null, pollMs: 60000, appliedArtifacts: [] },
     };
 
+    const completedHeld = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+      result: { code: 0, stdout: 'host JSONL is not companion stdout', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, errors: [] },
+    };
+    function mappedEvidence(rollouts, overrides = {}) {
+      const evidence = inspectShellWaitEvidence({
+        rollouts, zcodeCalls: [{ method: 'session/send' }], command: LAUNCHER,
+        publicResult: SENTINEL, redactions: ['/private/tmp/secret-home'], ...overrides,
+      });
+      return mapShellWaitLiveFacts(mappingInput, completedHeld, evidence, '0.160.1', null, mappingFixture, rollouts, ['/private/tmp/secret-home']);
+    }
+
+    test('Task 4 retains successful rollout calls and pre-launch diagnostics in the case record', async (t) => {
+      const rollouts = qualifiedRollouts();
+      rollouts[1].splice(1, 0,
+        { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'd1', arguments: JSON.stringify({ cmd: 'cat /private/tmp/secret-home/skill' }) } },
+        { type: 'response_item', payload: { type: 'function_call_output', call_id: 'd1', output: [{ type: 'input_text', text: JSON.stringify({ output: 'skill', exit_code: 0 }) }] } });
+      const facts = mappedEvidence(rollouts);
+      assert.ok(facts.collection, 'collection counts must survive mapping');
+      assert.equal(facts.collection.rolloutCount, 2);
+      assert.equal(facts.collection.childToolCallCount, 3);
+      assert.equal(facts.collection.truncated, false);
+      assert.equal(facts.excerpts.filter((entry) => entry.kind === 'rollout-tool-call').length, 2);
+      assert.equal(facts.excerpts.filter((entry) => entry.kind === 'pre-launch-diagnostic').length, 1);
+      assert.doesNotMatch(JSON.stringify(facts.excerpts), /\/private\/tmp\/secret-home/u);
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-retention-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const record = await runShellWaitCase({ ...mappingInput, codexBinary: process.execPath, output: root }, {
+        createFixture: async () => ({ ...mappingFixture, dispose: async () => {} }),
+        executeLiveCase: async () => facts,
+      });
+      assert.equal(record.evidence.rolloutCount, 2);
+      assert.equal(record.evidence.childToolCallCount, 3);
+      assert.equal(record.evidence.count, 3, 'count continues to mean retained excerpts');
+      assert.deepEqual(JSON.parse(await readFile(join(root, 'rescue-baseline.record.json'), 'utf8')).evidence, record.evidence);
+    });
+
+    test('Task 4 caps call excerpts without truncating the collection count', () => {
+      const rollouts = qualifiedRollouts();
+      for (let n = 0; n < 70; n += 1) rollouts[1].push({ type: 'response_item', payload: {
+        type: 'function_call', name: 'wait', call_id: `extra-${n}`, arguments: JSON.stringify({ cell_id: `cell-${n}` }),
+      } });
+      const facts = mappedEvidence(rollouts);
+      assert.ok(facts.collection, 'collection counts must survive mapping');
+      assert.equal(facts.collection.childToolCallCount, 72);
+      assert.equal(facts.collection.truncated, true);
+      assert.equal(facts.excerpts.filter((entry) => entry.kind === 'rollout-tool-call').length, 64);
+    });
+
+    test('Task 4 unavailable rollouts stay inconclusive with unknown collection counts', () => {
+      const facts = mappedEvidence([]);
+      assert.match(facts.inconclusive.reason, /rollouts-unavailable/u);
+      assert.ok(facts.collection, 'unavailable counts must be explicit unknowns');
+      assert.equal(facts.collection.rolloutCount, null);
+      assert.equal(facts.collection.childToolCallCount, null);
+      assert.equal(facts.linkage.companionLaunchCount, null);
+    });
+
+    test('Task 4 loads dated rollout files and matches thread metadata rather than filenames or session ids', async (t) => {
+      const { loadShellWaitRollouts } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-layout-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const dated = join(root, 'sessions', '2026', '10', '06');
+      await mkdir(dated, { recursive: true });
+      const rollouts = qualifiedRollouts();
+      const ids = ['01a111a2-66f2-7b53-8101-7c784edce02e', '01a111a3-0ef3-7892-930f-58d3775f6e3b'];
+      rollouts[0][0].payload.id = ids[0]; rollouts[0][0].payload.session_id = 'different-parent-session';
+      rollouts[0][2].payload.item.agent_thread_id = ids[1];
+      rollouts[1][0].payload.id = ids[1]; rollouts[1][0].payload.session_id = 'different-child-session';
+      rollouts[1][0].payload.parent_thread_id = ids[0];
+      for (const [index, events] of rollouts.entries()) await writeFile(join(dated, `rollout-2026-10-06T22-41-43-${ids[index]}_other-rollout-id.jsonl`), events.map((event) => JSON.stringify(event)).join('\n') + '\n');
+      const facts = mappedEvidence(await loadShellWaitRollouts(root));
+      assert.equal(facts.linkage.childThreadId, ids[1]);
+      assert.equal(facts.linkage.parentThreadId, ids[0]);
+      assert.equal(facts.linkage.companionLaunchCount, 1);
+      assert.equal(facts.inconclusive, null);
+    });
+
+    test('Task 4 layout or parse failures never qualify as silent zero', async (t) => {
+      const { loadShellWaitRollouts } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-unavailable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      assert.match(mappedEvidence(await loadShellWaitRollouts(root)).inconclusive.reason, /rollouts-unavailable/u);
+      await mkdir(join(root, 'sessions'));
+      await writeFile(join(root, 'sessions', 'rollout-broken.jsonl'), '{broken\n');
+      await assert.rejects(loadShellWaitRollouts(root), /JSON/u);
+      const evidence = inspectShellWaitEvidence({ rollouts: [], command: LAUNCHER });
+      const facts = mapShellWaitLiveFacts(mappingInput, completedHeld, evidence, '0.160.1', 'invalid JSON', mappingFixture);
+      assert.match(facts.inconclusive.reason, /rollouts-unavailable.*invalid JSON/u);
+      assert.equal(facts.collection.childToolCallCount, null);
+    });
+
+    test('Task 4 sentinel bytes survive production terminal rendering', async () => {
+      const { formatDirectInvocationSuccess } = await import('../scripts/lib/direct-invocation-result.mjs');
+      const rendered = formatDirectInvocationSuccess({ result: SENTINEL, job: { resumable: true } }).text;
+      const rollouts = qualifiedRollouts();
+      rollouts[1][4].payload.output[1].text = JSON.stringify({ output: rendered, exit_code: 0 });
+      const facts = mappedEvidence(rollouts);
+      assert.equal(facts.hostResult.sentinelMatched, true);
+      assert.equal(facts.inconclusive, null);
+      assert.equal(facts.excerpts.some((entry) => entry.kind === 'terminal-stdout-mismatch'), false);
+      assert.equal(JSON.parse(rollouts[1][4].payload.output[1].text).output, rendered, 'the observer must preserve stdout unchanged');
+    });
+
+    test('Task 4 terminal mismatch retains bounded scrubbed stdout rather than host stdout', () => {
+      const rollouts = qualifiedRollouts();
+      rollouts[1][4].payload.output[1].text = JSON.stringify({ output: '/private/tmp/secret-home\u0000' + 'x'.repeat(3000), exit_code: 0 });
+      const facts = mappedEvidence(rollouts);
+      assert.equal(facts.hostResult.sentinelMatched, false);
+      const excerpt = facts.excerpts.find((entry) => entry.kind === 'terminal-stdout-mismatch');
+      assert.ok(excerpt, 'terminal mismatch excerpt must survive mapping');
+      assert.equal(excerpt.truncated, true);
+      assert.ok(excerpt.text.startsWith('<redacted> '));
+      assert.ok(excerpt.text.length <= 2048 + '<truncated>'.length);
+      assert.doesNotMatch(excerpt.text, /secret-home|host JSONL/u);
+      assert.equal(excerpt.text.includes('\u0000'), false);
+    });
+
+    test('Task 4 altered sentinel bytes fail even when quoted messages contain the original', () => {
+      const rollouts = qualifiedRollouts();
+      rollouts[1][4].payload.output[1].text = JSON.stringify({ output: SENTINEL.toLowerCase() + '\n', exit_code: 0 });
+      rollouts[1].push({ type: 'event_msg', payload: { type: 'agent_message', message: SENTINEL } });
+      const facts = mappedEvidence(rollouts);
+      assert.equal(facts.hostResult.sentinelMatched, false);
+      assert.match(facts.inconclusive.reason, /byte-for-byte/u);
+      const excerpt = facts.excerpts.find((entry) => entry.kind === 'terminal-stdout-mismatch');
+      assert.ok(excerpt, 'terminal mismatch excerpt must survive mapping');
+      assert.equal(excerpt.text, SENTINEL.toLowerCase() + '\n');
+    });
+
     test('the companion process exit is mapped separately from the host exit', () => {
       const evidence = inspectShellWaitEvidence({
         rollouts: qualifiedRollouts(17), zcodeCalls: [{ id: 1, method: 'session/send', params: {} }],
@@ -2690,6 +3072,17 @@ process.exit(result.status ?? 1);
         assert.equal(controller.signal.aborted, false, 'a supported exact launcher must open the gate on the first read');
       });
     }
+
+    test('the observation gate recognizes the launcher inside a multi-statement cell', async () => {
+      const input = `text(await tools.exec_command({cmd:'node "/i/l.mjs" invoke-prepared rescue'}));\ntext(await tools.write_stdin({session_id:9,chars:''}));\n`;
+      const event = { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'l1', input } };
+      const controller = new AbortController();
+      await waitForLauncherObservation('/unused/codex-home', 'node "/i/l.mjs" invoke-prepared rescue', controller.signal, {
+        loadRollouts: async () => [[event]],
+        sleep: async () => { controller.abort(); },
+      });
+      assert.equal(controller.signal.aborted, false, 'the multi-statement launcher cell must open the gate on the first read');
+    });
 
     test('the observation gate rejects quoted command text outside an exact supported exec cmd', async () => {
       const command = 'node "/i/l.mjs" invoke-prepared rescue';
