@@ -806,6 +806,47 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(result.facts.completion.decisiveEnd, 'process-exit');
     });
 
+    test('call-ID ownership rejects a launcher and poll sharing one terminal response', () => {
+      const rollouts = fullRollouts();
+      rollouts[1] = [childMeta(),
+        wrappedCall('exec_command', 'shared', { cmd: LAUNCHER }),
+        wrappedCall('write_stdin', 'shared', { session_id: HANDLE, chars: '' }),
+        callOutput('shared', completedOutput({ output: SENTINEL, exit_code: 0, session_id: HANDLE }))];
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.notEqual(result.facts?.completion.qualified, true);
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'ambiguous-call-linkage');
+    });
+
+    for (const callType of ['custom_tool_call', 'function_call']) {
+      for (const callId of [undefined, null, '', 91, ['poll-1']]) {
+        test(`call-ID ownership rejects ${callType} ID ${JSON.stringify(callId)}`, () => {
+          const rollouts = fullRollouts();
+          rollouts[1][3] = wrappedCall('write_stdin', callId, { session_id: HANDLE, chars: '' }, callType);
+          rollouts[1][4].payload.call_id = callId;
+          const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+          assert.notEqual(result.facts?.completion.qualified, true);
+          assert.equal(result.status, 'inconclusive');
+          assert.equal(result.inconclusive.reason, 'ambiguous-call-linkage');
+        });
+      }
+    }
+
+    for (const corruption of ['duplicate response', 'missing response ID', 'orphan response', 'response before call']) {
+      test(`call-ID ownership rejects ${corruption}`, () => {
+        const rollouts = fullRollouts();
+        const child = rollouts[1];
+        if (corruption === 'duplicate response') child.push(fnOutput('poll-1', completedOutput({ output: SENTINEL, exit_code: 0, session_id: HANDLE })));
+        if (corruption === 'missing response ID') delete child[4].payload.call_id;
+        if (corruption === 'orphan response') child.push(callOutput('orphan', completedOutput({ exit_code: 0 })));
+        if (corruption === 'response before call') child.splice(3, 0, child.splice(4, 1)[0]);
+        const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+        assert.notEqual(result.facts?.completion.qualified, true);
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'ambiguous-call-linkage');
+      });
+    }
+
     test('the installed inline wrapper shape with a JavaScript object literal parses as a supported call', () => {
       // The exact shape observed live on 0.160.1 (Task 4 first Case 0 attempt):
       // `text(await tools.exec_command({...}));` with unquoted keys.
@@ -1300,7 +1341,7 @@ if (process.env[selfTestGuard] === '1') {
       );
       assert.match(inspectShellWaitEvidence(evidenceInput({ rollouts: foreign })).facts.completion.reason, /second private preparation frame/u, 'a later frame is a duplicate even when its handle is also foreign');
       const foreignFirst = base();
-      foreignFirst[1].splice(3, 1); // remove the sanctioned frame
+      foreignFirst[1].splice(3, 2); // remove the sanctioned frame and its response
       foreignFirst[1].splice(3, 0,
         { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'prep-3', input: preparationInput(999, 5) } },
         callOutput('prep-3', completedOutput({ output: '', session_id: 999 })),

@@ -501,7 +501,7 @@ rule in §6.2. Unknown counts in unsupported-shape records remain **null**, neve
 | [run1](/tmp/shell-wait-t4-case0.CsuXgR/rescue-long.record.json) | `b580e78952d72e95fda1f5bae98100728a39c656` | Inconclusive `unsupported-call-shape`: multi-statement diagnostic cell exceeded the then one-statement grammar. Instrument gap fixed in `9b2bbcd`; budget cleanup complete, 0 errors |
 | [run2](/tmp/shell-wait-t4-case0b.bJLmLH/rescue-long.record.json) | `9b2bbcdbd1bd3db1081b7fd75d048fc14a871930` | Inconclusive `unsupported-call-shape`: compact no-space wrapper tail (including terminal semicolon). Distinct grammar gap fixed in `cede2d8`; budget cleanup complete, 0 errors |
 | [run3](/tmp/shell-wait-t4-case0c.Lj2npB/rescue-long.record.json) | `cede2d84e1b91881a7a61750e429fb62a6922025` | Full production flow observed: named route, exact Child/handle, launch 1, send 1, process/host exit 0, outer returns 0, model calls 3, Root joins 7, decisive 82400 ms, pending inner false. Inconclusive under the then-strict whole-stdout sentinel rule (`publicResultMatchedSentinel: false`); rule and retention fixed in `7edb8ad`. Observation cleanup complete, 0 errors |
-| [run4](/tmp/shell-wait-t4-case0d.jHqZlH/rescue-long.record.json) | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` | Model went off-script and never launched the Companion; unsupported inline private preparation variant. Host exit 0, route/linkage/counts unknown; observation cleanup complete, 0 errors. Model nonadherence, retained without further retry |
+| [run4](/tmp/shell-wait-t4-case0d.jHqZlH/rescue-long.record.json) | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` | **INSTRUMENT GRAMMAR LIMITATION** (manually adjudicated retained excerpt): preparation write includes `yield_time_ms:1000`, excluded by `PREPARATION_PATTERN`; removing only that argument makes the excerpt parse. Execution behavior and route/linkage/counts unknown; host exit 0, observation cleanup complete, 0 errors. Inconclusive verdict preserved, no further retry |
 
 Run3's `evidence.count: 0` is the old excerpt-retention defect, not absence of collected calls (§12.4).
 Its 82.4-second decisive observation ended with process exit, not a cap-limited return while the worker
@@ -528,10 +528,12 @@ Both attempts requested `rescue-repeat --cap-ms 3600000 --worker-duration-ms 420
   cadence, terminal result and CLI version remain null. Failure cleanup verified exact-process and host
   termination; fixture disposed, cleanup complete, 0 errors. The requested path
   `/tmp/shell-wait-t4-repeat.LX9ij8` is absent; this is the actual retained record directory.
-- [repeat2](/tmp/shell-wait-t4-repeat2.9hJDAp/rescue-repeat.record.json): first action wrote the private
-  preparation envelope in an unsupported inline variant. **Model nonadherence**, recorded and not retried;
-  inconclusive `unsupported-call-shape`, host exit 0, unknown Child/count/result facts; observation cleanup
-  complete, fixture disposed, 0 errors.
+- [repeat2](/tmp/shell-wait-t4-repeat2.9hJDAp/rescue-repeat.record.json): **INSTRUMENT GRAMMAR LIMITATION**,
+  manually adjudicated from the retained preparation-write excerpt. `PREPARATION_PATTERN` excludes its
+  `yield_time_ms:1000`; removing only that argument makes the excerpt parse. Execution behavior is unknown,
+  with no evidence of departure from the prompted flow. Inconclusive `unsupported-call-shape` preserved,
+  host exit 0, unknown Child/count/result facts; observation cleanup complete, fixture disposed, 0 errors.
+  Recorded without retry.
 
 No comparable successful repeat interval or repeat cadence was established. Neither failure is evidence
 against the installed long-wait mechanism, nor does either count as repeat qualification.
@@ -577,11 +579,32 @@ Only the tracked report and plan are updated by this amendment; `git add -u` pre
 
 ## 8. Lifecycle, results, placement, Status sidecar (Task 5)
 
-Executed 2026-10-07 at source `074fb07` (instrument as amended through the Task 4 gate fixes), installed
-Codex `0.160.1`, same resolved executable `/Users/zhangzikai/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex`.
-Three live cases ran once each; no case was retried out of the record. Model nonadherence dominated this
-task: two of three cases ended before the observation flow the case prompts for, which the plan records as
-an outcome rather than a retry trigger.
+Executed 2026-10-07 with installed Codex `0.160.1`, same resolved executable
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex`.
+The actual fixture source pins below come from each retained record's `provenance.sourceSha`.
+They select the fixture snapshot; they do **not** identify the executing observer revision. No separate
+observer revision/hash is retained in these records, so attribution of execution to amended `074fb07`
+is unavailable.
+
+| Task 5 record | Actual fixture source pin | Executing observer revision |
+| --- | --- | --- |
+| `/tmp/shell-wait-t5-noise.o7vg44/rescue-noise.record.json` | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` | Unknown — not retained |
+| `/tmp/shell-wait-t5-background.ty0i87/background.record.json` | `7edb8adb1781404301f0a29bcc3bd7de6ab45972` | Unknown — not retained |
+| `/tmp/shell-wait-t5-interrupt.aQ5gyF/rescue-interrupt.record.json` | `81882a86e7202770c21df7be85e9b0ae6c23d560` | Unknown — not retained |
+| `/tmp/shell-wait-t5-statuswait.tQsvBt/status-wait.record.json` (preliminary command-rendering failure) | `81882a86e7202770c21df7be85e9b0ae6c23d560` | Unknown — not retained |
+
+The preliminary Status record failed before evidence collection because the Rescue launcher renderer
+rejected its command path (§9); it is not a fourth completed live case. Three live cases ran once each;
+no case was retried out of the record. Noise is blocked by an instrument grammar limitation (§8.2), and
+background retains an early host exit (§8.3); neither establishes model nonadherence.
+
+Compared with both historical fixture pins, amended `074fb07` changed pending-header handling
+(full result lists plus a pending header stay unresolved), timing attribution (whole-cell wall time is
+cell-scoped rather than a single observation's duration), and launch-gate parsing (bounded multi-statement
+cells rather than single calls). Those changes matter when interpreting apparent completion, decisive
+observation duration, or failure to reach the held launch boundary. The retained interrupt excerpts show
+single-statement calls; the noise excerpt cannot parse; background retains zero collected Child calls.
+These summaries do not establish that the amended observer executed or retroactively requalify any record.
 
 ### 8.1 `rescue-interrupt`: qualified pending observation, delivery not exercised (`installed-observed` / delivery `not-proven`)
 
@@ -599,22 +622,26 @@ interruption proof: delivery, target, pending interval, delivery-to-settlement l
 cancellation all remain **`not-proven`** (§3.1's surface and §10's register). No probe-budget kill is
 presented as interruption; the cleanup label is `observation`.
 
-### 8.2 `rescue-noise`: inconclusive — model nonadherence (`installed-observed` outcome, checks `not-proven`)
+### 8.2 `rescue-noise`: inconclusive — INSTRUMENT GRAMMAR LIMITATION (checks `not-proven`)
 
 Record: `/tmp/shell-wait-t5-noise.o7vg44/rescue-noise.record.json` (worker 130000 ms, raised cap,
-budget 360000 ms). The model left the prompted flow before the observation phase and the observer retained
-an `unsupported-call-shape` cell for manual adjudication, so the same-handle/no-replacement-Status/no-relay/
-exact-stdout checks could not be observed. This is recorded as model nonadherence; the instrument's
-fail-closed verdict (`inconclusive`, never zero) behaved correctly. The existing conversation/progress
-output remains the only sanctioned progress surface; no heartbeat protocol was added.
+budget 360000 ms). Manual adjudication of the retained `unsupported-call-shape` excerpt identifies an
+**INSTRUMENT GRAMMAR LIMITATION**: the preparation write includes `yield_time_ms:1000`, which
+`PREPARATION_PATTERN` excludes. Removing only that argument makes the retained excerpt parse, just as
+for Case 0 run4 (§7.3) and repeat2 (§7.4). This is an excerpt-level parser check, not replayed execution.
+Execution behavior remains unknown; the excerpt does not establish departure from the prompted flow.
+The same-handle/no-replacement-Status/no-relay/exact-stdout checks remain **`not-proven`**, and the
+fail-closed verdict stays inconclusive, never zero. The existing conversation/progress output remains
+the only sanctioned progress surface; no heartbeat protocol was added.
 
 ### 8.3 `background` compatibility: inconclusive — host ended before the boundary (`installed-observed` outcome)
 
 Record: `/tmp/shell-wait-t5-background.ty0i87/background.record.json`. Route selected `named`, but
 `companionLaunchCount: 0`, `modelCalls: 0`, and the host exited before the held completion boundary
 (`inconclusive: "the host ended before the held completion boundary; the pending-observation claim is
-inconclusive"`). The model never performed the explicit `--background` flow, so the new installed evidence
-for the background placement branch is not established. The placement matrix's inherited contract coverage
+inconclusive"`). The retained zero-launch/early-exit facts do not establish the explicit `--background` execution
+flow or its cause, so new installed evidence for the background placement branch is not established.
+The placement matrix's inherited contract coverage
 (small no-flag, complex detached, Review/Adversarial enqueue-only, same-child choices, owner-only queries)
 remains with the current functional tests and is not claimed as new installed evidence.
 
@@ -655,18 +682,20 @@ regression, for the root-family cases: the Rescue launcher renderer's `/skills/r
 check had rejected every companion script path, so `status-wait` could not even start before it). Each of
 the three commands ran once with a 130000-ms hold, raised cap, budget 360000 ms; no case was retried.
 
-### 9.1 Outcomes (`installed-observed` for what was observed; long-wait qualification `not-proven`)
+### 9.1 Outcomes (assistant-reported errors; renderer and long-wait qualification `not-proven`)
 
 | Command | Record | Observed outcome | Long-wait qualification |
 | --- | --- | --- | --- |
-| `review-wait` | `/tmp/shell-wait-t6-review-wait.JYhGH8/review-wait.record.json` | The model invoked Review with focus text; the Companion returned its exact public error result `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Review does not accept focus text.",…}}` (final-agent-message adjudication excerpt), then the host exited before the held boundary. `sendCount: 0` | **`not-proven`** — the error path was observed, the 130-second hold was not |
+| `review-wait` | `/tmp/shell-wait-t6-review-wait.JYhGH8/review-wait.record.json` | **ASSISTANT-REPORTED** Review error `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Review does not accept focus text.",…}}` (retained final-agent-message diagnostic only). Invocation, original handle, linked terminal output and process exit are unknown; host exited before the held boundary. `sendCount: 0` | **`not-proven`** — renderer/error-path execution and the 130-second hold are unverified |
 | `adversarial-review-wait` | `/tmp/shell-wait-t6-adversarial-review-wait.iMiSBx/adversarial-review-wait.record.json` | One `session/send` reached the fake peer, but no child linkage, launcher, terminal exit or sentinel applied; the case ended inconclusive | **`not-proven`** |
-| `status-wait` | `/tmp/shell-wait-t6-status-wait.DIXml7/status-wait.record.json` | The model invoked Status without the required 64-character job ID; the Companion returned its exact public error result `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Expected one 64-character job ID.",…}}`; host exited before the boundary. `sendCount: 0` | **`not-proven`** — including the cancellation subcase (native interruption is separately `not-proven`, §10) |
+| `status-wait` | `/tmp/shell-wait-t6-status-wait.DIXml7/status-wait.record.json` | **ASSISTANT-REPORTED** Status error `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Expected one 64-character job ID.",…}}` (retained final-agent-message diagnostic only). Invocation, original handle, linked terminal output and process exit are unknown; host exited before the boundary. `sendCount: 0` | **`not-proven`** — renderer/error-path execution, hold and cancellation subcase (native interruption is separately `not-proven`, §10) |
 
-The two `ARGUMENT_INVALID` results are genuine command-level public results observed through the retained
-final-agent-message adjudication excerpts — the Renderer's exact error contract held — but they are error
-paths, not the requested 130-second observation, and the plan forbids presenting them as command
-qualification.
+The two `ARGUMENT_INVALID` diagnostics are **ASSISTANT-REPORTED errors**, retained only as
+final-agent-message excerpts. The driver extraction contract forbids inferring execution from assistant
+text: neither diagnostic proves a Companion invocation, original handle, linked terminal public output,
+process exit, or the exact renderer contract. Renderer/error-path verification remains **`not-proven`**
+unless linked command/output evidence is retained; the requested 130-second observation also remains
+**`not-proven`**. Zero recorded sends does not supply the missing execution evidence.
 
 ### 9.2 Instrument gap discovered by Task 6 (`not-proven` prerequisite for a root-family campaign)
 
@@ -681,24 +710,26 @@ be qualified. Building that contract is a reviewed instrument change, out of sco
 
 ### 9.3 Model adherence
 
-All three root-family cases also surfaced the same model-adherence flakiness recorded in Task 5: the model
-invoked commands with wrong arguments (focus text, missing job ID) or ended its turn early. Per the plan,
-each command keeps its own outcome; no command is declared impossible or qualified from another's run.
+The Review and Status assistant diagnostics suggest argument errors (focus text, missing job ID), but
+without linked command/output evidence they do not establish executed arguments or model nonadherence.
+Early host exit and the root-family contract gap remain recorded limitations. Task 5's noise grammar
+limitation is separate (§8.2). Each command keeps its own outcome; no command is declared impossible
+or qualified from another's run.
 
 ## 10. Not-proven register (updated after Task 4)
 
 | Unresolved claim | Evidence and reason | Useful next step / owner |
 | --- | --- | --- |
 | Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to installed 0.160.1; 0.160.0 was the historical Task 1/Root version | Keep source facts separate; qualify any later installed version independently (Task 7) |
-| Installed unraised Child cap M | **`not-proven`**: four Case 0 records (§7.3); two grammar gaps, one terminal-rule mismatch/process-exit ender, then model nonadherence. None is a cap-limited inner completion on a still-running worker | A separately commissioned discriminating Case 0 must preserve the rule and leave enough measured worker lifetime; no further retry is claimed here |
+| Installed unraised Child cap M | **`not-proven`**: four Case 0 records (§7.3); three instrument grammar limitations (including manually adjudicated run4, execution behavior unknown) and one terminal-rule mismatch/process-exit ender. None is a cap-limited inner completion on a still-running worker | A separately commissioned discriminating Case 0 must preserve the rule and leave enough measured worker lifetime; no further retry is claimed here |
 | Raised fixture cap propagation onto the Child | **`not-proven`**: M absent. Case B's ≥386.6-s ceiling is `installed-observed`, beyond the source's 300000 ms, but cannot distinguish fixture override from unknown installed default | Establish M before causality or adoption guidance; never promote a Role cap field (§2 whitelist, Task 7) |
 | Case A qualified completion | **`not-proven`**: consecutive `wait cell_id` linkage unresolved in observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed` | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
-| Repeat qualification | **`not-proven`**: repeat1 instrument natural-exit verification failure; repeat2 unsupported inline preparation/model nonadherence, not retried (§7.4) | Diagnose lifecycle failure separately; any new live repeat requires explicit scope, and cannot erase these records |
+| Repeat qualification | **`not-proven`**: repeat1 instrument natural-exit verification failure; repeat2 instrument grammar limitation (manually adjudicated excerpt, execution behavior unknown), not retried (§7.4) | Diagnose lifecycle failure separately; any new live repeat requires explicit scope, and cannot erase these records |
 | Generic route and broader instruction support | **`not-proven`** installed; only named was observed. Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed` | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **`not-proven`**: Task 5's `rescue-interrupt` (§8.1) qualified the pending observation but the driver never DELIVERED a native interrupt (`delivered: null` with the prerequisite recorded), so delivery, target, interval, settlement and collateral cancellation are unmeasured; retained records do not establish full tool exposure | Wire the §3.1 surface into the owning native session, deliver to the exact pending Child and measure settlement; turn interrupt alone is insufficient (Task 7 follow-up) |
 | Installed `multi_agent_v2` configuration/bounds | **`not-proven`**: no installed configuration inventory or timeout-bound measurement | Record actual reachable family and bounds during Task 5/6; source defaults are separate |
-| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` ended in model nonadherence before the observation flow (§8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Any new campaign must first address the model-adherence flakiness these two cases exposed; budget/failure cleanup is not native user interruption |
-| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two observed their exact Companion `ARGUMENT_INVALID` error paths (real public results, not holds) and none reached a 130-second observation; the instrument's Rescue-shaped completion contract also cannot adjudicate root-family cases (§9.2) | Build a reviewed root-family observation contract (Root handle, constant command, command-specific renderer, cancellation-leaves-job-running) and rerun with a held job for Status |
+| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Address the preparation grammar limitation and diagnose background early exit separately; budget/failure cleanup is not native user interruption |
+| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics, with invocation/handle/output/exit and renderer verification unknown and none reached a 130-second observation; the instrument's Rescue-shaped completion contract also cannot adjudicate root-family cases (§9.2) | Build a reviewed root-family observation contract (Root handle, constant command, command-specific renderer, cancellation-leaves-job-running) and rerun with a held job for Status |
 | Production release/version generalization/token savings | **`not-proven`**: single named fixture invocation on 0.160.1, disposable sandbox/hook bypass, no token measurements; auto-update limits attribution to the earlier 0.160.0 record | Finish Tasks 5–7 and obtain separate adoption decision; no production rollout implied |
 
 The earlier absence of managed-Child wrapper observations is resolved **only within §7's scope**:
@@ -714,14 +745,14 @@ The fail-closed M discriminator and every independent release dimension above re
 | S1 preparation/binding authority | 1 (§4 four-stage chain, repository-text facts); 3 (§12.1 fixture uses production preparation/launcher/binding); 4 (§7.1 Case B: launch 1 / send 1 / original handle checked, `installed-observed`); production mismatch/one-shot tests re-recorded §8.5 |
 | S2 original-handle/outer-cell ownership | 3 (§12.4 fail-closed observer: empty-chars discipline, single launch, exact-cell linkage, event-order overlap, pending headers); 4 (§7.1/§7.2: Case B 0 overlaps + Case A 15 re-entries, `installed-observed`) |
 | S3 exact public/terminal/control outcomes | 4 (§7.1: byte-exact sentinel present in linked terminal output, `processExit: 0`); production result/choice/error suites re-recorded §8.5 |
-| S4 placement/background/Status observation-only | 5 (§8.3 background case inconclusive — model nonadherence; §8.4 sidecar structural-only); inherited placement matrix suites §8.5; **`not-proven` as new installed evidence** |
+| S4 placement/background/Status observation-only | 5 (§8.3 background case inconclusive — early host exit, cause unknown; §8.4 sidecar structural-only); inherited placement matrix suites §8.5; **`not-proven` as new installed evidence** |
 | S5 interruption/loss/timeouts/ceiling | 5 (§8.1: pending observation qualified; native interrupt delivery NOT exercised — `not-proven`); budget cleanup never labelled interruption; 100-hour ceiling untouched (production semantics unchanged) |
 | S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced) |
 | S7 isolation/no production changes | 2 (§ selection isolation), 3 (§12 fixture-owned clone/homes/cleanup), 7 (§1 provenance; final diff = docs + probe files only; production Skills/Role/Companion/config/packaging untouched) |
 | Q1/Q2 effective Child configuration/instructions | 1 (§2 config layers), 4 (§7.3: M `not-proven`; §7.1: candidate instructions delivered and followed on the named route) |
 | Q3 cadence and repeat | 4 (§7.2 A 15 returns vs §7.1 B 0, `installed-observed`; repeat `not-proven` §7.4) |
 | Q4 noise/native interruption/sidecar latency | 5 (§8.1–§8.4: all `not-proven` except the qualified interrupt-case pending observation) |
-| Q5 other waiting commands | 6 (§9: all three `not-proven`; error-path public results observed; root-family contract gap recorded) |
+| Q5 other waiting commands | 6 (§9: all three `not-proven`; ASSISTANT-REPORTED errors only, renderer verification `not-proven`; root-family contract gap recorded) |
 | Q6 version scope and smallest adoption delta | 7 (§11.2 below; single-version scope 0.160.1, auto-update caveat §7.1) |
 
 No missing evidence is silently marked passed: every row above names its label, and §10 carries the full
@@ -736,8 +767,10 @@ a discriminating long observation **and repeat** (repeat `not-proven`), reduced 
 **scoped follow-up campaign**, not a production change:
 
 1. Measure M (unraised installed Child cap) with a case whose model flow completes — the four §7.3
-   attempts each failed for a different recorded cause; the instrument is now grammar-complete and
-   retains terminal stdout on mismatch, so the next attempt is diagnostic by construction.
+   attempts include three instrument grammar limitations and one terminal-rule mismatch/process-exit
+   ender. First address the preparation `yield_time_ms` grammar limitation with bounded regressions;
+   successful excerpt parsing alone cannot requalify the historical runs. Terminal stdout retention
+   on mismatch addresses a separate evidence gap.
 2. Establish cap propagation against the measured M (raised-config Case B pair), then one fresh repeat.
 3. Wire the §3.1 native interrupt surface into the driver and measure delivery-to-settlement during a
    pending observation.
@@ -767,9 +800,15 @@ production plan. No wrapper pragma is claimed universal; no token-savings claim 
   typecheck, line endings and `git diff --check` clean, zero probe worktree registrations. The three
   untracked planning scratch files were parked outside the tree for the clean-source check and restored
   afterwards (spec §2 method, documented here).
-- Records: the seven Task 4 records, three Task 5 records and three Task 6 records live under
+- Records: the seven Task 4 records, three live Task 5 records plus the preliminary Status command-rendering
+  failure (§8), and three Task 6 records live under
   `/tmp/shell-wait-t4-*` and `/tmp/shell-wait-t5-*`, `/tmp/shell-wait-t6-*` (OS-temporary; the report's
   tables are the durable summaries, as the plan intends).
+- Backfill cause/provenance correction: noise, Case 0 run4 and repeat2 are manually adjudicated
+  **INSTRUMENT GRAMMAR LIMITATIONS**, with execution behavior unknown and inconclusive verdicts preserved.
+  Follow-up work must address the preparation grammar and background early exit separately; model
+  nonadherence is not established by those records. Task 5 fixture pins and unavailable executing-observer
+  revisions are separated in §8; Review/Status diagnostics remain ASSISTANT-REPORTED, renderer `not-proven`.
 - Human decisions open: PR merge, the §11.2 follow-up campaign, and any eventual production adoption.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
@@ -869,6 +908,22 @@ is unchanged.
   reparented, restarted, and nonce-mismatched cases.
 
 ### 12.4 Fail-closed behaviors (fixture-tested)
+
+- **Call IDs belong to events before statement expansion (backfill review fix).** Every call/response
+  event must carry a nonempty string `call_id`, without type coercion. IDs are unique among call events
+  within each rollout; a response must belong to exactly one preceding call event, with at most one
+  response record per ID. Missing/malformed IDs, duplicate call IDs, duplicate responses, orphan responses
+  and responses preceding their call produce `ambiguous-call-linkage` inconclusive before correlation.
+  Shared IDs are allowed only for statements expanded from **one** event, using ordered per-statement
+  results. A missing response stays unresolved. The reproduced launcher plus empty-input poll sharing
+  an ID with only one terminal response cannot qualify completion; the valid single-event multi-statement
+  launcher/poll control still qualifies. Fifteen new regressions failed before implementation (**RED
+  0/15**) and passed after (**GREEN 15/15**, plus the single-event control **1/1**). The one shell-research
+  run reported **192 tests / 188 pass / 4 fail / 0 skipped**: all 15 new tests passed, and the original
+  177 test assertions are preserved (173 passed; four sandbox artifacts: two npm-cache `EPERM` failures
+  and two macOS process-inspection `spawn EPERM` failures). The foreign-preparation test fixture now
+  removes the replaced call's response too, so it tests the same foreign-handle violation without an
+  unrelated orphan response. Selection **6/6**, lint, typecheck and `git diff --check` passed.
 
 - **Pending multi-statement cells never qualify on their own results (Task 4 gate fix).** A cell whose
   output carries the pending `Script running with cell ID …` header is unresolved regardless of how many

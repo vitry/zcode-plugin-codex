@@ -433,6 +433,14 @@ export function inspectShellWaitEvidence(input) {
     }
   }
 
+  // Validate event ownership before expanding statements or correlating any
+  // response. One event may own several statements, but two events can never
+  // share an ID, and one event can never have multiple response records.
+  for (const events of rollouts) {
+    const ambiguity = inspectCallOwnership(events);
+    if (ambiguity !== null) return inconclusive('ambiguous-call-linkage', ambiguity);
+  }
+
   const withMeta = rollouts.filter((events) => /** @type {any[]} */ (events).some((event) => event?.type === 'session_meta' && typeof event?.payload?.id === 'string'));
   if (withMeta.length === 0) {
     return inconclusive('rollouts-unavailable', 'No rollout exposes session metadata; parent and child rollouts cannot be identified.');
@@ -563,7 +571,40 @@ function inspectLinkage(rollouts) {
 }
 
 /**
+ * Validate call/response IDs at event scope, before statement expansion.
+ * Missing responses remain unresolved; malformed, orphaned, duplicated or
+ * out-of-order responses cannot supply execution evidence.
+ * @param {any[]} events
+ * @returns {string | null}
+ */
+function inspectCallOwnership(events) {
+  const callIds = new Set();
+  const responseIds = new Set();
+  for (const event of events) {
+    const payload = event?.payload;
+    const isCall = payload?.type === 'custom_tool_call' || payload?.type === 'function_call';
+    const isResponse = payload?.type === 'custom_tool_call_output' || payload?.type === 'function_call_output';
+    if (!isCall && !isResponse) continue;
+    const callId = payload.call_id;
+    if (typeof callId !== 'string' || callId.trim().length === 0) {
+      return 'A call or response event lacks a nonempty string call ID; response ownership is unknown.';
+    }
+    if (isCall) {
+      if (callIds.has(callId)) return 'Separate call events share a call ID; response ownership is ambiguous.';
+      callIds.add(callId);
+    } else {
+      if (!callIds.has(callId)) return 'A response has no preceding call event with its exact ID; response ownership is unknown.';
+      if (responseIds.has(callId)) return 'Multiple response events share a call ID; response ownership is ambiguous.';
+      responseIds.add(callId);
+    }
+  }
+  return null;
+}
+
+/**
  * Collect the bounded host calls of one rollout with their linked outputs.
+ * Event IDs have already passed inspectCallOwnership; only statements
+ * expanded from the same event may share that event's response.
  * @param {any[]} events
  */
 function collectCalls(events) {
@@ -572,7 +613,7 @@ function collectCalls(events) {
   for (const [index, event] of events.entries()) {
     const payload = event?.payload;
     if (payload?.type === 'custom_tool_call_output' || payload?.type === 'function_call_output') {
-      outputs.set(String(payload.call_id), { output: payload.output, index });
+      outputs.set(payload.call_id, { output: payload.output, index });
     }
   }
   /** @type {{ callId: string, call: NonNullable<ReturnType<typeof parseCallEvent>>, output: ReturnType<typeof parseToolOutput>, callIndex: number, outputIndex: number | null, cellWallTimeMs: number | null }[]} */
@@ -580,7 +621,7 @@ function collectCalls(events) {
   for (const [index, event] of events.entries()) {
     const parsed = parseCallStatements(event);
     if (!parsed) continue;
-    const callId = String(event.payload.call_id);
+    const callId = event.payload.call_id;
     const response = outputs.get(callId);
     const results = parseStatementOutputs(response?.output, parsed.length);
     // A multi-statement cell's host wall time covers every awaited statement,
