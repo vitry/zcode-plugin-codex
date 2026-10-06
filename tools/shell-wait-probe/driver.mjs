@@ -846,6 +846,33 @@ export function closeStdinLaunch(launch) {
 }
 
 /**
+ * Render the constant Companion command for root-family cases (review,
+ * adversarial-review, status). The installed companion script is not the
+ * Rescue launcher, so the production renderer's launcher-leaf check does not
+ * apply; every other safety property is validated the same way here —
+ * absolute path with the exact companion leaf, no shell-active or control
+ * characters, bounded bytes, and exact `node "…"` quoting. The path is
+ * rejected instead of escaped so the rendered command never depends on
+ * quoting rules.
+ * @param {string} companionPath
+ * @returns {string}
+ */
+export function renderCompanionCommand(companionPath) {
+  const unsafePathError = () => new Error('the Companion script path cannot be rendered safely.');
+  if (typeof companionPath !== 'string' || companionPath.length === 0) throw unsafePathError();
+  const hasControlCharacter = [...companionPath].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f;
+  });
+  const unsafe = /[\\"`$]/u.test(companionPath) || hasControlCharacter;
+  if (!companionPath.startsWith('/')
+    || !companionPath.endsWith('/scripts/zcode-companion.mjs')
+    || Buffer.byteLength(companionPath) > 2048
+    || unsafe) throw unsafePathError();
+  return `node "${companionPath}"`;
+}
+
+/**
  * Wait until the exact launcher command appears in a collected rollout.
  * Transient read/parse failures of an actively appended rollout are retried a
  * bounded number of consecutive times instead of aborting the held turn; the
@@ -935,7 +962,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
   const codexVersion = /\b(\d+\.\d+\.\d+)\b/u.exec(`${versionRun.stdout}${versionRun.stderr}`)?.[1] ?? null;
   const expectedCommand = spec.family === /** @type {'rescue'} */ ('rescue')
     ? `${renderRescueLauncherCommand(join(fixture.installedRoot, 'skills', 'rescue', 'launcher.mjs'))} invoke-prepared rescue`
-    : `${renderRescueLauncherCommand(join(fixture.installedRoot, 'scripts', 'zcode-companion.mjs'))} ${spec.companionCommand}`;
+    : `${renderCompanionCommand(join(fixture.installedRoot, 'scripts', 'zcode-companion.mjs'))} ${spec.companionCommand}`;
 
   const held = await runHeldHostTurn({
     gatePath,

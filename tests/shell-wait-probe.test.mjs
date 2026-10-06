@@ -3084,6 +3084,24 @@ process.exit(result.status ?? 1);
       assert.equal(controller.signal.aborted, false, 'the multi-statement launcher cell must open the gate on the first read');
     });
 
+    test('the root-family companion command renders safely without the launcher leaf', async () => {
+      const { renderCompanionCommand } = await import('../tools/shell-wait-probe/driver.mjs');
+      const installedRoot = '/private/var/folders/x/T/zcode-shell-wait-fixture-abc123/installed';
+      assert.equal(
+        renderCompanionCommand(`${installedRoot}/scripts/zcode-companion.mjs`),
+        `node "${installedRoot}/scripts/zcode-companion.mjs"`,
+        'the root-family cases render their own script path, not the Rescue launcher leaf',
+      );
+      for (const bad of [
+        `${installedRoot}/skills/rescue/launcher.mjs`,
+        `${installedRoot}/scripts/zcode-companion.mjs; rm -rf /`,
+        `${installedRoot}/scripts/zcode-companion.mjs "$HOME"`,
+        'relative/scripts/zcode-companion.mjs',
+      ]) {
+        assert.throws(() => renderCompanionCommand(bad), /cannot be rendered safely/u, JSON.stringify(bad));
+      }
+    });
+
     test('the observation gate rejects quoted command text outside an exact supported exec cmd', async () => {
       const command = 'node "/i/l.mjs" invoke-prepared rescue';
       for (const input of [
