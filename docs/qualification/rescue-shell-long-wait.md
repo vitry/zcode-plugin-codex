@@ -648,10 +648,42 @@ observations and installed background placement remain **`not-proven`** with the
 §10. Budget/failure cleanup is still never labelled native interruption (`nativeInterruptionClaimed` stays
 a literal `false` in every record).
 
-## 9. Root waiting commands (Task 6) — not yet executed
+## 9. Root waiting commands (Task 6)
 
-Not yet executed. Placeholder for: `review-wait`, `adversarial-review-wait`, `status-wait` observations with
-their real entry points, decision cadence, ownership and cancellation behavior.
+Executed 2026-10-07 at source `9a4c736` (includes the probe-local `renderCompanionCommand` fix, with its
+regression, for the root-family cases: the Rescue launcher renderer's `/skills/rescue/launcher.mjs` leaf
+check had rejected every companion script path, so `status-wait` could not even start before it). Each of
+the three commands ran once with a 130000-ms hold, raised cap, budget 360000 ms; no case was retried.
+
+### 9.1 Outcomes (`installed-observed` for what was observed; long-wait qualification `not-proven`)
+
+| Command | Record | Observed outcome | Long-wait qualification |
+| --- | --- | --- | --- |
+| `review-wait` | `/tmp/shell-wait-t6-review-wait.JYhGH8/review-wait.record.json` | The model invoked Review with focus text; the Companion returned its exact public error result `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Review does not accept focus text.",…}}` (final-agent-message adjudication excerpt), then the host exited before the held boundary. `sendCount: 0` | **`not-proven`** — the error path was observed, the 130-second hold was not |
+| `adversarial-review-wait` | `/tmp/shell-wait-t6-adversarial-review-wait.iMiSBx/adversarial-review-wait.record.json` | One `session/send` reached the fake peer, but no child linkage, launcher, terminal exit or sentinel applied; the case ended inconclusive | **`not-proven`** |
+| `status-wait` | `/tmp/shell-wait-t6-status-wait.DIXml7/status-wait.record.json` | The model invoked Status without the required 64-character job ID; the Companion returned its exact public error result `{"error":{"code":"ARGUMENT_INVALID","category":"validation","message":"Expected one 64-character job ID.",…}}`; host exited before the boundary. `sendCount: 0` | **`not-proven`** — including the cancellation subcase (native interruption is separately `not-proven`, §10) |
+
+The two `ARGUMENT_INVALID` results are genuine command-level public results observed through the retained
+final-agent-message adjudication excerpts — the Renderer's exact error contract held — but they are error
+paths, not the requested 130-second observation, and the plan forbids presenting them as command
+qualification.
+
+### 9.2 Instrument gap discovered by Task 6 (`not-proven` prerequisite for a root-family campaign)
+
+The driver's completion contract is **Rescue-shaped**: it qualifies exact Child linkage, the Rescue
+launcher invocation, and the original Child handle. Root-family cases intentionally have no Rescue Child,
+so `adversarial-review-wait`'s record reads "child linkage is not exact; the exact launcher command was
+observed in no identified child rollout" even when the Root-side flow ran — the verdict frame, not the
+host, rejected the case. A root-family campaign needs its own bounded observation contract (Root's own
+process handle, the constant Companion command, the command-specific renderer result, decision cadence,
+and — for `status-wait` — observation cancellation that leaves the job running) before any Root command can
+be qualified. Building that contract is a reviewed instrument change, out of scope for this campaign.
+
+### 9.3 Model adherence
+
+All three root-family cases also surfaced the same model-adherence flakiness recorded in Task 5: the model
+invoked commands with wrong arguments (focus text, missing job ID) or ended its turn early. Per the plan,
+each command keeps its own outcome; no command is declared impossible or qualified from another's run.
 
 ## 10. Not-proven register (updated after Task 4)
 
@@ -666,7 +698,7 @@ their real entry points, decision cadence, ownership and cancellation behavior.
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **`not-proven`**: Task 5's `rescue-interrupt` (§8.1) qualified the pending observation but the driver never DELIVERED a native interrupt (`delivered: null` with the prerequisite recorded), so delivery, target, interval, settlement and collateral cancellation are unmeasured; retained records do not establish full tool exposure | Wire the §3.1 surface into the owning native session, deliver to the exact pending Child and measure settlement; turn interrupt alone is insufficient (Task 7 follow-up) |
 | Installed `multi_agent_v2` configuration/bounds | **`not-proven`**: no installed configuration inventory or timeout-bound measurement | Record actual reachable family and bounds during Task 5/6; source defaults are separate |
 | Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` ended in model nonadherence before the observation flow (§8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised; unchanged inherited contracts and fixture cleanup do not qualify these dimensions | Any new campaign must first address the model-adherence flakiness these two cases exposed; budget/failure cleanup is not native user interruption |
-| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 not executed | Qualify each real command independently, including Status observation cancellation without cancelling its job |
+| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two observed their exact Companion `ARGUMENT_INVALID` error paths (real public results, not holds) and none reached a 130-second observation; the instrument's Rescue-shaped completion contract also cannot adjudicate root-family cases (§9.2) | Build a reviewed root-family observation contract (Root handle, constant command, command-specific renderer, cancellation-leaves-job-running) and rerun with a held job for Status |
 | Production release/version generalization/token savings | **`not-proven`**: single named fixture invocation on 0.160.1, disposable sandbox/hook bypass, no token measurements; auto-update limits attribution to the earlier 0.160.0 record | Finish Tasks 5–7 and obtain separate adoption decision; no production rollout implied |
 
 The earlier absence of managed-Child wrapper observations is resolved **only within §7's scope**:
