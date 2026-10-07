@@ -911,8 +911,11 @@ is unchanged.
 
 - **Multiple completed terminal polls in one cell block qualification (closure review fix).** The
   observer counts completed original-handle `write_stdin` statements by their owning cell and records
-  a terminal observation discipline violation on the second poll, excluding the validated one-shot
-  private preparation write. Spec §4 prohibits batching polls to manufacture fewer model decisions:
+  a terminal observation discipline violation on the second poll, whether completion arrives inline
+  or through an accepted exact-cell continuation. A pending poll retains its owning cell and preparation
+  classification; its completion is counted exactly once against that cell when the continuation resolves
+  it, excluding the validated one-shot private preparation write. Spec §4 prohibits batching polls to
+  manufacture fewer model decisions:
   two sequential 60000-ms empty-input polls cannot qualify even with zero outer returns and a terminal
   sentinel. The mapped record retains the blocking reason. Single-poll cells (including Case B), a
   launcher plus one poll, and preparation plus one poll still qualify; pre-launch `exec_command`
@@ -923,6 +926,15 @@ is unchanged.
   The one shell-research run reported **193 tests / 189 pass / 4 fail / 0 skipped**; all four failures
   were sandbox `EPERM` artifacts (two npm-cache accesses and two macOS process-inspection spawns).
   Selection **6/6**, lint, typecheck and `git diff --check` passed.
+  The second closure pass adds the yielded boundary: two polls completed through one accepted outer
+  continuation fail qualification and preserve the mapped batching reason; a yielded single poll resolved
+  by an exact-cell continuation still qualifies. Before the continuation fix, these regressions were
+  **RED 1/2** (the batch incorrectly qualified); afterward, both passed within **GREEN 108/108** observer
+  tests, including the preparation-plus-one-poll exact-continuation control and unchanged timing checks.
+  The single shell-research run reported **195 tests / 191 pass / 4 fail / 0 skipped**: both new regressions
+  passed, and the original 193 tests retained 189 passes and the same four sandbox `EPERM` artifacts
+  (two npm-cache accesses and two macOS process-inspection spawns). Selection **6/6**, lint, typecheck
+  and `git diff --check` passed.
 
 - **Call IDs belong to events before statement expansion (backfill review fix).** Every call/response
   event must carry a nonempty string `call_id`, without type coercion. IDs are unique among call events

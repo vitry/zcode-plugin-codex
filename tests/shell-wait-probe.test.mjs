@@ -1085,6 +1085,45 @@ if (process.env[selfTestGuard] === '1') {
       assert.match(mapped.inconclusive.reason, /batching.*terminal observation discipline/i);
     });
 
+    test('batched polls completed through one outer continuation violate the batching discipline', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('batched-polls', [
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+      ]), callOutput('batched-polls', [...pendingOutput('batched-cell'),
+        { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) },
+      ]), fnCall('wait', 'continue', { cell_id: 'batched-cell' }),
+      fnOutput('continue', completedOutput({ output: SENTINEL, session_id: HANDLE, exit_code: 0 })));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.handle.pollCount, 2);
+      assert.equal(result.facts.handle.overlappingInnerPolls, 0);
+      assert.equal(result.facts.observations.outerReturns, 1);
+      assert.equal(result.facts.observations.pendingInnerAtEnd, false);
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /batching.*terminal observation discipline/i);
+      const mapped = mapShellWaitLiveFacts({ case: 'rescue-baseline' }, {
+        endedBeforeGate: false, budgetExpired: false, result: { code: 0 },
+        cleanup: { releasedGate: true, errors: [] },
+      }, result, '0.160.1');
+      assert.match(mapped.inconclusive.reason, /batching.*terminal observation discipline/i);
+    });
+
+    test('a yielded single poll resolved by an exact-cell continuation still qualifies', () => {
+      const rollouts = fullRollouts();
+      rollouts[1][4] = callOutput('poll-1', pendingOutput('single-cell'));
+      rollouts[1].push(fnCall('wait', 'continue', { cell_id: 'single-cell' }),
+        fnOutput('continue', completedOutput({ output: SENTINEL, session_id: HANDLE, exit_code: 0 })));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.handle.pollCount, 1);
+      assert.equal(result.facts.handle.overlappingInnerPolls, 0);
+      assert.equal(result.facts.observations.outerReturns, 1);
+      assert.equal(result.facts.observations.pendingInnerAtEnd, false);
+      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.completion.reason, null);
+    });
+
     for (const badLine of ['console.log("extra");', 'text(await tools.exec_command({cmd: @broken}));', '']) {
       test(`multi-statement cell fails closed for unsupported line ${JSON.stringify(badLine)}`, () => {
         const rollouts = fullRollouts();

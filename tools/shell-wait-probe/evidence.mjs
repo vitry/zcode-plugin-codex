@@ -759,7 +759,7 @@ function analyzeCallSequence(calls, command) {
   // arrived — an observation stays outstanding until that position, so a
   // second same-handle poll issued before it is an overlap, even though the
   // rollout's records show a completed result.
-  /** @type {{ cellId: string, handleId: number } | null} */
+  /** @type {{ cellId: string, handleId: number, ownerCallId: string, sanctionedPreparation: boolean } | null} */
   let pendingCell = null;
   /** @type {'unresolved' | null} */
   let unresolvedObservation = null;
@@ -782,6 +782,14 @@ function analyzeCallSequence(calls, command) {
   const disciplineViolations = [];
   /** @type {Map<string, number>} */
   const completedPollsByCell = new Map();
+  /** @param {string} ownerCallId */
+  function countCompletedPoll(ownerCallId) {
+    const completedPolls = (completedPollsByCell.get(ownerCallId) ?? 0) + 1;
+    completedPollsByCell.set(ownerCallId, completedPolls);
+    if (completedPolls === 2) {
+      disciplineViolations.push('batching multiple completed terminal polls in one cell violates the terminal observation discipline (spec section 4)');
+    }
+  }
   const additionalExecs = calls.filter((entry) => entry.call.kind === 'exec_command' && entry !== launch
     && (entry.call.value.cmd === command || (launch && entry.callIndex > launch.callIndex)));
   if (additionalExecs.length > 0) {
@@ -842,11 +850,7 @@ function analyzeCallSequence(calls, command) {
         // decisions. Event-owned call IDs identify the cell; the sanctioned
         // preparation write is not a terminal poll.
         if (!sanctionedPreparation && output?.state === 'completed') {
-          const completedPolls = (completedPollsByCell.get(entry.callId) ?? 0) + 1;
-          completedPollsByCell.set(entry.callId, completedPolls);
-          if (completedPolls === 2) {
-            disciplineViolations.push('batching multiple completed terminal polls in one cell violates the terminal observation discipline (spec section 4)');
-          }
+          countCompletedPoll(entry.callId);
         }
         // Empty-input terminal observation discipline (spec S2): every
         // original-handle observation must send NO characters. Only the
@@ -865,7 +869,7 @@ function analyzeCallSequence(calls, command) {
           && (awaitingResolution.outputIndex === null || awaitingResolution.outputIndex > entry.callIndex);
         if (stillOutstanding) overlappingInnerPolls += 1;
         if (output?.state === 'pending') {
-          pendingCell = { cellId: output.cellId, handleId: pollHandle };
+          pendingCell = { cellId: output.cellId, handleId: pollHandle, ownerCallId: entry.callId, sanctionedPreparation };
           continuationGap = false;
           unresolvedObservation = null;
           awaitingResolution = { outputIndex: null };
@@ -957,6 +961,12 @@ function analyzeCallSequence(calls, command) {
       // foreign-handle case exists to guard.
       if (output?.state === 'completed') {
         if (continuationGap) unresolvedContinuation = 'unresolved';
+        // Charge the completed poll to its original cell, not this wait's
+        // call ID. Clearing pendingCell consumes the completion exactly once;
+        // preparation keeps its exemption across pending continuations.
+        if (pendingCell !== null && !pendingCell.sanctionedPreparation) {
+          countCompletedPoll(pendingCell.ownerCallId);
+        }
         pendingCell = null;
         lastCompletedOnHandle = { result: output.result, wallTimeMs: output.wallTimeMs, index };
         if (Number.isSafeInteger(output.result.exit_code)) terminalIndex = index;
