@@ -7,7 +7,8 @@ under the spec
 Worktree base commit `703fdcee958f4729a83d1a978c3b0e5cfa25f90a` (branch base `6638878e910154d7d1bc4effd4c9aa62f149f23a`, merged PR #65).
 This document authorizes **no production change**: canonical Skills, Role template, Companion stores, hooks,
 packaging, user configuration and `../codex` are untouched. §7 records Task 4 installed observations and
-precise limits; §8–§9 and §11 remain unexecuted Task 5–7 skeletons. §2–§6 retain the source/design findings,
+precise limits; §8–§9 record Tasks 5–6 executed 2026-10-07, with inconclusive and `not-proven` outcomes
+preserved; §11 is the closed coverage/delta/handoff section for Task 7. §2–§6 retain the source/design findings,
 §10 is the current not-proven register, and §12 records fixture-tested instrument behavior and its limits.
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
@@ -716,7 +717,7 @@ Early host exit and the root-family contract gap remain recorded limitations. Ta
 limitation is separate (§8.2). Each command keeps its own outcome; no command is declared impossible
 or qualified from another's run.
 
-## 10. Not-proven register (updated after Task 4)
+## 10. Not-proven register (updated through Tasks 4–6)
 
 | Unresolved claim | Evidence and reason | Useful next step / owner |
 | --- | --- | --- |
@@ -789,18 +790,23 @@ production plan. No wrapper pragma is claimed universal; no token-savings claim 
   pins recorded per run in §7/§8/§9; scratch files `task_plan.md`/`findings.md`/`progress.md` remained
   untracked throughout.
 - Gates: Tasks 1–3 closed at codex zero-findings (rounds 5 / 4 / 17). Tasks 4–7 artifacts were produced
-  under a recorded double-quota deviation (both reviewer channels exhausted — ZCode 2026-10-08 23:22,
-  codex 2026-10-10 05:11): the Task 4 gate ran once (`needs-attention`, 3 findings) and all three were
-  fixed with regressions at `074fb07`; the re-review and the Task 5/6/7 + overall reviews are
-  **pending backfill** and must run before any merge decision.
-- Final verification at `4352796` (tree fully committed — commits authorized by the user's PR
+  under a recorded double-quota deviation: both reviewer channels hit hard quota ceilings on
+  2026-10-06/07, before the report commit. The platforms announced quota resets at 2026-10-08 23:22
+  (ZCode subagents) and 2026-10-10 05:11 (codex); these are reset times, not exhaustion times.
+  The Task 4 gate ran once (`needs-attention`, 3 findings) and all three were fixed with regressions
+  at `074fb07`. The codex side recovered early via an account switch on 2026-10-07, and the catch-up
+  review ran that day; the resulting per-fix gates are recorded in §12.4.
+- Historical final verification at `4352796` (tree fully committed — commits authorized by the user's PR
   requirement): `npm test` exit 0 with the routine suite at **3397 tests / 3394 pass / 0 fail / 3
   skipped** (the three skips are the inherited opt-in E2E guards, not win32) and the marketplace
   snapshot build **2/2**; plus `npm run test:shell-research` **177/177**, selection **6/6**, lint,
   typecheck, line endings and `git diff --check` clean, zero probe worktree registrations. The three
   untracked planning scratch files were parked outside the tree for the clean-source check and restored
-  afterwards (spec §2 method, documented here).
-- Records: the seven Task 4 records, three live Task 5 records plus the preliminary Status command-rendering
+  afterwards (spec §2 method, documented here). Later commits `dd156b7`, `6f8d5bc` and `31921b8`
+  postdate that anchor and each recorded its own per-fix gates in §12.4. Current-head gate record at
+  `31921b8`: shell-research **195/195 pass**.
+- Records: the eight Task 4 records (four Case 0 runs, Case A, Case B, repeat1 and repeat2),
+  three live Task 5 records plus the preliminary Status command-rendering
   failure (§8), and three Task 6 records live under
   `/tmp/shell-wait-t4-*` and `/tmp/shell-wait-t5-*`, `/tmp/shell-wait-t6-*` (OS-temporary; the report's
   tables are the durable summaries, as the plan intends).
