@@ -909,6 +909,21 @@ is unchanged.
 
 ### 12.4 Fail-closed behaviors (fixture-tested)
 
+- **Multiple completed terminal polls in one cell block qualification (closure review fix).** The
+  observer counts completed original-handle `write_stdin` statements by their owning cell and records
+  a terminal observation discipline violation on the second poll, excluding the validated one-shot
+  private preparation write. Spec §4 prohibits batching polls to manufacture fewer model decisions:
+  two sequential 60000-ms empty-input polls cannot qualify even with zero outer returns and a terminal
+  sentinel. The mapped record retains the blocking reason. Single-poll cells (including Case B), a
+  launcher plus one poll, and preparation plus one poll still qualify; pre-launch `exec_command`
+  diagnostics are unaffected. The two-poll timing regression now asserts blocked qualification while
+  retaining `observations.cellWallTimeMs === 120000` and `decisiveWallMs === null`, so cell timing
+  remains distinct from an observation duration. Both batching expectations failed before the guard
+  (**RED 0/2**) and passed after it with the four legitimate controls (**GREEN 6/6**).
+  The one shell-research run reported **193 tests / 189 pass / 4 fail / 0 skipped**; all four failures
+  were sandbox `EPERM` artifacts (two npm-cache accesses and two macOS process-inspection spawns).
+  Selection **6/6**, lint, typecheck and `git diff --check` passed.
+
 - **Call IDs belong to events before statement expansion (backfill review fix).** Every call/response
   event must carry a nonempty string `call_id`, without type coercion. IDs are unique among call events
   within each rollout; a response must belong to exactly one preceding call event, with at most one

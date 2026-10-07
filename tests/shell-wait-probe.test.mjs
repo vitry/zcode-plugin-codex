@@ -724,6 +724,7 @@ if (process.env[selfTestGuard] === '1') {
 
   describe('inspectShellWaitEvidence', async () => {
     const { inspectShellWaitEvidence, parseCallEvent } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
 
     const PARENT = 'parent-thread-1';
     const CHILD = 'child-thread-1';
@@ -1048,15 +1049,40 @@ if (process.env[selfTestGuard] === '1') {
         wrappedCall('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
         callOutput('launch-1', completedOutput({ output: '', session_id: HANDLE })),
         statementCell('observe', [
-          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
-          inlineStatement('write_stdin', { session_id: HANDLE, chars: '' }),
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+          inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
         ]), callOutput('observe', output)];
       const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
       assert.equal(result.status, 'supported');
-      assert.equal(result.facts.completion.qualified, true);
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /batching.*terminal observation discipline/i);
       assert.equal(result.facts.observations.decisiveWallMs, null,
         'two 60000-ms polls in one 120-second cell must not report a 120-second observation');
       assert.equal(result.facts.observations.cellWallTimeMs, 120000);
+    });
+
+    test('two sequential 60000-ms empty-input polls in one cell violate the batching discipline', () => {
+      const rollouts = fullRollouts();
+      rollouts[1].splice(3, 2, statementCell('batched-polls', [
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+        inlineStatement('write_stdin', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+      ]), cellOutput('batched-polls', [
+        { output: '', session_id: HANDLE },
+        { output: SENTINEL, session_id: HANDLE, exit_code: 0 },
+      ]));
+      const result = inspectShellWaitEvidence(evidenceInput({ rollouts }));
+      assert.equal(result.status, 'supported');
+      assert.equal(result.facts.completion.qualified, false);
+      assert.match(result.facts.completion.reason, /batching.*terminal observation discipline/i);
+      assert.equal(result.facts.handle.pollCount, 2);
+      assert.equal(result.facts.handle.overlappingInnerPolls, 0);
+      assert.equal(result.facts.observations.outerReturns, 0);
+      assert.equal(result.facts.observations.decisiveWallMs, null);
+      const mapped = mapShellWaitLiveFacts({ case: 'rescue-baseline' }, {
+        endedBeforeGate: false, budgetExpired: false, result: { code: 0 },
+        cleanup: { releasedGate: true, errors: [] },
+      }, result, '0.160.1');
+      assert.match(mapped.inconclusive.reason, /batching.*terminal observation discipline/i);
     });
 
     for (const badLine of ['console.log("extra");', 'text(await tools.exec_command({cmd: @broken}));', '']) {

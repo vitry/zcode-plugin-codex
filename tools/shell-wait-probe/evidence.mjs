@@ -780,6 +780,8 @@ function analyzeCallSequence(calls, command) {
   const outerLinkageViolations = [];
   /** @type {string[]} */
   const disciplineViolations = [];
+  /** @type {Map<string, number>} */
+  const completedPollsByCell = new Map();
   const additionalExecs = calls.filter((entry) => entry.call.kind === 'exec_command' && entry !== launch
     && (entry.call.value.cmd === command || (launch && entry.callIndex > launch.callIndex)));
   if (additionalExecs.length > 0) {
@@ -836,6 +838,16 @@ function analyzeCallSequence(calls, command) {
       if (!sanctionedPreparation) pollCount += 1;
       if (originalHandleId !== null && !onOriginalHandle) foreignHandlePolls += 1;
       if (onOriginalHandle) {
+        // Spec section 4 forbids batching polls to manufacture fewer model
+        // decisions. Event-owned call IDs identify the cell; the sanctioned
+        // preparation write is not a terminal poll.
+        if (!sanctionedPreparation && output?.state === 'completed') {
+          const completedPolls = (completedPollsByCell.get(entry.callId) ?? 0) + 1;
+          completedPollsByCell.set(entry.callId, completedPolls);
+          if (completedPolls === 2) {
+            disciplineViolations.push('batching multiple completed terminal polls in one cell violates the terminal observation discipline (spec section 4)');
+          }
+        }
         // Empty-input terminal observation discipline (spec S2): every
         // original-handle observation must send NO characters. Only the
         // validated one-shot preparation above is exempt; any other nonempty
