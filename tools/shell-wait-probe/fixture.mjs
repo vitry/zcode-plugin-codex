@@ -16,6 +16,13 @@
  * createShellWaitFixture({ sourceRoot, sourceSha, codexBinary, output,
  * variant, capMs }) -> { workspace, codexHome, installedRoot, env, dispose }
  *
+ * Disposal limitation: cleanup is IN-PROCESS. A hard-killed run (SIGKILL of
+ * the probe, host crash, power loss) cannot run dispose, so that run's
+ * temporary root — including the copied credential source inside the isolated
+ * home and any session rollouts — LEAKS under the caller's tmpdir. Such
+ * leftovers are user-approved-deletion debris, never auto-cleaned by a later
+ * run; each leaked root is bounded to one disposable mkdtemp directory.
+ *
  * The returned record additionally carries the fixture-tested provenance
  * (instruction hashes, applied artifact digests and modes, cap placement) and
  * an optional second `dependencies` argument injects fast fakes for the
@@ -26,9 +33,10 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, dirname, isAbsolute, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
@@ -53,6 +61,42 @@ function candidateWaitingParagraph(pollYieldMs) {
   const requested = String(pollYieldMs);
   return 'Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls requesting a single observation window of ' + requested + ' ms: emit exactly one directive line `// @exec: {"yield_time_ms": ' + requested + '}` immediately before the call, and pass yield_time_ms: ' + requested + ' on that same empty-input call. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue\'s named and generic Role assignments; the initial launcher yield is 30000, and every subsequent same-handle observation requests the ' + requested + ' ms window with its leading directive.';
 }
+
+/**
+ * The exact installed waiting-policy paragraph shared by the canonical
+ * Review/Adversarial Review/Status command Skills (verified against the
+ * repository Skills at the fixture's source SHA; each file must contain it
+ * exactly once). The candidate replacement keeps the same discipline as the
+ * Rescue candidate edit: commands, arguments, renderer, ownership, and
+ * placement stay byte-identical — ONLY the waiting instructions change.
+ */
+const COMMAND_SKILL_WAITING_PARAGRAPH = 'Start the constant command once with the longest initial `exec_command` yield, up to 30000 ms. If it returns a live process handle, observe only that same handle with empty-input `write_stdin` calls using `yield_time_ms: 60000`. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep.';
+
+/**
+ * The candidate waiting paragraph for the three root-family command Skills:
+ * the same directive-led single long window request as the Rescue candidate,
+ * in the command Skills' own wording and backtick style.
+ * @param {number} pollYieldMs
+ */
+function candidateCommandSkillWaitingParagraph(pollYieldMs) {
+  const requested = String(pollYieldMs);
+  return 'Start the constant command once with the longest initial `exec_command` yield, up to 30000 ms. If it returns a live process handle, observe only that same handle with empty-input `write_stdin` calls requesting a single observation window of ' + requested + ' ms: emit exactly one directive line `// @exec: {"yield_time_ms": ' + requested + '}` immediately before the call, and pass `yield_time_ms: ' + requested + '` on that same empty-input call. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep.';
+}
+
+/** The isolated installed command Skill copies the root-family seam may touch. */
+const COMMAND_SKILL_ARTIFACTS = [
+  ['review-skill', 'review'],
+  ['adversarial-review-skill', 'adversarial-review'],
+  ['status-skill', 'status'],
+];
+
+// The owning-session identity the isolated production setup establishes
+// through the REAL SessionStart/UserPromptSubmit hooks; the status-wait job
+// reservation reuses this exact recorded turn as its caller authority.
+const FIXTURE_SETUP_TURN_ID = 'fixture-setup-turn';
+const FIXTURE_PERMISSION_MODE = 'acceptEdits';
+/** The harmless fixture task the reserved status-wait job carries. */
+const STATUS_JOB_TASK = 'shell-wait-probe-fixture-task';
 
 /** @param {string} message @returns {TypeError} */
 function invalidFixtureInput(message) {
@@ -145,15 +189,40 @@ async function assertPrivateEmptyOutput(output) {
 /**
  * Validate and normalize the fixture input before any filesystem side effect.
  * @param {ShellWaitFixtureInput} input
- * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', capMs: number|null, pollMs: number, authSource: string }}
+ * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
  */
 function validateFixtureInput(input) {
   if (!input || typeof input !== 'object') throw invalidFixtureInput('the fixture input must be an object.');
   if (input.variant !== 'baseline' && input.variant !== 'candidate') {
     throw invalidFixtureInput('variant must be exactly "baseline" or "candidate".');
   }
+  // The root-family candidate delivery seam (R2): when set to "candidate" the
+  // fixture ALSO applies the candidate waiting paragraph to the isolated
+  // installed copies of the Review/Adversarial Review/Status command Skills.
+  // It is meaningful only together with the candidate variant — a root-family
+  // baseline control must keep every installed instruction byte-identical.
+  const commandSkillVariant = input.commandSkillVariant ?? 'baseline';
+  if (commandSkillVariant !== 'baseline' && commandSkillVariant !== 'candidate') {
+    throw invalidFixtureInput('commandSkillVariant must be exactly "baseline" or "candidate".');
+  }
+  if (commandSkillVariant === 'candidate' && input.variant !== 'candidate') {
+    throw invalidFixtureInput('commandSkillVariant "candidate" requires variant "candidate" (the root-family candidate delivery seam); a baseline fixture never edits the installed command Skills.');
+  }
   if (input.capMs !== null && input.capMs !== undefined && (!Number.isSafeInteger(input.capMs) || input.capMs <= 0)) {
     throw invalidFixtureInput('capMs must be a positive integer or null (unraised).');
+  }
+  // The R3 status-wait setup seam: reserve one actually owned held job through
+  // the production command path in the owning session. The explicit query
+  // timeout is REQUIRED with the reservation (the rendered Status invocation
+  // must carry a real ID and a real deadline), and it is a fixture input only —
+  // never a production job timeout.
+  const reserveStatusJob = input.reserveStatusJob === true;
+  const statusQueryTimeoutMs = input.statusQueryTimeoutMs;
+  if (reserveStatusJob && (!Number.isSafeInteger(statusQueryTimeoutMs) || /** @type {number} */ (statusQueryTimeoutMs) <= 0)) {
+    throw invalidFixtureInput('reserveStatusJob requires a positive integer statusQueryTimeoutMs (the explicit Status query deadline).');
+  }
+  if (!reserveStatusJob && statusQueryTimeoutMs !== undefined) {
+    throw invalidFixtureInput('statusQueryTimeoutMs is only meaningful with reserveStatusJob.');
   }
   const pollMs = input.pollMs ?? input.capMs ?? 3_600_000;
   if (!Number.isSafeInteger(pollMs) || pollMs <= 0) throw invalidFixtureInput('pollMs must be a positive integer.');
@@ -163,8 +232,11 @@ function validateFixtureInput(input) {
     codexBinary: /** @type {string} */ (input.codexBinary),
     output: /** @type {string} */ (input.output),
     variant: input.variant,
+    commandSkillVariant,
     capMs: input.capMs ?? null,
     pollMs,
+    reserveStatusJob,
+    statusQueryTimeoutMs: statusQueryTimeoutMs ?? null,
     authSource: typeof input.authSource === 'string' && input.authSource.length > 0
       ? input.authSource
       : (process.env.CODEX_HOME ?? join(homedir(), '.codex')),
@@ -344,11 +416,44 @@ export async function createShellWaitFixture(input, dependencies = {}) {
       env, codexBinary: prepared.codexBinary, capMs: prepared.capMs,
     });
 
+    // The R3 status-wait setup: reserve ONE actually owned held job through
+    // the production command path in the owning session BEFORE the case runs.
+    // A reservation failure rejects the whole fixture creation (the caller's
+    // error path disposes it) — never a guessed job ID.
+    /** @type {{ jobId: string, status: string, queryTimeoutMs: number } | null} */
+    let statusJob = null;
+    /** @type {string | null} */
+    let owningSessionId = null;
+    if (prepared.reserveStatusJob) {
+      owningSessionId = /** @type {any} */ (record.isolatedSetup)?.owningSessionId;
+      if (typeof owningSessionId !== 'string' || owningSessionId.length === 0) {
+        throw new Error('the status-wait owned-job setup requires the isolated production setup to record the owning session (missing ownership context).');
+      }
+      const reserved = await (dependencies.reserveStatusJob ?? reserveOwnedStatusJob)({
+        companionEntry: join(installedRoot, 'scripts', 'zcode-companion.mjs'),
+        identityModule: join(installedRoot, 'scripts', 'lib', 'identity.mjs'),
+        dataRoot, workspace, env, sessionId: owningSessionId,
+        turnId: FIXTURE_SETUP_TURN_ID, permissionMode: FIXTURE_PERMISSION_MODE,
+        queryTimeoutMs: /** @type {number} */ (prepared.statusQueryTimeoutMs), task: STATUS_JOB_TASK,
+      });
+      statusJob = { jobId: reserved.jobId, status: reserved.status, queryTimeoutMs: /** @type {number} */ (prepared.statusQueryTimeoutMs) };
+      /** @type {Record<string, unknown>} */ (record).ownedStatusJob = {
+        reserved: true,
+        jobId: reserved.jobId,
+        status: reserved.status,
+        ownerSessionId: reserved.ownerSessionId,
+        queryTimeoutMs: prepared.statusQueryTimeoutMs,
+        reservedVia: 'companion rescue --background --fresh (protected caller envelope in the owning session)',
+        setupScope: 'instrument-level owning-session test setup only: the LIVE status-wait case creates its job inside the live host session (production selects explicit Status targets owner-scoped, and the fixture-setup session is not the live session)',
+      };
+    }
+
     return {
       workspace,
       codexHome,
       installedRoot,
       env,
+      ...(statusJob === null ? {} : { statusJob, owningSessionId: /** @type {string} */ (owningSessionId) }),
       dispose: async () => {
         if (disposed) return;
         disposed = true;
@@ -428,6 +533,187 @@ function boundedErrorText(text, limit = 512) {
 }
 
 /**
+ * Reserve ONE actually owned held job for the status-wait case through
+ * PRODUCTION entry points in the owning session, and retain the RETURNED job
+ * ID. INSTRUMENT-LEVEL OWNING-SESSION TEST SETUP ONLY: the reservation runs
+ * under the fixture-setup session, so it can prove the production reservation
+ * path and the query-timeout semantics on real jobs, but the LIVE status-wait
+ * case must NEVER use it — production selects explicit Status targets
+ * OWNER-SCOPED (`selectOwned` filters `listOwnedJobs(workspace,
+ * caller.sessionId)`), and the live host session is not the fixture-setup
+ * session. The live case creates its job inside the live host session (its
+ * turn-1 recorded launch) and the driver validates the observed flow.
+ *
+ * The reservation path is the exact production command surface the
+ * integration suites use: the real companion CLI `rescue --background --fresh`
+ * as a child process, its protected fd3 caller envelope minted by the real
+ * identity store for the hook-recorded owning turn, and the returned queued
+ * acknowledgement as the only source of the job ID. Nothing is manufactured:
+ * a missing owning turn fails the caller-context consumption closed inside the
+ * companion, and a missing or malformed acknowledgement fails this setup
+ * closed. The job is never claimed (`run-reserved-job` is never invoked), so
+ * it stays queued — held — until the observation window. Ownership and the
+ * held state are re-verified read-only through the production state store.
+ * @param {{ companionEntry: string, identityModule: string, dataRoot: string, workspace: string, env: NodeJS.ProcessEnv, sessionId: string, turnId: string, permissionMode: string, queryTimeoutMs: number, task?: string }} context
+ * @param {{ spawnCompanionChild?: (options: { command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, callerEnvelope: unknown, timeoutMs: number }) => Promise<{ code: number | null, internalResponse: string, stdout: string, stderr: string }> }} [dependencies]
+ * @returns {Promise<{ jobId: string, status: 'queued', ownerSessionId: string, queryTimeoutMs: number }>}
+ */
+export async function reserveOwnedStatusJob(context, dependencies = {}) {
+  /** @param {string} message @returns {never} */
+  const failClosed = (message) => { throw new Error(`the status-wait owned-job setup failed closed: ${message}`); };
+  /** @param {string} path @param {string} label */
+  const validateEntry = async (path, label) => {
+    if (typeof path !== 'string' || path.length === 0 || !isAbsolute(path)) failClosed(`the ${label} entry must be an absolute path.`);
+    const metadata = await lstat(path).catch(() => null);
+    if (!metadata?.isFile()) failClosed(`the ${label} entry does not exist.`);
+  };
+  await validateEntry(context.companionEntry, 'companion');
+  await validateEntry(context.identityModule, 'identity store');
+  if (typeof context.dataRoot !== 'string' || !isAbsolute(context.dataRoot)) failClosed('the data root must be an absolute path.');
+  if (typeof context.workspace !== 'string' || !isAbsolute(context.workspace)) failClosed('the workspace must be an absolute path.');
+  if (typeof context.sessionId !== 'string' || context.sessionId.length === 0
+    || typeof context.turnId !== 'string' || context.turnId.length === 0) failClosed('the owning session and turn must be recorded.');
+  if (!Number.isSafeInteger(context.queryTimeoutMs) || context.queryTimeoutMs <= 0) failClosed('the explicit Status query timeout must be a positive integer.');
+  const task = typeof context.task === 'string' && context.task.length > 0 && Buffer.byteLength(context.task) <= 4096
+    ? context.task
+    : failClosed('the reserved task must be a bounded non-empty string.');
+
+  // Production identity store of the SAME plugin copy (the installed tree in
+  // the live path): the ownership precheck reads the hook-recorded active
+  // turn, and the protected caller envelope is minted for that exact turn.
+  const identityStore = (await import(pathToFileURL(context.identityModule).href)).createIdentityStore({ dataRoot: context.dataRoot });
+  try {
+    await identityStore.resolveActiveTurn({ sessionId: context.sessionId, workspace: context.workspace, workspaceBinding: 'preview' });
+  } catch (error) {
+    failClosed(`the owning session has no active recorded turn (missing ownership): ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const callerToken = await identityStore.createCallerContext({
+    sessionId: context.sessionId, turnId: context.turnId, workspace: context.workspace, permissionMode: context.permissionMode,
+  });
+
+  const spawnCompanionChild = dependencies.spawnCompanionChild ?? defaultCompanionChildSpawn;
+  const outcome = await spawnCompanionChild({
+    command: process.execPath,
+    args: [context.companionEntry, 'rescue', '--background', '--fresh', task],
+    cwd: context.workspace,
+    env: context.env,
+    callerEnvelope: { callerContext: callerToken },
+    timeoutMs: 90_000,
+  }).catch((error) => failClosed(`the production reservation command could not run: ${error instanceof Error ? error.message : String(error)}`));
+  if (outcome.code !== 0) {
+    failClosed(`the production reservation command failed (${String(outcome.code)}): ${boundedErrorText(outcome.stderr || outcome.stdout)}`);
+  }
+  // The returned queued acknowledgement is the ONLY source of the job ID.
+  let acknowledgement;
+  try { acknowledgement = JSON.parse(outcome.internalResponse); } catch { acknowledgement = null; }
+  if (!acknowledgement || typeof acknowledgement !== 'object' || Array.isArray(acknowledgement)
+    || acknowledgement.type !== 'background'
+    || !acknowledgement.job || typeof acknowledgement.job !== 'object'
+    || !/^[a-f0-9]{64}$/u.test(String(acknowledgement.job.id ?? ''))) {
+    failClosed('the production reservation returned no queued job target (missing acknowledgement).');
+  }
+  const jobId = String(acknowledgement.job.id);
+  // Read-only ownership and held-state verification through the PRODUCTION
+  // state store of the same plugin copy.
+  const store = (await import(pathToFileURL(join(dirname(context.identityModule), 'state.mjs')).href)).createStateStore({ dataRoot: context.dataRoot });
+  const durable = await store.readJob(context.workspace, jobId).catch(() => null);
+  if (!durable || durable.ownerSessionId !== context.sessionId || durable.status !== 'queued') {
+    failClosed('the reserved job record does not prove session ownership and a held (queued) state.');
+  }
+  return { jobId, status: 'queued', ownerSessionId: context.sessionId, queryTimeoutMs: context.queryTimeoutMs };
+}
+
+/**
+ * Bounded protected-descriptor companion child spawn (the fd3 caller envelope
+ * / fd4 internal response discipline used by production management commands).
+ * The spawned command/args are validated by the caller; output is bounded and
+ * the child is killed on timeout. Exported as the instrument's own spawn
+ * primitive seam (P2-3 round-8): the drainage guarantee is pinned against
+ * real child processes, not fakes.
+ * @param {{ command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, callerEnvelope: unknown, timeoutMs: number }} options
+ * @returns {Promise<{ code: number | null, internalResponse: string, stdout: string, stderr: string }>}
+ */
+export function defaultCompanionChildSpawn(options) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(options.command, options.args, {
+      cwd: options.cwd, env: options.env, detached: process.platform !== 'win32', windowsHide: true, shell: false,
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = ''; let internal = ''; let bytes = 0;
+    let settled = false;
+    /** @type {NodeJS.Timeout | undefined} */ let timer;
+    /** @param {unknown} error @param {{ code: number | null, internalResponse: string, stdout: string, stderr: string } | undefined} value */
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // P2-3 round-25 fix: DESTROY the caller pipe (fd3) when the spawn
+      // operation finishes — end() closes only the writable half, and a
+      // descendant inheriting fd3 keeps the parent-side socket active, which
+      // could prevent probe exit indefinitely.
+      try { child.stdio[3]?.destroy(); } catch { /* already gone */ }
+      error ? reject(error) : resolvePromise(/** @type {{ code: number | null, internalResponse: string, stdout: string, stderr: string }} */ (value));
+    };
+    /** @param {'stdout' | 'stderr' | 'internal'} kind @param {Buffer} chunk */
+    const capture = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) { void terminate(); finish(new Error('the reservation child exceeded its output bound.'), undefined); }
+      else if (kind === 'stdout') stdout += chunk;
+      else if (kind === 'stderr') stderr += chunk;
+      else internal += chunk;
+    };
+    timer = setTimeout(() => { void terminate(); finish(new Error('the reservation child exceeded its time bound.'), undefined); }, options.timeoutMs);
+    const terminate = async () => {
+      try { child.kill('SIGKILL'); } catch { /* already exited */ }
+    };
+    child.stdout?.on('data', (chunk) => capture('stdout', chunk));
+    child.stderr?.on('data', (chunk) => capture('stderr', chunk));
+    child.stdio[3]?.on('error', () => {});
+    child.stdio[4]?.on('error', () => {});
+    child.stdio[4]?.on('data', (chunk) => capture('internal', chunk));
+    const callerPipe = /** @type {import('node:stream').Writable | undefined} */ (child.stdio[3]);
+    callerPipe?.end(`${JSON.stringify(options.callerEnvelope)}\n`, () => {});
+    child.once('error', (error) => finish(error, undefined));
+    child.once('exit', (code) => {
+      // P2-3 round-8 fix (P2-2 round-9 correction): the exit event does NOT
+      // guarantee the parent has drained the child's stdio — bytes already
+      // buffered in the parent's readable streams are still pending delivery
+      // as 'data' events. Wait (bounded) for every captured stream to end
+      // before constructing the outcome, and CONSTRUCT THE OUTCOME INSIDE THE
+      // FINAL COMPLETION CALLBACK — a snapshot taken before drainage begins
+      // would freeze the pre-drainage strings while the drainage callbacks
+      // keep appending to the live accumulators, so late-arriving bytes (an
+      // external writer holding the fd, a grandchild) would be lost and a
+      // SUCCESSFUL reservation could still be rejected as malformed.
+      const capturedStreams = [/** @type {import('node:stream').Readable} */ (child.stdout), /** @type {import('node:stream').Readable} */ (child.stderr), /** @type {import('node:stream').Readable} */ (child.stdio[4])];
+      const draining = capturedStreams.flatMap((stream) => (stream && !stream.readableEnded && !stream.destroyed ? [stream] : []));
+      /** Construct the result NOW — from the live accumulators, at completion time. */
+      const buildOutcome = () => ({ code, internalResponse: internal, stdout, stderr });
+      if (draining.length === 0) { finish(null, buildOutcome()); return; }
+      let pending = draining.length;
+      const drainTimer = setTimeout(() => {
+        // The bound is generous relative to pipe drainage but well inside the
+        // overall child timeout; an unending stream resolves with what was
+        // captured (never a hang). P2-3 round-10: the captured streams are
+        // also DESTROYED — a descendant holding the descriptor must not keep
+        // this process's event loop alive past the advertised bound.
+        for (const stream of draining) stream.destroy();
+        finish(null, buildOutcome());
+      }, 1000);
+      for (const stream of draining) {
+        const drained = () => {
+          if (settled) return;
+          pending -= 1;
+          if (pending <= 0) { clearTimeout(drainTimer); finish(null, buildOutcome()); }
+        };
+        stream.once('end', drained);
+        stream.once('error', drained);
+      }
+    });
+  });
+}
+
+/**
  * The isolated production setup: establish the fixture's own caller turn
  * through the production SessionStart and UserPromptSubmit hooks, run the
  * installed plugin's OWN production setup entry (which reconciles the managed
@@ -488,7 +774,10 @@ async function runIsolatedProductionSetup(context) {
     capVerified = new RegExp(`^background_terminal_max_timeout = ${String(capMs)}$`, 'mu').test(configAfterSetup);
     if (!capVerified) throw new Error(`the requested cap configuration (${String(capMs)}) did not survive the isolated production setup's configuration writes`);
   }
-  return { sessionEstablished: true, launcherDescriptorPublished, setupAttempts, roleStatus: observedRoleStatus, capVerified };
+  // The owning session the fixture's own caller turn established (a random
+  // fixture-local identifier): the status-wait job reservation reuses this
+  // exact recorded turn as its production caller authority.
+  return { sessionEstablished: true, launcherDescriptorPublished, setupAttempts, roleStatus: observedRoleStatus, capVerified, owningSessionId: sessionId };
 }
 
 /**
@@ -532,6 +821,34 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
   const templateApplied = await applyTo(templatePath, 'named-role-template', 'named Role template', prepared.variant === 'candidate' ? candidateTransform : (source) => source);
   const skillApplied = await applyTo(skillPath, 'generic-skill', 'generic assignment skill', prepared.variant === 'candidate' ? candidateTransform : (source) => source);
 
+  // The R2 root-family delivery seam: the candidate waiting paragraph is ALSO
+  // applied to the ISOLATED installed copies of the three command Skills, so a
+  // root-family candidate case's Root turn is actually instructed to request
+  // the long observation window. Baseline keeps them byte-identical. Either
+  // way the before/after hashes and file modes are recorded: a raised fixture
+  // cap or a `--poll-ms` record alone is NOT proof that Root was instructed —
+  // the delivered Skill text is.
+  /** @type {{ path: string, role: string, beforeSha256: string, afterSha256: string, mode: string }[]} */
+  const commandSkillAppliedArtifacts = [];
+  /** @type {{ path: string, label: string, before: string, after: string }[]} */
+  const commandSkillDifferences = [];
+  for (const [role, skillDirectory] of COMMAND_SKILL_ARTIFACTS) {
+    const commandSkillPath = join(installedRoot, 'skills', skillDirectory, 'SKILL.md');
+    const before = await readFile(commandSkillPath, 'utf8');
+    const metadata = await lstat(commandSkillPath);
+    let after = before;
+    if (prepared.commandSkillVariant === 'candidate') {
+      const occurrences = before.split(COMMAND_SKILL_WAITING_PARAGRAPH).length - 1;
+      if (occurrences !== 1) {
+        throw new Error(`The installed ${role} artifact must contain exactly one command waiting-policy paragraph to change (found ${String(occurrences)}).`);
+      }
+      after = before.replace(COMMAND_SKILL_WAITING_PARAGRAPH, candidateCommandSkillWaitingParagraph(prepared.pollMs));
+      await writeFile(commandSkillPath, after, 'utf8');
+      commandSkillDifferences.push({ path: role, label: 'command skill waiting paragraph', before: 'one command waiting-policy paragraph', after: 'the candidate command waiting-policy paragraph' });
+    }
+    commandSkillAppliedArtifacts.push({ path: role, role, beforeSha256: sha256(before), afterSha256: sha256(after), mode: fileMode(metadata) });
+  }
+
   let capConfiguration = null;
   if (prepared.capMs !== null) {
     const configPath = join(codexHome, 'config.toml');
@@ -565,6 +882,16 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
     isolatedSetup: /** @type {Record<string, unknown> | null} */ (null),
     appliedArtifacts,
     differences,
+    // R2 root-family instruction delivery: the isolated installed command
+    // Skills' variant state, hashes, and sanitized differences. The delivered
+    // Skill text (hashes here, sanitized diff below) is the instruction-
+    // delivery proof; a raised fixture cap or a --poll-ms record alone is not.
+    commandSkillVariants: {
+      variant: prepared.commandSkillVariant,
+      appliedArtifacts: commandSkillAppliedArtifacts,
+      differences: commandSkillDifferences,
+      deliveryProofNote: 'Root instruction delivery is proven by the delivered installed Skill text (before/after hashes and the sanitized waiting-paragraph differences retained here); a raised fixture cap or a --poll-ms record alone is NOT proof that Root was instructed to request a long observation.',
+    },
     capConfiguration,
     renderedNamedRoleSha256: sha256(renderedRole),
     baselineNamedRoleSha256: sha256(baselineRole),
@@ -850,8 +1177,11 @@ export async function releaseCompletionGate(gatePath) {
  *   codexBinary: string,
  *   output: string,
  *   variant: 'baseline'|'candidate',
+ *   commandSkillVariant?: 'baseline'|'candidate',
  *   capMs?: number | null,
  *   pollMs?: number,
+ *   reserveStatusJob?: boolean,
+ *   statusQueryTimeoutMs?: number,
  *   authSource?: string,
  * }} ShellWaitFixtureInput
  * @typedef {{
@@ -860,12 +1190,15 @@ export async function releaseCompletionGate(gatePath) {
  *   copyCredentials?: (context: { codexHome: string, authSource: string }) => Promise<{ copied?: boolean } | void>,
  *   removeOwnedWorktree?: () => Promise<void>,
  *   runSetup?: (context: { installedRoot: string, codexHome: string, dataRoot: string, workspace: string, temporary: string, env: NodeJS.ProcessEnv, codexBinary: string, capMs: number | null }) => Promise<Record<string, unknown>>,
+ *   reserveStatusJob?: typeof reserveOwnedStatusJob,
  * }} ShellWaitFixtureDependencies
  * @typedef {{
  *   workspace: string,
  *   codexHome: string,
  *   installedRoot: string,
  *   env: NodeJS.ProcessEnv,
+ *   statusJob?: { jobId: string, status: string, queryTimeoutMs: number },
+ *   owningSessionId?: string,
  *   dispose: () => Promise<void>,
  *   record: Record<string, unknown>,
  * }} ShellWaitFixtureHandle
