@@ -97,7 +97,7 @@ presented as a host limitation. Do not restart MCP research or expand the probe 
   (DONE R0 through 13 recorded codex-gate rounds: raw unclassifiable bodies suppressed to structural facts
   — allowlisted public tool/directive-key names, counts, byte length; no numbers from unclassified bodies;
   supported-path excerpts projected onto validated public protocol fields; schema gates and position-
-  validated wall-time headers. Report §12.4. R5 confirmation: every R5 off-script record retained only
+  validated wall-time headers. Report §12.4. R5 confirmation: every R5 unclassified-cell record retained only
   structural excerpts, zero private content.)
 - [x] Re-run the focused privacy tests and `npm run test:shell-research`; require GREEN before live trials.
   (DONE R0: shell-research green at every gate round, ending 217/217; R5's pre-trial re-verification passed
@@ -146,7 +146,7 @@ paths; existing-record remediation status is explicit, not silently claimed comp
   `pollStartedAtElapsedMs`; `remainingLifetimeMs` = hold-deadline − measured poll start, basis
   `hold-deadline-at-poll-start`, a conservative lower bound. R5 recorded timings on this basis; the
   discriminator's precondition is NOT evaluated — M is bounded-but-imprecise and the earlier
-  verification is WITHDRAWN (2026-10-06 review; §7.7/§10).)
+  verification is WITHDRAWN (post-trials review-loop correction; §7.7/§10).)
 
 **Exit:** the known legal preparation shape no longer blocks unrelated measurements, absent evidence is
 never zero, and new records can establish the discriminator's timing or explicitly state why not.
@@ -217,8 +217,9 @@ surfaces. This is instrument readiness, not installed command qualification.
   merely because Root acknowledged. If the actual host cannot keep that branch alive, retain that measured
   result rather than constructing a replacement process or changing production placement.
   (DONE R3: child-settlement phase — Root's acknowledgement recorded, Child gate opened first, settlement
-  watched, exact-process termination after the watch. §12.7. R5's background run went off-script before
-  this flow could be exercised (§7.7); the lifecycle remains tested, unexercised live.)
+  watched, exact-process termination after the watch. §12.7. R5's background run ended
+  inconclusive (unclassified cell) before this flow could be exercised (§7.7); the lifecycle
+  remains tested, unexercised live.)
 - [x] Run `npm run test:shell-research` and relevant existing job/placement tests without changing their
   expectations. Root/background installed claims remain open until R5's actual runs.
   (DONE R3: 277/277 exit 0; tests/job-control.test.mjs 209/209 and tests/rescue-route-planner.test.mjs
@@ -301,7 +302,7 @@ model prompting nor source existence alone guarantees delivery; no MCP/fork/seco
   an investigated missing surface remains a documented dependent limitation, not a fake interrupt run.
   Use one cause-directed follow-up at most per failed/inconclusive case; never retry model nonadherence
   until it disappears. No new statistical or universal-host qualification campaign.
-  (DONE R5 — ten trials, each run once (§7.7; final adjudication set by the 2026-10-06 review):
+  (DONE R5 — ten trials, each run once (§7.7; final adjudication set by the post-trials review loop):
   the unraised control **QUALIFIED with M bounded-but-imprecise** — the cap-limited return is
   observed (returned to the model with the 420000-ms worker still running, no other ender) but its
   exact duration was not retained; the `decisiveWallMs: 85000` figure is the TERMINAL poll, not M,
@@ -310,9 +311,11 @@ model prompting nor source existence alone guarantees delivery; no MCP/fork/seco
   `115000 ≤ 388169` validity-precondition verification are WITHDRAWN with the unattributable M
   number. **repeat QUALIFIED** (second qualified
   388.3-s run on a distinct Child). `rescue-baseline`, `rescue-noise`, `background` and the R4-wired
-  `rescue-interrupt` went OFF-SCRIPT before their measurements (`unsupported-call-shape`; R0 suppression
-  held; interrupt intent recorded `requested: true`/family v2 with delivery null and the explicit
-  missing-prerequisite reason — recorded as found, not retried). Root commands produced their first real
+  `rescue-interrupt` ended inconclusive before their measurements (unclassified
+  `unsupported-call-shape` cells — cause not established, attributed neither to model
+  nonadherence nor to host rejection; R0 suppression held; interrupt intent recorded
+  `requested: true`/family v2 with delivery null and the explicit missing-prerequisite reason —
+  recorded as found, not retried). Root commands produced their first real
   outcomes (§9.4): review-wait host-early-exit; adversarial-review-wait ran through the Root observer but
   renderer markers missing; status-wait fail-closed validation fired. No case was retried out of the record.)
 - [x] Use the original case CLI and private `mktemp -d` outputs. For the unraised candidate control omit
@@ -338,7 +341,8 @@ model prompting nor source existence alone guarantees delivery; no MCP/fork/seco
   (DONE R5 documentation phase: report §1.2.2, §7.7, §9.2 correction, §9.4, §10 register, §11.1–§11.3,
   §12.9 added (old §12.9 → §12.10); §9.2's out-of-scope sentence corrected — Root observer work was in
   scope under Task 6/spec Q5, implemented in R2 and exercised at R5. Instrument defects (the driver
-  defaults bug) are separated from measured host limitations and from off-script model behavior. The
+  defaults bug) are separated from measured host limitations and from the unclassified-cell
+  inconclusive runs (cause not established; §7.7). The
   historical 0.160.1 observations keep their own scope; no token savings claimed.)
 - [x] Run `npm run test:shell-research`, `node --test tests/test-selection.test.mjs`, `npm run lint`,
   `npm run typecheck`, `node scripts/check-line-endings.mjs`, `git diff --check`, and relevant unchanged
@@ -504,8 +508,8 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
   --output "$shell_case_output" --worker-duration-ms 420000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 720000
 ```
 
-- [ ] **PARTIAL (corrected by the 2026-10-06 review; the earlier R5 closure rested on withdrawn numbers).** Verify actual native Child parent/thread/path linkage and production preparation/binding admission; one Companion launch and one fake session/send; exact original process handle; actual directive/inner yield; terminal exit and byte-for-byte sentinel; no routine progress relay to Root. The cap-discrimination poll must begin with at least measured unraised/default configuration cap + 30000 ms remaining. A short run, gate released too soon or slow model leaving too little lifetime is inconclusive for that claim; an unestablished default cap must not be guessed from an unmatched source snapshot.
-  (PARTIAL as of the 2026-10-06 review's M correction, measured at R5 2026-10-08, installed 0.161.0:
+- [ ] **PARTIAL (corrected by the post-trials review loop; the earlier R5 closure rested on withdrawn numbers).** Verify actual native Child parent/thread/path linkage and production preparation/binding admission; one Companion launch and one fake session/send; exact original process handle; actual directive/inner yield; terminal exit and byte-for-byte sentinel; no routine progress relay to Root. The cap-discrimination poll must begin with at least measured unraised/default configuration cap + 30000 ms remaining. A short run, gate released too soon or slow model leaving too little lifetime is inconclusive for that claim; an unestablished default cap must not be guessed from an unmatched source snapshot.
+  (PARTIAL as of the post-trials review loop's M correction, measured at R5 2026-10-08, installed 0.161.0:
   the linkage pieces are qualified — named route, launch 1/send 1, original handle, terminal exit 0,
   sentinel in linked output (§7.7); but M is bounded-but-imprecise (the 85000 figure is the terminal
   poll, not the cap-return duration), so the cap-discrimination precondition (measured cap + 30000 ms
@@ -513,10 +517,10 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
   WITHDRAWN. The discriminator subcase reopens until M is re-measured with the per-poll-timing
   instrument (report §12.8). Report §7.7/§10.)
 
-**R5 verification/discriminator record (corrected by the 2026-10-06 review — the cap-discrimination
+**R5 verification/discriminator record (corrected by the post-trials review loop — the cap-discrimination
 item above is PARTIAL):** Case B fresh and `rescue-repeat` qualify named-route linkage, one
 launch/send, original handle, terminal exit and the sentinel; M is bounded-but-imprecise and the
-M + 30000 poll-start condition is NOT established (2026-10-06 review correction; §7.7/§10). Case A's
+M + 30000 poll-start condition is NOT established (post-trials review-loop correction; §7.7/§10). Case A's
 Task 4 completion-linkage limitation remains historical, and its R5 raised re-run also ended
 inconclusive (`unsupported-call-shape`, recorded as found). Routine progress-relay absence is still
 not established by retained call excerpts.
@@ -553,11 +557,11 @@ mapping.)
 
 **Files:** Report lifecycle/result/placement sections; new shell instrument regressions if an observed seam needs correction.
 
-- [ ] **OPEN — R5 re-run also inconclusive (§7.7): the R1 grammar fix removed the old preparation blocker, but the model again wrote an unclassified 4-line cell (`unsupported-call-shape`, 300 bytes; R0 structural suppression held — no private content). A different off-script shape with its own cause; recorded as found, not retried.** Run `rescue-noise` with a 130-second harmless hold and candidate observations (`--worker-duration-ms 130000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 360000`). Use existing conversation/progress output, not a new heartbeat protocol. Check same handle, no replacement Status loop, no ordinary progress relay to Root, and terminal stdout exactly preserved.
-- [ ] **OPEN — R5 wired-path runs went off-script before delivery (§7.7): the R4-wired prompt path exists and the retained record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) but `attempted`/`delivered`/`settled` are null with the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` off-script cell). Live delivery/settlement remains `not-proven`.** Run `rescue-interrupt` while a long observation is demonstrably pending. The driver uses the native exact-Child interaction identified in Task 1; it must record actual delivery, target, pending interval and settlement. A timer intent without delivery, host early exit, gate completion before the signal or killing the outer probe is inconclusive, not successful interruption. Measure delivery-to-settlement latency and compare with the matched baseline/native expectations; no hidden waiting until the new one-hour cap may be presented as preserved responsiveness.
+- [ ] **OPEN — R5 re-run also inconclusive (§7.7): the R1 grammar fix removed the old preparation blocker, but the run again produced an unclassified 4-line cell (`unsupported-call-shape`, 300 bytes; R0 structural suppression held — no private content). A different shape than the R1-CONFIRMED preparation-grammar gap; whether it is a further parser gap or a departure from the prompted flow is not established from the retained evidence. Recorded as found, not retried.** Run `rescue-noise` with a 130-second harmless hold and candidate observations (`--worker-duration-ms 130000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 360000`). Use existing conversation/progress output, not a new heartbeat protocol. Check same handle, no replacement Status loop, no ordinary progress relay to Root, and terminal stdout exactly preserved.
+- [ ] **OPEN — R5 wired-path runs ended inconclusive before delivery (§7.7): the R4-wired prompt path exists and the retained record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) but `attempted`/`delivered`/`settled` are null with the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, cause not established). Live delivery/settlement remains `not-proven`.** Run `rescue-interrupt` while a long observation is demonstrably pending. The driver uses the native exact-Child interaction identified in Task 1; it must record actual delivery, target, pending interval and settlement. A timer intent without delivery, host early exit, gate completion before the signal or killing the outer probe is inconclusive, not successful interruption. Measure delivery-to-settlement latency and compare with the matched baseline/native expectations; no hidden waiting until the new one-hour cap may be presented as preserved responsiveness.
 - [ ] **OPEN — not exercised live in this campaign; inherited production suites recorded (§8.5).** Check existing stop intent, reconciliation, durable winner and no accepted running work left untracked. Keep an unrelated harmless job/Child control live and verify it survives. Host loss and probe-budget cleanup are separately labelled; do not use either as native user-interrupt proof. If no exact native interrupt surface is reachable, document the prerequisite and leave that release dimension not-proven without blocking Root wait measurements.
 - [x] **DONE (structural; live steering not reachable this campaign, §8.4).** Preserve exact no-argument Child Status intents: `zcode status`, `$zcode:status`, `/zcode:status`, trimmed only. The sidecar runs at most once per accepted intent, **between polls**, and never authorizes another Rescue execution or replaces terminal stdout. Test the policy structurally; if the native interface permits safe live steering, observe its response opportunity under a long wait. Report delay as a usability limitation, never issue a parallel inner poll to improve responsiveness. Ordinary steering must not become a command.
-- [ ] **OPEN — R5 re-run with the R3-corrected prompt/lifecycle went off-script before the background flow (§7.7): `unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms but no Child linkage — the model left the prompted flow first. Recorded as found, not retried.** Run one short `background` compatibility case using explicit Rescue `--background`: Root sends only the existing launched-Child acknowledgement and does not join; the exact Child still observes attached Companion to terminal with the candidate policy. Use current functional tests for small no-flag and complex detached placement, Review/Adversarial enqueue-only, same-child choices and owner-only queries. Do not run every unchanged product contract live merely because it is a release requirement; distinguish inherited contract regression coverage from new installed evidence.
+- [ ] **OPEN — R5 re-run with the R3-corrected prompt/lifecycle ended inconclusive before the background flow (§7.7): `unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms but no Child linkage — the record retains an unclassified cell where the prompted invocation was expected; whether this was a further parser gap or a departure from the prompted flow is not established. Recorded as found, not retried.** Run one short `background` compatibility case using explicit Rescue `--background`: Root sends only the existing launched-Child acknowledgement and does not join; the exact Child still observes attached Companion to terminal with the candidate policy. Use current functional tests for small no-flag and complex detached placement, Review/Adversarial enqueue-only, same-child choices and owner-only queries. Do not run every unchanged product contract live merely because it is a release requirement; distinguish inherited contract regression coverage from new installed evidence.
 - [x] **DONE (§8.5: 417/417, 126/126, 213/213 at `074fb07`).** Run focused production regressions without changing their expected text/authority:
 
 ```bash
@@ -594,7 +598,7 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 
 **Files:** Report; plan progress boxes; no production edits.
 
-- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase (2026-10-08): report §11.1 is the authoritative filled mapping and now carries the R5 evidence labels (propagation POSITIVE-but-M-imprecise and repeat QUALIFIED on 0.161.0 with M bounded-but-imprecise (labels finalized by the 2026-10-06 review); interrupt delivery, noise/background, Root commands and the generic route `not-proven` with recorded causes).** Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
+- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase (2026-10-08): report §11.1 is the authoritative filled mapping and now carries the R5 evidence labels (propagation POSITIVE-but-M-imprecise and repeat QUALIFIED on 0.161.0 with M bounded-but-imprecise (labels finalized by the post-trials review loop); interrupt delivery, noise/background, Root commands and the generic route `not-proven` with recorded causes).** Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
 
 *(Task 4-era snapshot rows kept for the record; the authoritative current mapping is REPORT §11.1.
 Updated in 2026-10-10: production mismatch/one-shot/result/choice/error regression suites were
@@ -617,7 +621,7 @@ re-recorded via report §8.5 and the inherited-contract runs are DONE — see th
 | Q6 version scope and smallest adoption delta | 7 |
 
 - [x] **DONE (report §11.2 — scoped follow-up campaign; research-only delivery, no production rollout recommended: the precise M/discriminator, native interruption/settlement, noise/background, Root commands and the generic route remain not-proven; repeat is qualified and propagation is positive-in-shape but M-imprecise).** Propose a precise minimal adoption delta only for qualified surfaces: configuration location supported by the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup/upgrade guidance, and known version/latency limitations. Do not promote an unseen Role-field propagation path or claim a wrapper pragma is universal. Separate demonstrated improvement from release-blocking compatibility findings and optional human usability evaluation.
-- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase: the distinction is recorded throughout (§12.9 separates the driver defaults bug — an instrument defect found and fixed during R5 — from measured host limitations; §7.7/§9.4 record the off-script runs as model behavior, never host rejection; §9.2's erroneous out-of-scope claim is corrected).** If a case remains not-proven, close research with the exact cause and one useful next step; do not lower a requirement, fabricate success or freeze all independent work. Production canonical remains shell with its existing instructions until the human adopts a subsequent change. MCP results remain untouched.
+- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase: the distinction is recorded throughout (§12.9 separates the driver defaults bug — an instrument defect found and fixed during R5 — from measured host limitations; §7.7/§9.4 record the unclassified-cell runs as evidence-insufficient (inconclusive) — attributed neither to model nonadherence nor to host rejection — while the confirmed parser/instrument gaps are separately labeled (§11.3 grammar limitations; §12.9 driver defaults bug; §12.8 root-side wrapper-cell scan fix); §9.2's erroneous out-of-scope claim is corrected).** If a case remains not-proven, close research with the exact cause and one useful next step; do not lower a requirement, fabricate success or freeze all independent work. Production canonical remains shell with its existing instructions until the human adopts a subsequent change. MCP results remain untouched.
 - [x] **DONE (recorded in §11.3/§7.6 and the commit messages; see verification below).** Verify artifact changes proportionately:
 
 ```bash
