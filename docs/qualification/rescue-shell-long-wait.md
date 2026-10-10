@@ -508,7 +508,8 @@ unregistered at the pin.
 **Zero outer re-entries: one long observation through process exit instead of the baseline cadence.**
 The candidate invocation is **QUALIFIED** for this observed named route on installed 0.160.1.
 This is current-invocation completion and reduced re-entry evidence; cap propagation and repeatability
-remain `not-proven` (§7.3–§7.4).
+remain `not-proven` at that stage (§7.3–§7.4) — historical: R5 closed repeatability QUALIFIED and
+propagation POSITIVE-but-M-imprecise (§7.7/§10).
 
 Record: [Case B](/tmp/shell-wait-t4-rescue-long.TNpWiR/rescue-long.record.json).
 Executed `rescue-long --cap-ms 3600000 --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000`
@@ -619,6 +620,10 @@ bounded-but-imprecise and the raised-cap discriminator is POSITIVE-but-M-impreci
 
 ### 7.4 Repeat outcome (`not-proven`)
 
+> **Historical record:** this section adjudicates the Task 4-era attempts on installed 0.160.1. Repeat
+> was subsequently closed **QUALIFIED** at R5 on distinct Children (§7.7, §10, §11.1); §11.1 carries
+> the current mapping.
+
 The recorded failure outcomes are `installed-observed`; repeat qualification remains `not-proven`.
 Both attempts requested `rescue-repeat --cap-ms 3600000 --worker-duration-ms 420000 --poll-ms 3600000
 --budget-ms 1200000` at source `7edb8adb1781404301f0a29bcc3bd7de6ab45972` with fresh outputs.
@@ -652,6 +657,11 @@ raised run on a distinct Child — §7.7. The two 0.160.1 attempts above remain 
 | Q1 effective Child configuration | **`not-proven`**: fixture cap key verified, Child observation ceiling at least 386.6 s (`installed-observed`), but M missing; propagation cannot be distinguished from unknown installed default |
 | Q2 effective Child instructions | **`installed-observed`**, named-route invocation only: candidate long empty-poll request yields one 386.6-s observation; current instruction control yields 15 continuations. **`fixture-tested`**: named/generic artifact paragraph synchronization. Generic installed behavior and universal directive support remain **`not-proven`** |
 | Q3 cadence and repeat | **`installed-observed`**: Case A 15 outer returns/23 Child calls/7 Root joins; Case B 0/2/1. **`not-proven`**: comparable repeat, per-token savings and reproducibility beyond this invocation |
+
+R5 and the inherited-contract re-recordings (§8.5) superseded rows S1/S3/Q1/Q3 above: the production
+mismatch/one-shot/result/choice/error suites were re-recorded (§8.5); M/propagation are adjudicated per
+§7.7 and §10 (M bounded-but-imprecise, propagation POSITIVE-but-M-imprecise) and repeat closed QUALIFIED
+(§7.7); §11.1 is the current mapping.
 
 The host selected the named route wherever a route was established. Generic installed-route qualification
 remains `not-proven`; there was no forced generic fallback. Structural paragraph parity is only
@@ -1013,6 +1023,16 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   source pins recorded per run in §7/§8/§9/§7.7; the R5 records additionally carry the working-tree
   observer digest per record (§12.5). Scratch files `task_plan.md`/`findings.md`/`progress.md` remained
   untracked throughout.
+- **Current closure status (2026-10-10 document revision):** the R0–R5 work is committed as `60b9fc5`
+  ("fix: close the shell long-wait remediation review findings (R0-R5)"; the commit message records
+  442 shell-research tests) and pushed to PR #66. Review closure for the accumulated remediation tree:
+  a 30-round plain codex `review` loop — every finding in rounds 1–29 fixed test-first, round 30 zero
+  findings — plus the independent ZCode dual-axis review (spec acceptance ACCEPT / standards ACCEPT /
+  close-out CLOSE). Remote state fresh-verified 2026-10-10 via `gh`: PR #66 head `60b9fc5`, state
+  OPEN, MERGEABLE, all 6 checks pass (Actions run 37862214745) — CI runs the full routine and
+  marketplace suites on six platform/node combinations, covering the clean-tree check that had not
+  run at R5 close. The dated bullets below record the status at their own phases, not the current
+  state.
 - Gates: Tasks 1–3 closed at codex zero-findings (rounds 5 / 4 / 17). Tasks 4–7 artifacts were produced
   under a recorded double-quota deviation: both reviewer channels hit hard quota ceilings on
   2026-10-06/07, before the report commit. The platforms announced quota resets at 2026-10-08 23:22
@@ -1020,14 +1040,18 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   The Task 4 gate ran once (`needs-attention`, 3 findings) and all three were fixed with regressions
   at `074fb07`. The codex side recovered early via an account switch on 2026-10-07, and the catch-up
   review ran that day; the resulting per-fix gates are recorded in §12.4.
-- Amendment-phase review status: R0's corrections additionally passed the recorded codex-gate rounds
-  (§12.4); **ZCode self-reviews are recorded for R0–R4** (§12.5–§12.8 and progress), and **independent
-  codex backfill reviews for the R1–R3 phase gates (and R4/R5) remain pending** — they must run before
-  any merge.
-- Uncommitted work: **all R0–R4 instrument fixes (plus this R5 documentation amendment) are uncommitted
-  working-tree changes on top of `5026009`** — commit authorization has not been granted. The final
-  routine/marketplace clean-tree `npm test` check therefore did NOT run at R5 close; it needs either
-  commit authorization or the spec §2 park-and-restore method (used once before at `4352796`, below).
+- Amendment-phase review status (phase record; superseded clause updated inline): R0's corrections
+  additionally passed the recorded codex-gate rounds (§12.4); **ZCode self-reviews are recorded for
+  R0–R4** (§12.5–§12.8 and progress), and **independent codex backfill reviews for the R1–R3 phase
+  gates (and R4/R5) remained pending at that phase** — they later ran: the accumulated working tree
+  passed a 30-round plain codex `review` loop (all findings in rounds 1–29 fixed test-first; round 30
+  zero findings) plus the ZCode dual-axis review (ACCEPT/ACCEPT/CLOSE) before commit `60b9fc5`.
+- Uncommitted work (**historical status at the R5 documentation phase; superseded — see the Current
+  closure status bullet above**): **all R0–R4 instrument fixes (plus this R5 documentation amendment)
+  are uncommitted working-tree changes on top of `5026009`** — commit authorization has not been
+  granted. The final routine/marketplace clean-tree `npm test` check therefore did NOT run at R5
+  close; it needs either commit authorization or the spec §2 park-and-restore method (used once
+  before at `4352796`, below).
 - Historical final verification at `4352796` (tree fully committed — commits authorized by the user's PR
   requirement): `npm test` exit 0 with the routine suite at **3397 tests / 3394 pass / 0 fail / 3
   skipped** (the three skips are the inherited opt-in E2E guards, not win32) and the marketplace
@@ -1049,9 +1073,10 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   The R1 fix removed that preparation-grammar blocker; the R5 noise re-run failed on a DIFFERENT
   off-script shape (§7.7). Task 5 fixture pins and unavailable executing-observer
   revisions are separated in §8; Review/Status diagnostics remain ASSISTANT-REPORTED, renderer `not-proven`.
-- Human decisions open: commit authorization for the uncommitted R0–R5 work, PR merge, the §11.2
-  follow-up campaign (interrupt delivery, noise/background, Root commands, generic route), and any
-  eventual production adoption.
+- Human decisions open (updated 2026-10-10; commit authorization was granted and exercised — see the
+  Current closure status bullet above): PR #66 merge, the §11.2 follow-up campaign (per-poll M
+  re-measurement and the numeric discriminator, live interrupt delivery, noise/background, Root
+  commands, generic route), and any eventual production adoption.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 

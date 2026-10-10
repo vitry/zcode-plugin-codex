@@ -17,6 +17,14 @@ Resume with **R0–R5 below**, then close the remaining original task boxes. The
 unchanged. Historical successful observations remain valid within their recorded scope; no production
 rollout, commit, push, PR or merge is authorized by this amendment.
 
+**Status superseded (2026-10-10):** the R0–R5 remediation described below was EXECUTED and its final
+state is recorded here: instruments fixed and reviewed (30-round plain codex `review` loop converged at
+round 30 with zero findings, plus the ZCode dual-axis review ACCEPT/ACCEPT/CLOSE), the corrected R5
+trials adjudicated (M bounded-but-imprecise, propagation POSITIVE-but-M-imprecise, repeat QUALIFIED),
+and the work committed as `60b9fc5` and pushed to PR #66 — fresh-verified 2026-10-10 via `gh` (head
+`60b9fc5`, OPEN, MERGEABLE, 6/6 checks pass, run 37862214745). The R0–R5 boxes below are the executed
+ledger, not an execution instruction; commit/push/merge authority applies as recorded in each phase.
+
 ---
 
 ## Execution boundary
@@ -136,8 +144,9 @@ paths; existing-record remediation status is explicit, not silently claimed comp
   as such in historical records; never retroactively qualify the M + 30000 discriminator from it.
   (DONE R1: arithmetic retired from new records; `held.timeline` on the monotonic elapsed clock with
   `pollStartedAtElapsedMs`; `remainingLifetimeMs` = hold-deadline − measured poll start, basis
-  `hold-deadline-at-poll-start`, a conservative lower bound. R5 used exactly this basis to verify the
-  discriminator's precondition — §7.7.)
+  `hold-deadline-at-poll-start`, a conservative lower bound. R5 recorded timings on this basis; the
+  discriminator's precondition is NOT evaluated — M is bounded-but-imprecise and the earlier
+  verification is WITHDRAWN (2026-10-06 review; §7.7/§10).)
 
 **Exit:** the known legal preparation shape no longer blocks unrelated measurements, absent evidence is
 never zero, and new records can establish the discriminator's timing or explicitly state why not.
@@ -292,9 +301,14 @@ model prompting nor source existence alone guarantees delivery; no MCP/fork/seco
   an investigated missing surface remains a documented dependent limitation, not a fake interrupt run.
   Use one cause-directed follow-up at most per failed/inconclusive case; never retry model nonadherence
   until it disappears. No new statistical or universal-host qualification campaign.
-  (DONE R5 — ten trials, each run once (§7.7): **M = 85000 ms ESTABLISHED** (qualified, cap-limited,
-  unraised control) and **propagation POSITIVE** (fresh raised Case B 388300 ms ≈ 4.57× M, zero
-  re-entries, validity precondition 115000 ≤ 388169 verified); **repeat QUALIFIED** (second qualified
+  (DONE R5 — ten trials, each run once (§7.7; final adjudication set by the 2026-10-06 review):
+  the unraised control **QUALIFIED with M bounded-but-imprecise** — the cap-limited return is
+  observed (returned to the model with the 420000-ms worker still running, no other ender) but its
+  exact duration was not retained; the `decisiveWallMs: 85000` figure is the TERMINAL poll, not M,
+  so no numeric cap claim stands. **Propagation POSITIVE-but-M-imprecise** (fresh raised Case B one
+  388300-ms observation, zero re-entries, natural completion); the numeric ratio and the
+  `115000 ≤ 388169` validity-precondition verification are WITHDRAWN with the unattributable M
+  number. **repeat QUALIFIED** (second qualified
   388.3-s run on a distinct Child). `rescue-baseline`, `rescue-noise`, `background` and the R4-wired
   `rescue-interrupt` went OFF-SCRIPT before their measurements (`unsupported-call-shape`; R0 suppression
   held; interrupt intent recorded `requested: true`/family v2 with delivery null and the explicit
@@ -331,14 +345,19 @@ model prompting nor source existence alone guarantees delivery; no MCP/fork/seco
   production contract tests. Use Task 7's clean exact-source method for the final routine/marketplace check.
   Record actual failures/skips and exact tested revisions; do not infer live coverage from fixture tests.
   (DONE R5 at the uncommitted working tree: shell-research 293/293 exit 0, selection 6/6, lint, typecheck,
-  line endings and `git diff --check` clean. **The final routine/marketplace check did NOT run**: it needs
-  a clean tree, i.e. commit authorization or the spec §2 park-and-restore method — recorded in §11.3 as an
-  open human decision.)
-- [ ] Independently review the implemented corrections and spec coverage before declaring closure; use
+  line endings and `git diff --check` clean. **The final routine/marketplace check had not run at
+  that point** — it needs a clean tree (commit authorization or the spec §2 park-and-restore method;
+  recorded in §11.3 as an open human decision). Superseded: commit authorization was later granted
+  and exercised — the work is committed as `60b9fc5` (message records 442 shell-research tests) and
+  the full routine + marketplace suites run in PR #66 CI, fresh-verified 2026-10-10 via `gh` at head
+  `60b9fc5`: OPEN, MERGEABLE, 6/6 checks pass (run 37862214745).)
+- [x] Independently review the implemented corrections and spec coverage before declaring closure; use
   `code-review`'s separate axes. This plan authorizes that read-only review, not delegation of implementation
   or changes to production. Address findings and deliver an updated handoff for the human adoption decision.
-  (OPEN — not yet run for R5: the independent read-only review of the R5 trials, documentation and
-  instrument fixes is still pending at R5 documentation close; it must run before closure is declared.)
+  (CLOSED post-R5: the 30-round plain codex `review` loop over the accumulated R0–R5 working tree
+  converged at round 30 with zero findings (all findings in rounds 1–29 fixed test-first, ~61 P2s), plus
+  the independent ZCode dual-axis review — spec acceptance ACCEPT / standards ACCEPT / close-out CLOSE.
+  The reviewed work is committed as `60b9fc5` and pushed to PR #66.)
 
 **Exit:** the instrument omissions/privacy failure are corrected; each remaining research question has
 actual evidence or a precise investigated `not-proven` reason. A positive rollout recommendation still
@@ -473,7 +492,8 @@ Both used the regular installed `0.160.1` executable after the pipeline auto-upd
 Case A/B source pin is `7edb8adb1781404301f0a29bcc3bd7de6ab45972`.
 See report [§1 and §7](../../qualification/rescue-shell-long-wait.md) for the actual records,
 earlier Case 0 pins, exact call excerpts and evidence labels. The comparative A/B execution is complete;
-the separately recorded unraised cap remains `not-proven`.
+the separately recorded unraised cap remains `not-proven` (historical Task 4 wording; R5 later observed
+the cap-limited return — M bounded-but-imprecise, report §7.7/§10).
 
 Expected baseline is an observation, not an assumed 31-second return. Record what this actual Child did; cap configuration alone is not improvement proof.
 
@@ -484,14 +504,22 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
   --output "$shell_case_output" --worker-duration-ms 420000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 720000
 ```
 
-- [x] Verify actual native Child parent/thread/path linkage and production preparation/binding admission; one Companion launch and one fake session/send; exact original process handle; actual directive/inner yield; terminal exit and byte-for-byte sentinel; no routine progress relay to Root. The cap-discrimination poll must begin with at least measured unraised/default configuration cap + 30000 ms remaining. A short run, gate released too soon or slow model leaving too little lifetime is inconclusive for that claim; an unestablished default cap must not be guessed from an unmatched source snapshot.
-  (CLOSED at R5, 2026-10-08, installed 0.161.0: Case B fresh qualified — named route, launch 1/send 1, original handle, terminal exit 0, sentinel in linked output; M = 85000 ms established by the unraised control (cap-limited per §6.2, worker held); the validity precondition holds — 85000 + 30000 = 115000 ≤ 388169 ms measured poll-start remaining lifetime (basis hold-deadline-at-poll-start, conservative lower bound); propagation POSITIVE. Report §7.7.)
+- [ ] **PARTIAL (corrected by the 2026-10-06 review; the earlier R5 closure rested on withdrawn numbers).** Verify actual native Child parent/thread/path linkage and production preparation/binding admission; one Companion launch and one fake session/send; exact original process handle; actual directive/inner yield; terminal exit and byte-for-byte sentinel; no routine progress relay to Root. The cap-discrimination poll must begin with at least measured unraised/default configuration cap + 30000 ms remaining. A short run, gate released too soon or slow model leaving too little lifetime is inconclusive for that claim; an unestablished default cap must not be guessed from an unmatched source snapshot.
+  (PARTIAL as of the 2026-10-06 review's M correction, measured at R5 2026-10-08, installed 0.161.0:
+  the linkage pieces are qualified — named route, launch 1/send 1, original handle, terminal exit 0,
+  sentinel in linked output (§7.7); but M is bounded-but-imprecise (the 85000 figure is the terminal
+  poll, not the cap-return duration), so the cap-discrimination precondition (measured cap + 30000 ms
+  remaining) is NOT evaluated and the earlier `85000 + 30000 = 115000 ≤ 388169` verification is
+  WITHDRAWN. The discriminator subcase reopens until M is re-measured with the per-poll-timing
+  instrument (report §12.8). Report §7.7/§10.)
 
-**Closed at R5 (verification/discriminator):** Case B fresh and `rescue-repeat` qualify named-route
-linkage, one launch/send, original handle, terminal exit and the sentinel; M and the M + 30000
-poll-start condition are established on 0.161.0 (§7.7). Case A's Task 4 completion-linkage limitation
-remains historical, and its R5 raised re-run also ended inconclusive (`unsupported-call-shape`, recorded
-as found). Routine progress-relay absence is still not established by retained call excerpts.
+**R5 verification/discriminator record (corrected by the 2026-10-06 review — the cap-discrimination
+item above is PARTIAL):** Case B fresh and `rescue-repeat` qualify named-route linkage, one
+launch/send, original handle, terminal exit and the sentinel; M is bounded-but-imprecise and the
+M + 30000 poll-start condition is NOT established (2026-10-06 review correction; §7.7/§10). Case A's
+Task 4 completion-linkage limitation remains historical, and its R5 raised re-run also ended
+inconclusive (`unsupported-call-shape`, recorded as found). Routine progress-relay absence is still
+not established by retained call excerpts.
 
 - [x] Run `rescue-repeat` once with the same candidate flags and a fresh output. Do not retry model nonadherence out of the record. Compare outer re-entry counts over comparable remaining work intervals; separately report Root native child joins. One long held observation has no intervening model return; whole-operation decisions need not be zero. Do not claim token savings without actual token measurements.
   (CLOSED at R5, 2026-10-08: `rescue-repeat` qualified — 388300 ms, 0 outer returns, `rootJoins: 7`, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence. Report §7.7.)
@@ -516,7 +544,10 @@ two macOS process-inspection `spawn EPERM`), not host-behavior rejection. Report
 **Exit (partial):** Q1 configuration propagation and M are `not-proven`; Q2 named candidate behavior is
 `installed-observed`; Q3 cadence is `installed-observed` (A 15 outer returns vs B 0), repeat `not-proven`.
 Report §7.5 fills the Task 4-owned S1/S2/S3 partial and Q1/Q2/Q3 coverage rows; full Task 7 coverage and
-Task 5/6 work remain open. Child completion proves only the current invocation, not automatic production release.
+Task 5/6 work remain open. Child completion proves only the current invocation, not automatic production
+release. (Historical Task 4 Exit wording; R5 updated the labels: propagation POSITIVE-but-M-imprecise,
+M bounded-but-imprecise, repeat QUALIFIED — current adjudication in report §7.7/§10 and the Task 7
+mapping.)
 
 ## Task 5: Preserve lifecycle, results, placement and Status sidecar semantics
 
@@ -563,25 +594,29 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" node tools/shell-wait-
 
 **Files:** Report; plan progress boxes; no production edits.
 
-- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase (2026-10-08): report §11.1 is the authoritative filled mapping and now carries the R5 evidence labels (M/propagation/repeat closed positive on 0.161.0; interrupt delivery, noise/background, Root commands and the generic route `not-proven` with recorded causes).** Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
+- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase (2026-10-08): report §11.1 is the authoritative filled mapping and now carries the R5 evidence labels (propagation POSITIVE-but-M-imprecise and repeat QUALIFIED on 0.161.0 with M bounded-but-imprecise (labels finalized by the 2026-10-06 review); interrupt delivery, noise/background, Root commands and the generic route `not-proven` with recorded causes).** Fill this coverage mapping with evidence labels and the actual retained command/case links. Do not leave missing evidence silently marked passed:
+
+*(Task 4-era snapshot rows kept for the record; the authoritative current mapping is REPORT §11.1.
+Updated in 2026-10-10: production mismatch/one-shot/result/choice/error regression suites were
+re-recorded via report §8.5 and the inherited-contract runs are DONE — see the rows below.)*
 
 | Spec item | Task and evidence |
 | --- | --- |
-| S1 preparation/binding authority | **Partial**: Tasks 1/3/4; Task 4 `installed-observed` Case B production linkage/one launch/send, §12 `fixture-tested` negatives. Full production mismatch/one-shot regression coverage still open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
+| S1 preparation/binding authority | **Partial**: Tasks 1/3/4; Task 4 `installed-observed` Case B production linkage/one launch/send, §12 `fixture-tested` negatives. Production mismatch/one-shot regression coverage re-recorded (report §8.5, inherited contract suites); [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
 | S2 original-handle/outer-cell ownership | **Partial**: Task 4 `installed-observed` Case B exact original handle and settled long observation; §12 `fixture-tested` negatives. Case A completion linkage `not-proven` (instrument); Task 5 open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
-| S3 exact public/terminal/control outcomes | **Partial**: Task 4 `installed-observed` Case B terminal/host exit 0 and byte-exact sentinel in linked output; §12 `fixture-tested` sentinel negatives. Tasks 5/6 choice/error/command checks remain open; [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
+| S3 exact public/terminal/control outcomes | **Partial**: Task 4 `installed-observed` Case B terminal/host exit 0 and byte-exact sentinel in linked output; §12 `fixture-tested` sentinel negatives. Task 5 production result/choice/error suites re-recorded (report §8.5); installed Root-command qualification remains `not-proven` (report §9.4/§10); [report §7.5](../../qualification/rescue-shell-long-wait.md#75-task-4-coverage-partial-report-closure-task-7-mapping) |
 | S4 placement/background/Status observation-only | 5, 6; one short installed background case and current matrix/Status tests |
 | S5 interruption/loss/timeouts/ceiling | 5, 6; actual native delivery separated from controlled tests and cleanup |
 | S6 named/generic parity and no fallback weakening | 1, 3, 4; actual route plus structural parity and explicit unavailable labels |
 | S7 isolation/no production changes | 2, 3, 7; suite selection, installed-fixture cleanup and final diff |
-| Q1 effective Child configuration | Tasks 1/3/4: **`not-proven`** propagation/M; `installed-observed` ≥386.6-s ceiling is insufficient for causality; [report §7.3](../../qualification/rescue-shell-long-wait.md#73-case-0-unraised-child-cap-m-not-established-not-proven) |
+| Q1 effective Child configuration | Tasks 1/3/4 historical `not-proven` (§7.3, link below); R5: propagation **POSITIVE-but-M-imprecise** and M **BOUNDED-BUT-IMPRECISE** (`installed-observed` 0.161.0, §7.7) — the cap-limited return is observed but its exact duration was not retained, so the numeric discriminator and the M + 30000 precondition remain open pending per-poll re-measurement (report §12.8/§10); [report §7.3 (historical)](../../qualification/rescue-shell-long-wait.md#73-case-0-unraised-child-cap-m-not-established-not-proven) |
 | Q2 effective Child instructions | Task 4: **`installed-observed`**, named candidate invocation only; directive-led long request, 0 outer returns vs baseline 15. Generic remains `not-proven`; artifact parity `fixture-tested`; [report §7.1–§7.2](../../qualification/rescue-shell-long-wait.md#71-case-b-qualified-named-route-long-observation-installed-observed) |
-| Q3 cadence and repeat | Task 4: **`installed-observed`** A/B outer returns 15/0, Child calls 23/2, Root joins 7/1; repeat **`not-proven`** with both attempts retained; [report §7.4](../../qualification/rescue-shell-long-wait.md#74-repeat-outcome-not-proven) |
+| Q3 cadence and repeat | Task 4: **`installed-observed`** A/B outer returns 15/0, Child calls 23/2, Root joins 7/1; Task 4-era repeat attempts `not-proven` (report §7.4, historical, link below); R5 closed **repeat QUALIFIED** (fresh Case B + `rescue-repeat` on distinct Children, both 388.3 s, zero outer re-entries, natural exit, §7.7); [report §7.4 (historical)](../../qualification/rescue-shell-long-wait.md#74-repeat-outcome-not-proven) |
 | Q4 noise/native interruption/sidecar latency | 5 |
 | Q5 other waiting commands | 6 |
 | Q6 version scope and smallest adoption delta | 7 |
 
-- [x] **DONE (report §11.2 — scoped follow-up campaign; no production rollout recommended because repeat/interruption/M remain not-proven).** Propose a precise minimal adoption delta only for qualified surfaces: configuration location supported by the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup/upgrade guidance, and known version/latency limitations. Do not promote an unseen Role-field propagation path or claim a wrapper pragma is universal. Separate demonstrated improvement from release-blocking compatibility findings and optional human usability evaluation.
+- [x] **DONE (report §11.2 — scoped follow-up campaign; research-only delivery, no production rollout recommended: the precise M/discriminator, native interruption/settlement, noise/background, Root commands and the generic route remain not-proven; repeat is qualified and propagation is positive-in-shape but M-imprecise).** Propose a precise minimal adoption delta only for qualified surfaces: configuration location supported by the actual Child/Root trace, compatible instruction form, named/generic synchronization, setup/upgrade guidance, and known version/latency limitations. Do not promote an unseen Role-field propagation path or claim a wrapper pragma is universal. Separate demonstrated improvement from release-blocking compatibility findings and optional human usability evaluation.
 - [x] **REOPENED for R5 — CLOSED at the R5 documentation phase: the distinction is recorded throughout (§12.9 separates the driver defaults bug — an instrument defect found and fixed during R5 — from measured host limitations; §7.7/§9.4 record the off-script runs as model behavior, never host rejection; §9.2's erroneous out-of-scope claim is corrected).** If a case remains not-proven, close research with the exact cause and one useful next step; do not lower a requirement, fabricate success or freeze all independent work. Production canonical remains shell with its existing instructions until the human adopts a subsequent change. MCP results remain untouched.
 - [x] **DONE (recorded in §11.3/§7.6 and the commit messages; see verification below).** Verify artifact changes proportionately:
 
@@ -598,7 +633,7 @@ git diff --stat
 
 Expected: no failures in changed instrument/selection checks; no production Skills/Role/Companion/config/packaging changes. Also inspect newly created untracked files, which ordinary `git diff` omits. Record real skips and observed failures rather than calling mocks live qualification.
 - [x] **DONE — see the recorded run in §11.3 (clean-source method documented).** For the final routine/marketplace check, use a clean exact source containing the changes **only if commits are separately authorized**, or the existing builder's explicit snapshot inputs/owned isolated clean staging. Do not temporarily hide implementation source needed by the test, commit without authority, or mislabel an old baseline as current verification. Record the exact method and run `npm test` once when appropriate; do not re-enter the previous huge MCP research suite.
-- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase: report §11.3 is the updated handoff — R0–R5 work is uncommitted pending commit authorization; ZCode self-reviews done for R0–R4 with codex backfill reviews pending for the R1–R3 phase gates; the clean-tree routine/marketplace check awaits commit authorization or the spec §2 park-and-restore method; ten R5 records plus eight trialless invocation-artifact directories; open human decisions enumerated.** Write a concise execution handoff linking this report/spec/plan, completed task boxes, actual probe commands, unresolved prerequisites and proposed production file scope. Human review decides whether to commission the subsequent production change; do not automatically ship it.
+- [x] **REOPENED for R5 — CLOSED at the R5 documentation phase — the phase wording is preserved in report §11.3 as a historical record: at that phase R0–R5 work was uncommitted pending commit authorization, backfill reviews were pending, and the clean-tree check awaited commit authorization; ten R5 records plus eight trialless invocation-artifact directories; open human decisions enumerated. Superseded 2026-10-08/10: commit authorization was granted and exercised — the work is committed as `60b9fc5` and pushed to PR #66; the backfill closure ran as the 30-round plain codex `review` loop, converging at round 30 with zero findings, alongside the ZCode dual-axis review (ACCEPT/ACCEPT/CLOSE); PR #66 fresh-verified 2026-10-10 via `gh`: head `60b9fc5`, OPEN, MERGEABLE, 6/6 checks pass (run 37862214745). Current open human decisions: PR merge, the §11.2 campaign, production adoption.** Write a concise execution handoff linking this report/spec/plan, completed task boxes, actual probe commands, unresolved prerequisites and proposed production file scope. Human review decides whether to commission the subsequent production change; do not automatically ship it.
 
 **Exit:** finite completed qualification artifacts, honest evidence coverage and a concrete human decision. No production rollout is implied.
 
@@ -618,3 +653,8 @@ Expected: no failures in changed instrument/selection checks; no production Skil
   authority. The current request authorizes this plan correction and a temporary handoff only. The next
   agent should execute the research correction after the user delegates it, preserving the three untracked
   scratch files; commit/push/PR/merge and production rollout still require separate authority.
+- **Superseded (2026-10-10):** the bullets above are dated phase records. Remediation R0–R5 was
+  subsequently executed; the accumulated working tree was committed as `60b9fc5` with user commit
+  authorization and pushed to PR #66, and the review closures are recorded in the report §11.3 Current
+  closure status. An agent reading this plan should NOT re-execute the R0–R5 remediation; the remaining
+  human decisions are PR merge, the report §11.2 follow-up campaign, and any production adoption.
