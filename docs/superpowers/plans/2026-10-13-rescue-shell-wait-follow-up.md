@@ -272,12 +272,53 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
 
 **Files:** Existing Root-family case specs/observer, `validateStatusWaitFlow`, renderer fixture/test seams; report Q5.
 
-- [ ] Review: trace the concrete early host exit with redacted bounded evidence. Keep Root placement and the real `invoke review` entry; no Rescue-shaped replacement or invented new process.
-- [ ] Adversarial Review: compare the production renderer's actual contract with the fake peer payload and linked bytes. A fixture marker mismatch can be an instrument/dependency mismatch; test the correct framing with existing renderer contracts before changing a probe marker. Never remove exact terminal/exit checks or change production output to manufacture qualification.
-- [ ] Status: use the existing two-turn owner-session flow. Turn 1 launches `review --background`; turn 2 uses ONLY the actually observed reserved job id in that SAME session, with an explicit Status query timeout. No pre-reserved foreign-owner job, guessed id, assistant-reported result or unrelated final reply substitutes for the acknowledgement/linked command.
-- [ ] Run `review-wait` and `adversarial-review-wait` separately with the existing CLI, each using fresh output, `--worker-duration-ms 130000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 600000`. Run `status-wait` separately with those flags plus `--status-query-timeout-ms 120000`. Record per-case verdicts, natural completion OR the production timeout envelope, and original process termination. Confirm Status's timeout is not extended by the requested shell observation window.
-- [ ] Qualify Root Status observation cancellation separately from Child interruption: discover a supported native interaction owning that EXACT running Root observation, prove it ends while the selected job remains authorized/running and receives no stop/cancel intent. Do not call Root self-interrupt, target another agent, or assume SIGINT means observation-only cancellation. If no supported interaction is reachable, retain live cancellation `not-proven`; the existing AbortController wait-boundary test is instrument-level only.
-- [ ] Background Review/Adversarial stay enqueue-only. Re-run controlled timeout/ownership/result tests as relevant without modifying their expectations. Do not infer these commands' qualification from generic Root shell support or one successful command.
+- [x] Review: trace the concrete early host exit with redacted bounded evidence. Keep Root placement and the real `invoke review` entry; no Rescue-shaped replacement or invented new process.
+  Executed 2026-10-13 on the unchanged 0.162.1 pin (§13.7 run 1): the R5 early-exit shape is CONFIRMED
+  and traced — exactly one observed companion launch (`invoke review`, initial 30000-ms yield),
+  `companionSendCount: 0` (the review turn was never sent, so the gate-held observation never
+  existed), no poll ever, host result at 15214 ms exit 0, a 170-char withheld final message,
+  `endedBeforeGate: true`/cleanup `early-exit` — long-wait qualification `not-proven` with the cause
+  recorded; why the command sent nothing is not adjudicable from retained facts (production-scope);
+  the follow-up was NOT consumed.
+- [x] Adversarial Review: compare the production renderer's actual contract with the fake peer payload and linked bytes. A fixture marker mismatch can be an instrument/dependency mismatch; test the correct framing with existing renderer contracts before changing a probe marker. Never remove exact terminal/exit checks or change production output to manufacture qualification.
+  Executed 2026-10-13 (§13.7): the comparison DEMONSTRATED the probe-side instrument/dependency
+  mismatch — the production review pipeline renders only the schema-validated structured findings
+  document (`extractFinalResult` → `renderOutput`; verified by executing the real production modules
+  against the fake peer's `{findings: []}` payload), so the sentinel marker was unsatisfiable by
+  construction and R5's miss is fully explained. Corrected RED→GREEN in the owning probe spec only
+  (resultMarkers → the rendered findings-document line; 3 RED failures for the expected reason,
+  451/451 GREEN); no terminal/exit check moved; no production output changed.
+- [x] Status: use the existing two-turn owner-session flow. Turn 1 launches `review --background`; turn 2 uses ONLY the actually observed reserved job id in that SAME session, with an explicit Status query timeout. No pre-reserved foreign-owner job, guessed id, assistant-reported result or unrelated final reply substitutes for the acknowledgement/linked command.
+  Executed 2026-10-13 (§13.7 run 3): `validateStatusWaitFlow` returned `valid: true` — exactly one
+  distinct reserved job id extracted from observed tool outputs in the launch session, turn 2 resumed
+  the SAME session with the invocation built only from the observed id
+  (`$zcode:status <id> --wait --timeout-ms 120000`), exact id match on the queried side; the fixture
+  reserved no foreign-owner job (`statusJob: null`).
+- [x] Run `review-wait` and `adversarial-review-wait` separately with the existing CLI, each using fresh output, `--worker-duration-ms 130000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 600000`. Run `status-wait` separately with those flags plus `--status-query-timeout-ms 120000`. Record per-case verdicts, natural completion OR the production timeout envelope, and original process termination. Confirm Status's timeout is not extended by the requested shell observation window.
+  Executed 2026-10-13, one run each on the unchanged 0.162.1 pin, re-pinned before EVERY run, driver
+  exit 0, cleanup complete in all three (§13.7): `review-wait` — inconclusive, early host exit at
+  15214 ms (host exit 0), `not-proven` (above). `adversarial-review-wait` — QUALIFIED
+  (`inconclusive: null`): exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll,
+  `processExit` 0, the corrected production-contract marker matched, natural completion at the hold
+  gate, NO process termination. `status-wait` — QUALIFIED (`inconclusive: null`): the production
+  120000-ms query deadline fired UN-EXTENDED (exit 1 with the confirmed JOB_WAIT_TIMEOUT framing
+  matched; one 87500-ms poll against the requested 3600000-ms window; `requestedPollMs` and
+  `requestedStatusQueryTimeoutMs` separate record fields), natural completion through the hold gate,
+  no termination. Retention-only diagnostic gate carried on all three (zero behavioral delta, §13.6
+  precedent); no unclassified cell blocked any of the three runs.
+- [x] Qualify Root Status observation cancellation separately from Child interruption: discover a supported native interaction owning that EXACT running Root observation, prove it ends while the selected job remains authorized/running and receives no stop/cancel intent. Do not call Root self-interrupt, target another agent, or assume SIGINT means observation-only cancellation. If no supported interaction is reachable, retain live cancellation `not-proven`; the existing AbortController wait-boundary test is instrument-level only.
+  Executed 2026-10-13 as a source survey plus the run's own facts (§13.7): NO supported interaction
+  is reachable — `interrupt_spawned_agent` rejects root and self targets at source `67727e7c` and its
+  registry is per-process, the app-server `turn/interrupt` stays excluded by rule, SIGINT is never
+  assumed observation-only, and the run recorded `interrupt.callCount: 0`. Live cancellation is
+  retained `not-proven` with this precise cause; the AbortController wait-boundary regression stays
+  instrument-level. The cancellation subcase does not reduce status-wait's flow qualification.
+- [x] Background Review/Adversarial stay enqueue-only. Re-run controlled timeout/ownership/result tests as relevant without modifying their expectations. Do not infer these commands' qualification from generic Root shell support or one successful command.
+  Executed 2026-10-13 (§13.7): no live background run was launched for either command; the
+  controlled tests re-ran with expectations unmodified — full shell-wait suite 451/451 (including the
+  R3 status-wait owned-job/query-deadline and background enqueue-only sections), focused
+  R3/background selections 18/18, `tests/test-selection.test.mjs` 6/6. Each Root command carries its
+  own verdict; none is inferred from another's run or from generic Root shell support.
 
 **Exit:** each real Root command has a bounded, owned, command-specific conclusion; failure of one does not disqualify or qualify the others.
 

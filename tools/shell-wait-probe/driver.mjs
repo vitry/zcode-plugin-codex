@@ -1357,15 +1357,27 @@ export const SHELL_WAIT_CASE_SPECS = Object.freeze({
     family: 'root',
     companionCommand: 'invoke review',
     prompt: 'Use the installed $zcode:review --wait skill exactly once now. Wait for the review to complete and return only its final public output.',
-    resultMarkers: [PUBLIC_RESULT_SENTINEL],
-    resultCheckLabel: 'narrower check: the rendered review output presents the companion result verbatim, and the linked terminal output carries the fake peer\'s final public result sentinel; full rendered-output equality is not claimed',
+    // The production review contract renders the SCHEMA-VALIDATED structured
+    // findings document (scripts/lib/review.mjs extractFinalResult →
+    // JSON.stringify(structured, null, 2); render.mjs renderOutput prints
+    // `${result}\n` for the `{ job, result }` invoke output) — never the raw
+    // fake-peer text, so the Rescue sentinel is unsatisfiable here (the R5
+    // rendered-marker miss was this instrument/dependency mismatch). The
+    // marker below is the rendered empty-findings document line, derived from
+    // the real production modules applied to the fake peer's structured
+    // payload (pinned by the root-family observer-contract regression).
+    resultMarkers: ['"findings": []'],
+    resultCheckLabel: 'narrower check: the rendered review output presents the production review contract\'s result — the schema-validated structured findings document extracted by the companion review pipeline (the raw peer text is never the rendered review result) — and the linked terminal output carries that rendered document; full rendered-output equality is not claimed',
   },
   'adversarial-review-wait': {
     family: 'root',
     companionCommand: 'invoke adversarial-review',
     prompt: 'Use the installed $zcode:adversarial-review --wait skill exactly once now. Wait for the review to complete and return only its final public output.',
-    resultMarkers: [PUBLIC_RESULT_SENTINEL],
-    resultCheckLabel: 'narrower check: the rendered adversarial-review output presents the companion result verbatim, and the linked terminal output carries the fake peer\'s final public result sentinel; full rendered-output equality is not claimed',
+    // The SAME production contract as review (the adversarial-review command
+    // shares the findings-schema extraction branch); the same correction and
+    // its regression apply verbatim.
+    resultMarkers: ['"findings": []'],
+    resultCheckLabel: 'narrower check: the rendered adversarial-review output presents the production review contract\'s result — the schema-validated structured findings document extracted by the companion review pipeline (the raw peer text is never the rendered review result) — and the linked terminal output carries that rendered document; full rendered-output equality is not claimed',
   },
   'status-wait': {
     family: 'root',

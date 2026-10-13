@@ -2358,15 +2358,34 @@ if (process.env[selfTestGuard] === '1') {
     // The command-specific rendered success results, built here from the real
     // renderers' documented output shapes (scripts/lib/render.mjs renderOutput/
     // renderJob), NOT from the observer under test:
-    //  - review/adversarial-review: renderOutput returns `${value.result}\n…`
-    //    — the stored final result presented verbatim. Under the fixture the
-    //    fake peer's final public result is the documented sentinel, so the
-    //    rendered review output carries that sentinel (a NARROWER check; full
-    //    rendered-output equality is not claimed).
+    //  - review/adversarial-review: the companion's review pipeline
+    //    (scripts/lib/review.mjs extractFinalResult) validates the final
+    //    assistant turn against the findings schema and returns ONLY the
+    //    structured document (`JSON.stringify(structured, null, 2)`); the
+    //    invoke output is `{ job, result }` and renderOutput prints
+    //    `${result}\n`. The fake peer's structured review payload is
+    //    `{ findings: [] }` (tests/fixtures/fake-zcode-cli.mjs), so the
+    //    production-rendered review output is that document — the raw gate
+    //    text is never the rendered review result. The markers below are
+    //    derived from the REAL production modules applied to the fake peer's
+    //    payload (a NARROWER check; full rendered-output equality is not
+    //    claimed).
     //  - status: a single-job status view is renderJob's fixed field lines —
     //    `Job: `, `Command: `, `Status: `, … `Progress:` (also narrower).
     const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
-    const REVIEW_MARKERS = [SENTINEL];
+    const { extractFinalResult } = await import('../scripts/lib/review.mjs');
+    const { renderOutput } = await import('../scripts/lib/render.mjs');
+    const fakePeerReviewSnapshot = {
+      messages: [
+        { info: { messageId: 'message-user-current', sessionId: 'fake-session', role: 'user' }, parts: [{ type: 'text', text: 'hello' }] },
+        { info: { messageId: 'message-assistant-current', sessionId: 'fake-session', role: 'assistant', structured: { findings: [] } }, parts: [{ type: 'text', text: SENTINEL }] },
+      ],
+    };
+    const renderedReviewOutput = renderOutput({
+      job: { id: 'aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee', command: 'review', status: 'succeeded' },
+      result: extractFinalResult(fakePeerReviewSnapshot, 'review', {}),
+    });
+    const REVIEW_MARKERS = ['"findings": []'];
     const STATUS_JOB_ID = 'aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee';
     const renderedStatusOutput = [
       `Job: ${STATUS_JOB_ID}`,
@@ -2383,8 +2402,8 @@ if (process.env[selfTestGuard] === '1') {
     ].join('\n') + '\n';
     const STATUS_MARKERS = ['Job: ', 'Command: ', 'Status: ', 'Progress:'];
     const CASE_CONTRACTS = {
-      'review-wait': { command: REVIEW_COMMAND, terminalOutput: `${SENTINEL}\n`, markers: REVIEW_MARKERS, outerReturns: 1 },
-      'adversarial-review-wait': { command: ADVERSARIAL_REVIEW_COMMAND, terminalOutput: `${SENTINEL}\n`, markers: REVIEW_MARKERS, outerReturns: 1 },
+      'review-wait': { command: REVIEW_COMMAND, terminalOutput: renderedReviewOutput, markers: REVIEW_MARKERS, outerReturns: 1 },
+      'adversarial-review-wait': { command: ADVERSARIAL_REVIEW_COMMAND, terminalOutput: renderedReviewOutput, markers: REVIEW_MARKERS, outerReturns: 1 },
       'status-wait': { command: STATUS_COMMAND, terminalOutput: renderedStatusOutput, markers: STATUS_MARKERS, outerReturns: 2 },
     };
 
@@ -2673,6 +2692,28 @@ if (process.env[selfTestGuard] === '1') {
       // The Rescue family keeps its own contract unchanged.
       assert.equal(SHELL_WAIT_CASE_SPECS['rescue-long'].family, 'rescue');
       assert.equal(SHELL_WAIT_CASE_SPECS['rescue-long'].companionCommand, undefined);
+    });
+
+    test('review/adversarial-review markers follow the production renderer contract: the schema-validated findings render, never the fake-peer gate text', () => {
+      // The R5 adversarial-review run completed the whole flow (launch/send/
+      // 98.1-s observation/exit 0) and failed ONLY the marker check: the probe
+      // pinned the Rescue fake-peer sentinel, but the production review
+      // pipeline never renders the raw peer text — extractFinalResult validates
+      // the final turn against the findings schema and renders ONLY the
+      // structured document, and renderOutput prints `${result}\n` for the
+      // `{ job, result }` invoke output. The expected bytes here come from the
+      // REAL production modules applied to the fake peer's review payload (the
+      // section's renderedReviewOutput builder), an independent source of
+      // truth — never from the observer under test.
+      assert.equal(renderedReviewOutput.includes(SENTINEL), false, 'the production review render never carries the fake-peer gate text');
+      assert.match(renderedReviewOutput, /"findings": \[\]/u);
+      for (const label of ['review-wait', 'adversarial-review-wait']) {
+        const markers = SHELL_WAIT_CASE_SPECS[label].resultMarkers ?? [];
+        assert.ok(markers.length > 0, `${label} binds command-specific rendered result markers`);
+        for (const marker of markers) {
+          assert.equal(renderedReviewOutput.includes(marker), true, `${label} marker ${JSON.stringify(marker)} must appear in the production-rendered review output`);
+        }
+      }
     });
 
     test('the live evidence request selects the Root contract for root-family cases and the Rescue sentinel for Rescue cases', () => {

@@ -972,7 +972,7 @@ useful next step for each is recorded in §10 and §11.2.
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan. **2026-10-13 Task 3 run on 0.162.1 (§13.5): that one retry executed and again ended inconclusive — but the model DID emit exactly ONE V2 `interrupt_agent` interaction whose tool response success-decoded to the ACTIVE `previous_status: "running"`, the first run with a parsed AND counted V2 interrupt interaction (`callCount: 1`, target-shape facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (the R5 record had already retained a parsed interaction with the same active `previous_status` and `family: "v2"`, §7.7, but under the since-corrected unanchored grammar — §7.7's retained R5 row lists no count or target facts, and its case failed the whole-case scan); the call's target was suppressed (23 chars, neither id-shaped nor the fixture marker) and the ordering never bound (the case evidence failed fail-closed on the same unclassified `exec_command`-cell family, new 3-line/314-B shape), so exact-target delivery, pending-window ordering, settlement and every production layer stay `not-proven` on this pin** | On 0.162.1 the one run and its cause-directed follow-up decision are consumed/recorded (§13.5); the remaining step on this pin is the narrow unclassified-cell adjudication (§13.4's blocking prerequisite, reserved to Task 4's allowance) before any further interrupt measurement; the 0.160.1/0.161.0 records keep their own scope |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
 | Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence. **2026-10-13 Task 4 on 0.162.1 (§13.6): both cases ran exactly once each behind the plan's new bounded structural diagnostic — both again inconclusive `unsupported-call-shape`, but the family is now SHAPE-ADJUDICATED** (noise: a single-content-line `write_stdin`-headed script statement, 387 B, failing both pinned grammars — a variant outside them, defect and nonadherence both non-demonstrable, fingerprint `38c33f61…`; background: a 4-statement cell whose leading statements reference no observational tool, 583 B, fingerprint `a9d65bb2…`, Root host result at 46384 ms with the Child-settlement watch running the full budget to a 600010-ms budget-cleanup termination, never labelled interruption). Noise checks, noise and background placement stay `not-proven` on this pin; the sidecar structural policy re-verified 162/162 + 76/76 while installed sidecar latency stays `not-proven` (no qualified pending observation existed to steer) | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell family is adjudicated to the retention design's limit (§13.6): further measurement needs content-level evidence (a privacy-authority decision outside the plan's authority) or a host/form change — no parser expansion. Budget/failure cleanup is never native user interruption |
-| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). Root commands remain `not-proven`, each with its own recorded outcome | Per-command cause-directed follow-ups: review-wait needs the host to survive its held boundary; adversarial-review-wait needs the renderer-marker contract re-examined against the actual rendered bytes (the flow itself completed); status-wait needs a live run whose turn-1 launch acknowledgement is actually emitted and observable; the instrument is no longer the blocker (§12.6, §12.9) |
+| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). **2026-10-13 Task 5 on 0.162.1 (§13.7), one run each behind the corrected production-contract marker: `adversarial-review-wait` QUALIFIED (`inconclusive: null` — exact Root linkage, launch 1/send 1, one 97800-ms poll on the original handle, `processExit` 0, the rendered findings-document marker matched, natural completion, no termination; the R5 miss was a demonstrated probe-side instrument/dependency mismatch — the review pipeline renders only the schema-validated findings document, never the sentinel — corrected RED→GREEN in the probe spec only); `status-wait` QUALIFIED (`inconclusive: null` — `validateStatusWaitFlow` `valid: true` on the in-session owned acknowledgement → exact-id query in the SAME session, the production 120000-ms query deadline fired un-extended (exit 1, JOB_WAIT_TIMEOUT framing matched, one 87500-ms poll against a 3600000-ms window request), natural completion through the hold gate, no termination; live Status-observation cancellation stays `not-proven` — no supported native interaction owns a Root session's own running observation, source-pinned root/self rejection at `67727e7c`); `review-wait` `not-proven` with the R5 early-exit shape CONFIRMED and traced (launch 1/send 0, no poll, host exit 0 at 15214 ms, cause: the command reached its own terminal without ever sending the review turn, so the gate-held observation never existed; why no-send is not adjudicable from retained facts)** | Per-command state on 0.162.1: adversarial-review-wait and status-wait carry single-run qualified long-wait observations (no repeat claimed — the plan requested none for Root commands); review-wait needs its command-side no-send cause established (production-scope investigation, outside the probe); review-wait's follow-up was NOT consumed. Status-observation cancellation would need a supported native interaction that does not exist at the source pin |
 | Production release/version generalization/token savings | **`not-proven`**: disposable sandbox/hook bypass and no token measurements throughout. Qualified claims span two installed versions measured at execution time — 0.160.1 (Task 4) and 0.161.0 (R5, §1.2.2); auto-update limits attribution in both directions and no release generalization is claimed | Obtain a separate human adoption decision (§11.2); no production rollout implied |
 
 The earlier absence of managed-Child wrapper observations is resolved **only within §7's scope**:
@@ -1035,7 +1035,14 @@ the smallest useful next delta is still a **scoped follow-up campaign**, not a p
    exercised §9.4). Per-command causes: review-wait's host must survive its held boundary;
    adversarial-review-wait's flow completed but its renderer-marker contract needs re-examination
    against the actual rendered bytes; status-wait needs a live run whose turn-1 launch acknowledgement is
-   actually emitted and observable.
+   actually emitted and observable. **2026-10-13 Task 5 update (§13.7): executed on 0.162.1 —
+   adversarial-review-wait QUALIFIED (the marker contract WAS the re-examination: a demonstrated
+   probe-side instrument/dependency mismatch, corrected in the probe spec only) and status-wait
+   QUALIFIED (the acknowledgement was emitted, observed and owned-queried in-session, with the query
+   deadline verified un-extended); review-wait's early exit is now CONFIRMED and traced with the
+   command-side no-send cause recorded, remaining `not-proven` on a production-scope question; live
+   Status-observation cancellation stays `not-proven` (no supported native interaction exists for a
+   Root session's own observation).**
 4. Generic route parity: never observed or forced; the candidate paragraph reaches the generic
    assignment only as `fixture-tested` structural parity.
 
@@ -1081,6 +1088,30 @@ next step needs content-level evidence (a privacy-authority decision outside the
 a host/form change — never a parser expansion. The sidecar structural policy re-verified (162/162 +
 76/76); installed sidecar latency stays `not-proven` (no qualified pending observation existed to
 steer).
+
+2026-10-13 Task 5 update: delta item 3 (root command qualification) was executed on the SAME 0.162.1
+pin (§13.7) — one run per command behind a corrected probe instrument. The R5
+adversarial-review-wait marker miss was demonstrated to be a probe-side instrument/dependency
+mismatch (the production review pipeline renders only the schema-validated structured findings
+document; the Rescue sentinel can appear in no render path) and corrected RED→GREEN in the probe
+spec only (`resultMarkers` → the rendered findings-document line; observer digest
+`b237a6e1…` → `562981ce…`). Outcomes, each on its own record: **`adversarial-review-wait` QUALIFIED**
+(exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll, `processExit` 0, the corrected
+marker matched, natural completion, no termination) and **`status-wait` QUALIFIED**
+(`validateStatusWaitFlow` `valid: true` on the in-session owned acknowledgement → exact-id query in
+the SAME session with the fixture reserving NO job; the production 120000-ms query deadline fired
+UN-EXTENDED against the requested 3600000-ms observation window — exit 1 with the JOB_WAIT_TIMEOUT
+framing matched; natural completion through the hold gate, no termination) — each a single-run
+qualification on this pin with NO repeat claimed. **`review-wait` stays `not-proven`** with the R5
+early-exit shape CONFIRMED and traced with redacted bounded evidence (launch 1/send 0, no poll ever,
+host exit 0 at 15214 ms — the command reached its own terminal without ever sending the review turn,
+so the gate-held observation never existed; WHY no send is not adjudicable from retained facts, a
+production-scope question outside the probe). Live Status-observation cancellation stays
+`not-proven`: no supported native interaction owns a Root session's own running observation
+(source-pinned root/self rejection at `67727e7c`; app-server `turn/interrupt` excluded by rule;
+SIGINT never assumed observation-only). Background Review/Adversarial remain enqueue-only — no live
+background run was launched; the controlled timeout/ownership/result tests re-ran unmodified
+(451/451 + the focused R3/background suites 25/25 — `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs` — corrected from the unreproducible `18/18`, §13.7 + selection 6/6).
 
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
@@ -3533,3 +3564,260 @@ launched; the sidecar work launched none. Per §3 the recurring unknown-shape fa
 its fingerprints and both cases stop here. The pre-existing OS-temporary
 `zcode-shell-wait-fixture-fHFp3c` scratch directory recorded in §13.5 was again found untouched and
 left in place; both of this task's fixtures were disposed by the driver.
+
+### 13.7 Follow-up campaign Task 5: Root Review, Adversarial Review and Status qualified separately (2026-10-13, installed 0.162.1) — adversarial-review-wait QUALIFIED end to end behind the corrected production-contract marker, status-wait QUALIFIED on the owned two-turn flow with the query deadline verified un-extended, review-wait `not-proven` on a confirmed early host exit traced with redacted bounded evidence; live Status-observation cancellation `not-proven` (no supported interaction reachable)
+
+Task 5 executed the plan's three listed live cases, exactly one run per case label, plus the no-launch
+work items (the renderer-contract comparison, the observation-cancellation survey and the controlled
+re-runs). One instrument correction preceded the runs (below — the plan's own ordering: "test the
+correct framing with existing renderer contracts before changing a probe marker"); no other code
+changed.
+
+**Pre-registered adjudication reading (fixed before any Task 5 live run).** The same convention as
+§13.6's table: **the PRE-RUN TIMING itself is not independently verifiable from retained artifacts —
+the records carry no timestamped pre-registration, so the "stated before the runs" claim rests on
+this section's recorded account alone.** The reading, per command:
+
+- **Pin rule (all cases).** Re-pin `realpath` of `command -v codex` + `--version` immediately before
+  EACH run; the §1.2.3/§13.4 pin was 0.162.1. A changed binary/version stops cross-version
+  comparison, repins, and records the boundary.
+- **Diagnostic-gate reading (all cases).** The Task 4 retention-only diagnostic gate is carried on
+  every run (zero behavioral delta — the §13.6 precedent; per-run structural fingerprints for free).
+  If an unclassified cell blocks a case, the Task 4 whitelist facts are read structurally only:
+  `wholeBodyStatementMatch: true` → demonstrated instrument defect → RED→GREEN whole-body fallback
+  and that case's single cause-directed follow-up (the correction is the only changed variable);
+  `false` with a recognizable supported head and an open-then-closed depth profile → a variant
+  outside the pinned grammars → NEITHER defect NOR nonadherence demonstrable under the retention
+  design; foreign statements / no observational tool references → departure shape, recorded, case
+  stops.
+- **review-wait qualifies ONLY on its own record:** exact Root observation linkage; exactly one
+  observed `invoke review` companion invocation; same-handle observation discipline; settled outer
+  continuations; terminal exit on the Root handle; every command-specific rendered result marker
+  present in the linked terminal output; the host NOT ended before the held completion boundary
+  (natural completion or the production timeout envelope); no non-natural process termination. Any
+  early host exit is adjudicated for its CONCRETE cause from redacted bounded evidence (timeline
+  facts, structural output facts, final-agent structural markers only — assistant text is never
+  evidence); an early exit never qualifies.
+- **adversarial-review-wait: the identical contract** with `invoke adversarial-review`. The R5
+  rendered-marker miss is pre-adjudicated as an instrument/dependency mismatch (demonstrated below
+  from the production modules); the live run tests the corrected framing. The correction must not
+  weaken any terminal/exit check and must not touch production output.
+- **status-wait qualifies ONLY if** `validateStatusWaitFlow` passes on the record (exactly one launch
+  acknowledgement with a reserved 64-hex job id extracted from observed TOOL OUTPUTS — never
+  assistant text; the queried id extracted from renderJob's `Job:` line or the confirmed
+  JOB_WAIT_TIMEOUT framing; launch session == query session; exact id match; explicit query timeout
+  120000) AND the root-family completion contract accepts either the rendered success markers or the
+  confirmed JOB_WAIT_TIMEOUT framing as the alternative set. The query-deadline expiry is the
+  EXPECTED terminal of this deadline-measurement trial — never labelled an early exit. Timeout
+  non-extension evidence: the query turn ends at the Status command's own 120000-ms production
+  deadline while the requested shell observation window stays 3600000 ms;
+  `requestedPollMs` and `requestedStatusQueryTimeoutMs` remain separate provenance fields. No
+  pre-reserved foreign-owner job, guessed id, assistant-reported result or unrelated final reply
+  substitutes for the acknowledgement/linked command.
+- **Observation cancellation (status-wait only).** Pre-registered survey reading: the V2
+  `interrupt_agent` handler rejects root targets ("root is not a spawned agent") and self targets
+  ("an agent cannot interrupt itself") at source `67727e7c` (`core/src/agent/control/interrupt.rs`
+  `interrupt_spawned_agent`), and its registry is the per-process in-process `LocalAgentControl`, so
+  no supported native interaction owns a Root session's own running observation; the app-server's
+  `turn/interrupt` is excluded by the standing rule and SIGINT is process-level, never assumed
+  observation-only. Expected outcome: live cancellation retained `not-proven`; the existing
+  AbortController wait-boundary test stays instrument-level. Only a run-discovered supported
+  interaction could change this.
+- **Follow-up discipline.** At most ONE cause-directed follow-up per case, spent only on a concrete
+  cause with a single changeable variable; a model-behavior recurrence with no governing case flag
+  consumes nothing (§13.4–§13.6 precedent); a recurring unknown shape after the bounded follow-up is
+  retained and that case stops.
+
+**The instrument correction (the only code change; the plan's demonstrated-defect path).** The
+Task 5 briefing ordered the renderer-contract comparison FIRST, and it demonstrated a probe-side
+instrument/dependency mismatch: for `review`/`adversarial-review` the production review pipeline
+NEVER renders the raw peer text — `scripts/lib/review.mjs` `extractFinalResult` validates the final
+turn against the findings schema (`schemas/review-output.schema.json`) and returns ONLY
+`JSON.stringify(structured, null, 2)` (a raw-text fallback throws `REVIEW_RESULT_INVALID`),
+`scripts/zcode-companion.mjs` returns the invoke output `{ job, result }`, and
+`scripts/lib/render.mjs` `renderOutput` prints `${result}\n` — while the fake peer's structured
+review payload is `{ findings: [] }` (`tests/fixtures/fake-zcode-cli.mjs`). Verified by executing
+the REAL production modules against the fake-peer payload: the rendered bytes are
+`{\n  "findings": []\n}\n\n` and the Rescue sentinel `ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C` appears in
+NO render path (not the structured success, not the error envelope, and markdown-escaped in any
+progress preview). This fully explains R5's adversarial-review-wait miss (`sentinelPresent: false`
+after a flow that completed end to end, §9.4): the probe's
+`resultMarkers: [PUBLIC_RESULT_SENTINEL]` was unsatisfiable for the review family by construction.
+TDD evidence (plan §3; skill-conformant): regression FIRST in the existing
+`root-family observer contract (R2)` section with its existing builders re-derived from the real
+production modules (`extractFinalResult` + `renderOutput` applied to the fake peer's payload — an
+independent source of truth, never the observer under test); RED shown as THREE failures for the
+expected reason (the new production-contract regression plus the two existing spec-binding pins:
+`review-wait marker "ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C" must appear in the production-rendered
+review output — false !== true`); the smallest research-only correction changed ONLY the two
+review-family `resultMarkers` (now `['"findings": []']`, the rendered empty-findings document line)
+and their `resultCheckLabel` basis (`tools/shell-wait-probe/driver.mjs`); GREEN with the full
+shell-wait suite at **451/451** (from 450 — one added regression), `tests/test-selection.test.mjs`
+6/6, and the focused selections re-run by exact command at this revision: the plan's Task 1 seam +
+privacy/ownership pattern `node --test --test-name-pattern='review adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction recording|root-family observer contract|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs` →
+**80/80** (6 suites), and the R3/background pattern `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs` →
+**25/25** (2 suites: 17 status-wait-owned-job + 8 background-placement; combined, the two patterns
+select **105/105** across 8 suites), `npm run lint`, `npm run typecheck`,
+`scripts/check-line-endings.mjs` and `git diff --check` clean. Correction: the originally cited
+`105/105` (attributed to the Task 1 seam + privacy/ownership selection) and `18/18` (R3/background)
+could not be reconstructed as stated — at this revision the Task 1 pattern alone selects 80 tests
+and no reconstructed R3/background pattern yields 18 — so both counts are corrected above to the
+exactly-reproducible selections (105 reproduces only as the combined eight-suite selection). No
+terminal/exit check moved, no
+production output changed, and the Status markers were already the production-contract set.
+
+**Re-pin before EACH run:** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL before all three runs; the pin never moved, so
+all three records share the §13.4–§13.6 comparable pin and no cross-version comparison was started.
+Worktree HEAD `1fb30bd…` — the fixture installed committed source at that pin; the working tree
+carried the uncommitted marker correction (both modified files: `driver.mjs`, the test file), and
+all three records carry the recomputed observer digest `562981ce…` (`working-tree-uncommitted`,
+`sourcesChangedDuringRun: false`) — distinct from §13.6's `b237a6e1…` BECAUSE the correction changed
+`driver.mjs` bytes; that is the expected, self-explained provenance delta. Per-run provenance per
+the Task 1 schema (all three runs): `codexVersion` "0.162.1", executing model `null` (never
+inferred), `requestedCapMs` 3600000 with `isolatedSetup.capVerified: true` (fixture-configuration
+retention, NOT propagation evidence), `requestedPollMs` 3600000,
+`requestedWorkerDurationMs`/`requestedBudgetMs` 130000/600000,
+`requestedStatusQueryTimeoutMs` 120000 (status-wait only; null elsewhere), `roleStatus: "ready"`,
+`setupAttempts: 2` (the fixture's documented normal bootstrap re-run), `fixtureVariant: "candidate"`,
+instruction artifacts with before/after sha256 + mode retained per record (the candidate
+waiting-paragraph edits applied to all three command Skills, hashes retained), `statusJob: null`
+even for status-wait — the fixture reserved NO job (the R3 design: the job is created inside the
+live host session). The diagnostic gate is recorded top-level in all three records
+(`unclassifiedStructuralDiagnostic: true`); NO unclassified blocking cell appeared in any of the
+three runs, so the whitelist reading above never came into play. Driver exit 0 in all three runs —
+execution/cleanup completed (`fixtureDisposed: true`, `cleanupComplete: true`, 0 errors), NOT that
+any case qualified.
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 | `review-wait`, plan flags (worker 130000, cap 3600000, poll 3600000, budget 600000) + the retention-only gate | `6ad5d85616900be392950ca7d6ad8ed658cd5c8487d63e1147e8d3c138e11eb9` (`…/tmp.MHGiyctREG`) | `executed`, **inconclusive — early host exit at 15214 ms** (host exit 0), the R5 shape CONFIRMED on 0.162.1; Root linkage `mode: "root"` (`rootThreadId 01a136e0-…`), launch 1, send 0, no poll ever; long-wait qualification **`not-proven`** with the concrete traced cause (below) |
+| 2 | `adversarial-review-wait`, same flags + the gate | `681c22a132f3c36f103d96eceeb1c82f58ce970caf22bd9c33ce47ddfbf4ef5d` (`…/tmp.lvM4qcEvrt`) | `executed`, **`inconclusive: null` — QUALIFIED**: the full R2 root-family contract held end to end on the corrected production-contract marker (below); natural completion, exit 0, no termination |
+| 3 | `status-wait`, same flags plus `--status-query-timeout-ms 120000` + the gate | `225b7614c3e09c77c6aafa3fa03dd2b18b378da40d8e604836a694fcf9ac734f` (`…/tmp.uQFGxIcAXr`) | `executed`, **`inconclusive: null` — QUALIFIED**: the owned two-turn flow validated (`statusQuery.validation.valid: true`) and the production query deadline fired un-extended (below); natural completion through the hold gate, host exit 0, no termination |
+
+**Run 1 — review-wait: the concrete early host exit, traced with redacted bounded evidence.** The
+model made exactly ONE observed tool call: the exact companion launch
+(`invoke review`, `yield_time_ms` 30000 — the candidate paragraph's directive-led initial yield;
+retained tool-call excerpt). The fake peer's app-server call log records **zero session sends**
+(`companionSendCount: 0`) — the review turn was never sent to the fake peer, so the completion gate
+(the mechanism that holds the peer's turn for the 130000-ms hold) was never consulted and the
+companion command reached its own terminal inside the initial 30000-ms yield. No live handle ever
+existed to observe: `pollWallTimesMs: []` (empty — no polls), `modelCalls: 1`,
+`observationDetectedAtElapsedMs: null`, no poll-start stamp. The host result resolved at
+**15214 ms** with exit 0; the model returned a 170-char final agent message (withheld — assistant
+text is never evidence; only presence and length recorded) and the turn ended naturally
+**114786 ms before** the 130000-ms hold boundary: `endedBeforeGate: true`, cleanup `early-exit`,
+`gateReleased: true`, `verifiedTerminated: false`, `codexTerminated: true` (the early-exit cleanup
+path's own terminate call — cleanup, never native interruption,
+`nativeInterruptionClaimed: false`), host exit 0. NOT adjudicable from retained facts: WHY the
+command produced no send — the command's own linked output was never captured (no terminal exit was
+attributable on the Root handle without a poll: `processExit: null`, `decisiveWallMs: null`, all
+`null`-with-cause, never zero), and the fake-peer call log beyond counts is not persisted. The shape
+matches R5's 0.161.0 record exactly (14477 ms, launch 1, send 0, §9.4) and is now CONFIRMED on
+0.162.1. **Verdict per the pre-registration: `not-proven`** — Root placement and the real
+`invoke review` entry are kept; no Rescue-shaped replacement; the follow-up was NOT consumed (no
+concrete cause with a single changeable probe-side variable: the command-side no-send behavior is
+production behavior no case flag governs; a same-config re-run would be the forbidden
+model-behavior retry; no instrument defect is demonstrable — the observer adjudicated the run
+honestly under the R2 contract).
+
+**Run 2 — adversarial-review-wait: QUALIFIED (`installed-observed`, 0.162.1) — the first qualified
+Root-family command.** Every contract field on the run's own record: exact Root observation linkage
+(`mode: "root"`, `rootThreadId 01a136e2-…`); exactly one companion invocation
+(`invoke adversarial-review`, launch 1, send 1 — the fake peer's review turn WAS sent); same-handle
+observation discipline (`originalHandleChecked: true`; ONE empty-input poll on the launch's own
+handle, `yield_time_ms` 3600000); settled outer continuations (`outerReturns: 0`, no unresolved
+continuation, `pendingInnerAtEnd: false`); terminal exit on the Root handle (`processExit: 0`); the
+command-specific rendered result markers present in the linked terminal output
+(`publicResultMatchedSentinel: true`, `terminalStdoutChecked: true` — the corrected
+`"findings": []` production-contract marker, i.e. the schema-validated structured findings document
+the review pipeline actually renders); the host did NOT end before the held completion boundary
+(`endedBeforeGate: false`, cleanup `observation`, `gateReleased: true`). One decisive observation:
+`decisiveWallMs: 97800` with its own tool-reported wall time retained (`pollWallTimesMs: [97800]`),
+`pollStartedAtElapsedMs: 47293`, hold deadline 144974, remaining lifetime 97681 ms (basis
+`hold-deadline-at-poll-start`), observation detected at 14974 ms; the held turn ran to the hold
+gate, the gate released, the command completed, and the host ended naturally at 151465 ms —
+`rootAcknowledgementAtElapsedMs: 151461`, host exit 0, `verifiedTerminated: false`,
+`codexTerminated: false` (NO process termination — natural completion), `interrupt.requested:
+false`. One ACTUAL extra intervention is recorded per the noise-case discipline: one pre-launch
+diagnostic `exec_command` (170-char withheld command content, retained as a suppressed bounded
+excerpt) — it did not substitute for the observation and did not block the case. **The decisive
+diagnosis of the R5-era finding is closed: the flow R5 recorded (98.1-s observation, launch/send/exit
+0) was a compliant flow all along; the marker the probe tested was the wrong dependency's contract.**
+The R5 `not-proven` verdict keeps its own scope; this run qualifies adversarial-review-wait's long
+wait on THIS pin only (one run; the repeat dimension is not claimed — no repeat was requested for
+Root commands).
+
+**Run 3 — status-wait: QUALIFIED (`installed-observed`, 0.162.1) on the owned two-turn flow, with
+the query deadline verified un-extended.** Every sub-fact on the run's own record:
+
+- **Owned acknowledgement (the R5-era miss, now closed):** turn 1 launched
+  `$zcode:review --background` inside the live host session; the launch acknowledgement was
+  extracted from observed TOOL OUTPUTS with exactly ONE distinct reserved job id
+  (`acknowledgementJobId 6a1db22c…`, `acknowledgementDistinctJobIdCount: 1`); the fixture reserved
+  NO foreign-owner job (`statusJob: null` — the job was created in-session, owner-correct by
+  construction); turn 2 resumed THAT SAME session (`launchSessionId == querySessionId ==
+  rootThreadId 01a136e5-…`) with the invocation built ONLY from the observed id
+  (`statusWaitInvocation`: `$zcode:status <id> --wait --timeout-ms 120000` — never guessed, never
+  assistant-reported); the queried id came back from the linked terminal output with exactly one
+  distinct id on the query side too. **`validateStatusWaitFlow`: `valid: true`** — same-session
+  ownership, exact id match, explicit 120000-ms query timeout.
+- **Timeout NOT extended by the requested shell observation window:** the query turn's Status
+  command observed with ONE empty-input poll requesting `yield_time_ms` 3600000 — and returned at
+  its OWN observed wall time of **87500 ms** (`pollWallTimesMs: [87500]`) because the command exited
+  at its own production deadline: `processExit: 1` (the production timeout category's exit code) with
+  the confirmed JOB_WAIT_TIMEOUT framing matched in the linked terminal output
+  (`publicResultMatchedSentinel: true` via the alternative query-deadline marker set;
+  `terminalStdoutChecked: true`). Timeline corroboration on one clock: the `invoke status` launch
+  was detected at 24605 ms and the command's terminal resolved at ≈144800 ms (24605 + 120000 = 144605
+  plus detection lag) — the 120000-ms production deadline fired; the 3600000-ms window never held the
+  observation. `requestedPollMs` 3600000 and `requestedStatusQueryTimeoutMs` 120000 remain separate
+  record fields.
+- **Natural completion / production timeout envelope / termination:** this case's EXPECTED terminal
+  is the deadline expiry — recorded as its own lifecycle outcome, never the generic early exit:
+  `endedBeforeGate: false`, cleanup `observation`, `gateReleased: true` (the held phase ran to its
+  130000-ms hold deadline, released the gate, and the query result joined naturally at 163445 ms;
+  host ended at 163451 ms, host exit 0), `verifiedTerminated: false`, `codexTerminated: false` —
+  NO process termination, `interrupt.requested: false`.
+- **Root Status observation cancellation is SEPARATE from Child interruption — live cancellation
+  `not-proven` retained.** The pre-registered survey was executed against the read-only source pin
+  `67727e7c` (clean, unchanged — re-verified): `interrupt_spawned_agent` rejects root targets and
+  self targets outright, and its registry is per-process, so NO supported native interaction can own
+  the Root session's own running Status observation; no run-discovered supported interaction
+  existed either (the run's flow contains exactly the launch and the one poll — `interrupt.callCount:
+  0`). The app-server `turn/interrupt` remains excluded by the standing rule and SIGINT is never
+  assumed observation-only. Live cancellation therefore stays **`not-proven`** with this precise
+  cause; the existing AbortController wait-boundary regression remains instrument-level evidence
+  only. The cancellation subcase does not reduce the flow qualification above: what IS proved is the
+  owned acknowledgement, the un-extended query deadline and the observation-only expiry framing.
+
+**Background Review/Adversarial stay enqueue-only — no live background run was launched for them.**
+The controlled timeout/ownership/result tests re-ran with expectations UNMODIFIED on the corrected
+tree: the full `node --test tests/shell-wait-probe.test.mjs` 451/451 (including the R3
+`status-wait owned-job setup and query-deadline separation` section — query-deadline expiry
+independent of job completion with the job staying held; the live case never requests the fixture
+reservation; queried-id extraction; invalid-flow inconclusive; explicit-timeout option accepted for
+status-wait only — and the background enqueue-only acknowledgement/lifecycle tests), the focused
+R3/background suites **25/25** via `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs`
+(corrected from the unreproducible `18/18`, §13.7 above), `tests/test-selection.test.mjs` 6/6. No Root command's
+qualification is inferred from generic Root shell support or from another command's run: each of
+the three carries its own verdict above.
+
+**Instrument defect: exactly one, demonstrated and corrected (the marker mismatch above); nothing
+else changed.** The review-family marker correction is the plan's own anticipated framing ("a
+fixture marker mismatch can be an instrument/dependency mismatch"); it was implemented RED→GREEN in
+the existing section with existing builders, and the corrected framing is what the live
+adversarial-review run then exercised. No unclassified-cell parser change, no grammar expansion, no
+production output change, and no expectation was modified to manufacture the result: the terminal
+and exit checks (`processExit`, `terminalStdoutChecked`, same-handle discipline, settled
+continuations) are the unchanged R2 contract.
+
+**Run/follow-up allowance ledger.** `review-wait`: the ONE listed run consumed, inconclusive with
+the traced cause; the case's one cause-directed follow-up NOT consumed (no single changeable
+variable — see the verdict above). `adversarial-review-wait`: the ONE listed run consumed,
+QUALIFIED; no follow-up needed or spent. `status-wait`: the ONE listed run consumed, QUALIFIED; no
+follow-up needed or spent. The observation-cancellation subcase consumed NO run (a source-survey
+conclusion plus the run's own recorded `interrupt.callCount: 0`). No other host was launched (the
+renderer-contract comparison and the TDD cycle launched none). Per §3 each case label keeps its own
+verdict; failure of review-wait neither disqualifies nor qualifies the other two.
