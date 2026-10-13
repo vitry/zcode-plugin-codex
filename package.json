@@ -35,6 +35,7 @@
   "scripts": {
     "test": "node tools/run-test-suite.mjs routine && node --test tests/integration/marketplace-snapshot-build.mjs",
     "test:mcp-research": "node tools/run-test-suite.mjs mcp-research",
+    "test:shell-research": "node tools/run-test-suite.mjs shell-research",
     "test:unit": "node --test tests/plugin-contracts.test.mjs",
     "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
     "test:qualified": "node --test tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs",

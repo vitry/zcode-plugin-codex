@@ -12,6 +12,8 @@ const researchEntries = Object.freeze([
   'tests/wait-route-probe.test.mjs',
 ]);
 const researchSet = new Set(researchEntries);
+const shellResearchEntries = Object.freeze(['tests/shell-wait-probe.test.mjs']);
+const shellResearchSet = new Set(shellResearchEntries);
 const testExtension = /\.(?:cjs|mjs|js)$/;
 const testFileName = /(?:\.test|[-_]test)\.(?:cjs|mjs|js)$|^test(?:-.*)?\.(?:cjs|mjs|js)$/;
 
@@ -38,23 +40,28 @@ export async function discoverTestEntries() {
   return entries.sort();
 }
 
-/** Select routine or MCP research tests without ever silently losing a research entry.
+/** Select routine, MCP research or shell research tests without ever silently losing a research entry.
  * @param {string[]} entries
  * @param {string} suite
  */
 export function selectTestEntries(entries, suite) {
-  if (suite !== 'routine' && suite !== 'mcp-research') throw new Error(`Unknown test suite: ${suite}`);
+  if (suite !== 'routine' && suite !== 'mcp-research' && suite !== 'shell-research') throw new Error(`Unknown test suite: ${suite}`);
   if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string') || new Set(entries).size !== entries.length) {
     throw new Error('Duplicate test entry or invalid test list');
   }
   for (const entry of researchEntries) {
     if (!entries.includes(entry)) throw new Error(`Missing MCP research test: ${entry}`);
   }
-  return entries.filter((entry) => suite === 'routine' ? !researchSet.has(entry) : researchSet.has(entry)).sort();
+  for (const entry of shellResearchEntries) {
+    if (!entries.includes(entry)) throw new Error(`Missing shell research test: ${entry}`);
+  }
+  return entries.filter((entry) => suite === 'routine'
+    ? !researchSet.has(entry) && !shellResearchSet.has(entry)
+    : suite === 'mcp-research' ? researchSet.has(entry) : shellResearchSet.has(entry)).sort();
 }
 
 async function main() {
-  if (process.argv.length !== 3) throw new Error('Expected one test suite: routine or mcp-research');
+  if (process.argv.length !== 3) throw new Error('Expected one test suite: routine, mcp-research or shell-research');
   const suite = process.argv[2];
   const entries = selectTestEntries(await discoverTestEntries(), suite);
   if (entries.length === 0) throw new Error(`No tests selected for ${suite}`);
