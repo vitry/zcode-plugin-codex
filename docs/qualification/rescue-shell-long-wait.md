@@ -969,7 +969,7 @@ useful next step for each is recorded in §10 and §11.2.
 | Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7). **The 2026-10-13 baseline re-run on 0.162.1 (§13.4) ended inconclusive on the same family — no outer-return count is attributable on that pin; the re-entry comparison stays unknown there, never zero** | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
 | Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical. **2026-10-13 repeat attempt on 0.162.1 (§13.4): no qualified raised run exists on that pin to repeat; the executed `rescue-repeat` run itself ended inconclusive (`unsupported-call-shape`, same family). QUALIFIED stands on 0.161.0 only** | Repeat is closed on 0.161.0; a future version repeats the measurement independently; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
 | Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
-| Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan | The R4-wired path exists and is untested by a completed on-script run; one cause-directed retry through the same owning-session prompt path (with the observation surviving long enough for evidence collection) is the remaining step |
+| Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan. **2026-10-13 Task 3 run on 0.162.1 (§13.5): that one retry executed and again ended inconclusive — but the model DID emit exactly ONE V2 `interrupt_agent` interaction whose tool response success-decoded to the ACTIVE `previous_status: "running"`, the first run with a parsed AND counted V2 interrupt interaction (`callCount: 1`, target-shape facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (the R5 record had already retained a parsed interaction with the same active `previous_status` and `family: "v2"`, §7.7, but under the since-corrected unanchored grammar — §7.7's retained R5 row lists no count or target facts, and its case failed the whole-case scan); the call's target was suppressed (23 chars, neither id-shaped nor the fixture marker) and the ordering never bound (the case evidence failed fail-closed on the same unclassified `exec_command`-cell family, new 3-line/314-B shape), so exact-target delivery, pending-window ordering, settlement and every production layer stay `not-proven` on this pin** | On 0.162.1 the one run and its cause-directed follow-up decision are consumed/recorded (§13.5); the remaining step on this pin is the narrow unclassified-cell adjudication (§13.4's blocking prerequisite, reserved to Task 4's allowance) before any further interrupt measurement; the 0.160.1/0.161.0 records keep their own scope |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
 | Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell shape needs its own bounded adjudication before noise/background measurements can complete. Budget/failure cleanup is never native user interruption |
 | Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). Root commands remain `not-proven`, each with its own recorded outcome | Per-command cause-directed follow-ups: review-wait needs the host to survive its held boundary; adversarial-review-wait needs the renderer-marker contract re-examined against the actual rendered bytes (the flow itself completed); status-wait needs a live run whose turn-1 launch acknowledgement is actually emitted and observable; the instrument is no longer the blocker (§12.6, §12.9) |
@@ -1045,6 +1045,22 @@ the rescue-family cases it now blocks before any of items 0–4 can complete on 
 records (including the 0.161.0 POSITIVE-but-M-imprecise propagation clue and QUALIFIED repeat) keep their
 own recorded scope; no cross-version claim is made in either direction.
 
+2026-10-13 Task 3 update: delta item 1 (native interrupt live delivery-to-settlement) was executed once
+on the SAME 0.162.1 pin (§13.5) — the first run with a parsed, counted V2 interrupt interaction
+(`callCount: 1`, target-shape facts retained) under the corrected anchored grammar and the first on
+this pin (the R5 record had already retained a parsed interaction with an active
+`previous_status: "running"` under the since-corrected unanchored grammar, §7.7/§12.8); its tool
+response success-decoded to that ACTIVE status, but the case evidence again failed fail-closed on the
+recurring unclassified-cell family (new 3-line/314-B shape), so exact-target delivery, pending-window
+ordering,
+delivery-to-settlement latency, all four settlement layers (native Child turn interruption, inner
+poll-cell settlement, exact Companion process cleanup, durable job/reconciler settlement) and live
+no-collateral preservation stay `not-proven` on this pin. The separately named
+`native-short-window-responsiveness-control` run was deliberately NOT spent: its latency reference
+serves only the delivery-to-settlement comparison, which is `not-proven`. No code changed (no
+instrument defect demonstrated); item 1 on this pin remains behind the same unclassified-cell
+prerequisite as items 0 and 2 (§13.4).
+
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
 field — §2 whitelist), the candidate directive-led waiting paragraph in the named Role, and
@@ -1111,8 +1127,14 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   green (§13.1). No live run had executed under the follow-up plan at that point. **2026-10-13 Task 2
   update:** the four Task 2 live runs have now executed on the 0.162.1 pin (§13.4) — all four inconclusive
   on the unclassified-cell family; the §11.2 delta list's measured dimensions stay `not-proven` on this
-  pin, and no code changed (no instrument defect demonstrated). Editorial note: this update rewrote the
-  Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
+  pin, and no code changed (no instrument defect demonstrated). **2026-10-13 Task 3 update:** the
+  `rescue-interrupt` run has now executed on the same pin (§13.5) — inconclusive on the same family; the
+  first parsed-and-counted on-script V2 interrupt interaction under the corrected anchored grammar on
+  this pin (one call, success-decoded active `previous_status`; the R5 record had already retained a
+  parsed interaction with the same active status under the since-corrected grammar, §7.7/§12.8) is
+  recorded there as surviving structural facts, every dependent production
+  dimension stays `not-proven`, the responsiveness control was deliberately not spent, and no code
+  changed. Editorial note: this update rewrote the Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
   the §11.2 delta list stands." became "No live run had executed under the follow-up plan at that
   point." — to avoid leaving a falsehood in the current-state handoff; the remainder of the Task 1 note
   is unchanged, and no earlier section was touched.
@@ -3107,3 +3129,187 @@ resized-group remediation targets lifetime sizing, which is not the observed cau
 `workerDurationMs = max(420000, ceil(M) + 90000)` formula has no input while M is unattributable).
 `rescue-repeat`: one run consumed, inconclusive, no follow-up (same cause). `rescue-baseline`: one run
 consumed, inconclusive, no follow-up (same cause). No other host was launched.
+
+### 13.5 Follow-up campaign Task 3: native pending-observation interruption and owned settlement (2026-10-13, installed 0.162.1) — one run, again inconclusive on the unclassified-cell family; the delivery contract and every settlement layer `not-proven` on this pin
+
+Task 3 executed its single listed live run plus the two no-launch work items (delivery-path trace and
+strict adjudication). No cause-directed follow-up was consumed, the optional responsiveness control was
+NOT spent, and no code changed (no instrument defect demonstrated — see the defect note below).
+
+**Delivery-path trace (no host launched).** Re-confirmed against the read-only Codex source checkout,
+unchanged and clean at `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (`git rev-parse HEAD` + `git status
+--short` re-run 2026-10-13; the checkout still proves no source/binary correspondence). The concrete
+mechanism the repaired case uses is the historical V2 hypothesis, confirmed at the pin:
+
+1. **Registration in the owning session.** `codex-rs/core/src/tools/spec_plan.rs`:
+   `add_collaboration_tools` (:1299) registers the V2 `interrupt_agent` tool UNCONDITIONALLY inside the
+   V2 branch (it is gated by neither `wait_agent_enabled` nor `disable_direct_message`; :1382–1391),
+   whenever `collab_tools_enabled` (:672) holds — for V2 that is
+   `session_source.get_agent_path().is_none() || model_info.multi_agent_version == Some(V2)`, so the
+   ROOT of a normal `codex exec` session (the owning Root of the Rescue Child) qualifies.
+   `config.multi_agent_version_override()` (`core/src/config/mod.rs` :1592) hard-resolves V2 when
+   `features.multi_agent_v2` is enabled (the live user config's block, §3.3 — authorship not
+   established); in the fixture's isolated home (which carries only the production setup's
+   `[agents.zcode-rescue]` role and hook writes, never a `features.multi_agent_v2.enabled` block —
+   `scripts/lib/managed-agent-role.mjs` :132/:296/:727) the version can still resolve V2 through the
+   model catalog declaration (`multi_agent_version_for_model` :1612; §3.3's `codex debug models`
+   corroboration). The qualified live `wait_agent` joins recorded since R5 (§7.7) corroborate that the
+   fixture's owning sessions resolve the V2 family in practice.
+2. **Exact tool/flag the repaired case sends.** The case prompt (`SHELL_WAIT_CASE_SPECS['rescue-interrupt']`,
+   `tools/shell-wait-probe/driver.mjs`) directs exactly ONE model-facing V2 `interrupt_agent` call with
+   `{ "target": <the exact agent id the spawn acknowledgement returned> }`, only while the observation is
+   pending, with collateral interruption forbidden. Source spec (`multi_agents_spec.rs` :355
+   `create_interrupt_agent_tool_v2`): `ToolSpec::Function`, name `interrupt_agent`, single required
+   `target` argument. The legacy V1 `send_input` is recognized ONLY with `{interrupt: true}` (V1 is not
+   the resolved family on this machine, §3.3, and was not used); no separate app-server `turn/interrupt`
+   was touched.
+3. **Delivery and status semantics.** `core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs`:
+   handler `ToolName::plain("interrupt_agent")`, args `{target}` (`deny_unknown_fields`), resolves the
+   target then calls `agent_control.interrupt(session.thread_id, AgentTarget::Id, V2)` →
+   `interrupt_spawned_agent` (`core/src/agent/control/interrupt.rs`): registry-known check, root and
+   self rejection, status SNAPSHOT FIRST (`inspect_agent` — the returned `previous_status` is the status
+   observed before the interrupt request was handled), then `Op::Interrupt` to the live Child thread
+   (`core/src/agent/control.rs` :299), tolerating `ThreadNotFound`/`InternalAgentDied` as success;
+   returns `{ previous_status }` (pinned snake_case `AgentStatus`, protocol.rs — `running` is the
+   ACTIVE label; `completed`/`errored`/`shutdown`/`not_found`/`interrupted` are the terminal set the
+   driver pins at `TERMINAL_INTERRUPT_PREVIOUS_STATUSES`).
+4. **Inner settlement is NOT part of the delivery.** `core/src/tasks/mod.rs` :925–936: the turn-abort
+   path cancels nested code-mode cells only under `TurnAbortReason::Interrupted` AND
+   `Feature::CodeModeInterrupt` — installed `code_mode_interrupt false` (§3.3) — so an exact-Child turn
+   interruption guarantees nothing about an already-yielded poll cell. Companion-process cleanup and
+   durable job/reconciler settlement are separate production layers entirely.
+5. **Installed 0.162.1 rollout grammar (probe parsers).** `tools/shell-wait-probe/evidence.mjs`
+   recognizes the interaction in TWO shapes: a direct `function_call` named `interrupt_agent`
+   (dotted namespaces tolerated) with JSON args, and a code-mode cell statement in the anchored awaited
+   form `text(await tools.interrupt_agent({...}));` (bounded per-statement parser, ≤4096-char body,
+   JSON-first with a string-aware JS-literal fallback; the unanchored-substring false-attempt hole is
+   closed, §12.8). The run below is itself the installed-grammar datum: the 0.162.1 host emitted a
+   recognizable V2 interaction that the parsers counted (once), family-classified (`v2`) and
+   success-decoded — the record does not retain which event shape carried it (not a persisted field).
+
+**Re-pin before the run.** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex` (regular
+executable), `codex --version` → `codex-cli 0.162.1` — IDENTICAL to §1.2.3/§13.4; the pin did not move,
+so this run stays on the Task 2 comparable pin and cross-version comparison rules are unchanged.
+Worktree HEAD `67d327d7fd206bd2fb87245b6d720d29d73e4924`, clean tree.
+
+**The run (exactly one).** `rescue-interrupt` with the plan's exact flags (worker 420000, cap 3600000,
+poll 3600000, budget 900000), the pinned executable in both `--codex` and `CODEX_BINARY`, fixture
+installed from committed source `67d327d7…` (clean tree, committed bytes = working tree), fresh private
+`mktemp -d` output — retained record sha256
+`592675051bd0f87147531d798bc2084b6a2b7772fbfb3022cbc94c8db8ba706a` (`…/tmp.iX0612W7DO`, OS-temporary
+private dir, the §13.4 per-run convention) — observer digest recomputed at case start `e28ec619…`
+(`working-tree-uncommitted`, `sourcesChangedDuringRun: false`, `model: null`) — matching §1.2.3.
+Per-run provenance per the Task 1 schema: `codexVersion` "0.162.1", `requestedCapMs` 3600000 with
+`isolatedSetup.capVerified: true` (fixture-configuration retention, NOT propagation evidence),
+`requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs` as listed, `roleStatus: "ready"`,
+`setupAttempts: 2` (the fixture's documented normal bootstrap re-run), `fixtureVariant: "candidate"`,
+instruction artifacts with before/after sha256 + mode retained in the record. Driver exit 0 —
+execution/cleanup completed (`fixtureDisposed: true`, `cleanupComplete: true`, 0 errors, no budget
+kill, no external termination: `verifiedTerminated`/`codexTerminated` both false), which does NOT mean
+the case qualified.
+
+**Outcome: `executed`, INCONCLUSIVE `unsupported-call-shape` — the same recurring family as §13.4, new
+shape facts.** The whole-case fail-closed scan blocked on one unclassified `exec_command` script cell
+(3 content lines, **314 bytes**, `directivePresent: false`, content withheld by the R0
+structural-suppression design — §13.4's runs: 443/246/336/443 bytes). Whether that cell is a parser gap
+or a model departure remains unestablishable from withheld content. Driver-watch timeline (monotonic,
+NOT rollout-attributable): observation detected at 50121 ms, Root host result resolved at 72767 ms,
+turn ended naturally at the hold gate (`endedAtElapsedMs: 470128`, `holdDeadlineElapsedMs: 470121`,
+`gateReleased: true`, `endedBeforeGate: false`, cleanup label `observation`), host exit 0.
+
+**The interrupt block: degraded nulls with cause, PLUS surviving structural facts that advance the
+campaign.** Because the case evidence failed fail-closed, the driver persisted the could-not-observe
+form (`attempted: null`, `delivered: null`, the explicit evidence-collection `missingPrerequisite`;
+`driver.mjs`'s evidence-failed branch overrides these two fields) — the nulls are a DEGRADED-RECORD
+consequence, not an observed "no call". The fields the override does not touch record what the
+extractor actually parsed from the collected rollouts:
+
+| Field | Persisted value | Reading |
+| --- | --- | --- |
+| `requested` | `true` | case directive active |
+| `callCount` | `1` | exactly ONE interrupt-shaped interaction existed |
+| `family` | `"v2"` | the V2 `interrupt_agent` grammar (V1 would need `{interrupt:true}`) |
+| `previousStatus` | `"running"` | the call's own output success-decoded to the PINNED ACTIVE AgentStatus label — the target agent was mid-turn when the interrupt landed (tool-acknowledgement level only) |
+| `target` | `{ kind: "unknown", value: null, suppressed: true, chars: 23 }` | the target string was NEITHER id-shaped NOR the known fixture task marker → suppressed to its structural length (23 chars) by the R0 sanitizer; WHAT it named is not retained |
+| `exactTargetMatch` | `null` | unbindable: the target is suppressed AND the case evidence carried no child thread id to bind against |
+| `orderingBound` | `false` | no supported evidence → no exact-Child binding options → fail-closed ordering |
+| `settled` / `settledBasis` | `null` / `"ordering-unbound-not-attributed"` | the basis is itself proof the underlying interaction was attempted with a non-rejected outcome, then failed the ordering gate |
+| `pendingIntervalMs` / `deliveryToSettlementMs` / `timingBasis` | `null` / `null` / `"unavailable"` | no attributable pending anchor, no attributable settlement, no rollout-event timing |
+
+This is the first run with a PARSED AND COUNTED V2 interrupt interaction (`callCount: 1`, target-shape
+facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (0.162.1). The
+novelty is scoped, not absolute: the R5 0.161.0 record had ALREADY retained a parsed on-script
+interaction with the same active `previousStatus: "running"` and `family: "v2"` (§7.7), but that parse
+ran under the since-corrected unanchored grammar (§12.8 — a shape that could fabricate attempts);
+§7.7's retained R5 row lists no count or target-shape facts (the row's basis: the record itself is
+gone, so absence is verifiable only from the retained row, never from the artifact), and its case
+failed the whole-case scan; §13.4's four runs all
+had no interrupt interaction at all. The model demonstrably ANSWERED the interrupt directive with
+exactly one V2 call whose tool response reported an active (`running`) previous status. It still
+qualifies nothing.
+
+**Adjudication (strict, per the plan's qualification rule).** NOT QUALIFIED — `attempted`/`delivered`
+are null-with-cause in the persisted record, `exactTargetMatch: null`, `callCount: 1` (the only field
+on its side of the contract), `orderingBound: false`, `settled: null`, `settledBasis:
+"ordering-unbound-not-attributed"`, all timing null. There is no ONE exact-target delivery, no active
+prior status bound to the EXACT Child (`previousStatus: "running"` attributes an active turn to the
+UNNAMED target only), no attributable pending original-handle observation at delivery, and no linked
+post-delivery outcome. Terminal-before-interrupt, wrong target, multiple delivery, unreadable
+continuation and external budget kill did not arise; the case is inconclusive on the fail-closed scan,
+which never qualifies.
+
+**The four distinctions the plan requires (all `not-proven` on this pin).**
+
+- **Native Child turn interruption (exact): `not-proven`.** A successful interrupt TOOL response alone
+  proves none of the layers below, and here even the tool response is unbound: the target was withheld
+  (23 suppressed chars) and the ordering was never bound to the exact Child's pending observation.
+- **Inner poll-cell settlement: `not-proven`.** No attributable observation exists (`pollWallTimesMs`
+  null), no settlement watch fact is attributable, `settled: null`. Whether an interrupted turn left
+  the pending poll alive is UNADJUDICABLE in this record — `orderingBound: false` means the
+  `turn-interrupted-pending-observation-survives` shape could not even be evaluated, let alone
+  recorded as observed.
+- **Exact Companion process cleanup: `not-proven`.** No companion launch/send/handle linkage survived
+  the fail-closed scan (all null); `child.settlement.observed: false` with basis null.
+- **Durable job/reconciler settlement: `not-proven`.** The bounded production-store read was NOT
+  exercised: with every linkage field null there was no attributable original job, stop cause/intent or
+  terminal winner to read through the existing seams, and no accepted running work became untracked.
+  Nothing sanitized existed to retain.
+
+**Distinction ledger demanded by the plan.** Missing model call: RULED OUT (callCount 1 — the model
+called). Tool rejection: RULED OUT (the response success-decoded; `rejection: null`). Interrupt-parser
+failure: RULED OUT (the interaction was parsed, counted, family-classified and decoded). Case-level
+unknown-shape failure: PRESENT (the unclassified `exec_command` cell blocked the scan — the same
+family as §13.4, cause not establishable under the retention design). Delivered-but-unsettled work:
+UNADJUDICABLE (ordering unbound; settlement null) — recorded as unknown, never as survival or as
+settlement.
+
+**No-collateral control: NOT REACHED, claim `not-proven`.** The control requires the lifecycle to get
+far enough to carry an unrelated harmless owned job/Child with independently observed survival; this
+run's case evidence failed fail-closed before any qualifying shape existed, so the control was not
+spent and live no-collateral preservation is NOT claimed from the instrument's unit tests alone.
+
+**`native-short-window-responsiveness-control`: deliberately NOT spent (0 runs).** The control is a
+separately named one-run group with no retry, and its only purpose is a latency REFERENCE for a
+delivery-to-settlement comparison. The candidate produced no attributable
+`deliveryToSettlementMs` (null on the guards: `settled` null), so the comparison it would serve is
+`not-proven`; spending the control without the claim it serves would waste its single run. The sole
+experimental change it would have carried (the temporary waiting paragraph requesting the baseline
+60000-ms window) was therefore never issued.
+
+**Instrument defect: none demonstrated — no code changed.** The interrupt-interaction grammar
+DEMONSTRABLY worked on this run's installed shapes (it parsed, counted, family-classified and
+success-decoded the V2 call), and for the unclassified `exec_command` cell the §13.4 rationale applies
+unchanged: no byte-level evidence can exist under the retention design, so the RED→GREEN defect path
+has no demonstrated trigger. Per §3 the recurring unknown shape is retained and this case stops here.
+
+**Run/follow-up allowance ledger.** `rescue-interrupt`: the ONE listed run consumed, inconclusive; the
+case's one cause-directed follow-up NOT consumed — no concrete cause with a single changeable variable
+exists (the blocker is the instruction-independent unclassified-cell family of §13.4 with yet another
+shape; no Task 3 case flag governs it; the §12.8 root-control wrapper fix already addressed the OLD R5
+wrapper shape and this is a DIFFERENT, script-cell-shaped blocker; a same-config re-run would be the
+forbidden model-behavior retry). `native-short-window-responsiveness-control`: 0 of 1 runs spent
+(deliberate; see above). No other host was launched. A pre-existing OS-temporary
+`zcode-shell-wait-fixture-fHFp3c` directory (mtime 2026-10-13 04:13 local, BEFORE this task's run) was
+found untouched and left in place per §3's unrelated-scratch preservation rule; this run's own fixture
+was disposed by the driver.

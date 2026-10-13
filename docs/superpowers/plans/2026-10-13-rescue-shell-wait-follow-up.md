@@ -144,8 +144,15 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
 
 **Files:** Existing `rescue-interrupt`, Root-control extraction and lifecycle fixture/tests; report S5/Q4.
 
-- [ ] Trace the current installed family's owning-session delivery path using the report/source starting points. The historical V2 `interrupt_agent` path is the starting hypothesis, not a mandate to use a nonexistent API. Use V1 only if the current host actually exposes its interrupt flag; never use a separate app-server's `turn/interrupt` to pretend it owns the CLI's Child. No MCP or fork.
-- [ ] Run the repaired case once, with a long enough held original observation for pending-window evidence:
+- [x] Trace the current installed family's owning-session delivery path using the report/source starting points. The historical V2 `interrupt_agent` path is the starting hypothesis, not a mandate to use a nonexistent API. Use V1 only if the current host actually exposes its interrupt flag; never use a separate app-server's `turn/interrupt` to pretend it owns the CLI's Child. No MCP or fork.
+  Executed 2026-10-13 with no host launch (§13.5 trace): the V2 hypothesis is CONFIRMED at source
+  `67727e7c` (clean) — `add_collaboration_tools` registers `interrupt_agent` unconditionally in the V2
+  branch; the owning exec Root qualifies via `collab_tools_enabled`; handler resolves
+  `AgentTarget::Id` → snapshot-first `previous_status` → `Op::Interrupt` to the live Child thread.
+  The repaired case sends exactly one V2 `interrupt_agent {target: <spawn-ack id>}`; V1
+  `send_input {interrupt:true}` unused; no app-server/Fork/MCP. Inner settlement is NOT part of the
+  delivery (`code_mode_interrupt` false at the pin).
+- [x] Run the repaired case once, with a long enough held original observation for pending-window evidence:
 
 ```bash
 shell_case_output=$(mktemp -d)
@@ -156,11 +163,46 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
   --cap-ms 3600000 --poll-ms 3600000 --budget-ms 900000
 ```
 
-- [ ] Require ONE actual exact-target delivery, active prior status, an attributable pending original-handle observation at delivery, and linked post-delivery outcome. Record `attempted`, `delivered`, `exactTargetMatch`, `callCount`, `orderingBound`, `settled`, `settledBasis` and timing. Nulls, terminal-before-interrupt, wrong target, multiple delivery, unreadable continuation and external budget kill never qualify.
-- [ ] Distinguish native Child turn interruption, inner poll/cell settlement, exact Companion process cleanup and durable job/reconciler settlement. A successful interrupt tool response alone proves none of the latter. Read the isolated production stores through existing bounded seams to establish the original job, stop cause/intent and terminal winner; no accepted running work may become untracked. Retain only sanitized ownership/settlement facts.
-- [ ] Establish no collateral cancellation using one unrelated harmless owned job/Child control in the same relevant host lifecycle, with independently observed survival. Reuse the existing lifecycle fixture/production seams; investigate the minimum isolated control if not already available. No new binding, separate owner authority or parallel original-handle poll. Without live control evidence, do not claim live no-collateral preservation from a unit test alone.
-- [ ] For responsiveness, compare delivery-to-settlement against the native short-window expectation on the same host. Inspect source plus existing controlled baseline first; if neither provides a comparable measured latency, allow ONE separately recorded `native-short-window-responsiveness-control` run (a report/group name, not a new assumed CLI option), with no retry. State the sole experimental change before running: the temporary waiting paragraph requests the baseline 60000-ms window; executable/model/cap/worker/entry/ownership/delivery method and evidence rules remain matched to the candidate. Use only the minimum tested isolated fixture seam if current case selection cannot express that control. This control neither consumes nor adds retries to the candidate's one-run-plus-one-cause-follow-up allowance, and cannot substitute for candidate delivery/settlement qualification. Record the measured delay instead of inventing a universal SLA or waiting secretly until the one-hour window ends.
-- [ ] If the host interrupts the turn but the pending poll survives, record that exact result and keep production blocked. Investigate one cause-directed follow-up using existing supported host mechanisms; never substitute process-budget cleanup for native cancellation. A missing model call stays distinct from tool rejection, parser failure and delivered-but-unsettled work.
+  Executed once 2026-10-13 on the unchanged 0.162.1 pin (§13.5): driver exit 0, cleanup complete,
+  fixture disposed, but the case is inconclusive `unsupported-call-shape` again — one unclassified
+  `exec_command` script cell (3 lines, 314 bytes, no directive, content withheld) failed the
+  whole-case fail-closed scan. Same family as §13.4, new shape facts.
+- [x] Require ONE actual exact-target delivery, active prior status, an attributable pending original-handle observation at delivery, and linked post-delivery outcome. Record `attempted`, `delivered`, `exactTargetMatch`, `callCount`, `orderingBound`, `settled`, `settledBasis` and timing. Nulls, terminal-before-interrupt, wrong target, multiple delivery, unreadable continuation and external budget kill never qualify.
+  Adjudicated NOT QUALIFIED with all fields recorded (§13.5): record `attempted`/`delivered` null with
+  the degraded could-not-observe cause; surviving structural facts show exactly one V2 interaction
+  (`callCount: 1`, `family: "v2"`) whose response success-decoded to ACTIVE `previous_status:
+  "running"`, but the target was suppressed (23 chars, not id-shaped/marker → `exactTargetMatch:
+  null`) and `orderingBound: false` (`settled: null`, `settledBasis:
+  "ordering-unbound-not-attributed"`, all timing null). First run with a parsed, counted on-script V2
+  interrupt interaction (`callCount: 1`, target-shape facts retained) under the corrected anchored
+  grammar, and the first on this pin — the R5 record had already retained a parsed interaction with
+  the same active previous_status under the since-corrected unanchored grammar (§7.7/§12.8); it still
+  qualifies nothing.
+- [x] Distinguish native Child turn interruption, inner poll/cell settlement, exact Companion process cleanup and durable job/reconciler settlement. A successful interrupt tool response alone proves none of the latter. Read the isolated production stores through existing bounded seams to establish the original job, stop cause/intent and terminal winner; no accepted running work may become untracked. Retain only sanitized ownership/settlement facts.
+  All four layers recorded `not-proven` with causes (§13.5): exact turn interruption unproven (target
+  + ordering unbound); inner poll-cell settlement unadjudicable (no attributable observation; the
+  survive-or-settle shape could not be evaluated); Companion cleanup unproven (no linkage survived);
+  job/reconciler settlement unproven — the bounded store read was NOT exercised because no
+  attributable original job existed to read (all linkage null; no accepted running work became
+  untracked). Distinction ledger: missing model call RULED OUT (the model called once); tool rejection
+  RULED OUT (success decode); interrupt-parser failure RULED OUT (parsed/counted/decoded);
+  case-level unknown-shape failure PRESENT; delivered-but-unsettled UNADJUDICABLE (ordering unbound).
+- [x] Establish no collateral cancellation using one unrelated harmless owned job/Child control in the same relevant host lifecycle, with independently observed survival. Reuse the existing lifecycle fixture/production seams; investigate the minimum isolated control if not already available. No new binding, separate owner authority or parallel original-handle poll. Without live control evidence, do not claim live no-collateral preservation from a unit test alone.
+  Evaluated and recorded `not-proven` (§13.5): the control is only reachable once the lifecycle
+  produces a qualifying shape; this run's case evidence failed fail-closed before that, so the control
+  was not spent and live no-collateral preservation is NOT claimed from unit tests alone.
+- [x] For responsiveness, compare delivery-to-settlement against the native short-window expectation on the same host. Inspect source plus existing controlled baseline first; if neither provides a comparable measured latency, allow ONE separately recorded `native-short-window-responsiveness-control` run (a report/group name, not a new assumed CLI option), with no retry. State the sole experimental change before running: the temporary waiting paragraph requests the baseline 60000-ms window; executable/model/cap/worker/entry/ownership/delivery method and evidence rules remain matched to the candidate. Use only the minimum tested isolated fixture seam if current case selection cannot express that control. This control neither consumes nor adds retries to the candidate's one-run-plus-one-cause-follow-up allowance, and cannot substitute for candidate delivery/settlement qualification. Record the measured delay instead of inventing a universal SLA or waiting secretly until the one-hour window ends.
+  Evaluated; comparison `not-proven` and the control deliberately NOT spent (§13.5): the candidate
+  produced no attributable `deliveryToSettlementMs` (null on the settlement guards), so the latency
+  reference the one-run control would provide has no claim to serve; spending it would waste the
+  group's single run.
+- [x] If the host interrupts the turn but the pending poll survives, record that exact result and keep production blocked. Investigate one cause-directed follow-up using existing supported host mechanisms; never substitute process-budget cleanup for native cancellation. A missing model call stays distinct from tool rejection, parser failure and delivered-but-unsettled work.
+  Evaluated and recorded (§13.5): the survival shape could NOT be established (`orderingBound: false`;
+  the case never qualified), so it was recorded as unadjudicable — never as observed survival. No
+  budget kill occurred (cleanup `observation`), so no cleanup-for-cancellation substitution arose. The
+  cause-directed follow-up was NOT consumed: the blocker is the instruction-independent
+  unclassified-cell family with yet another shape; no case flag governs it; a same-config re-run is
+  the forbidden model-behavior retry. Production stays blocked on this pin (§13.4's prerequisite).
 
 **Exit:** pending delivery, responsive owned settlement and unrelated control survival are proved, or each dependent production dimension stays precisely `not-proven`. The 100-hour ceiling is exercised through inherited controlled tests, not a 100-hour live run.
 
