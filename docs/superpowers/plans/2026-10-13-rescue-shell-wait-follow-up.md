@@ -210,8 +210,17 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
 
 **Files:** Existing `rescue-noise` and `background`; conditional narrow evidence/fixture/test corrections; report S2–S4/Q4.
 
-- [ ] Before retrying, inspect the recorded shape facts/known grammar fixes. A privacy-suppressed unknown cell cannot be retroactively reconstructed or labelled model nonadherence. If needed, use one fresh bounded diagnostic retaining only whitelisted structural facts and manually adjudicate the observed narrow shape; no raw private rollout archive or general JS interpreter.
-- [ ] Run each case once after that concrete prerequisite is understood:
+- [x] Before retrying, inspect the recorded shape facts/known grammar fixes. A privacy-suppressed unknown cell cannot be retroactively reconstructed or labelled model nonadherence. If needed, use one fresh bounded diagnostic retaining only whitelisted structural facts and manually adjudicate the observed narrow shape; no raw private rollout archive or general JS interpreter.
+  Executed 2026-10-13 (§13.6): the §12.8 grammar corrections were inspected first and cover none of the
+  observed shapes; the already-retained facts (tool/lines/bytes/directive-presence) were confirmed
+  insufficient for adjudication, so the plan's bounded diagnostic was built — a gated structural
+  whitelist in the unclassified-cell excerpt (`wholeBodyStatementMatch`, per-line fixed-token prefix /
+  cumulative bracket depth / semicolon / allowlisted tool names, content sha256), default retention
+  byte-identical and pinned, with 7 focused RED→GREEN + privacy regressions. The diagnostic launched as
+  the noise case's initial run and its narrow shape was manually adjudicated: a single-line
+  `write_stdin`-headed script statement outside BOTH pinned grammars — neither a demonstrable defect
+  nor demonstrable nonadherence under the retention design.
+- [x] Run each case once after that concrete prerequisite is understood:
 
 ```bash
 shell_case_output=$(mktemp -d)
@@ -229,9 +238,33 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
   --cap-ms 3600000 --poll-ms 3600000 --budget-ms 600000
 ```
 
-- [ ] Noise: same handle and terminal bytes; ordinary stderr/progress must not substitute for completion or be routinely relayed to Root. Record actual extra interventions, not just requested long yields.
-- [ ] Background: Root's decoded acknowledgement is launch-only for the exact Child, with zero positively observed Root joins; the exact Child remains responsible for attached Companion observation to terminal. Root acknowledgement is not Child settlement; verify the existing settlement watch and final process outcome. A completed Root alone cannot qualify background placement.
-- [ ] Preserve existing between-polls-only sidecar intents (`zcode status`, `$zcode:status`, `/zcode:status`, trim only). Inspect/test the structural policy and observe installed latency only if the same native session supports safe steering. Do not issue a parallel poll or turn Status into the waiting engine. If unreachable, retain the concrete interface limitation; do not demand a new undocumented steering API.
+  Executed 2026-10-13 on the unchanged 0.162.1 pin (re-verified before EACH run), one run per case,
+  driver exit 0, cleanup complete in both (§13.6): `rescue-noise` — its initial run WAS the diagnostic
+  (plan flags + the retention-only gate; host behavior identical); inconclusive
+  `unsupported-call-shape`, fingerprint `38c33f61…`. `background` — the formal trial with the same
+  retention-only gate; inconclusive `unsupported-call-shape`, fingerprint `a9d65bb2…`, budget-cleanup
+  at 600010 ms after the Root host result resolved at 46384 ms. Both follow-ups NOT consumed (no
+  concrete cause with a single changeable variable); both cases stopped per §3.
+- [x] Noise: same handle and terminal bytes; ordinary stderr/progress must not substitute for completion or be routinely relayed to Root. Record actual extra interventions, not just requested long yields.
+  Adjudicated `not-proven` with cause (§13.6): the fail-closed scan blocked the case on the adjudicated
+  cell before any attributable linkage, so same-handle discipline, terminal-byte exactness,
+  no-substitution, no-relay and the ACTUAL extra-intervention count are all `null`-with-cause (never
+  zero). The held turn itself ran cleanly to the natural hold-gate end (host exit 0, no termination,
+  `interrupt.requested: false`).
+- [x] Background: Root's decoded acknowledgement is launch-only for the exact Child, with zero positively observed Root joins; the exact Child remains responsible for attached Companion observation to terminal. Root acknowledgement is not Child settlement; verify the existing settlement watch and final process outcome. A completed Root alone cannot qualify background placement.
+  Adjudicated `not-proven` with every sub-fact recorded (§13.6): the decoded acknowledgement is NOT
+  established (content unattributable; all linkage `null`); Root joins UNKNOWN (`rootJoins: null`,
+  never zero); the settlement watch DID execute — the held turn stayed open the full remaining budget
+  and settlement was never detected (`settlement.observed: false`); the final process outcome is
+  BUDGET-CLEANUP termination (`codexTerminated: true`, `nativeInterruptionClaimed: false` — cleanup,
+  never native interruption); the completed Root alone qualified nothing.
+- [x] Preserve existing between-polls-only sidecar intents (`zcode status`, `$zcode:status`, `/zcode:status`, trim only). Inspect/test the structural policy and observe installed latency only if the same native session supports safe steering. Do not issue a parallel poll or turn Status into the waiting engine. If unreachable, retain the concrete interface limitation; do not demand a new undocumented steering API.
+  Executed 2026-10-13 (§13.6): the intents and the between-polls-only/trim-only policy are unchanged and
+  re-verified by the existing suites (`tests/codex-rescue-qualification.test.mjs` 162/162 including the
+  status-sidecar mutation set; `tests/integration/skills.test.mjs` 76/76); no probe code changed.
+  Installed latency NOT observed — the interface precondition never materialized (no qualified pending
+  original-handle observation existed on this pin to steer), so the concrete limitation is retained:
+  sidecar latency `not-proven`; no parallel poll was issued and Status was never made the waiting engine.
 
 **Exit:** each placement/noise surface has its own result; uncertainty does not erase the already measured named foreground behavior.
 

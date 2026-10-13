@@ -971,7 +971,7 @@ useful next step for each is recorded in §10 and §11.2.
 | Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan. **2026-10-13 Task 3 run on 0.162.1 (§13.5): that one retry executed and again ended inconclusive — but the model DID emit exactly ONE V2 `interrupt_agent` interaction whose tool response success-decoded to the ACTIVE `previous_status: "running"`, the first run with a parsed AND counted V2 interrupt interaction (`callCount: 1`, target-shape facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (the R5 record had already retained a parsed interaction with the same active `previous_status` and `family: "v2"`, §7.7, but under the since-corrected unanchored grammar — §7.7's retained R5 row lists no count or target facts, and its case failed the whole-case scan); the call's target was suppressed (23 chars, neither id-shaped nor the fixture marker) and the ordering never bound (the case evidence failed fail-closed on the same unclassified `exec_command`-cell family, new 3-line/314-B shape), so exact-target delivery, pending-window ordering, settlement and every production layer stay `not-proven` on this pin** | On 0.162.1 the one run and its cause-directed follow-up decision are consumed/recorded (§13.5); the remaining step on this pin is the narrow unclassified-cell adjudication (§13.4's blocking prerequisite, reserved to Task 4's allowance) before any further interrupt measurement; the 0.160.1/0.161.0 records keep their own scope |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
-| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell shape needs its own bounded adjudication before noise/background measurements can complete. Budget/failure cleanup is never native user interruption |
+| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence. **2026-10-13 Task 4 on 0.162.1 (§13.6): both cases ran exactly once each behind the plan's new bounded structural diagnostic — both again inconclusive `unsupported-call-shape`, but the family is now SHAPE-ADJUDICATED** (noise: a single-content-line `write_stdin`-headed script statement, 387 B, failing both pinned grammars — a variant outside them, defect and nonadherence both non-demonstrable, fingerprint `38c33f61…`; background: a 4-statement cell whose leading statements reference no observational tool, 583 B, fingerprint `a9d65bb2…`, Root host result at 46384 ms with the Child-settlement watch running the full budget to a 600010-ms budget-cleanup termination, never labelled interruption). Noise checks, noise and background placement stay `not-proven` on this pin; the sidecar structural policy re-verified 162/162 + 76/76 while installed sidecar latency stays `not-proven` (no qualified pending observation existed to steer) | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell family is adjudicated to the retention design's limit (§13.6): further measurement needs content-level evidence (a privacy-authority decision outside the plan's authority) or a host/form change — no parser expansion. Budget/failure cleanup is never native user interruption |
 | Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). Root commands remain `not-proven`, each with its own recorded outcome | Per-command cause-directed follow-ups: review-wait needs the host to survive its held boundary; adversarial-review-wait needs the renderer-marker contract re-examined against the actual rendered bytes (the flow itself completed); status-wait needs a live run whose turn-1 launch acknowledgement is actually emitted and observable; the instrument is no longer the blocker (§12.6, §12.9) |
 | Production release/version generalization/token savings | **`not-proven`**: disposable sandbox/hook bypass and no token measurements throughout. Qualified claims span two installed versions measured at execution time — 0.160.1 (Task 4) and 0.161.0 (R5, §1.2.2); auto-update limits attribution in both directions and no release generalization is claimed | Obtain a separate human adoption decision (§11.2); no production rollout implied |
 
@@ -1024,7 +1024,13 @@ the smallest useful next delta is still a **scoped follow-up campaign**, not a p
    enough for evidence collection.
 2. Noise and background placement: both R5 re-runs ended inconclusive on unclassified cells
    (`unsupported-call-shape`); each needs its own bounded adjudication of that cell shape before the
-   measurements can complete.
+   measurements can complete. **2026-10-13 Task 4 update: that bounded adjudication was built and
+   executed (§13.6) — a gated structural whitelist in the observer plus the two case runs on 0.162.1.
+   The family is adjudicated to the retention design's limit (script cells outside the two pinned
+   grammars, per-run structural fingerprints retained; defect and nonadherence both
+   non-demonstrable), and both measurements remain `not-proven` on this pin. The next step is no
+   longer an instrument task: it needs content-level evidence via a privacy-authority decision
+   outside the plan's authority, or a host/form change.**
 3. Root command qualification: the instrument is no longer the blocker (R2 contract implemented §12.6;
    exercised §9.4). Per-command causes: review-wait's host must survive its held boundary;
    adversarial-review-wait's flow completed but its renderer-marker contract needs re-examination
@@ -1060,6 +1066,21 @@ no-collateral preservation stay `not-proven` on this pin. The separately named
 serves only the delivery-to-settlement comparison, which is `not-proven`. No code changed (no
 instrument defect demonstrated); item 1 on this pin remains behind the same unclassified-cell
 prerequisite as items 0 and 2 (§13.4).
+
+2026-10-13 Task 4 update: the plan's bounded-diagnostic mechanism (the §13.4 blocking prerequisite
+reserved to Task 4's allowance) was built and executed (§13.6) — the campaign's first instrument
+change (a gated structural whitelist in the unclassified-cell excerpt; default retention unchanged
+and pinned; observer digest `e28ec619…` → `b237a6e1…`) — and the two Task 4 cases each ran exactly
+once on the SAME 0.162.1 pin: `rescue-noise`'s initial run WAS the diagnostic (formal flags plus the
+retention-only gate), and `background` ran its formal trial with the same gate. Both ended
+inconclusive on the adjudicated unclassified-cell family with NEW structural fingerprints
+(noise `38c33f61…`, background `a9d65bb2…`); both cases' cause-directed follow-ups were NOT consumed
+(no concrete cause with a single changeable variable), and both cases stopped per §3. Delta items 0–2
+all remain behind the same family on this pin, now adjudicated to the retention design's limit: the
+next step needs content-level evidence (a privacy-authority decision outside the plan's authority) or
+a host/form change — never a parser expansion. The sidecar structural policy re-verified (162/162 +
+76/76); installed sidecar latency stays `not-proven` (no qualified pending observation existed to
+steer).
 
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
@@ -1134,7 +1155,17 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   parsed interaction with the same active status under the since-corrected grammar, §7.7/§12.8) is
   recorded there as surviving structural facts, every dependent production
   dimension stays `not-proven`, the responsiveness control was deliberately not spent, and no code
-  changed. Editorial note: this update rewrote the Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
+  changed. **2026-10-13 Task 4 update:** the noise diagnostic (the case's initial run, formal flags
+  plus a retention-only gate) and the background formal trial have now executed on the same pin
+  (§13.6) — both inconclusive on the adjudicated unclassified-cell family with new structural
+  fingerprints (`38c33f61…` / `a9d65bb2…`); the bounded-diagnostic instrument seam was added (the
+  campaign's first code change: gated, default retention unchanged, RED→GREEN + privacy regressions,
+  observer digest `b237a6e1…`); both cases' follow-ups were NOT consumed and both cases stopped; the
+  sidecar structural policy re-verified (162/162 + 76/76) and its installed latency stays
+  `not-proven` (no qualified pending observation existed to steer). The two Task 4 records live under
+  private OS-temp dirs `…/tmp.Y8ONkaeHm6` (noise, record digest `f0f677ca…`) and `…/tmp.MwsOB6nhkP`
+  (background, record digest `32db5479…`) with the §13.4 per-run convention. Editorial note: this
+  update rewrote the Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
   the §11.2 delta list stands." became "No live run had executed under the follow-up plan at that
   point." — to avoid leaving a falsehood in the current-state handoff; the remainder of the Task 1 note
   is unchanged, and no earlier section was touched.
@@ -3313,3 +3344,192 @@ forbidden model-behavior retry). `native-short-window-responsiveness-control`: 0
 `zcode-shell-wait-fixture-fHFp3c` directory (mtime 2026-10-13 04:13 local, BEFORE this task's run) was
 found untouched and left in place per §3's unrelated-scratch preservation rule; this run's own fixture
 was disposed by the driver.
+
+### 13.6 Follow-up campaign Task 4: noisy output, background placement and the sidecar opportunity (2026-10-13, installed 0.162.1) — the plan's bounded diagnostic executed as the noise case's initial run; both live cases inconclusive on the same unclassified-cell family, now structurally adjudicated; noise/background placement stay `not-proven`; sidecar structural policy re-verified, installed latency unreachable
+
+Task 4 executed the plan's two listed live cases plus its diagnostic prerequisite, exactly one run per
+case, with the bounded diagnostic mechanism the plan reserves to this task's allowance (§13.4/§13.5's
+blocking prerequisite). **Diagnostic accounting (recorded before any launch):** the diagnostic ran as
+the `rescue-noise` case's INITIAL run — the plan orders the diagnostic before "run each case once
+after that concrete prerequisite is understood", and §3 counts a host-launching diagnostic as that
+case's initial run or its follow-up. Choosing initial-run placement (rather than formal-first +
+diagnostic-as-follow-up) preserves a usable noise measurement path if the adjudication had
+demonstrated a correctable cause, keeps the background case's full allowance intact, and matched the
+observed recurrence (the family had blocked every inconclusive recorded run on the 0.161.0/0.162.1
+pins — R5's four retrials, §13.4's four runs, §13.5's run), so a formal-first order would most likely
+have burned the formal run inconclusively before the adjudication existed. The single delta of the
+diagnostic run versus the plan's formal invocation is a RETENTION-ONLY research gate; host behavior is
+byte-identical.
+
+**The diagnostic instrument (the campaign's first instrument change; plan-authorized as an instrument
+need, not a defect fix).** A gated extension of the unclassified-cell structural excerpt
+(`tools/shell-wait-probe/evidence.mjs`): when the evidence input carries the explicit boolean
+`unclassifiedStructuralDiagnostic: true` (threaded from the new `--unclassified-structural-diagnostic 1`
+CLI marker, which only accepts the literal `1`, through `validateCaseInput` into the evidence request,
+and recorded top-level in the case record ONLY when enabled), the excerpt of an unclassified STRING
+body additionally retains whitelisted structural facts and nothing else:
+
+- `wholeBodyStatementMatch` — whether the module's OWN single-statement wrapper parser
+  (`parseWrappedToolInput`, the same pinned patterns, no new grammar) accepts the whole body; the
+  discriminator between "a grammar-valid statement only the per-line cell splitter rejects" (a
+  demonstrable instrument defect) and a foreign/departed shape;
+- `lines[]` — per CONTENT line (directive stripped, blank separators skipped, bounded 16): 1-based raw
+  line number, a fixed-token prefix class tested against the EXISTING grammar heads
+  (`const-r-await` / `text-await-tools` / `text(` / `other`), a NAIVE cumulative bracket-depth balance
+  (string literals are not lexed; a diagnostic hint, never an admission fact), a trailing-semicolon
+  flag, and the allowlisted public tool names referenced on that line (unknown names stay withheld
+  behind a count);
+- `sha256` — the withheld body's one-way digest: a recurrence fingerprint across runs and cases.
+
+No raw content, no content-derived string, and no number extracted from content is retained; the
+verdict stays `unsupported-call-shape`/inconclusive either way. **Default retention is unchanged and
+pinned:** without the gate the excerpt JSON carries exactly the previous nine facts
+(`suppressed/classification/tool/bodyType/inputLines/directivePresent/directiveKeys/withheldDirectiveKeys/inputBytes`).
+TDD evidence: the seven focused regressions in the new `unclassified-cell structural diagnostic` test
+section failed 6/7 before implementation (the FIRST of the seven pins the default-retention invariance
+and passed before and after; the other six — ending with the `shellWaitEvidenceRequest`/gate-validation
+test — failed before implementation for the missing gate and passed after), passed 7/7 after; the full
+shell-wait suite went 449/449 (from 442), the Task 1 seam
+selection stayed 79/79, selection 6/6, `npm run lint` and `npm run typecheck` clean. The R0 canary
+discipline holds under the gate: synthetic canaries planted in unsupported cells never reach the gated
+excerpt, the evidence object, or the persisted record (pinned by regression).
+
+Post-review correction (same commit; one reproduced P2 review finding): a sixteen-line gated cell's
+serialized line facts could exceed the 2048-char excerpt budget, so the scrubber truncated the JSON
+mid-object — losing the fingerprint, the omission count and parseability. Fixed by budgeting the
+serialized diagnostic against the caller's excerpt room and dropping trailing line facts into
+`withheldLines` BEFORE the scrubber (the digest and closing delimiters survive for any body size;
+retention whitelist unchanged). Regression evidence: RED with the excerpt truncated
+(`truncated: true`, unparseable JSON), GREEN after — the diagnostic section 8/8, the full suite
+**450/450** (from the 449 recorded above at the original execution), selection 6/6, lint, typecheck,
+line endings and `git diff --check` clean at the amended commit.
+
+**Pre-registered adjudication table (stated before the runs):** `wholeBodyStatementMatch: true` →
+demonstrated instrument defect → minimal whole-body fallback correction (RED→GREEN) and the formal
+noise trial as the case's cause-directed follow-up (single changed variable = that correction);
+`false` with a recognizable supported head and an open-then-closed depth profile → a statement variant
+outside the pinned grammar → adjudicate gap-vs-departure conservatively, no code change unless the
+cell is clearly a sanctioned shape; foreign statements / no observational tool references → departure
+shape, recorded, case stops. The table's content is fully consistent with the executed adjudication;
+the PRE-RUN TIMING itself is not independently verifiable from retained artifacts — the records carry
+no timestamped pre-registration, so the "stated before the runs" claim rests on this section's
+recorded account alone.
+
+**Re-pin before EACH run:** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL before both runs; the pin never moved, so both
+records share the §13.4/§13.5 comparable pin and no cross-version comparison was started. Worktree
+HEAD `0e50444e…` — the fixture installed committed source at that pin; the working tree carried the
+uncommitted instrument seam (executing module sha256 `evidence.mjs af15dd90…`, `driver.mjs 53e7de4e…`,
+`fixture.mjs 8b93ecc8…` unchanged), and both records carry the recomputed observer digest
+`b237a6e1…` (`working-tree-uncommitted`, `sourcesChangedDuringRun: false`) — the post-seam
+instrument, distinct from §13.4/§13.5's `e28ec619…`. Per-run provenance per the Task 1 schema (both
+runs): `codexVersion` "0.162.1", `requestedCapMs` 3600000 with `isolatedSetup.capVerified: true`
+(fixture-configuration retention, NOT propagation evidence), `requestedPollMs` 3600000,
+`requestedWorkerDurationMs`/`requestedBudgetMs` 130000/360000 (noise) and 120000/600000 (background),
+`roleStatus: "ready"`, `setupAttempts: 2` (the fixture's documented normal bootstrap re-run),
+`fixtureVariant: "candidate"`, instruction artifacts with before/after sha256 + mode retained in the
+records (candidate paragraph applied to both artifacts; the three command Skills byte-identical),
+executing model `null` (never inferred). Driver exit 0 in both runs — execution/cleanup completed
+(`fixtureDisposed: true`, `cleanupComplete: true`, 0 disposal errors), NOT that any case qualified.
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 — diagnostic = noise INITIAL run | `rescue-noise`, plan's exact flags (worker 130000, cap 3600000, poll 3600000, budget 360000) + `--unclassified-structural-diagnostic 1` | `f0f677caf50becd22e10d51f77876c8dff4f20635f43c5f5fe5de7312149b00b` (`…/tmp.Y8ONkaeHm6`) | `executed`, **inconclusive `unsupported-call-shape`** — one unclassified `custom_tool_call` script cell, content withheld, NOW structurally adjudicated (below). Route/linkage/observations all `null`; the noise checks (same handle, terminal bytes, no stderr/progress substitution, no relay to Root, actual extra interventions) are `null`-with-cause, never zero |
+| 2 — background formal trial | `background`, plan's exact flags (worker 120000, cap 3600000, poll 3600000, budget 600000) + the same retention-only gate (recorded in the record; host behavior identical to the plan's invocation) | `32db54797aed8aec1bca50db61668d1e535bec95fec697e664b4eb2784564406` (`…/tmp.MwsOB6nhkP`) | `executed`, **inconclusive `unsupported-call-shape`** — same family, DIFFERENT shape (below); budget-cleanup at 600010 ms; Root host result resolved at 46384 ms with no Child linkage; background placement `not-proven` |
+
+**Diagnostic adjudication (retained structural facts only).**
+
+- **Run 1 (noise).** The blocked cell is a `write_stdin`-referencing single-content-line script
+  statement (2 raw segments = one line + trailing newline; 387 bytes; no directive; prefix
+  `text-await-tools`; bracket balance 0 at line end; semicolon-terminated; tool fact `write_stdin`;
+  fingerprint sha256 `38c33f61215028e44ef443da30e7e37088ebe95d3501fc7b8ab28cb548d13164`;
+  `wholeBodyStatementMatch: false`). A plain poll write parses through the inline wrapper and would
+  have classified, so a balanced one-line `text(await tools.write_stdin(…));` statement that fails
+  BOTH the byte-pinned sanctioned preparation grammar (§12.4's `PREPARATION_PATTERN` — the by-design
+  exact form of the one sanctioned nonempty write) AND the wrapper-argument literal parser implies
+  argument EXPRESSION SYNTAX outside both — most plausibly the preparation envelope's
+  `JSON.stringify(…)` construction in a form that departs from the pinned byte form. **Adjudication:
+  a statement variant OUTSIDE the pinned grammar — neither a demonstrable instrument defect nor
+  demonstrable model nonadherence.** The strict pattern is deliberately pinned to the taught form, so
+  widening it would be the forbidden generic parser expansion; the content is withheld by the R0
+  design, so the departure cannot be labelled nonadherence either (§3's rule). No case flag governs
+  the model's script form.
+- **Run 2 (background).** The blocked cell (where the prompted `$zcode:rescue --background --fresh`
+  invocation was expected) is a 4-content-line script cell (5 raw segments; 583 bytes; no directive;
+  `wholeBodyStatementMatch: false`; fingerprint sha256
+  `a9d65bb252cabafafa8e2087070280cc5e01497b3b2a1148b3b3f93f34cdfe70`) whose first TWO content lines
+  are balanced, semicolon-terminated statements referencing NO observational tool at all (prefix
+  `other`, empty tool facts), followed by two balanced, semicolon-terminated
+  `text(await tools.exec_command(…));`-headed lines. Any single unparseable line rejects the whole
+  cell fail-closed, so the failing statements are (at least) the two non-tool leading lines — shapes
+  outside the observational grammar by construction, not a demonstrably sanctioned form. **Same
+  adjudication: variant outside the pinned grammar; defect and nonadherence both non-demonstrable
+  under the retention design.** The two fingerprints (`38c33f61…`, `a9d65bb2…`) differ — the family's
+  shapes keep varying run to run and case to case, consistent with §13.4's varying byte/line facts.
+- **What this settles:** the §13.4 blocking prerequisite is adjudicated as far as the retention design
+  permits — the family is code-mode script cells whose statements fall outside the two pinned
+  grammars, with per-run structural fingerprints now retained for recurrence comparison. It does NOT
+  settle whether the cells are benign form variants or departures: that needs content-level evidence,
+  which only a privacy-authority decision (outside this plan's authority) or a host/form change could
+  provide. No parser correction follows, because no defect is demonstrable (§3: no code change just
+  to create a diff — the seam above is the plan-authorized diagnostic instrument, the only code
+  change).
+
+**Noise outcome (`not-proven` on this pin).** The case ran once with the noise environment active; the
+whole-case fail-closed scan blocked on the adjudicated cell before any attributable linkage, so
+same-handle discipline, terminal-byte exactness, the no-substitution and no-relay rules, and the count
+of ACTUAL extra interventions are all `null`-with-cause (never zero). The held turn itself ran
+cleanly: observation detected at 36258 ms, first poll-start detection at 68181 ms, turn ended
+naturally at the hold gate (hold deadline 166258 ms, ended 174728 ms, `endedBeforeGate: false`,
+cleanup label `observation`), host exit 0, no termination, `interrupt.requested: false`.
+
+**Background outcome (`not-proven` on this pin; every placement sub-fact recorded).** The Root host
+RESULT resolved at 46384 ms (`rootAcknowledgementAtElapsedMs`) — closely mirroring R5's 41333 ms
+"host ended before the background flow" shape (§7.7), now recurring on 0.162.1. The required
+sub-adjudications: Root's decoded acknowledgement is NOT established as launch-only for the exact
+Child (the result's decoded content is unattributable — every linkage field `null`); positively
+observed Root joins are UNKNOWN (`rootJoins: null`, never zero); the Child-side settlement watch DID
+execute — the held turn stayed open for the full remaining budget exactly as the R3 lifecycle
+requires, and settlement was never detected (`settlement.observed: false`,
+`settlementDetectedAtElapsedMs: null`); the final process outcome is BUDGET-CLEANUP termination at
+600010 ms (`codexTerminated: true`, `nativeInterruptionClaimed: false` — cleanup, never native user
+interruption), with `hostExit: null` because the terminated host result never resolved. A completed
+Root alone could not qualify background placement in any case, and here even the Root completion is
+unattributable: the case evidence failed fail-closed on the adjudicated cell.
+
+**Sidecar outcome (structural policy re-verified; installed latency `not-proven` — interface
+limitation).** The existing between-polls-only sidecar policy is unchanged and re-verified on this
+tree by its existing suites on 2026-10-13: `tests/codex-rescue-qualification.test.mjs` 162/162 (the
+status-sidecar mutation set: exactly one sidecar, between polls while the original handle is live,
+the constant no-argument command with no extra arguments, unique call id, bounded public projection
+keys, private progress-preview suppression) and `tests/integration/skills.test.mjs` 76/76 (the bound
+sidecar exposes only the safe fixed fields; missing/sibling/stale-turn/ambiguous bindings rejected).
+The intents (`zcode status`, `$zcode:status`, `/zcode:status`, trim only) are pinned verbatim in the
+skill-contract fixtures. Installed latency was NOT observed because the interface precondition never
+materialized: safe steering requires a qualified live session with a pending original-handle
+observation, and on this pin neither case reached an attributable observation (both fail-closed
+before linkage), so there was no session to steer and no legitimate occasion to issue anything beside
+the held observation. No parallel poll was issued and Status was not made the waiting engine; the
+concrete limitation is retained: sidecar response delay under a long wait remains unmeasurable on
+this pin until a case first produces a qualified pending observation.
+
+**Instrument defect: none demonstrated — the seam is the only code change.** The diagnostic
+adjudications above are the defect path's input: no blocked cell is a demonstrably sanctioned shape
+(the noise cell fails the by-design pinned preparation form; the background cell's leading statements
+reference no observational tool), so no grammar correction was made and none of the pinned
+fail-closed boundaries moved. The gated seam itself is the plan's own bounded-diagnostic mechanism
+("use one fresh bounded diagnostic retaining only whitelisted structural facts and manually adjudicate
+the observed narrow shape"), built test-first with default-retention invariance pinned.
+
+**Run/follow-up allowance ledger.** `rescue-noise`: the ONE initial run consumed — by the diagnostic
+(plan flags + the retention-only gate, the case's own formal attempt simultaneously); inconclusive;
+the case's one cause-directed follow-up NOT consumed — no concrete cause with a single changeable
+variable exists (content withheld; the pinned preparation form is a design decision, not a defect; a
+same-config re-run would be the forbidden model-behavior retry; no case flag governs the script
+form). `background`: the ONE listed run consumed (formal trial); inconclusive on a new shape
+(fingerprint `a9d65bb2…`); the follow-up NOT consumed for the same reason. No other host was
+launched; the sidecar work launched none. Per §3 the recurring unknown-shape family is retained with
+its fingerprints and both cases stop here. The pre-existing OS-temporary
+`zcode-shell-wait-fixture-fHFp3c` scratch directory recorded in §13.5 was again found untouched and
+left in place; both of this task's fixtures were disposed by the driver.

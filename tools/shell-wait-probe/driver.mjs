@@ -262,7 +262,7 @@ export function parseShellWaitArguments(argv) {
   if (argv.includes('--help')) return { help: true };
   /** @type {Record<string, string>} */
   const values = {};
-  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms'];
+  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic'];
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -288,6 +288,13 @@ export function parseShellWaitArguments(argv) {
   if (values['--status-query-timeout-ms'] !== undefined && values['--case'] !== 'status-wait') {
     throw invalidCaseInput('--status-query-timeout-ms is only valid for the status-wait case.');
   }
+  // The bounded-diagnostic research gate (follow-up plan Task 4): a marker
+  // value, not a duration — only the literal `1` enables it, so the single
+  // changed variable of a diagnostic run is unambiguous in the invocation.
+  if (values['--unclassified-structural-diagnostic'] !== undefined
+    && values['--unclassified-structural-diagnostic'] !== '1') {
+    throw invalidCaseInput('--unclassified-structural-diagnostic only accepts the literal value 1.');
+  }
   const defaults = shellWaitCaseDefaults(/** @type {string} */ (values['--case']));
   const capMs = values['--cap-ms'] !== undefined ? Number(values['--cap-ms']) : defaults.capMs;
   const pollMs = values['--poll-ms'] !== undefined ? Number(values['--poll-ms']) : defaults.pollMs;
@@ -308,6 +315,7 @@ export function parseShellWaitArguments(argv) {
       ? Number(values['--status-query-timeout-ms'])
       : defaults.statusQueryTimeoutMs,
     budgetMs: values['--budget-ms'] !== undefined ? Number(values['--budget-ms']) : defaults.budgetMs,
+    unclassifiedStructuralDiagnostic: values['--unclassified-structural-diagnostic'] === '1',
   };
 }
 
@@ -464,6 +472,10 @@ function validateCaseInput(input) {
   if (input.statusQueryTimeoutMs !== undefined && input.case !== 'status-wait') {
     throw invalidCaseInput('statusQueryTimeoutMs is only valid for the status-wait case.');
   }
+  if (input.unclassifiedStructuralDiagnostic !== undefined
+    && typeof input.unclassifiedStructuralDiagnostic !== 'boolean') {
+    throw invalidCaseInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
+  }
   return {
     case: /** @type {ShellWaitCaseLabel} */ (input.case),
     codexBinary: /** @type {string} */ (input.codexBinary),
@@ -474,6 +486,7 @@ function validateCaseInput(input) {
     pollMs: /** @type {number} */ (input.pollMs),
     statusQueryTimeoutMs: input.statusQueryTimeoutMs,
     budgetMs: /** @type {number} */ (input.budgetMs),
+    unclassifiedStructuralDiagnostic: input.unclassifiedStructuralDiagnostic === true,
   };
 }
 
@@ -536,6 +549,10 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     status,
     case: caseInput.case,
     executedAt: new Date().toISOString(),
+    // The bounded-diagnostic research gate (follow-up plan Task 4): recorded
+    // ONLY when enabled, so the single changed variable of a diagnostic run is
+    // visible in the persisted record and default records keep the pinned schema.
+    ...(caseInput.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
     provenance: {
       sourceSha: caseInput.sourceSha,
       sourceWorktreeOwnedByFixture: true,
@@ -2276,6 +2293,10 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       workerStillAliveAfterObservation: held.endedBeforeGate === false && held.processAliveWhileHeld === true,
       queryTurn: statusQueryTurn,
     }),
+    // The bounded-diagnostic research gate (follow-up plan Task 4): threaded
+    // ONLY when the validated case input enables it, so the default evidence
+    // input — and default retention — stay unchanged.
+    ...(input.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
     redactions,
   });
   const rolloutsFailureReason = rolloutsError === null ? null : redactPrivatePaths(rolloutsError, fixture);
@@ -2948,6 +2969,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   cleanup: { label: string | null, nativeInterruptionClaimed: false, fixtureDisposed: boolean | null, disposalError: string | null, cleanupComplete: boolean | null, cleanupErrorCount: number },
  *   evidence: { count: number, truncated: boolean, excerpts: unknown[], rolloutCount: number | null, childToolCallCount: number | null },
  *   inconclusive: { reason: string } | null,
+ *   unclassifiedStructuralDiagnostic?: true,
  * }} ShellWaitCaseRecord
  * @typedef {{
  *   case: ShellWaitCaseLabel,
@@ -2959,6 +2981,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   pollMs: number,
  *   statusQueryTimeoutMs?: number,
  *   budgetMs: number,
+ *   unclassifiedStructuralDiagnostic: boolean,
  * }} ValidatedShellWaitCase
  * @typedef {'rescue-baseline'|'rescue-long'|'rescue-repeat'|'rescue-noise'|'rescue-interrupt'|'review-wait'|'adversarial-review-wait'|'status-wait'|'background'} ShellWaitCaseLabel
  * @typedef {{
@@ -2972,6 +2995,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   pollMs?: number,
  *   statusQueryTimeoutMs?: number,
  *   budgetMs?: number,
+ *   unclassifiedStructuralDiagnostic?: boolean,
  * }} ShellWaitCaseInput
  * @typedef {import('./fixture.mjs').ShellWaitFixtureHandle} ShellWaitFixtureHandle
  * @typedef {{
@@ -3022,7 +3046,8 @@ const modulePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === pathToFileURL(modulePath).href) {
   const usage = 'usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> '
     + `--source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] `
-    + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
+    + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] `
+    + `[--unclassified-structural-diagnostic 1]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
   try {
     const parsed = parseShellWaitArguments(process.argv.slice(2));
     if ('help' in parsed) {
