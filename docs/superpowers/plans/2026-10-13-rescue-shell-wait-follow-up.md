@@ -91,7 +91,7 @@ Expected: zero failures. Existing `pollWallTimesMs` covers individual polls; a p
 
 **Files:** Existing `rescue-long`/`rescue-repeat`/`rescue-baseline` cases; conditional timing correction in evidence/driver/test; report §§7/10/11.
 
-- [ ] Execute one unraised candidate control. Omit `--cap-ms` completely; `0` is invalid. Use private fresh output for every invocation:
+- [x] Execute one unraised candidate control. Omit `--cap-ms` completely; `0` is invalid. Use private fresh output for every invocation:
 
 ```bash
 shell_case_output=$(mktemp -d)
@@ -102,14 +102,43 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
   --poll-ms 3600000 --budget-ms 1200000
 ```
 
-- [ ] Adjudicate M from the nonterminal original-handle poll's OWN `pollWallTimesMs` value and linked return shape: worker/process still running, request window not expired, no interrupt or other ender. Do not take the last terminal poll, whole-cell duration or source default. No nonterminal return or null poll timing means M remains imprecise/unproved; investigate one cause-directed follow-up, not a fabricated number. Preserve poll/result ordering without persisting private output.
-- [ ] Execute a raised `rescue-long` with the SAME executable, model, paragraph, requested yield and worker duration, adding only `--cap-ms 3600000`. A causal comparison requires matching pins/configuration apart from that key. At decisive poll start, the independently measured remaining lifetime must be at least `M + 30000`; its basis remains the conservative hold-deadline-at-poll-start measurement, not `workerDurationMs - decisiveWallMs`.
-- [ ] If the initial hold cannot meet that precondition, record it as inconclusive. A single cause-directed resized group may use `workerDurationMs = max(420000, ceil(M) + 90000)` with enough finite probe budget; measure actual remaining lifetime again and keep worker duration matched across its unraised/raised runs. If M is at/above the candidate cap, do not claim propagation from this candidate or enlarge the cap without first reporting the changed experimental scope.
-- [ ] On the current comparable pin, execute one fresh `rescue-repeat` with the qualified raised flags and a distinct actual Child. Because the planning binary differs from 0.161.0, the historical repeat does not replace this current-version repeat. If an exactly matching historical pin is actually reused, retain its qualified repeat without re-running it merely for ceremony; explain all provenance matches.
-- [ ] Where current-version re-entry benefit lacks a comparable instruction control, run one `rescue-baseline` with the SAME cap/worker/budget and `--poll-ms 60000`. This isolates instructions from cap configuration. Unknown baseline linkage/counts remain unknown, not zero. Reuse qualified matching evidence if available; do not recreate four historical M attempts.
-- [ ] Record exact route, parent/Child linkage, one launch/send, original handle, directive and inner yield, individual poll outcomes, outer returns, Root joins, terminal exit and sentinel. Exit 0 from the DRIVER means execution/cleanup completed, not that the case qualified. Calculate ratio/precondition only when M is attributable; otherwise keep `POSITIVE-but-M-imprecise` as a clue, not spec Q3 acceptance.
+  Executed 2026-10-13 on the re-pinned 0.162.1 executable (§13.4): driver exit 0, fixture cleanup
+  complete, but the case is inconclusive `unsupported-call-shape` (one unclassified 3-line 443-byte
+  `exec_command` cell, content withheld by the R0 design, cause not established).
+- [x] Adjudicate M from the nonterminal original-handle poll's OWN `pollWallTimesMs` value and linked return shape: worker/process still running, request window not expired, no interrupt or other ender. Do not take the last terminal poll, whole-cell duration or source default. No nonterminal return or null poll timing means M remains imprecise/unproved; investigate one cause-directed follow-up, not a fabricated number. Preserve poll/result ordering without persisting private output.
+  Adjudicated `not-proven` with its cause recorded (§13.4): the fail-closed scan blocked every record
+  before any attributable poll timing existed — `pollWallTimesMs` is null in all four records. The one
+  allowed cause-directed follow-up was NOT consumed: no concrete cause with a single changeable variable
+  exists (the blocker recurred 4/4 runs, both instruction variants, varying shapes; no case flag governs
+  it; a re-run would retry model behavior; no instrument defect is demonstrable under the retention
+  design, so no code changed).
+- [x] Execute a raised `rescue-long` with the SAME executable, model, paragraph, requested yield and worker duration, adding only `--cap-ms 3600000`. A causal comparison requires matching pins/configuration apart from that key. At decisive poll start, the independently measured remaining lifetime must be at least `M + 30000`; its basis remains the conservative hold-deadline-at-poll-start measurement, not `workerDurationMs - decisiveWallMs`.
+  Executed once (§13.4 run 2): `capVerified: true` (fixture configuration only), but the case ended
+  inconclusive on the same family — no attributable decisive poll, so the precondition is UNEVALUABLE and
+  propagation is `not-proven` on this pin (0.162.1 does not even reach POSITIVE-but-M-imprecise; the
+  0.161.0 clue stands for its own pin).
+- [x] If the initial hold cannot meet that precondition, record it as inconclusive. A single cause-directed resized group may use `workerDurationMs = max(420000, ceil(M) + 90000)` with enough finite probe budget; measure actual remaining lifetime again and keep worker duration matched across its unraised/raised runs. If M is at/above the candidate cap, do not claim propagation from this candidate or enlarge the cap without first reporting the changed experimental scope.
+  Trigger evaluated and recorded inconclusive (§13.4); the resized-group option was NOT exercised — the
+  observed cause is the unclassified-cell scan blocker, not lifetime sizing, so a resize would not be
+  cause-directed (§3), and the resize formula has no input while M is unattributable. M is unknown, so
+  the M-at/above-cap branch cannot arise; no cap was enlarged.
+- [x] On the current comparable pin, execute one fresh `rescue-repeat` with the qualified raised flags and a distinct actual Child. Because the planning binary differs from 0.161.0, the historical repeat does not replace this current-version repeat. If an exactly matching historical pin is actually reused, retain its qualified repeat without re-running it merely for ceremony; explain all provenance matches.
+  Executed once with the raised flags (§13.4 run 3); inconclusive on the same family. No qualified
+  raised run exists on this pin to repeat, so repeat qualification is not executable on 0.162.1; the
+  0.161.0 QUALIFIED verdict keeps its own scope.
+- [x] Where current-version re-entry benefit lacks a comparable instruction control, run one `rescue-baseline` with the SAME cap/worker/budget and `--poll-ms 60000`. This isolates instructions from cap configuration. Unknown baseline linkage/counts remain unknown, not zero. Reuse qualified matching evidence if available; do not recreate four historical M attempts.
+  Executed once (§13.4 run 4, baseline variant byte-identical artifacts, `capVerified: true`);
+  inconclusive on the same family — no outer-return count is attributable on this pin; unknown counts
+  stay unknown.
+- [x] Record exact route, parent/Child linkage, one launch/send, original handle, directive and inner yield, individual poll outcomes, outer returns, Root joins, terminal exit and sentinel. Exit 0 from the DRIVER means execution/cleanup completed, not that the case qualified. Calculate ratio/precondition only when M is attributable; otherwise keep `POSITIVE-but-M-imprecise` as a clue, not spec Q3 acceptance.
+  Recorded per §13.4: every attributable fact is in the run table; route/linkage/poll/cadence/terminal
+  facts are `null`-with-cause in all four records (never zero); no ratio or precondition was computed
+  because M is unattributable. The 0.161.0 POSITIVE-but-M-imprecise clue is preserved as a clue only.
 
 **Exit:** exact M and the quantitative discriminator are proved on the comparable pin, or the missing fact/cause is explicit. Natural completion/repeat evidence remains useful regardless of the causal verdict.
+  Outcome: the missing fact/cause is explicit (§13.4) — the recurring unclassified-cell family is the
+  single blocking prerequisite for every measured dimension on this pin; no natural-completion/repeat
+  evidence was obtainable on it.
 
 ## Task 3: Native pending-observation interruption and owned settlement
 

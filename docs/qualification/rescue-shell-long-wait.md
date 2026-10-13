@@ -964,10 +964,10 @@ useful next step for each is recorded in §10 and §11.2.
 | Unresolved claim | Evidence and reason | Useful next step / owner |
 | --- | --- | --- |
 | Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to the installed binary (0.160.1 at Tasks 4–5; re-pinned **0.161.0** by R4's non-authenticated probe, 2026-10-08, §3.3 — **0.161.0 was the R5 live-run version**, §1.2.2); 0.160.0 was the historical Task 1/Root version; the 2026-10-13 follow-up Task 1 re-pin found the installed CLI auto-updated again to **0.162.1** before any follow-up live run (§1.2.3). The R5-observed unraised Child return differs from the pinned source default (300000 ms, §2.5) — recorded as facts on different surfaces, never a mapping claim | Keep source facts separate; qualify any later installed version independently (Task 7) |
-| Installed unraised Child cap M | **BOUNDED-BUT-IMPRECISE (2026-10-08 observed; adjudication corrected by the post-trials review loop, `installed-observed`, 0.161.0)**: the qualified unraised trial's cap-limited return is established QUALITATIVELY (returned to the model with the 420000-ms worker still running, strictly below the requested 3600000-ms yield, no other ender), but its exact duration was NOT separately retained — the record's `decisiveWallMs` (85000) is the TERMINAL observation, the earlier nonterminal return has no surviving timing, and the retained excerpts carry call arguments only (§7.7). M is bounded by [>0, return-before-worker-end]; it is not a usable number. The four Task 4 0.160.1 records (§7.3) remain historical attempts | Re-measure M with the per-poll-timing observer (§12.8) before any numeric use; re-measure on any future installed version before reuse |
-| Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7) | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist) |
-| Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7) | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
-| Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical | Repeat is closed on 0.161.0; a future version repeats the measurement independently |
+| Installed unraised Child cap M | **BOUNDED-BUT-IMPRECISE (2026-10-08 observed; adjudication corrected by the post-trials review loop, `installed-observed`, 0.161.0)**: the qualified unraised trial's cap-limited return is established QUALITATIVELY (returned to the model with the 420000-ms worker still running, strictly below the requested 3600000-ms yield, no other ender), but its exact duration was NOT separately retained — the record's `decisiveWallMs` (85000) is the TERMINAL observation, the earlier nonterminal return has no surviving timing, and the retained excerpts carry call arguments only (§7.7). M is bounded by [>0, return-before-worker-end]; it is not a usable number. The four Task 4 0.160.1 records (§7.3) remain historical attempts. **2026-10-13 re-measurement attempt on 0.162.1 (§13.4): the unraised control ended inconclusive (`unsupported-call-shape`, unclassified `exec_command` cell, cause not established) — M is `not-proven` on that pin (not even bounded); the 0.161.0 bounded-but-imprecise state stands for its own pin** | Re-measure M with the per-poll-timing observer (§12.8) before any numeric use; re-measure on any future installed version before reuse; on 0.162.1 the unclassified-cell adjudication (§13.4) is the blocking prerequisite |
+| Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7). **2026-10-13 raised run on 0.162.1 (§13.4): also inconclusive (`unsupported-call-shape`, same family; `capVerified: true` is fixture-configuration retention only) — the M + 30000 precondition is UNEVALUABLE and propagation is `not-proven` on that pin; no positive shape is attributable there, so 0.162.1 does not even reach POSITIVE-but-M-imprecise** | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist); on 0.162.1 the unclassified-cell adjudication blocks the measurement itself (§13.4) |
+| Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7). **The 2026-10-13 baseline re-run on 0.162.1 (§13.4) ended inconclusive on the same family — no outer-return count is attributable on that pin; the re-entry comparison stays unknown there, never zero** | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
+| Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical. **2026-10-13 repeat attempt on 0.162.1 (§13.4): no qualified raised run exists on that pin to repeat; the executed `rescue-repeat` run itself ended inconclusive (`unsupported-call-shape`, same family). QUALIFIED stands on 0.161.0 only** | Repeat is closed on 0.161.0; a future version repeats the measurement independently; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
 | Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan | The R4-wired path exists and is untested by a completed on-script run; one cause-directed retry through the same owning-session prompt path (with the observation surviving long enough for evidence collection) is the remaining step |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
@@ -1033,6 +1033,18 @@ the smallest useful next delta is still a **scoped follow-up campaign**, not a p
 4. Generic route parity: never observed or forced; the candidate paragraph reaches the generic
    assignment only as `fixture-tested` structural parity.
 
+2026-10-13 Task 2 update: delta item 0 (M re-measurement) was executed on the re-pinned 0.162.1 host
+together with the raised candidate, repeat and baseline runs (§13.4) — all four ended inconclusive on
+the recurring `unsupported-call-shape` family (unclassified `exec_command` cells, cause not established,
+instruction-variant-independent, 4/4 runs). On this pin M is `not-proven` (not even bounded), the
+M + 30000 precondition is unevaluable, propagation/repeat/re-entry comparisons are `not-proven`, and no
+positive raised shape is attributable. The campaign's measured dimensions on a current pin are now
+blocked by that single prerequisite: the narrow unclassified-cell adjudication (bounded diagnostic with
+only whitelisted structural facts) that the follow-up plan reserves to Task 4's allowance must extend to
+the rescue-family cases it now blocks before any of items 0–4 can complete on this host. The 0.160.1/0.161.0
+records (including the 0.161.0 POSITIVE-but-M-imprecise propagation clue and QUALIFIED repeat) keep their
+own recorded scope; no cross-version claim is made in either direction.
+
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
 field — §2 whitelist), the candidate directive-led waiting paragraph in the named Role, and
@@ -1096,7 +1108,14 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   **2026-10-13 follow-up (Task 1):** the follow-up plan's Task 1 re-pinned provenance before any live
   run — installed CLI **0.162.1** (auto-updated again; §1.2.3), plugin pin `e9751d9f`, executing-observer
   digest `e28ec619…`, Codex source unchanged `67727e7c` clean — and re-ran the existing seam regressions
-  green (§13.1). No live run has executed under the follow-up plan yet; the §11.2 delta list stands.
+  green (§13.1). No live run had executed under the follow-up plan at that point. **2026-10-13 Task 2
+  update:** the four Task 2 live runs have now executed on the 0.162.1 pin (§13.4) — all four inconclusive
+  on the unclassified-cell family; the §11.2 delta list's measured dimensions stay `not-proven` on this
+  pin, and no code changed (no instrument defect demonstrated). Editorial note: this update rewrote the
+  Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
+  the §11.2 delta list stands." became "No live run had executed under the follow-up plan at that
+  point." — to avoid leaving a falsehood in the current-state handoff; the remainder of the Task 1 note
+  is unchanged, and no earlier section was touched.
 - Backfill cause/provenance correction: noise, Case 0 run4 and repeat2 are manually adjudicated
   **INSTRUMENT GRAMMAR LIMITATIONS**, with execution behavior unknown and inconclusive verdicts preserved.
   The R1 fix removed that preparation-grammar blocker; the R5 noise re-run failed on a DIFFERENT
@@ -2993,3 +3012,98 @@ the same sites that push to `pollWallTimesMs` (`analyzeCallSequence`, the own-re
 continuation-resolution branch), asserted 1:1 by a regression extending the existing round-2/3 timing
 fixtures in `tests/shell-wait-probe.test.mjs` with one nonterminal return plus one terminal poll.
 Recorded here so Tasks 2–3 adjudication documents its reading rule instead of assuming one.
+
+### 13.4 Follow-up campaign Task 2: M measurement and cap-discriminator adjudication on one comparable host (2026-10-13, installed 0.162.1) — all four live runs inconclusive on the recurring unclassified-cell family; M `not-proven` on this pin
+
+Task 2 executed the follow-up plan's four listed live runs on ONE pinned executable, exactly one run per
+listed case label/group, no cause-directed follow-up consumed anywhere (see the allowance ledger below).
+Every run: fixture installed from committed source `3fa035a9eed568d163f6057fbf26623d3adc84a7` (worktree
+HEAD at execution, clean tree), the pinned executable in both `--codex` and `CODEX_BINARY`, fresh private
+`mktemp -d` output (OS-temporary; only redacted/whitelisted facts are repeated here), and the per-record
+observer digest recomputed at case start — every record carries `e28ec619…` (`working-tree-uncommitted`,
+`sourcesChangedDuringRun: false`), matching §1.2.3. The pin was re-verified (`realpath` of `command -v
+codex` → the 0.162.1 standalone binary, `codex-cli 0.162.1`, worktree HEAD, clean tree) immediately before
+EVERY run; the pin never changed, so all four records share one comparable pin. Driver exit 0 in all four
+runs means execution/cleanup completed — it does NOT mean any case qualified.
+
+Per-run provenance (the fields §1.2.3 defined as "captured at first live run"): `codexVersion` 0.162.1 in
+all four records; the executing model is retained as `null` — the instrument cannot observe it and never
+infers it from hashes (§1.2.3); the observation-cap key's verified application facts are
+`requestedCapMs` + `isolatedSetup.capVerified` (run 1: `requestedCapMs: null`, unraised control — no cap
+verification applies; runs 2–4: `requestedCapMs: 3600000`, `capVerified: true` — the raised cap verifiably
+survived the isolated production setup's configuration writes; this is fixture-configuration retention,
+NOT propagation evidence); wait bounds `requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs`
+as listed per run; `roleStatus: "ready"`, `setupAttempts: 2` (the fixture's documented normal data-root
+bootstrap re-run — documented in the fixture source, the `tools/shell-wait-probe/fixture.mjs` bootstrap
+re-run comment), `fixtureVariant` candidate/candidate/candidate/baseline; instruction artifacts carry
+before/after sha256 + mode per record (baseline run: before == after on both artifacts, byte-identical
+as designed).
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 — UNRAISED M control | `rescue-long`, NO `--cap-ms`, worker 420000, poll 3600000, budget 1200000 | `8df4026ff0b95fcdaa28beadfb805302c5bc8d9adb582d4c0b4fdbda1efa4620` (`…/tmp.a4Da3YEWp1`) | `executed`, **inconclusive `unsupported-call-shape`**: one unclassified `exec_command` script cell (3 content lines, 443 bytes, `directivePresent: false`, content withheld by the R0 structural-suppression design) failed the whole-case fail-closed scan. Route/linkage/observations all `null`; M **not established** |
+| 2 — RAISED candidate | `rescue-long --cap-ms 3600000`, worker 420000, poll 3600000, budget 1200000 | `befd4e76c2b46afd9b13aa427253011eb23f5ff38c36801db9a09d3fd3af3b05` (`…/tmp.rixDv8c4uN`) | `executed`, **inconclusive `unsupported-call-shape`**: same family, DIFFERENT shape facts (2 lines, 246 bytes, no directive). `capVerified: true`. All attributable observations `null` |
+| 3 — repeat | `rescue-repeat`, same raised flags/worker/budget as run 2 | `43b9496f10c71db2ed99c610f2932ac23e8e933f9709b9926e5d6a711c43ded6` (`…/tmp.h8sQOMlOjU`) | `executed`, **inconclusive `unsupported-call-shape`**: same family again (4 lines, 336 bytes, no directive). `capVerified: true`. All attributable observations `null` |
+| 4 — baseline instruction control | `rescue-baseline --cap-ms 3600000 --poll-ms 60000`, worker 420000, budget 1200000 (baseline variant: artifacts byte-identical) | `341a26890a54d42b5274a0f263ef4d8894db6c60989654c874a877025b2dce78` (`…/tmp.pUvpLEtU8T`) | `executed`, **inconclusive `unsupported-call-shape`**: same family (3 lines, 443 bytes — same shape facts as run 1). `capVerified: true`. All attributable observations `null`; outer-re-entry counts UNKNOWN, never zero |
+
+Facts that ARE attributable in every run (all four): the live flow demonstrably progressed — the driver's
+held-turn watch detected the observation (40018/62640/47451/53056 ms) and the first empty-input poll on
+the original handle (77372/95631/82659/85479 ms, basis `held-turn-monotonic-elapsed-ms`), the turn ended
+naturally at the hold gate (`cleanupLabel: "observation"`, `gateReleased: true`, `endedBeforeGate: false`),
+host exit 0, cleanup complete with 0 errors, fixture disposed; `interrupt.requested: false` everywhere.
+Facts that are NOT attributable anywhere: route actually selected, parent/Child linkage, companion
+launch/send, `originalHandleChecked`, `outerReturns`/`modelCalls`/`rootJoins`, `decisiveWallMs`,
+**`pollWallTimesMs` (no per-poll timings exist in any record)**, `remainingLifetimeMs`, sentinel/terminal
+checks — each `null` with the recorded fail-closed cause, never zero.
+
+**Adjudications.**
+
+- **M (unraised Child cap on 0.162.1): `not-proven`.** The §13.2 point-3 convention has nothing to
+  attribute: no nonterminal original-handle return is observable because the whole-case fail-closed scan
+  blocks every record at the first unclassified cell, so no `pollWallTimesMs` entry, no linked return
+  shape, and no cap-limited return exists. M is not even bounded on this pin. The R5 0.161.0
+  bounded-but-imprecise state (§7.7) stands for that version only.
+- **Raised-run precondition: UNEVALUABLE.** The §13.2 point-4 arithmetic needs M (unattributable) AND the
+  raised trial's `hold-deadline-at-poll-start` `remainingLifetimeMs` at its decisive poll start — the
+  raised run retains no attributable decisive poll at all, so neither side of `M + 30000 ≤
+  remainingLifetimeMs` exists. The first-poll-stamp caveat never came into play.
+- **Raised-cap propagation on 0.162.1: `not-proven` — the campaign does not even reach
+  `POSITIVE-but-M-imprecise` on this pin.** No raised observation shape is attributable (no single long
+  observation, no re-entry counts), so there is no positive discriminator signal here. The 0.161.0
+  POSITIVE-but-M-imprecise clue (§7.7/§10) stands unchanged for that pin.
+- **Repeat on 0.162.1: not executable as designed — no qualified raised run exists on this pin to
+  repeat.** The executed `rescue-repeat` run (run 3) is itself inconclusive with the same cause. Repeat
+  remains QUALIFIED only on 0.161.0 (§7.7); the 0.160.1 attempts (§7.4) remain historical.
+- **Baseline/re-entry comparison on 0.162.1: inconclusive.** Runs 2 and 4 differ in instruction variant
+  and poll request exactly as designed, but no outer-return count is attributable in either, so the
+  current-version re-entry comparison could not be established. Unknown linkage/counts stay unknown, not
+  zero. The Task 4-era 15-vs-0 comparison remains pinned to its own recorded versions.
+- **Cause adjudication of the blocker (the only cause-directed investigation, performed on retained
+  records — no host was relaunched for it):** the `unsupported-call-shape` family recurred in 4/4 runs,
+  across BOTH instruction variants (run 4 rules out candidate-paragraph linkage), with VARYING shape
+  facts (3 lines/443 B, 2/246, 4/336, 3/443 — the last identical to the first), always an
+  `exec_command` `custom_tool_call` with no directive and withheld content. This is the same
+  unknown-shape family R5 recorded for baseline/noise/background/interrupt on 0.161.0 (§7.7, cause not
+  established there either), now systematic on 0.162.1 and instruction-independent. The retained
+  structural facts cannot adjudicate WHY the cells fail classification: content is withheld by the R0
+  privacy design (§12.4, §12.10 — working exactly as documented), and no additional live diagnostic is
+  permitted (every case's one-run allowance is spent; a fresh diagnostic would count against it).
+
+**Instrument defect: none demonstrated — no code changed.** The fail-closed scan, structural excerpt
+retention and privacy suppression behaved exactly as documented and test-pinned (§12.4/§12.10, §13.1);
+what is not demonstrable is that the parser SHOULD have accepted the withheld cell shapes (no byte-level
+evidence can exist under the retention design), so the plan's defect path (regression RED → minimal
+correction) has no demonstrated trigger. The grammar limitation is real and is now the campaign's
+blocking prerequisite: any future measured dimension on this pin needs the narrow unclassified-cell
+adjudication the follow-up plan reserves to Task 4's bounded-diagnostic allowance, extended to the
+rescue-family cases it now blocks. Per §3 the recurring unknown shape is retained and every case stops
+here; no generic parser expansion was attempted.
+
+**Run/follow-up allowance ledger.** `rescue-long` comparable group: BOTH planned runs consumed (unraised
+control + raised candidate), both inconclusive; the group's one cause-directed follow-up was NOT consumed
+— no concrete cause with a single changeable variable exists (the blocker is instruction-independent and
+shape-variable; no case flag governs it; a re-run would be a forbidden model-behavior retry; the §6.2
+resized-group remediation targets lifetime sizing, which is not the observed cause, and its
+`workerDurationMs = max(420000, ceil(M) + 90000)` formula has no input while M is unattributable).
+`rescue-repeat`: one run consumed, inconclusive, no follow-up (same cause). `rescue-baseline`: one run
+consumed, inconclusive, no follow-up (same cause). No other host was launched.
