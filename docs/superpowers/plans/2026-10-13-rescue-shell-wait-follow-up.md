@@ -60,7 +60,7 @@ For a discovered instrument defect: first add a regression to the relevant exist
 
 **Files:** Inspect the three shell probe modules and relevant test sections; record facts in the report. Conditional fixes belong only to their owning module/test.
 
-- [ ] Verify baseline/source/status and pin the actual installed executable, not `node_modules/@openai/codex`'s development pin:
+- [x] Verify baseline/source/status and pin the actual installed executable, not `node_modules/@openai/codex`'s development pin:
 
 ```bash
 git status --short
@@ -73,8 +73,8 @@ git -C ../../../codex status --short
 node tools/shell-wait-probe/driver.mjs --help
 ```
 
-- [ ] Record executable/version, plugin source/artifact digests, executing observer digest, model, effective isolated configuration, route and instruction variant per run. Configuration retention uses the existing fixture's redacted provenance/hash convention: only the observation-cap key, relevant feature booleans and numeric wait bounds, file digest/mode and verified application facts may be retained. Never persist full TOML, authentication, tokens, private preparation or arbitrary environment values; schema-unknown values are suppressed. Source checkout existence never proves source/binary correspondence. If a later case observes a changed binary/version, stop cross-version comparisons, repin and record the boundary; do not restart the whole campaign silently.
-- [ ] Run the existing timing/interrupt/Root/privacy regressions before authenticating:
+- [x] Record executable/version, plugin source/artifact digests, executing observer digest, model, effective isolated configuration, route and instruction variant per run. Configuration retention uses the existing fixture's redacted provenance/hash convention: only the observation-cap key, relevant feature booleans and numeric wait bounds, file digest/mode and verified application facts may be retained. Never persist full TOML, authentication, tokens, private preparation or arbitrary environment values; schema-unknown values are suppressed. Source checkout existence never proves source/binary correspondence. If a later case observes a changed binary/version, stop cross-version comparisons, repin and record the boundary; do not restart the whole campaign silently.
+- [x] Run the existing timing/interrupt/Root/privacy regressions before authenticating:
 
 ```bash
 node --test --test-name-pattern='review adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction recording|root-family observer contract|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs
@@ -83,7 +83,7 @@ node --test tests/test-selection.test.mjs
 
 Expected: zero failures. Existing `pollWallTimesMs` covers individual polls; a preparation continuation or shared-cell wall time is not a cap duration. The existing Root-control wrapper exemption must stay forbidden inside the observed Rescue Child.
 
-- [ ] Read `mapShellWaitLiveFacts`, `extractInterruptInteraction`, `analyzeCallSequence`, `waitForPollObservation`, `waitForChildSettlementObservation` and their tests. Determine how an actual nonterminal poll's timing, live original process, pending cell and eventual exit are linked. Missing fields stay null. Do not introduce a fixed undocumented API requirement; record any needed minimal evidence seam as a research task, with an example regression, before changing it.
+- [x] Read `mapShellWaitLiveFacts`, `extractInterruptInteraction`, `analyzeCallSequence`, `waitForPollObservation`, `waitForChildSettlementObservation` and their tests. Determine how an actual nonterminal poll's timing, live original process, pending cell and eventual exit are linked. Missing fields stay null. Do not introduce a fixed undocumented API requirement; record any needed minimal evidence seam as a research task, with an example regression, before changing it.
 
 **Exit:** measurement/cleanup/privacy seams are understood and test-backed; no new installed behavior has yet been claimed.
 

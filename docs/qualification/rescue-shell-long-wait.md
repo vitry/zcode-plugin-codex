@@ -11,7 +11,9 @@ precise limits (§7.7 adds the R5 campaign of 2026-10-08); §8–§9 record Task
 inconclusive and `not-proven` outcomes preserved (§9.4 adds the R5 root-family outcomes); §11 is the
 coverage/delta/handoff section, updated through R5. §2–§6 retain the source/design findings,
 §10 is the current not-proven register (updated through R5), and §12 records fixture-tested instrument
-behavior and its limits (§12.9 records the R5 campaign's instrument facts).
+behavior and its limits (§12.9 records the R5 campaign's instrument facts). §13 opens the 2026-10-13
+follow-up campaign (Task 1: provenance re-pin and measurement-seam verification, no live run;
+§1.2.3 records the re-pinned provenance).
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -63,6 +65,27 @@ The documentation amendment changes this worktree's final HEAD; it does not rewr
 | Fixture source | `5026009b6199f5f2d43ca8a567e536078e95080d` — the fixture installs committed source; the R0–R4 instrument corrections are working-tree-only and never enter the installed snapshot |
 | Observer | `working-tree-uncommitted` with a per-record sha256 digest in `provenance.observer` (§12.5): `27bc1715…` for the eight pre-fix trials, `cd41ef07…` for the two post-defaults-fix `r5c` trials (the R5 driver defaults fix changed `driver.mjs` bytes mid-campaign — §7.7, §12.9) |
 | Trials and artifacts | Ten retained records under `/tmp/shell-wait-r5*` (§7.7); eight additional empty output directories are recorded orchestrator invocation artifacts that ran NO trial and carry no measurement |
+
+### 1.2.3 Follow-up Task 1 provenance re-pin (2026-10-13; no live run)
+
+Task 1 of the follow-up plan re-pinned the provenance before any live run, with the same conventions as
+§1.2.1/§1.2.2. No host was launched; the planning-session `0.162.1` observation (follow-up plan §2) is
+confirmed by this non-authenticated probe.
+
+| Fact | Value |
+| --- | --- |
+| Installed executable | `/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex` |
+| Resolution | `realpath` of `command -v codex` (`/Users/zhangzikai/.local/bin/codex` resolves through the standalone package family, §1.2.2); the driver requires a regular executable, so any later case passes this absolute target to `--codex`/`CODEX_BINARY`. This is NOT the `node_modules/@openai/codex` development pin (`0.147.0`), which remains the repo dependency default |
+| Version/platform | `codex-cli 0.162.1`, macOS arm64 (`Darwin arm64`, macOS 26.5.2). **Auto-updated from 0.161.0 since R5 and re-pinned 2026-10-13.** The 0.160.1/0.161.0 qualified records keep their own recorded scope; cross-version comparison stops here — every follow-up live measurement re-pins and records its own boundary (follow-up plan Task 1) |
+| Follow-up source pin | `e9751d9fe7ee53d11c3f556dcda1527d5547fce7` — worktree `.worktrees/rescue-shell-wait-qualification-next`, branch `docs/rescue-shell-wait-qualification-next`, HEAD "docs: add 2026-10-13 shell long-wait follow-up qualification plan", one setup commit on the merged baseline `41e5b0aa24189903f77acb971931df6de04a170e`; `git status --short` clean at the pin (the documentation commit recording this section postdates it and does not rewrite the pin) |
+| Fixture source | The same pin — the fixture installs committed source, and with a clean tree the committed source and the working-tree bytes coincide (`shell_source_sha` = `git rev-parse HEAD` = `e9751d9f…`) |
+| Executing observer | Schema revision label `working-tree-uncommitted` with the §12.5/§12.9 per-record construction (`zcode-shell-wait-observer-v1`, NUL-separated module-init snapshot of `evidence.mjs` + `driver.mjs`): digest `e28ec61949e24c027c4d2b85934ffd91c60344b3d3e67063a75b9ba4d91a6dfe`. The tree being clean, these bytes are identical to the committed pin; live records recompute the digest at case start with record-time reconciliation (round-28/29) |
+| Module digests (informational sha256) | `evidence.mjs` `aad51e632860df15507f748c2ce433b9fa17db8ef10b67c8b00ab89e53f2e018`; `driver.mjs` `ba42eebf2592702109e377a095ea0a274a9e537962771b9c5c481c93ed4b7e4e`; `fixture.mjs` `8b93ecc8ab1237d3073fec611b1223d81f692adadcc7062a5ba36f9c76cc0335`. The observer digest covers `evidence.mjs` + `driver.mjs` only |
+| Codex source checkout | Unchanged from §1.3: `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (main), `git status --short` clean on 2026-10-13. Read-only throughout; the checkout's existence still proves no source/binary correspondence |
+| Driver check | `node tools/shell-wait-probe/driver.mjs --help` prints the usage line and all nine case labels (`rescue-baseline`, `rescue-long`, `rescue-repeat`, `rescue-noise`, `rescue-interrupt`, `review-wait`, `adversarial-review-wait`, `status-wait`, `background`) |
+| Per-run fields (model, effective isolated configuration, route, instruction variant) | **Captured at first live run.** The record schema defines the retention (`buildCaseRecord`, `driver.mjs`): numeric wait bounds (`requestedCapMs`/`requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs`/`requestedStatusQueryTimeoutMs`), the observation-cap key's verified application as the record persists it — `requestedCapMs` plus the `isolatedSetup` verified facts incl. `capVerified` (the post-setup regex check that `background_terminal_max_timeout = <capMs>` survived the isolated production setup's configuration writes). The fixture ALSO computes a `capConfiguration` before/after sha256 pair for the config write (fixture.mjs), but that object is fixture-INTERNAL provenance: `buildCaseRecord` never reads it and it is NOT persisted in the case record — if a later executing task needs those hashes in the record, persisting them is a recorded instrument gap for that task to decide, not an existing retention. File digest/mode is retained only for the touched instruction artifacts (`instructionVariants.appliedArtifacts`, `renderedNamedRoleSha256`/`genericMessageSha256`, `commandSkillVariants` — never paragraph text), beside the verified setup booleans, `route.requested`/`route.actual`, and the live `codexVersion`. The executing model is deliberately `null` (`provenance.observer.model` — the instrument cannot observe it and never infers it from hashes) |
+| Retention boundary | Verified against the record builder: only the whitelisted redacted facts above persist — never full TOML, authentication, tokens, private preparation input or arbitrary environment values; schema-unknown values stay `null` |
+| Selection tests | `node --test tests/test-selection.test.mjs` — 6 tests, 6 pass, 0 fail (recorded before any live attempt, §13.1) |
 
 ### 1.3 Codex source checkout (read-only; not matched to any binary)
 
@@ -940,7 +963,7 @@ useful next step for each is recorded in §10 and §11.2.
 
 | Unresolved claim | Evidence and reason | Useful next step / owner |
 | --- | --- | --- |
-| Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to the installed binary (0.160.1 at Tasks 4–5; re-pinned **0.161.0** by R4's non-authenticated probe, 2026-10-08, §3.3 — **0.161.0 was the R5 live-run version**, §1.2.2); 0.160.0 was the historical Task 1/Root version. The R5-observed unraised Child return differs from the pinned source default (300000 ms, §2.5) — recorded as facts on different surfaces, never a mapping claim | Keep source facts separate; qualify any later installed version independently (Task 7) |
+| Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to the installed binary (0.160.1 at Tasks 4–5; re-pinned **0.161.0** by R4's non-authenticated probe, 2026-10-08, §3.3 — **0.161.0 was the R5 live-run version**, §1.2.2); 0.160.0 was the historical Task 1/Root version; the 2026-10-13 follow-up Task 1 re-pin found the installed CLI auto-updated again to **0.162.1** before any follow-up live run (§1.2.3). The R5-observed unraised Child return differs from the pinned source default (300000 ms, §2.5) — recorded as facts on different surfaces, never a mapping claim | Keep source facts separate; qualify any later installed version independently (Task 7) |
 | Installed unraised Child cap M | **BOUNDED-BUT-IMPRECISE (2026-10-08 observed; adjudication corrected by the post-trials review loop, `installed-observed`, 0.161.0)**: the qualified unraised trial's cap-limited return is established QUALITATIVELY (returned to the model with the 420000-ms worker still running, strictly below the requested 3600000-ms yield, no other ender), but its exact duration was NOT separately retained — the record's `decisiveWallMs` (85000) is the TERMINAL observation, the earlier nonterminal return has no surviving timing, and the retained excerpts carry call arguments only (§7.7). M is bounded by [>0, return-before-worker-end]; it is not a usable number. The four Task 4 0.160.1 records (§7.3) remain historical attempts | Re-measure M with the per-poll-timing observer (§12.8) before any numeric use; re-measure on any future installed version before reuse |
 | Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7) | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist) |
 | Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7) | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
@@ -1070,6 +1093,10 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   `/tmp/shell-wait-t4-*` and `/tmp/shell-wait-t5-*`, `/tmp/shell-wait-t6-*`; the ten R5 records live
   under `/tmp/shell-wait-r5*` with eight additional empty invocation-artifact directories (§7.7). All
   are OS-temporary; the report's tables are the durable summaries, as the plan intends.
+  **2026-10-13 follow-up (Task 1):** the follow-up plan's Task 1 re-pinned provenance before any live
+  run — installed CLI **0.162.1** (auto-updated again; §1.2.3), plugin pin `e9751d9f`, executing-observer
+  digest `e28ec619…`, Codex source unchanged `67727e7c` clean — and re-ran the existing seam regressions
+  green (§13.1). No live run has executed under the follow-up plan yet; the §11.2 delta list stands.
 - Backfill cause/provenance correction: noise, Case 0 run4 and repeat2 are manually adjudicated
   **INSTRUMENT GRAMMAR LIMITATIONS**, with execution behavior unknown and inconclusive verdicts preserved.
   The R1 fix removed that preparation-grammar blocker; the R5 noise re-run failed on a DIFFERENT
@@ -2851,3 +2878,118 @@ typecheck, line-ending and `git diff --check` gates green at worktree state
   conclusion. (R2 added the exact rendered-command contract, the candidate-policy delivery seam and the
   command-specific renderer markers, §12.6; the R5 root runs used them, §9.4 — the command
   qualifications themselves remain `not-proven`.)
+
+## 13. Follow-up campaign Task 1: provenance re-pin and measurement-seam verification (2026-10-13; no live run)
+
+Task 1 of the follow-up plan
+[2026-10-13-rescue-shell-wait-follow-up](../superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md):
+verification and documentation only. No live host was launched, no instrument code changed, and no new
+installed behavior is claimed anywhere in this section. The re-pinned provenance is §1.2.3; the plan
+required §§7.7, 10, 11.2 and 12.8 to be read before any of this work, and they were.
+
+### 13.1 Already-repaired seam regressions (re-run before authentication)
+
+The plan's Task 1 regression selection — the R4-era review-round corrections ("review adjudication
+fixes" and rounds 2–3), native interrupt interaction recording, the root-family observer contract, and
+the unsupported-call/final-message preparation privacy set — all pass at the re-pinned pin, zero
+failures as the plan expects:
+
+| Command | Result |
+| --- | --- |
+| `node --test --test-name-pattern='review adjudication fixes\|review round 2 refinements\|review round 3 refinements\|native interrupt interaction recording\|root-family observer contract\|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs` | **79 tests / 79 pass / 0 fail / 0 skipped** (6 suites: R0 canaries, R2 root-family observer contract, R4 interrupt recording, and the three R4+ review-round suites) |
+| `node --test tests/test-selection.test.mjs` | **6 tests / 6 pass / 0 fail / 0 skipped** |
+
+The fail-closed boundaries the plan calls out are unchanged and pinned by these suites: `pollWallTimesMs`
+covers individual polls only (a sanctioned preparation continuation contributes no duration; a
+shared-cell wall time is not a cap duration), and the Root-control wrapper recognition
+(`interrupt_agent`/`send_input` as root-control calls) stays forbidden inside the identified Child
+rollout, where those calls still count as discipline violations.
+
+### 13.2 How a nonterminal poll's own timing links to the live original process, pending cell and eventual exit
+
+Survey result for the plan's named functions (`mapShellWaitLiveFacts`, `extractInterruptInteraction`,
+`analyzeCallSequence`, `waitForPollObservation`, `waitForChildSettlementObservation` and their tests):
+the linkage is complete with the EXISTING seams. No new API is required, and no instrument defect was
+demonstrated, so no code changed. This is the reading rule Tasks 2–3 adjudication uses.
+
+1. **One original handle, grounded independently on three surfaces.** Post-run, `analyzeCallSequence`
+   grounds `originalHandleId` from the exact launcher `exec_command`'s own completed output
+   (`launch.output.result.session_id`, `tools/shell-wait-probe/evidence.mjs`, `analyzeCallSequence`
+   opening), and every poll is a `write_stdin` to that id. Live, both watches re-ground the SAME id
+   from the launch's own response decoded at its statement position (`waitForPollObservation` and
+   `waitForChildSettlementObservation`, `tools/shell-wait-probe/driver.mjs` — `statementOutputAt` for
+   shared cells) and fire only on empty-input polls to THAT handle. The interrupt ordering binding
+   (`deriveChildObservationBinding`, `evidence.mjs`) reuses the sequence machinery so only that
+   handle's polls and accepted `wait` continuations are attributable ordering evidence
+   (`attributableCallIds`/`attributableStatements`/`pollIntervals`).
+2. **A poll's own duration exists only when its OWN response completes.** `analyzeCallSequence` pushes
+   the output's tool-reported wall-time header onto `pollWallTimesMs` at its event position when a poll
+   is answered by its own completed output (`null` when no trusted header), and marks the terminal from
+   that result's `exit_code` (`terminalIndex`). A poll that YIELDS instead opens the event-order
+   `pendingCell` (cell id + owning call id) and contributes no timing; if an accepted `wait`
+   continuation with the exact canonical `cell_id` resolves the cell, the poll's entry stays `null` —
+   the continuation's header measures the wait request, never the poll (§12.8 round 3), and the
+   preparation exemption keeps the array 1:1 with actual polls. The cap-limited return — a poll whose
+   own completed response carries a still-running result and no exit code — is therefore a numeric
+   `pollWallTimesMs` entry at its event position, while the eventual exit is the entry whose result
+   carries the exit code (or, when the terminal resolves through a continuation,
+   `decisiveWallMs = sequence.lastCompletedOnHandle.wallTimeMs`).
+3. **Identification convention in the persisted record (documented; no new field).** The record
+   retains `observations.pollWallTimesMs` in event order beside `decisiveWallMs` and the timeline facts
+   (`buildCaseRecord`). The terminal entry is the LAST poll-owned completed response (its header equals
+   `decisiveWallMs` when the terminal was poll-owned; a continuation-resolved terminal leaves its array
+   entry `null` while `decisiveWallMs` carries the header). Every EARLIER numeric entry is a
+   nonterminal original-handle return — the M candidate — attributable only with the linked return
+   shape: `remainingLifetimeMs > 0` on basis `hold-deadline-at-poll-start` (the worker's hold deadline
+   had not passed at the poll-start detection), no interrupt intent/outcome
+   (`interrupt.requested`/`delivered` null or false), cleanup label `observation` (no other ender), and
+   the worker still running. Missing fields stay `null` on every path (the pre-turn failure branch maps
+   every observation field to `null`).
+4. **The live remaining-lifetime arithmetic is measured, never derived from wall times.**
+   `runHeldHostTurn` records `timeline.holdDeadlineElapsedMs` from the absolute monotonic hold
+   deadline; the concurrent poll-start watch stamps `timeline.pollStartedAtElapsedMs` only for a
+   detection at or before that deadline on one clock (§12.8 round 7); `mapShellWaitLiveFacts` computes
+   `remainingLifetimeMs = holdDeadlineElapsedMs − pollStartedAtElapsedMs` with basis
+   `hold-deadline-at-poll-start` — a conservative lower bound (detection lags the true poll start).
+   The §6.2 validity precondition compares ACROSS the two comparable runs: `M + 30000 ≤
+   remainingLifetimeMs`, where `M` is the UNRAISED control run's attributable cap-return duration
+   (identified per the point-3 convention from the unraised run's own record) and `remainingLifetimeMs`
+   is the RAISED trial's `hold-deadline-at-poll-start` measurement at its decisive poll start. The
+   historical §12.8/§6.2 formula `firstPollMs + 30000 ≤ remainingLifetimeMs` names the same UNRAISED
+   measurement — in the unraised M trial the cap return was expected to be that run's first poll — and
+   never substitutes the raised trial's first `pollWallTimesMs` entry (which in a natural-completion
+   raised shape is the raised terminal duration, not a cap; using it would wrongly reject valid
+   discriminator trials). The first-poll-stamp caveat applies ONLY to the lifetime measurement:
+   `timeline.pollStartedAtElapsedMs` is stamped ONCE, by the first-poll watch
+   (`waitForPollObservation` returns on the first empty-input poll to the exact handle), so in a
+   multi-poll raised shape the recorded remaining lifetime is measured at the first poll's detection and
+   could overstate the lifetime at a later decisive poll — a later-decisive-poll shape therefore leaves
+   the precondition UNEVALUABLE from the record.
+5. **Pending-cell and eventual-exit linkage for interruption adjudication (feeds Task 3).**
+   `extractInterruptInteraction` binds ordering to the exact Child: `boundObservations` carry each
+   bound response's resolution kind (`pending` / `completed-exit` / `completed-running` /
+   `unparseable`) — a still-running nonterminal completion RESOLVES a historical pending header — and
+   an outstanding poll's call-to-response interval (`binding.pollIntervals`, `callAtMs`/`responseAtMs`)
+   is pending-state evidence. `pendingBeforeCall.atMs` anchors `interrupt.pendingIntervalMs`, and
+   `deliveryToSettlementMs`/`timingBasis` (`rollout-event-timestamps`) are attributed only for a
+   settled exact-target delivery. The live settlement watch resolves only through the launch handle's
+   own polls/linked continuations decoding a completed exit-code result at the linked statement's own
+   position (`basis: 'exact-launch-handle-linked-completed-exit-code-output'`).
+
+### 13.3 Research note: per-entry resolution labels beside `pollWallTimesMs` (optional hardening; NOT implemented, NOT needed)
+
+One seam candidate surfaced during the survey and was investigated to a "not needed" verdict.
+`pollWallTimesMs` carries durations only — no per-entry resolution kind or event index — so identifying
+which entry is the cap-limited return relies on the §13.2 positional convention (terminal = the entry
+matching `decisiveWallMs` / the last poll-owned completed response; earlier numeric entries =
+nonterminal returns). For the plan's adjudication shapes this is unambiguous: the M trial expects at
+most one nonterminal cap return plus one terminal poll (or a continuation-resolved terminal), and event
+order preserves relative position even with multiple nonterminal returns. No attribution gap exists, so
+per the plan's bounded-execution rule no code changed. Should a future measured shape ever make the
+positional convention insufficient, the minimal research-only seam would be a PARALLEL array, never a
+reinterpretation of `pollWallTimesMs` itself — e.g. `observations.pollResolutionKinds`
+(`'completed-running' | 'completed-exit' | 'continuation-resolved' | 'preparation'`) pushed at exactly
+the same sites that push to `pollWallTimesMs` (`analyzeCallSequence`, the own-response branch and the
+continuation-resolution branch), asserted 1:1 by a regression extending the existing round-2/3 timing
+fixtures in `tests/shell-wait-probe.test.mjs` with one nonterminal return plus one terminal poll.
+Recorded here so Tasks 2–3 adjudication documents its reading rule instead of assuming one.
