@@ -326,10 +326,40 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
 
 **Files:** Read Rescue Skill/route planner/Role preflight; conditional isolated route selection in fixture/driver/tests only; report S6/Q2.
 
-- [ ] Trace the current host's actual named/generic selection and supported spawn schema from existing production preflight. Decide whether the generic route is genuinely reachable under that host's ordinary capability conditions. Do not fake a named-Role rejection or route around a recognized-but-rejected Role.
-- [ ] If supported, add only the minimum explicit research-fixture seam needed to exercise that ordinary generic condition, recording the condition and delivered immutable assignment hash. No CLI flag/API name is pre-required by this plan. Define any new seam in the report, test the exact admissible condition and named-rejection negative RED→GREEN, and keep production planner/binding/assignment authority unchanged.
-- [ ] Execute one generic qualification with matched candidate cap/paragraph and enough measured remaining lifetime. Require actual generic linkage, one mapped Companion launch/send, original handle, exact terminal output and no fallback weakening. Its installed result remains distinct from fixture paragraph parity.
-- [ ] If unavailable, record source and installed schema/preflight evidence, not merely that the model selected named. Do not force a generic run for a checkbox. Any later rollout recommendation must explicitly describe the named/generic scope and preserve parity before broader promotion.
+- [x] Trace the current host's actual named/generic selection and supported spawn schema from existing production preflight. Decide whether the generic route is genuinely reachable under that host's ordinary capability conditions. Do not fake a named-Role rejection or route around a recognized-but-rejected Role.
+  Executed 2026-10-14 with NO host launch (§13.8): selection = the Skill's admission table
+  (L138–148) over the host's exposed `spawn_agent` schema; supported schema (pinned source
+  `67727e7c`, re-verified clean) = required `task_name`+`message`, optional `fork_turns`, and
+  `agent_type` present in the V2 properties IFF `config.agent_roles` is non-empty
+  (`spec_plan.rs` L1329; `multi_agents_spec.rs` L120–122), with `agent_type` an optional
+  parser-known field (`multi_agents_v2/spawn.rs` L262–269) so the generic shape is genuinely
+  supported. **Decision: NOT genuinely reachable under ordinary conditions** — the managed-Role
+  registration that makes the Role preflight `ready` IS an `agent_roles` entry, so every
+  route-decision-capable state exposes `agent_type` and mandates named, while the omitting state
+  fails closed before any preparation exists; no named rejection was faked and no recognized Role
+  state was routed around.
+- [x] If supported, add only the minimum explicit research-fixture seam needed to exercise that ordinary generic condition, recording the condition and delivered immutable assignment hash. No CLI flag/API name is pre-required by this plan. Define any new seam in the report, test the exact admissible condition and named-rejection negative RED→GREEN, and keep production planner/binding/assignment authority unchanged.
+  Condition evaluated FALSE with recorded evidence (§13.8): the ordinary generic condition ("the
+  active tool schema omits `agent_type`") does not exist in any state the Rescue flow can act in, so
+  no seam was added, no assignment hash was delivered, and the RED→GREEN pair has no seam to pin —
+  a seam able to reach generic would have to weaken the fixture's fail-closed Role gate
+  (`fixture.mjs` refuses a non-`ready` preflight), i.e. weaken admission. Production
+  planner/binding/assignment authority untouched; no .mjs changed.
+- [x] Execute one generic qualification with matched candidate cap/paragraph and enough measured remaining lifetime. Require actual generic linkage, one mapped Companion launch/send, original handle, exact terminal output and no fallback weakening. Its installed result remains distinct from fixture paragraph parity.
+  NOT EXECUTED — recorded `not-proven` with the precise cause (§13.8): its precondition (a genuinely
+  reachable ordinary generic condition) is the exact fact the trace adjudicated false, and the plan
+  forbids forcing a generic run for a checkbox. The group's ONE run was deliberately unspent; no
+  generic linkage/launch/send/handle/terminal facts exist, and none were fabricated. The
+  fixture-tested paragraph parity (§7.3) remains distinct from and does not substitute for an
+  installed observation.
+- [x] If unavailable, record source and installed schema/preflight evidence, not merely that the model selected named. Do not force a generic run for a checkbox. Any later rollout recommendation must explicitly describe the named/generic scope and preserve parity before broader promotion.
+  Executed 2026-10-14 (§13.8): source evidence (schema exposure = `agent_roles` non-empty; handler
+  accepts the generic shape; built-in `default` role resolution; child `agentRole: null` = the
+  planner's `'generic'` class) plus installed evidence (re-pinned 0.162.1 unchanged; `codex features
+  list` `multi_agent_v2 stable true`; live-config `[agents.zcode-rescue]` present and no
+  `[multi_agent_v2]` table; the `debug prompt-input` render's schema-less surface limitation; all
+  historical established routes named) — the route recommendation scope stays named-only with the
+  unreachable-condition boundary recorded; parity guard unchanged.
 
 **Exit:** generic is independently proved or precisely unavailable/unproved; no false universal qualification.
 

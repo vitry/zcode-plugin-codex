@@ -968,7 +968,7 @@ useful next step for each is recorded in §10 and §11.2.
 | Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7). **2026-10-13 raised run on 0.162.1 (§13.4): also inconclusive (`unsupported-call-shape`, same family; `capVerified: true` is fixture-configuration retention only) — the M + 30000 precondition is UNEVALUABLE and propagation is `not-proven` on that pin; no positive shape is attributable there, so 0.162.1 does not even reach POSITIVE-but-M-imprecise** | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist); on 0.162.1 the unclassified-cell adjudication blocks the measurement itself (§13.4) |
 | Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7). **The 2026-10-13 baseline re-run on 0.162.1 (§13.4) ended inconclusive on the same family — no outer-return count is attributable on that pin; the re-entry comparison stays unknown there, never zero** | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
 | Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical. **2026-10-13 repeat attempt on 0.162.1 (§13.4): no qualified raised run exists on that pin to repeat; the executed `rescue-repeat` run itself ended inconclusive (`unsupported-call-shape`, same family). QUALIFIED stands on 0.161.0 only** | Repeat is closed on 0.161.0; a future version repeats the measurement independently; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
-| Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
+| Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback. **2026-10-14 Task 6 on 0.162.1 (§13.8): the plan's unavailable branch CLOSED with a structural cause — the host genuinely SUPPORTS the generic spawn shape (pinned-source `67727e7c`: `agent_type` an optional parser-known field; no-`agent_type` calls resolve the built-in `default` role and yield an `agentRole: null` child = the planner's `'generic'` class), but it is NOT genuinely reachable under ordinary capability conditions: the managed-Role registration that makes the preflight `ready` IS an `agent_roles` entry, so every route-decision-capable state exposes `agent_type` in the V2 schema and mandates named, while the exposing-free state fails closed before any preparation exists; no fixture seam, no live run, no code change** | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7); a generic observation would require a genuinely changed host/form (e.g. an installed binary whose schema omits `agent_type` while the Role preflight passes — impossible at the pinned source by construction), recorded per the §13.8 decision |
 | Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan. **2026-10-13 Task 3 run on 0.162.1 (§13.5): that one retry executed and again ended inconclusive — but the model DID emit exactly ONE V2 `interrupt_agent` interaction whose tool response success-decoded to the ACTIVE `previous_status: "running"`, the first run with a parsed AND counted V2 interrupt interaction (`callCount: 1`, target-shape facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (the R5 record had already retained a parsed interaction with the same active `previous_status` and `family: "v2"`, §7.7, but under the since-corrected unanchored grammar — §7.7's retained R5 row lists no count or target facts, and its case failed the whole-case scan); the call's target was suppressed (23 chars, neither id-shaped nor the fixture marker) and the ordering never bound (the case evidence failed fail-closed on the same unclassified `exec_command`-cell family, new 3-line/314-B shape), so exact-target delivery, pending-window ordering, settlement and every production layer stay `not-proven` on this pin** | On 0.162.1 the one run and its cause-directed follow-up decision are consumed/recorded (§13.5); the remaining step on this pin is the narrow unclassified-cell adjudication (§13.4's blocking prerequisite, reserved to Task 4's allowance) before any further interrupt measurement; the 0.160.1/0.161.0 records keep their own scope |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
 | Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence. **2026-10-13 Task 4 on 0.162.1 (§13.6): both cases ran exactly once each behind the plan's new bounded structural diagnostic — both again inconclusive `unsupported-call-shape`, but the family is now SHAPE-ADJUDICATED** (noise: a single-content-line `write_stdin`-headed script statement, 387 B, failing both pinned grammars — a variant outside them, defect and nonadherence both non-demonstrable, fingerprint `38c33f61…`; background: a 4-statement cell whose leading statements reference no observational tool, 583 B, fingerprint `a9d65bb2…`, Root host result at 46384 ms with the Child-settlement watch running the full budget to a 600010-ms budget-cleanup termination, never labelled interruption). Noise checks, noise and background placement stay `not-proven` on this pin; the sidecar structural policy re-verified 162/162 + 76/76 while installed sidecar latency stays `not-proven` (no qualified pending observation existed to steer) | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell family is adjudicated to the retention design's limit (§13.6): further measurement needs content-level evidence (a privacy-authority decision outside the plan's authority) or a host/form change — no parser expansion. Budget/failure cleanup is never native user interruption |
@@ -990,7 +990,7 @@ The fail-closed M discriminator and every independent release dimension above re
 | S3 exact public/terminal/control outcomes | 4 (§7.1: byte-exact sentinel present in linked terminal output, `processExit: 0`); production result/choice/error suites re-recorded §8.5 |
 | S4 placement/background/Status observation-only | 5 (§8.3 background case inconclusive — early host exit, cause unknown; §8.4 sidecar structural-only); inherited placement matrix suites §8.5; R5 re-ran the R3-corrected background prompt/lifecycle — ended inconclusive before the flow (unclassified cell, cause not established), `not-proven` (§7.7) |
 | S5 interruption/loss/timeouts/ceiling | 5 (§8.1: pending observation qualified; native interrupt delivery NOT exercised); R4 wired the established V2 delivery path (§12.8); R5's wired runs ended inconclusive before delivery (unclassified cell, cause not established) — live delivery/settlement `not-proven` (§7.7); budget cleanup never labelled interruption; 100-hour ceiling untouched (production semantics unchanged) |
-| S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced) |
+| S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced); 6 (§13.8: generic route host-supported but NOT reachable under the ordinary capability conditions — pinned-source + installed preflight evidence recorded; no seam, no run, nothing forced) |
 | S7 isolation/no production changes | 2 (§ selection isolation), 3 (§12 fixture-owned clone/homes/cleanup), 7 (§1 provenance; final diff = docs + probe files only; production Skills/Role/Companion/config/packaging untouched) |
 | Q1/Q2 effective Child configuration/instructions | 1 (§2 config layers); 4 (§7.3 historical attempts; §7.1 candidate instructions delivered and followed on the named route); **R5 (§7.7, corrected by the post-trials review loop): cap-limited return OBSERVED (M bounded-but-imprecise — exact duration not separately retained) and raised-cap propagation POSITIVE-but-M-imprecise (388300 ms, zero re-entries; numeric ratio and precondition withdrawn with the M number), `installed-observed` on 0.161.0** |
 | Q3 cadence and repeat | 4 (§7.2 A 15 returns vs §7.1 B 0, `installed-observed`); **R5 (§7.7): repeat QUALIFIED — two independent qualified 388.3-s raised runs on distinct Children**; Task 4's repeat attempts (§7.4) remain historical |
@@ -1044,7 +1044,13 @@ the smallest useful next delta is still a **scoped follow-up campaign**, not a p
    Status-observation cancellation stays `not-proven` (no supported native interaction exists for a
    Root session's own observation).**
 4. Generic route parity: never observed or forced; the candidate paragraph reaches the generic
-   assignment only as `fixture-tested` structural parity.
+   assignment only as `fixture-tested` structural parity. **2026-10-14 Task 6 update (§13.8): the
+   follow-up plan's discovery question is CLOSED on this pin — generic is host-supported but not
+   genuinely reachable under ordinary capability conditions (the Role preflight's own registration
+   populates the `agent_roles` map that forces the V2 schema to expose `agent_type`, mandating named;
+   the omitting state fails closed before any preparation), so the unavailable branch was executed
+   with source + installed evidence and NO seam/run; any future generic observation requires a
+   genuinely changed host/form, not a forced call.**
 
 2026-10-13 Task 2 update: delta item 0 (M re-measurement) was executed on the re-pinned 0.162.1 host
 together with the raised candidate, repeat and baseline runs (§13.4) — all four ended inconclusive on
@@ -1112,6 +1118,22 @@ production-scope question outside the probe). Live Status-observation cancellati
 SIGINT never assumed observation-only). Background Review/Adversarial remain enqueue-only — no live
 background run was launched; the controlled timeout/ownership/result tests re-ran unmodified
 (451/451 + the focused R3/background suites 25/25 — `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs` — corrected from the unreproducible `18/18`, §13.7 + selection 6/6).
+
+2026-10-14 Task 6 update: delta item 4 (generic route parity) was adjudicated on the SAME 0.162.1 pin
+with NO host launch and NO code change (§13.8): the trace (production preflight + pinned source
+`67727e7c`, clean) established that the host genuinely supports the generic spawn shape (optional
+`agent_type`, built-in `default` role resolution, `agentRole: null` children = the planner's
+`'generic'` class) but the generic route is NOT genuinely reachable under ordinary capability
+conditions — the managed-Role registration that satisfies the Role preflight is itself an
+`agent_roles` entry, so every state in which the Rescue flow can act exposes `agent_type` in the V2
+`spawn_agent` schema and the Skill mandates named, while any role-free state fails closed before a
+preparation exists. The plan's unavailable branch was executed: source + installed schema/preflight
+evidence recorded (features list, read-only config probes, the non-authenticated prompt-input render
+surface limitation, and the historical all-named spawn records), no fixture seam added, no run
+forced, the group's one run deliberately unspent. Installed generic long-wait behavior stays
+`not-proven` with this precise structural cause; the closing paragraph's "generic assignment touched
+only after generic parity is demonstrated" guard stands unchanged, and parity now has a defined
+unreachable-condition boundary instead of an open question.
 
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
@@ -1199,7 +1221,11 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   update rewrote the Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
   the §11.2 delta list stands." became "No live run had executed under the follow-up plan at that
   point." — to avoid leaving a falsehood in the current-state handoff; the remainder of the Task 1 note
-  is unchanged, and no earlier section was touched.
+  is unchanged, and no earlier section was touched. **2026-10-14 Task 6 update:** the generic-route
+  discovery item has executed with NO host launch, NO instrument change, and NO new record (§13.8) —
+  the trace closed the plan's unavailable branch (generic host-supported, not genuinely reachable
+  under ordinary capability conditions; precise structural cause recorded), so no generic-case record
+  exists and the §13.4–§13.7 record set is unchanged; the pin stayed 0.162.1 throughout.
 - Backfill cause/provenance correction: noise, Case 0 run4 and repeat2 are manually adjudicated
   **INSTRUMENT GRAMMAR LIMITATIONS**, with execution behavior unknown and inconclusive verdicts preserved.
   The R1 fix removed that preparation-grammar blocker; the R5 noise re-run failed on a DIFFERENT
@@ -1208,7 +1234,10 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
 - Human decisions open (updated 2026-10-10; commit authorization was granted and exercised — see the
   Current closure status bullet above): PR #66 merge, the §11.2 follow-up campaign (per-poll M
   re-measurement and the numeric discriminator, live interrupt delivery, noise/background, Root
-  commands, generic route), and any eventual production adoption.
+  commands, generic route), and any eventual production adoption. **2026-10-14 status of the generic
+  route within that list: adjudicated `not-proven` with a structural unreachable-condition cause
+  (§13.8) — no live generic observation is obtainable on this pin without a genuinely changed host or
+  form; the remaining open decisions are unchanged.**
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
@@ -3821,3 +3850,161 @@ follow-up needed or spent. The observation-cancellation subcase consumed NO run 
 conclusion plus the run's own recorded `interrupt.callCount: 0`). No other host was launched (the
 renderer-contract comparison and the TDD cycle launched none). Per §3 each case label keeps its own
 verdict; failure of review-wait neither disqualifies nor qualifies the other two.
+
+### 13.8 Follow-up campaign Task 6: supported generic route, without weakening admission (2026-10-14, installed 0.162.1) — the trace closes the plan's unavailable branch: the host genuinely SUPPORTS the generic spawn shape, but it is NOT genuinely reachable under the host's ordinary capability conditions; no fixture seam, no live run, installed generic long-wait behavior stays `not-proven` with a precise structural cause
+
+Task 6 executed with NO host launch and NO code change. The work was the plan's trace item (production
+preflight + the pinned Codex source), the re-pin, non-authenticated installed-surface probes, and the
+reachability decision. Because the decision closed the unavailable branch, the plan's conditional seam
+and live-run items never became executable (below).
+
+**Re-pin (2026-10-14, before any probe).** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL to the §1.2.3/§13.4 pin, so no cross-version
+boundary arose and all §13.4–§13.7 records remain on one comparable pin. The Codex source checkout was
+re-verified: `67727e7cf114cf3e1b71db368d74b24e32f6cb12`, `git status --short` empty (clean), and every
+source fact below was read from that checkout (`git`-verified revision; read-only, nothing fetched,
+built, or edited). Source/binary mapping stays `not-proven` (§10): source facts and installed facts are
+recorded on separate surfaces and never merged into a mapping claim.
+
+**Trace, part 1 — the production preflight's actual named/generic selection (repository-text facts).**
+
+- The Rescue Skill's admission table (`skills/rescue/SKILL.md` L138–148) is the sole route authority
+  after a prepared `spawn` directive: **named spawn is PREFERRED when "the active `spawn_agent` tool
+  schema exposes `agent_type`"** (L126–135: the exact named call with `agent_type: 'zcode-rescue'`);
+  **the generic route is the mandated action ONLY for "The active tool schema omits `agent_type`"**
+  (row 1) or a **proven pre-child schema rejection of the `agent_type` FIELD** (row 2 — "unknown/
+  unrecognized/unsupported/reserved field/key/parameter `agent_type`", with proof no child started);
+  a **Role-VALUE rejection** (`zcode-rescue` unknown/unavailable/invalid) **fails closed with
+  `$zcode:setup` and must never use generic fallback** (row 3), and collision/timeout/ambiguity/any
+  returned agent ID is terminal (row 4). The generic shape itself is fixed (L150–173):
+  `spawn_agent({ task_name: prepared.route.taskName, fork_turns: 'none', no agent_type, message: the
+  fixed task-blind forwarder message with the one immutable launcher substitution })`. The same
+  assignment duality exists on the follow-up side (L118–124): a v2 directive's `assignment` selects the
+  named literal (`zcode-rescue`) or the complete fixed generic message (`default`), failing closed on
+  anything else.
+- The route planner (`marketplace/plugins/zcode/scripts/lib/rescue-route-planner.mjs`) recognizes BOTH
+  child classes: `classifyRescueChildHost` (L293–298) returns `'named'` for `agentRole === 'zcode-rescue'`,
+  **`'generic'` for `agentRole === null`**, and `'occupancy'` otherwise; the v2 follow-up directive
+  admits `assignment: 'zcode-rescue' | 'default'` (L212–215), and the persisted-binding validation maps
+  a discovered `agentRole === null` host to expected executor agentType `'default'` (L331–332). The
+  planner emits `spawn` directives only with a task name (L199–205) — the named/generic choice happens
+  in the Skill's schema negotiation, never in the planner.
+- The fixture already exercises the INSTRUCTION side of both routes: the candidate waiting paragraph is
+  applied to the named Role template AND the generic assignment skill (`tools/shell-wait-probe/
+  fixture.mjs` `applyVariantArtifacts`, the `generic-skill` artifact), recording before/after sha256 +
+  mode per record. That is the §7.3/§10 structural paragraph parity — `fixture-tested` only, and it
+  says nothing about which route a live host ever takes.
+
+**Trace, part 2 — the pinned host's supported spawn schema (source `67727e7c`, clean).**
+
+- **Schema exposure is a config function, not a model choice.** The V2 `spawn_agent` tool is built by
+  `create_spawn_agent_tool_v2` (`core/src/tools/handlers/multi_agents_spec.rs` L105–160): required =
+  `["task_name", "message"]`, `fork_turns` optional, and **`if !options.expose_agent_type {
+  properties.remove("agent_type") }`** (L120–122). `expose_agent_type` is set at registration
+  (`core/src/tools/spec_plan.rs` L1329, V2 branch of `add_collaboration_tools`) to
+  **`!turn_context.config.agent_roles.is_empty()`** — the schema exposes `agent_type` exactly when at
+  least one agent Role is configured. (`hide_spawn_agent_metadata`, whose pinned default is `true` —
+  `core/src/config/mod.rs` L1369 — affects only the V2 output schema/description guidance in this
+  branch; the property-removing helper `hide_spawn_agent_metadata_options` is called only by the V1
+  spec builder, L83–85.)
+- **The handler genuinely supports the generic shape.** `SpawnAgentArgs` parses
+  `{ message, task_name, agent_type: Option<String>, model, reasoning_effort, fork_turns,
+  fork_context }` with `#[serde(deny_unknown_fields)]` (`core/src/tools/handlers/multi_agents_v2/
+  spawn.rs` L262–269): `agent_type` is an OPTIONAL, parser-known field, so a no-`agent_type` call is
+  accepted (and even an unexposed-but-passed `agent_type` would not be field-rejected — schema hiding
+  is not argument rejection). `role_name` is the trimmed `agent_type` or `None` (L125–128).
+  `prepare_agent_spawn_config` (`core/src/agent/child_config.rs` L51–99) applies a role for a
+  `fork_turns: 'none'` spawn UNCONDITIONALLY (`!options.full_history_fork` → `apply_spawn_agent_role`),
+  resolving `None` to the built-in `DEFAULT_ROLE_NAME = "default"` (`core/src/agent/role.rs` L33,
+  L51–55; the built-in `default` role has `config_file: None` → no overrides → success). The child's
+  recorded spawn-source role stays `None` (and the child metadata `agentRole` therefore `null` — the
+  production `'generic'` class) unless the caller passed a role or the config ALSO defines a
+  user `default` role with a `config_file` (child_config.rs L87–98). **So on an ordinary plugin config
+  (which defines only `zcode-rescue`), the host's generic spawn shape would succeed and produce exactly
+  the child class the production planner classifies `'generic'` — the two surfaces correspond.**
+- **The two ordinary conditions are mutually exclusive BY CONSTRUCTION.** The Rescue flow can reach a
+  route decision ONLY after its Role preflight observes `ready` (`skills/rescue/SKILL.md` L50–54; the
+  probe fixture fail-closes otherwise — `fixture.mjs` L766–769 `the isolated Role preflight did not
+  reach ready`). That preflight inspects the managed registration `agents.zcode-rescue =
+  { description, config_file }` (`scripts/zcode-companion.mjs` L102–137 →
+  `inspectRescueRoleStatus` in `scripts/lib/codex-config.mjs` L67–82 →
+  `inspectManagedRescueRole`; written by setup via `expectedRegistration`,
+  `scripts/lib/managed-agent-role.mjs` L133/L663). **`agents.zcode-rescue` IS an `agent_roles` entry**
+  (config `[agents.zcode-rescue]`): the same registration that makes the preflight `ready` makes
+  `config.agent_roles` non-empty, which at the pinned source forces `expose_agent_type: true` and the
+  schema EXPOSES `agent_type`. Therefore: **with the Role installed (the only state in which the flow
+  ever reaches the route table), the schema exposes `agent_type` and the Skill's NAMED row is
+  mandatory; without the Role, the flow has already failed closed before any route decision exists.**
+  There is no reachable ordinary state in which the generic row's condition ("the active tool schema
+  omits `agent_type`") holds while a Rescue preparation is alive.
+
+**Trace, part 3 — installed-schema and preflight evidence (non-authenticated probes; no session, no
+turn, no host run launched).**
+
+- `codex features list` on the re-pinned binary: `multi_agent_v2 — stable — true` (and
+  `multi_agent — stable — true`): the V2 collaboration family is ACTIVE on the installed 0.162.1.
+- Live user config, read-only: `[agents.zcode-rescue]` present (config line 208) — `agent_roles` is
+  non-empty on the live machine; `[features.multi_agent_v2] enabled = true` with the two wait timeouts
+  (unchanged from §3.3); **no `[multi_agent_v2]` settings table exists** (so `hide_spawn_agent_metadata`
+  sits at its pinned default, which does not touch the V2 parameter properties — see part 2).
+- `codex debug prompt-input` (a local render of the model-visible input list; it starts no session):
+  the rendered developer context contains the V2 multi-agent collaboration framing and names the
+  namespaced recipient `functions.collaboration.spawn_agent` — consistent with the pinned V2
+  registration path (namespace default) — but this surface renders no tool JSON schemas, so the
+  installed schema's exact property list is not observable without a live turn. Recorded as a surface
+  limitation, not as absence of evidence.
+- Installed behavioral corroboration (historical, this campaign): every established route was named —
+  the probe's route detection reads `agent_type` from the observed `spawn_agent` call arguments
+  (`tools/shell-wait-probe/evidence.mjs` L2228), and Case B (§7.1), the R5 qualified runs (§7.7) all
+  recorded named spawns carrying `agent_type: 'zcode-rescue'`. The §13.7 root-family launches are
+  terminal-command based (`invoke review`/`invoke adversarial-review` via `exec_command`), so they add
+  no spawn-route evidence either way.
+
+**Decision (the plan's unavailable branch, executed).** The generic route is genuinely SUPPORTED by the
+host (optional schema-conditional field, accepted generic call shape, built-in default role resolution,
+and a child class the production planner recognizes), but it is NOT genuinely REACHABLE under the
+installed host's ordinary capability conditions: every state in which the Rescue flow can act exposes
+`agent_type` and mandates the named route, and every state that would omit `agent_type` fails closed
+before any preparation exists. The only ways to a generic observation would be (a) manufacturing an
+agent-role-free host — i.e. deleting the plugin's managed Role to dodge the very preflight the flow
+fail-closes on, a non-ordinary broken-install state and precisely "routing around a recognized Role
+state", which this plan forbids; (b) faking a named-Role rejection — forbidden; or (c) issuing the
+generic call anyway and hoping the host accepts an unexposed field — a forced run for a checkbox that
+would be model nonadherence by the Skill's own admission table, not qualification. None was attempted.
+**Consequently: no research-fixture seam was added** (the plan authorizes a seam only to exercise an
+admissible ordinary generic condition, which does not exist — and any seam able to reach generic would
+have to weaken the fixture's own fail-closed Role gate, production binding/assignment authority in
+research clothing), **no live run was launched**, and the exact admissible-condition/named-rejection
+negative RED→GREEN pair the plan requests for the seam case has no seam to pin. **Installed generic
+long-wait behavior remains `not-proven`** — now with this precise structural cause instead of merely
+"the model selected named".
+
+**Instrument defect: none.** No probe module, parser, or observer code is implicated in this outcome;
+no code changed anywhere (the report, the plan checkboxes, and nothing else differ from `afa26ba`).
+
+**Documentation-amendment gates (no .mjs/test changed, so lint/typecheck are not required by the
+convention and were not the gate).** `node --test tests/test-selection.test.mjs` → **6 tests / 6 pass /
+0 fail**; the Task 1 seam + privacy/ownership selection `node --test --test-name-pattern='review
+adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction
+recording|root-family observer contract|unsupported-call and final-message preparation privacy'
+tests/shell-wait-probe.test.mjs` → **80 tests / 80 pass / 0 fail / 0 skipped** (6 suites, the §13.1
+selection at its current count); `git diff --check` clean;
+`node scripts/check-line-endings.mjs` → LF verified in 534 tracked files. The FULL
+`node --test tests/shell-wait-probe.test.mjs` returned **451 tests / 449 pass / 2 fail / 0 skipped**,
+the 2 failures being EXACTLY the two real-builder fixture tests of the briefing's known environmental
+issue (`the real builder failure-path prune…` and `the real marketplace build and plugin install
+path…`), both dying inside the builder's `npm ci` with npm's own "Exit handler never called!" crash —
+**adjudicated environmental with fresh reproduction evidence**: the same manifests
+(`package.json` + `npm-shrinkwrap.json`, byte-identical to this tree) `npm ci` cleanly in 1 s under the
+real HOME, and crash with the identical npm error twice under an empty sandboxed `HOME` (the exact
+condition the fixture builder creates by design), with npm's debug log showing the crash inside
+tarball extraction under the sandbox cache; the probe code path is byte-identical to `afa26ba`, where
+§13.7 recorded this suite 451/451. Nothing about this task's outcome depends on those two builder
+tests (no fixture was built and no host launched).
+
+**Run/follow-up allowance ledger.** The generic qualification group's ONE listed run was deliberately
+NOT launched: its precondition (a genuinely reachable ordinary generic condition) is the precise thing
+this task adjudicated false, and per the plan the run must not be forced for a checkbox. No
+cause-directed follow-up was consumed (none exists — the cause is structural, not a changed variable);
+no diagnostic was consumed; no other host was launched. The §13.4–§13.7 pins and verdicts are untouched.
