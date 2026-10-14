@@ -979,6 +979,14 @@ The earlier absence of managed-Child wrapper observations is resolved **only wit
 Case B's single long observation and Case A's outer continuation cadence are `installed-observed`.
 The fail-closed M discriminator and every independent release dimension above remain intact.
 
+2026-10-14 Task 7 close-out: no row above changed state in the close-out itself — Task 7 launched no
+host. The register stands with §13.9's executed-case ledger as its run ledger. §13.9 additionally
+records the close-out's environmental npm adjudication (the two shell-research real-builder fixture
+tests and three routine-suite npm-install tests failing inside npm's own install machinery during the
+first clean-source `npm test` run; all adjudicated ENVIRONMENTAL with controlled reproduction
+evidence — failures-with-cause, never silently green) and the pending-backfill codex review state
+(§11.3).
+
 ## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
 ### 11.1 Spec coverage mapping
@@ -1000,6 +1008,15 @@ The fail-closed M discriminator and every independent release dimension above re
 
 No missing evidence is silently marked passed: every row above names its label, and §10 carries the full
 `not-proven` register with causes and next steps.
+
+2026-10-14 Task 7 close-out addendum: the follow-up campaign's final per-item labels are recorded in
+§13.9's close-out mapping table — adversarial-review-wait and status-wait QUALIFIED
+(`installed-observed`, 0.162.1, single runs, no repeat claimed; status's timeout non-extension
+confirmed with observation cancellation separately `not-proven`); review-wait, noise/background
+placement, native interruption/settlement, M/propagation/repeat/re-entry on the current pin and
+installed generic behavior all `not-proven` with precise recorded causes; every S1–S7 inherited
+production invariant re-verified by the close-out regression matrix. The rows above stand unchanged as
+historical scope.
 
 ### 11.2 Proposed next delta (updated through R5; no production rollout recommended yet)
 
@@ -1135,6 +1152,24 @@ forced, the group's one run deliberately unspent. Installed generic long-wait be
 only after generic parity is demonstrated" guard stands unchanged, and parity now has a defined
 unreachable-condition boundary instead of an open question.
 
+2026-10-14 Task 7 close-out: the follow-up campaign is CLOSED on this pin with ZERO proposed production
+changes (§13.9). Spec §8's positive managed-Rescue recommendation criteria are NOT met on 0.162.1: the
+actual Child route, discriminating long observation, repeat, reduced re-entry and native
+interruption/settlement are all `not-proven` on this pin behind the single unclassified-cell
+prerequisite (§13.4–§13.6), while adversarial-review-wait and status-wait carry single-run
+qualifications and review-wait keeps its traced early-exit cause (§13.7). A future campaign that could
+reopen the recommendation needs, minimally: (a) the unclassified-cell shape-classification prerequisite
+resolved — which requires content-level evidence via a privacy-authority decision outside the plan's
+authority, or a genuinely changed host/form (§13.6's adjudication limit; no parser expansion) — and
+(b) re-measurement of M, propagation, repeat, re-entry and interrupt delivery on a current 0.162.x pin
+under that resolved prerequisite. The 0.161.0 records (bounded-but-imprecise M clue,
+POSITIVE-but-M-imprecise propagation clue, QUALIFIED repeat) keep their own recorded scope; no
+cross-version claim is made in either direction.
+
+(Pre-close-out formulation, retained unchanged: it describes what a production change WOULD have looked
+like had the human adoption happened on the 0.161.0-era evidence — the 2026-10-14 Task 7 close-out
+paragraph above records that the adoption criteria are NOT met on the current pin and proposes ZERO
+production changes, §13.9.)
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
 field — §2 whitelist), the candidate directive-led waiting paragraph in the named Role, and
@@ -1238,6 +1273,19 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   route within that list: adjudicated `not-proven` with a structural unreachable-condition cause
   (§13.8) — no live generic observation is obtainable on this pin without a genuinely changed host or
   form; the remaining open decisions are unchanged.**
+- **2026-10-14 Task 7 close-out review and gate status:** the campaign's contract regression matrix,
+  final clean-source `npm test`, environmental npm adjudication, executed-case ledger and S1–S7/Q1–Q6
+  close-out mapping are recorded in §13.9 (plugin HEAD `a6771a4`, clean tree — committed bytes are the
+  executing bytes under the delegated commit authority; observer digest `562981ce…`). Review-state
+  handoff, recorded honestly: Tasks 1–4 closed at codex review gates with ZERO findings (final amended
+  SHAs `3fa035a`, `67d327d`, `0e50444`, `1fb30bd`); Task 5 (`afa26ba`) and Task 6 (`a6771a4`) carry
+  clean self-reviews while their codex review gates are PENDING BACKFILL — the codex review service
+  suffered four consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection
+  failed + workspace routing discovery failed; review interrupted), accumulating backfill range
+  `1fb30bd..a6771a4`; the whole-branch close-out codex review is pending on the same service recovery.
+  A tooling outage is NOT authority to switch coding agents silently — this state is recorded as
+  pending, never as passed. Cleanup verified at close-out: ZERO surviving
+  `zcode-shell-wait-fixture-*` or campaign case-output directories in OS temp (§13.9).
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
@@ -4008,3 +4056,210 @@ NOT launched: its precondition (a genuinely reachable ordinary generic condition
 this task adjudicated false, and per the plan the run must not be forced for a checkbox. No
 cause-directed follow-up was consumed (none exists — the cause is structural, not a changed variable);
 no diagnostic was consumed; no other host was launched. The §13.4–§13.7 pins and verdicts are untouched.
+
+### 13.9 Follow-up campaign Task 7 close-out (2026-10-14, plugin HEAD `a6771a4`; no host launch) — contract regression matrix and final clean-source `npm test` recorded, the environmental npm failures adjudicated with controlled reproduction, baseline diff and fixture cleanup verified, executed-case ledger and S1–S7/Q1–Q6 mapping closed, production scope ZERO changes
+
+Task 7 is documentation-only close-out: no host was launched, no `.mjs` or test file changed, and no new
+installed behavior is claimed anywhere in this section. The plan's Task 7 file ownership (this report's
+§§10/11 plus this dated section, and the plan's checkboxes/§5) was kept; the spec
+([2026-10-05 design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md)) was read, not
+edited.
+
+**Executing-tree provenance (recorded before the matrix).**
+
+| Fact | Value |
+| --- | --- |
+| Plugin source pin | `a6771a4e1b953da68445df7e9b2ef1ed2b4dad4f` — branch `docs/rescue-shell-wait-qualification-next`, HEAD "docs: probe the supported generic route without weakening admission (task 6)"; `git status --short` EMPTY at every recorded gate (the committed source IS the executing source — commit authority was explicitly granted for this branch and all implementation is committed) |
+| Executing observer digest | `562981ce8300c1a83ff3084b9fedebdbc5049459758aff1ef8c042f1a09c09ac` (`zcode-shell-wait-observer-v1`, the §12.5/§12.9 module-init construction, recomputed for this section) — IDENTICAL to §13.7's post-marker-correction digest: the §13.7 instrument correction is this branch's final instrument state, and the clean tree makes committed bytes = executing bytes |
+| Module sha256s (informational) | `evidence.mjs` `8b00ecf7d2d520f8c862988c24c8b2fb1feb35a97b7179b740ad8c4761ac2af2`; `driver.mjs` `b9f1a73d91f535c5272b82f6787f0fb0c6530988443d5c7efc838c2621c0e829`; `fixture.mjs` `8b93ecc8ab1237d3073fec611b1223d81f692adadcc7062a5ba36f9c76cc0335` — the fixture bytes never changed in this campaign (§1.2.3) |
+| Codex source checkout | `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (main), `git status --short` clean, re-verified 2026-10-14; read-only throughout; still proves no source/binary correspondence |
+
+**Contract regression matrix (exact commands, counts, skips, failures).**
+
+| Command | Result |
+| --- | --- |
+| `npm run test:shell-research` | **451 tests / 449 pass / 2 fail / 0 skipped** (46 suites). The 2 failures are EXACTLY the known real-builder fixture pair (`the real builder failure-path prune stays inside clone metadata and preserves shared registrations`, `the real marketplace build and plugin install path yields an installable isolated fixture`) — adjudicated ENVIRONMENTAL below; recorded as failures-with-cause, never silently green |
+| `node --test tests/test-selection.test.mjs` | **6 / 6 pass**, 0 skipped |
+| `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | **417 / 417 pass**, 0 skipped |
+| `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | **126 / 126 pass**, 0 skipped |
+| `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | **213 / 213 pass**, 0 skipped |
+| `npm run lint` | exit 0, clean |
+| `npm run typecheck` | exit 0, clean |
+| `node scripts/check-line-endings.mjs` | LF verified in 534 tracked files |
+| `git diff --check` | clean (exit 0) |
+| `git status --short` | EMPTY |
+
+Instrument-scope note: `git diff afa26ba..HEAD --stat -- tools/ tests/` is EMPTY — the shell-wait
+instrument and test bytes at this HEAD are byte-identical to the §13.7 tree where the same suite
+recorded **451/451**, so the two builder failures below cannot be an instrument or content regression.
+
+**Environmental adjudication: the two real-builder shell-research failures (fresh reproduction on this
+watch).** Both failures die inside the fixture's real marketplace-snapshot builder
+(`buildMarketplaceSnapshot`), at the builder's consumer-side `npm install` step
+(`scripts/build-marketplace-snapshot.mjs:175`), with the identical signature: the harness's own
+`ZCODE_PROCESS_TIMEOUT` at 120000 ms and `capturedOutputBytes: 0` — npm hung without emitting anything,
+npm's documented "Exit handler never called!" failure class. The builder runs under the fixture's
+BY-DESIGN isolated home (`HOME`/`USERPROFILE` pointed at a fixture-owned empty sandbox directory,
+`fixture.mjs`). Controlled reproduction for this close-out used byte-identical manifests
+(`package.json` + `npm-shrinkwrap.json` copied to OS temp), so the only variable in each pair is the
+HOME/cache environment:
+
+| Arm | Environment | Result |
+| --- | --- | --- |
+| Control | real HOME (warm cache) | `npm ci --ignore-scripts --no-audit --no-fund` exit 0, 185 packages, ≈1 s |
+| Experimental, twice | EMPTY sandboxed HOME (fresh cache), live registry | npm's own internal failure **"Exit handler never called!" both times** (70.2 s / 70.3 s); the npm debug log shows the run dying inside its fetch/extraction phase under the sandbox cache |
+| Experimental, seeded | sandboxed HOME with the npm cache pre-seeded from the warm cache, `--prefer-offline` | **exit 0**, 185 packages, ≈2 s — the sandboxed HOME itself is NOT fatal; the failures track npm's fetch/extract path under the changed HOME |
+
+Host-context facts recorded honestly: this host routes package traffic through a local proxy
+(`http(s)_proxy` = `127.0.0.1:7890` in the inherited environment), and that proxy was observed REFUSING
+connections during the reproduction window (a port probe was refused), which is why the two
+empty-sandbox arms' debug logs show `ECONNREFUSED` on registry fetches. The failing test run itself had
+progressed PAST the builder's `npm ci` and `npm pack` (both succeeded inside the fixture) before
+hanging at the consumer install, so the test-run hang is the same npm-internal zero-output failure
+class rather than the proxy refusal itself. The common adjudicated fact across the recorded occurrences
+of this npm-install failure family — enumerated explicitly so the count is reconstructible: §13.8's
+full-suite gate at this same HEAD (451 tests / 449 pass / 2 fail, EXACTLY this pair), this close-out's
+shell-research run (the second recorded suite run with this exact pair), the first `npm test` run's
+three npm-install tests, and the single-variable `package-install` experiment — is: npm malfunctions
+inside its own install machinery specifically under the fixture's by-design sandboxed-HOME condition on
+this host, every non-builder test passes regardless, and the identical instrument bytes recorded
+451/451 at §13.7 under a healthy host environment.
+
+**Verdict: ENVIRONMENTAL** — not an instrument, content or product regression; this is the SECOND
+recorded suite run in which exactly this pair failed inside the builder (after §13.8's gate), within
+the wider recorded npm-install failure family enumerated above. Reported as
+failures-with-cause; no test was retried out of the record and no expectation was relaxed.
+
+**Final `npm test` gate on clean exact source.** Commit authority WAS explicitly granted for this
+branch, all implementation is committed, and the tree is clean — so the fully committed source at HEAD
+`a6771a4` is the clean exact source, and no parking was needed for the IMPLEMENTATION. Three runs are
+recorded, in order:
+
+1. **First run, inherited host environment:** **3397 tests / 3391 pass / 3 fail / 3 skipped** (exit 1).
+   The 3 failures — `isolated Codex marketplace lists and installs the eight-skill snapshot`
+   (`tests/integration/marketplace-install.test.mjs:130`), `packed production install loads and locks
+   on Node 22.13` (`tests/integration/package-install.test.mjs:25`), `future writable-concurrency ADR
+   remains absent from real package and marketplace artifacts`
+   (`tests/release-contracts.test.mjs:281`) — are the SAME environmental npm family as the
+   shell-research pair: all three died as `ZCODE_PROCESS_TIMEOUT` at 120000 ms with
+   `capturedOutputBytes: 0`, two inside `buildMarketplaceSnapshot`'s consumer `npm install` step and
+   one inside the package-install test's own `npm install` step. None of the three test files is
+   touched by this branch (`git diff 41e5b0aa..HEAD --stat` over them is EMPTY).
+2. **Decisive single-variable experiment** (same committed source, same window): the identical
+   `package-install` test FAILS with the host's proxy environment and **PASSES 1/1 with the proxy
+   environment variables removed** (npm's direct egress works from this host) — isolating the host
+   package-transport environment, not the source, as the failing variable.
+3. **Full rerun with the proxy environment removed:** **3397 tests / 3393 pass / 1 fail / 3 skipped**.
+   The single remaining failure is `isolated Codex marketplace lists and installs the eight-skill
+   snapshot` failing in 31 ms with `Marketplace source tree must be clean, including tracked and
+   untracked files.` — the clean-tree marketplace check running against THIS TASK'S OWN uncommitted
+   close-out documentation edits, which were being written in the same worktree while that rerun
+   executed. That is the spec §2-documented execution-order artifact (the same shape as the
+   planning-session drafting failure recorded there), not a source or environment defect; every other
+   routine test passed in that run.
+4. **Definitive gate** (proxy environment removed AND the two close-out documentation files parked per
+   the spec §2 owned park-and-restore method — documentation only, all tested implementation present,
+   pre/post content hashes recorded and verified identical: report `c9b441b6…`, plan `a38380c8…`):
+   **exit 0 — 3397 tests / 3394 pass / 0 fail / 3 skipped, plus the marketplace snapshot 2/2 pass** —
+   exactly the planning baseline (**3397 tests / 3394 pass / 0 fail / 3 skipped** + marketplace
+   snapshot **2/2**; the 3 skips are the inherited opt-in E2E guards, not win32). The parked files
+   (exact paths `docs/qualification/rescue-shell-long-wait.md` and
+   `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`, sole occupants of stash entry
+   "task7 close-out docs park for clean-tree npm test") were restored immediately afterwards and their
+   restored bytes verified hash-identical. `test:mcp-research` and authenticated ordinary E2E were NOT
+   run — the plan forbids inventing them as a new routine gate.
+
+**Baseline diff and cleanup verification.**
+
+- `git diff 41e5b0aa24189903f77acb971931df6de04a170e..HEAD --stat -- skills/ agents/ scripts/ hooks/
+  .codex-plugin/ marketplace/ docs/superpowers/specs/` is **EMPTY** — no production, spec or
+  marketplace change anywhere on the branch.
+- The branch's TOTAL diff touches exactly five files: `docs/qualification/rescue-shell-long-wait.md`,
+  `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`,
+  `tools/shell-wait-probe/driver.mjs`, `tools/shell-wait-probe/evidence.mjs`,
+  `tests/shell-wait-probe.test.mjs`. `fixture.mjs` is untouched.
+- Fixture-owned cleanup: a scan of the OS temp roots (`/tmp`, `$TMPDIR`) found **ZERO** surviving
+  `zcode-shell-wait-fixture-*` directories (the fixture's mkdtemp prefix; the failed builder runs'
+  disposal guarantee held on the failure path) and **ZERO** surviving campaign case-output directories
+  (all ten §13.4–§13.7 private record directories are gone; §13.5's pre-existing
+  `zcode-shell-wait-fixture-fHFp3c` scratch is no longer present either) and no
+  `zcode-marketplace-build-*` leftovers. Nothing was deleted by this task.
+- Unrelated OS-temp scratch observed and left untouched, recorded basename-only per the plan's
+  preservation rule: `$TMPDIR/tmp.sKRbsPhH0o` (contains only a `package.json`; not campaign-owned), and
+  this task's own reproduction scratch under `/tmp/task7-*` (six directories and nine log/hash files —
+  known-temporary, disposable).
+
+**Executed case ledger (Tasks 2–6: every live run of the follow-up campaign, all on the single
+re-pinned 0.162.1 comparable pin of §1.2.3; Task 7 launched no host).**
+
+| Task | Case / group | Runs | Outcome | Cause-directed follow-up |
+| --- | --- | --- | --- | --- |
+| 2 | `rescue-long` UNRAISED (M control) | 1 | inconclusive `unsupported-call-shape`; M `not-proven` on this pin | NOT consumed (no concrete cause with a single changeable variable) |
+| 2 | `rescue-long` RAISED candidate | 1 | inconclusive, same family; `capVerified: true` is fixture-configuration retention only | (the comparable group's one follow-up left unspent) |
+| 2 | `rescue-repeat` | 1 | inconclusive, same family; no qualified raised run exists on this pin to repeat | not consumed |
+| 2 | `rescue-baseline` | 1 | inconclusive, same family; outer-return counts UNKNOWN, never zero | not consumed |
+| 3 | `rescue-interrupt` | 1 | inconclusive; the first parsed AND counted V2 interrupt interaction on this pin (`callCount: 1`, success-decoded `previous_status: "running"`); target suppressed, ordering unbound | NOT consumed |
+| 3 | `native-short-window-responsiveness-control` | **0 of 1** | deliberately NOT spent (no attributable `deliveryToSettlementMs` exists for it to serve) | n/a (separately named one-run group, no retry) |
+| 4 | `rescue-noise` (its initial run WAS the plan's bounded diagnostic, retention-only gate) | 1 | inconclusive; the family is STRUCTURALLY ADJUDICATED (a statement variant outside both pinned grammars; fingerprint `38c33f61…`) | NOT consumed |
+| 4 | `background` | 1 | inconclusive (fingerprint `a9d65bb2…`); budget-cleanup at 600010 ms; the settlement watch executed and never detected settlement; never labelled interruption | NOT consumed |
+| 5 | `review-wait` | 1 | inconclusive — the early host exit CONFIRMED and traced (launch 1 / send 0, no poll, host exit 0 at 15214 ms; the command-side no-send cause is production-scope) | NOT consumed |
+| 5 | `adversarial-review-wait` | 1 | **QUALIFIED** (`inconclusive: null`, §13.7) | none needed |
+| 5 | `status-wait` | 1 | **QUALIFIED** (`inconclusive: null`; query deadline verified un-extended, §13.7) | none needed |
+| 6 | generic qualification group | **0 of 1** | deliberately unspent — the precondition (a genuinely reachable ordinary generic condition) was adjudicated FALSE by the trace (§13.8) | none exists (structural cause) |
+| 7 | close-out | 0 host runs | this section (matrix, final gate, mapping, handoff) | n/a |
+
+Total: **10 live runs on one comparable pin**; every case-level cause-directed follow-up left
+deliberately unspent; both separately named one-run groups (`native-short-window-responsiveness-control`
+and the generic qualification group) left unspent. No case was retried out of the record.
+
+**S1–S7 / Q1–Q6 close-out mapping** (per-item label, version, scope and precise remaining cause; the
+historical rows of §11.1 stand unchanged as their own scope):
+
+| Spec item | Close-out state |
+| --- | --- |
+| S1 preparation, atomic binding, one-shot/resume authority | `fixture-tested` fail-closed seams (§12) plus the inherited controlled suites re-verified green in the matrix above (preparation/binding/route-planner 417/417); `installed-observed` named-route launch-1/send-1/original-handle linkage on 0.160.1 (§7.1) and 0.161.0 (§7.7); on 0.162.1 the Rescue-Child-side preparation/binding linkage is `not-proven` (blocked by the unclassified-cell family, §13.4), while the Root-family qualified runs re-observed the owned two-turn flow (§13.7). Production negatives unchanged (zero production diff, below) |
+| S2 one launch, original handle, empty observations, pending-cell ownership | `installed-observed` 0.161.0 (§7.7: one launch, one poll on the original handle, zero outer returns to natural completion); `fixture-tested` fail-closed observer (§12.4); 0.162.1 Root-family same-handle discipline observed in both qualified runs (§13.7); Rescue-Child pending-cell ownership on this pin `not-proven` (blocked) |
+| S3 exact public output, errors, choice/resume/control | inherited result/choice/error suites re-verified green (job-control + mcp-result 213/213); byte-exact sentinel with `processExit: 0` `installed-observed` 0.161.0 (§7.7); on 0.162.1 the production-contract rendered marker matched in adversarial-review-wait and the confirmed JOB_WAIT_TIMEOUT framing matched in status-wait (§13.7); Rescue-Child terminal-byte linkage on this pin `not-proven` (blocked) |
+| S4 placement matrix, background and Status observation-only | inherited placement suites green (matrix); background placement `not-proven` (R5 §7.7; 0.162.1 §13.6 — Root acknowledgement unattributable, budget-cleanup termination, settlement watch executed, never labelled interruption); Status observation-only behavior CONFIRMED on the qualified run's own record — the production 120000-ms query deadline fired UN-EXTENDED against the requested 3600000-ms observation window (`requestedPollMs`/`requestedStatusQueryTimeoutMs` remain separate record fields, §13.7); Review/Adversarial background enqueue-only re-verified by the controlled suites with no live background run |
+| S5 interruption, reconciliation/loss, deadlines and ceiling | inherited loss/timeout/ceiling suites re-verified green (lifecycle/reconciliation/relay 126/126; no literal 100-hour run); native interruption: delivery path `source-confirmed` (V2 `interrupt_agent`, registered unconditionally in the owning exec Root at `67727e7c`, §13.5 trace) with ONE parsed counted interaction retained on 0.162.1 (`callCount: 1`, success-decoded active `previous_status`), delivery/settlement `not-proven` (§13.5); live Status-observation cancellation `not-proven` (no supported native interaction exists at the pin, §13.7); budget cleanup never labelled interruption (§13.6) |
+| S6 named/generic alignment, no fallback weakening | named route `installed-observed` 0.160.1/0.161.0 (§7.1/§7.7); the generic spawn shape `source-confirmed` SUPPORTED at `67727e7c` yet PRECISELY UNAVAILABLE under ordinary capability conditions — mutually exclusive by construction (Role-preflight-ready ⇒ `agent_roles` non-empty ⇒ the V2 schema exposes `agent_type` ⇒ named is mandatory; the omitting state fails closed before any preparation exists, §13.8); parity guard unchanged; no fallback forced, faked or routed around |
+| S7 isolation, no production/canonical/config changes | VERIFIED at close-out (below): the production/spec/marketplace diff against `41e5b0aa` is EMPTY; the branch's total diff is the report + plan + `driver.mjs`/`evidence.mjs` + `tests/shell-wait-probe.test.mjs` only, with `fixture.mjs` untouched; zero surviving fixture/case-output temp dirs; no user config, cache or Codex-source change |
+| Q1/Q2 effective Child configuration and delivered instructions | configuration layers `source-confirmed` at `67727e7c` (§2); the installed Child's effective unraised cap M `not-proven` on 0.162.1 (§13.4 — the unclassified-cell blocker; the 0.161.0 bounded-but-imprecise state stands for its own pin, §7.7); delivered route instructions `installed-observed` named on 0.160.1/0.161.0 and `not-proven` on this pin (blocked); `capVerified: true` is fixture-configuration retention, never propagation evidence |
+| Q3 timing, discriminator, re-entry and repeat | M `not-proven` (0.162.1, §13.4); raised-cap propagation `not-proven` on this pin with the M + 30000 precondition UNEVALUABLE (the 0.161.0 POSITIVE-but-M-imprecise clue stands for its own pin, §7.7); repeat QUALIFIED on 0.161.0 ONLY (§7.7 — the 0.162.1 repeat run itself ended inconclusive); the current-version re-entry comparison NOT ESTABLISHED (unknown counts stay unknown, §13.4) |
+| Q4 noise, native interruption and sidecar latency | noise `not-proven` (the family shape-adjudicated to the retention design's limit, §13.6); native interruption delivery/settlement `not-proven` (§13.5); the sidecar structural policy `fixture-tested` and re-verified (162/162 + 76/76, §13.6; both suites re-green in the matrix), installed sidecar latency `not-proven` (no qualifying pending observation ever existed on this pin to steer) |
+| Q5 Root waiting Skills | `adversarial-review-wait` QUALIFIED (`installed-observed`, 0.162.1, single run, no repeat claimed — exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll, `processExit: 0`, the corrected production-contract marker matched, natural completion, no termination, §13.7); `status-wait` QUALIFIED (owned in-session acknowledgement → exact-id query, `validateStatusWaitFlow` `valid: true`, deadline un-extended; observation cancellation separately `not-proven`); `review-wait` `not-proven` (early exit confirmed and traced; launch 1/send 0; the command-side no-send cause is a production-scope question outside the probe). Each command carries its own verdict; none is inferred from another |
+| Q6 smallest supported/version-scoped next delta | CLOSED at this close-out: proposed production scope = **ZERO changes** (below); spec §8's positive-recommendation criteria are NOT met on this pin; a future campaign needs the cell-shape classification prerequisite plus a current-pin re-measurement; version scope recorded per pin (0.160.1 / 0.161.0 / 0.162.1), never merged |
+
+**Review-state record (honest, at close-out).** Tasks 1–4 closed with codex review gates at ZERO
+findings (final amended SHAs `3fa035a`, `67d327d`, `0e50444`, `1fb30bd`). Task 5 (`afa26ba`) and Task 6
+(`a6771a4`) carry clean self-reviews; their codex review gates are PENDING BACKFILL — the codex review
+service suffered four consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com
+connection failed + workspace routing discovery failed; review interrupted), accumulating backfill
+range `1fb30bd..a6771a4`. The whole-branch close-out codex review (the plan's independent Spec and
+Standards review item) is also pending on the same service recovery. A tooling outage is NOT authority
+to switch coding agents silently: this state is recorded as pending, never as passed, and no coding
+agent was switched.
+
+**Proposed production scope: ZERO changes (decision handoff).** The campaign's positive recommendation
+criteria (spec §8: the actual Child route, a discriminating long observation and repeat, reduced
+re-entry, exact handle/terminal linkage, and observed native interruption/settlement) are NOT met on
+this pin — on 0.162.1 every measured managed-Rescue dimension is blocked by the single
+unclassified-cell prerequisite (§13.4–§13.6), and the two qualified Root commands do not carry the
+managed-Rescue recommendation. The current canonical remains the existing shell adapter and
+instructions; MCP remains in its prior recorded state; nothing is auto-promoted. A future campaign that
+could reopen the recommendation needs, minimally: (a) the unclassified-cell shape-classification
+prerequisite resolved — which requires content-level evidence via a privacy-authority decision outside
+the plan's authority, or a genuinely changed host/form (§13.6's adjudication limit; never a parser
+expansion) — and (b) re-measurement of M, raised-cap propagation, repeat, re-entry and native interrupt
+delivery/settlement on a current 0.162.x pin under that resolved prerequisite. Only after an explicit
+human adoption decision may a separate production-change plan be written.
+
+**Temporary handoff (links).** Spec:
+[2026-10-05-rescue-shell-long-wait-design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md)
+(read-only; S1–S7, Q1–Q6, §8). Follow-up plan:
+[2026-10-13-rescue-shell-wait-follow-up](../superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md)
+(Tasks 1–7 checkboxes with recorded outcomes; §5 final review status). This report: §§1.2.3, 6.2, 7.7,
+10, 11.1–11.3 and 13.1–13.9. Historical execution ledger:
+[2026-10-05-rescue-shell-long-wait plan](../superpowers/plans/2026-10-05-rescue-shell-long-wait.md). Records: all ten live
+case records are OS-temporary and now gone (ledger above + §13.4–§13.7 tables are the durable
+summaries, as the plan intends); the campaign's durable review record is §11.3's gate/backfill state.

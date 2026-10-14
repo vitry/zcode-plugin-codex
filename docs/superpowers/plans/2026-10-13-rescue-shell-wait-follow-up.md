@@ -367,7 +367,7 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
 
 **Files:** Report §§10/11 and a dated follow-up section; this plan checkboxes; no spec/production updates.
 
-- [ ] Run the changed shell instrument, isolation and inherited authority/lifecycle/result regressions. Record exact source plus executing-tree digests, commands, counts, skips and failures:
+- [x] Run the changed shell instrument, isolation and inherited authority/lifecycle/result regressions. Record exact source plus executing-tree digests, commands, counts, skips and failures:
 
 ```bash
 npm run test:shell-research
@@ -382,11 +382,64 @@ git diff --check
 git status --short
 ```
 
-- [ ] For final `npm test`, use a clean exact source. Without explicit commit authority, use the existing spec §2 owned park-and-restore method ONLY for documentation/scratch, leaving all tested implementation present; record the exact parked paths, pre/post content hashes, test result and successful restoration, without touching unrelated user files. If uncommitted implementation prevents a clean exact-source run and the existing builder cannot stage it faithfully without a commit, report that final gate as blocked pending authorization; do not commit to make it pass. Only when separate explicit commit authority is actually granted may a fully committed source be used. Never hide implementation or cite the clean planning baseline as current changed-tree verification. Do not run `test:mcp-research` or authenticated ordinary E2E merely as a new routine gate.
-- [ ] Verify no production/spec/marketplace diff against `41e5b0aa24189903f77acb971931df6de04a170e`. Check exact fixture-owned process/worktree/config/credential cleanup; keep redacted outcome summaries and decisive tool evidence only. A cleanup failure is reported, not silently called success or resolved by broad directory deletion.
-- [ ] Update S1–S7 and Q1–Q6 coverage with source-confirmed, fixture-tested and installed-observed labels, versions, scope and precise remaining causes. Do not rewrite historical facts, fold unknown counts into zero or collapse native tool acknowledgement, poll exit and durable cancellation settlement into one boolean.
+  Executed 2026-10-14 at HEAD `a6771a4` (clean tree; observer digest `562981ce…`; module sha256s and
+  source pins recorded, §13.9): shell-research **451 tests / 449 pass / 2 fail / 0 skipped** — the 2
+  failures are exactly the known real-builder fixture pair, adjudicated ENVIRONMENTAL with fresh
+  controlled reproduction evidence (byte-identical manifests `npm ci` cleanly in ≈1 s under the real
+  HOME; npm's own "Exit handler never called!" twice under an empty sandboxed HOME; a seeded-cache
+  sandboxed-HOME run succeeded — npm's fetch/extract path under the by-design isolated HOME is the
+  failing surface, host-proxy-dependent; instrument bytes byte-identical to the §13.7 tree that
+  recorded 451/451); recorded as failures-with-cause, never silently green. Selection **6/6**;
+  rescue-preparation/binding/route-planner **417/417**; rescue-lifecycle/child-reconciliation/
+  progress-relay **126/126**; job-control + mcp-result **213/213**; lint, typecheck, line endings
+  (534 tracked files), `git diff --check` and `git status --short` all clean.
+- [x] For final `npm test`, use a clean exact source. Without explicit commit authority, use the existing spec §2 owned park-and-restore method ONLY for documentation/scratch, leaving all tested implementation present; record the exact parked paths, pre/post content hashes, test result and successful restoration, without touching unrelated user files. If uncommitted implementation prevents a clean exact-source run and the existing builder cannot stage it faithfully without a commit, report that final gate as blocked pending authorization; do not commit to make it pass. Only when separate explicit commit authority is actually granted may a fully committed source be used. Never hide implementation or cite the clean planning baseline as current changed-tree verification. Do not run `test:mcp-research` or authenticated ordinary E2E merely as a new routine gate.
+  Executed on the FULLY COMMITTED source at HEAD `a6771a4` — commit authority was explicitly granted
+  for this branch and the tree is clean, so the committed bytes are the exact executing source (no
+  implementation parking needed). Recorded runs (§13.9): inherited-environment run **3397 tests /
+  3391 pass / 3 fail / 3 skipped**, the 3 failures the same environmental npm family (all
+  `ZCODE_PROCESS_TIMEOUT` at 120 s with zero captured bytes inside npm-install steps; none of the three
+  test files touched by this branch); the decisive single-variable experiment (the identical
+  `package-install` test FAILS with the host's proxy env and PASSES 1/1 without it); a full
+  proxy-free rerun **3397 / 3393 / 1 fail / 3 skipped** whose only failure is the clean-tree
+  marketplace check (31 ms) against this task's OWN uncommitted close-out docs mid-edit (the spec §2
+  execution-order artifact); and the DEFINITIVE gate with those two documentation files parked per the
+  spec §2 owned method (exact paths `docs/qualification/rescue-shell-long-wait.md` and
+  `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`, pre/post hashes recorded
+  identical: `c9b441b6…` / `a38380c8…`): **exit 0 — 3397 tests / 3394 pass / 0 fail / 3 skipped plus
+  the marketplace snapshot 2/2 pass, exactly the planning baseline.** `test:mcp-research` and
+  authenticated ordinary E2E were NOT run.
+- [x] Verify no production/spec/marketplace diff against `41e5b0aa24189903f77acb971931df6de04a170e`. Check exact fixture-owned process/worktree/config/credential cleanup; keep redacted outcome summaries and decisive tool evidence only. A cleanup failure is reported, not silently called success or resolved by broad directory deletion.
+  Verified (§13.9): the production/spec/marketplace diff against `41e5b0aa` is EMPTY; the branch's
+  total diff touches exactly the report, this plan, `tools/shell-wait-probe/{driver,evidence}.mjs` and
+  `tests/shell-wait-probe.test.mjs` (`fixture.mjs` untouched). Cleanup: ZERO surviving
+  `zcode-shell-wait-fixture-*` or campaign case-output directories in OS temp (the failed builder
+  runs' disposal guarantee held; §13.5's pre-existing `fHFp3c` scratch is gone too); unrelated scratch
+  recorded basename-only and left untouched; nothing deleted.
+- [x] Update S1–S7 and Q1–Q6 coverage with source-confirmed, fixture-tested and installed-observed labels, versions, scope and precise remaining causes. Do not rewrite historical facts, fold unknown counts into zero or collapse native tool acknowledgement, poll exit and durable cancellation settlement into one boolean.
+  Recorded in §13.9's close-out mapping table (per-item label, version, scope, precise remaining
+  cause) with the dated §11.1 addendum; historical rows stand unchanged as their own scope; unknown
+  counts stayed unknown; native tool acknowledgement, poll exit and durable cancellation settlement
+  remain separate `not-proven` entries (§13.5's four-layer ledger).
 - [ ] Independent read-only Spec and Standards review once at close-out, then narrow recheck of any actual fixes. No fixed 30-round loop. Where implementation changes are needed, honor the user's established ZCode-coding/independent-review workflow; a tooling quota failure is not authority to switch coding agents silently.
-- [ ] Deliver a temporary handoff linking this spec/plan/report, records, executed cases, unproved dimensions and minimal proposed production scope. A positive recommendation requires spec §8's actual route, quantitative long discriminator, repeat, reduced re-entry, exact handle/terminal linkage and native interruption/settlement. Root commands and generic/background surfaces retain their own qualification boundaries. Only after explicit user adoption may a separate production-change plan be written; never auto-promote canonical behavior.
+  PENDING — attempted per the established workflow; the codex review service suffered four
+  consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection failed +
+  workspace routing discovery failed; review interrupted). Tasks 1–4's gates closed at zero findings
+  (`3fa035a`, `67d327d`, `0e50444`, `1fb30bd`); Task 5 (`afa26ba`) and Task 6 (`a6771a4`) carry clean
+  self-reviews with their codex gates inside the accumulated backfill range `1fb30bd..a6771a4`,
+  together with this whole-branch close-out review — all pending on the service's recovery. A tooling
+  outage is NOT authority to switch coding agents silently: recorded as pending, never as passed.
+  This checkbox stays open until that review runs.
+- [x] Deliver a temporary handoff linking this spec/plan/report, records, executed cases, unproved dimensions and minimal proposed production scope. A positive recommendation requires spec §8's actual route, quantitative long discriminator, repeat, reduced re-entry, exact handle/terminal linkage and native interruption/settlement. Root commands and generic/background surfaces retain their own qualification boundaries. Only after explicit user adoption may a separate production-change plan be written; never auto-promote canonical behavior.
+  Delivered as report §13.9 (links to spec/plan/report and the historical ledger; executed-case ledger
+  with allowances consumed/unspent; unproved dimensions with precise causes; the pending-backfill
+  review state; the environmental npm adjudication) plus this plan's §5 final review-status block.
+  Proposed production scope: **ZERO changes** — spec §8's positive-recommendation criteria are NOT met
+  on this pin; a future campaign needs the unclassified-cell shape-classification prerequisite
+  (content-level evidence via a privacy-authority decision outside the plan's authority, or a genuinely
+  changed host/form) plus a current-pin re-measurement of M, propagation, repeat, re-entry and native
+  interrupt delivery/settlement. Root commands and the generic/background surfaces keep their own
+  recorded boundaries; nothing is auto-promoted.
 
 ## 4. Coverage and completion
 
@@ -409,7 +462,28 @@ Research completion accepts honest evidence or precise investigated `not-proven`
 
 ## 5. Planning verification and independent review
 
-Planning complete; execution has NOT started. The formal plan is stored in this new worktree's `docs/superpowers/plans/` directory, where its relative links resolve. All execution checkboxes remain open.
+Planning complete; execution ran 2026-10-13 → 2026-10-14 under the user's delegated
+execution-plus-commit authority and closed with Task 7. The formal plan is stored in this worktree's
+`docs/superpowers/plans/` directory, where its relative links resolve. Tasks 1–6 checkboxes are ticked
+with their recorded outcomes; Task 7's checkboxes are ticked with recorded outcomes EXCEPT its
+independent Spec-and-Standards review item, which is recorded PENDING inline below and in the report's
+§13.9.
+
+**Final execution review status (2026-10-14, recorded honestly):**
+
+- Tasks 1–4 closed with codex review gates at ZERO findings (final amended SHAs `3fa035a`, `67d327d`,
+  `0e50444`, `1fb30bd`).
+- Task 5 (`afa26ba`) and Task 6 (`a6771a4`) have CLEAN self-reviews but their codex gates are PENDING
+  BACKFILL — the codex review service suffered four consecutive network failures (2026-10-14
+  14:26→15:22 local: chatgpt.com connection failed + workspace routing discovery failed; review
+  interrupted). Accumulated backfill range: `1fb30bd..a6771a4`. The whole-branch close-out codex review
+  is also pending on the same service recovery. A tooling outage is NOT authority to switch coding
+  agents silently — this state is recorded as pending, never as passed.
+- Task 7's close-out record: report §13.9 (regression matrix, final clean-source `npm test`, the
+  environmental npm adjudication, the executed-case ledger, the S1–S7/Q1–Q6 close-out mapping, and the
+  ZERO-production-scope handoff).
+
+The six bullets below are the PLANNING-session records, preserved unchanged.
 
 - Fresh clean baseline at `41e5b0aa24189903f77acb971931df6de04a170e`: `npm ci` succeeded without dependency-file changes. `npm test` exited 0: routine **3397 tests / 3394 pass / 0 fail / 3 skipped**, plus marketplace snapshot **2/2 pass**. The plan was drafted outside the worktree until that clean-source run completed. Log: `/tmp/zcode-shell-wait-next-baseline-2026-10-13.log`. These are planning-baseline tests, not verification of future instrument changes or installed long-wait behavior.
 - `npm ci` reported three high-severity dependency audit advisories. No automatic dependency change or audit fix was performed; this planning session does not adjudicate those advisories.
