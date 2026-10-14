@@ -270,8 +270,9 @@ const MAX_DIAGNOSTIC_LINE_TOOLS = 4;
  * truncates the diagnostic mid-JSON. The digest and the match flag are never
  * dropped: with the fixed-vocabulary base facts the smallest serialized object
  * always fits the 2048-char excerpt budget.
- * No raw content, no content-derived string, and no number extracted from
- * content ever enters these facts.
+ * No raw content, nothing content-revealing or content-recoverable, and no
+ * content-extracted number enters these facts; the sole content-derived value
+ * is the one-way sha256 recurrence fingerprint.
  * @param {string} raw the unclassified body (only structural facts are derived)
  * @param {number} budgetChars the serialized character budget for these facts
  * @returns {Record<string, unknown>}

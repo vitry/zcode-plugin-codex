@@ -981,11 +981,13 @@ The fail-closed M discriminator and every independent release dimension above re
 
 2026-10-14 Task 7 close-out: no row above changed state in the close-out itself — Task 7 launched no
 host. The register stands with §13.9's executed-case ledger as its run ledger. §13.9 additionally
-records the close-out's environmental npm adjudication (the two shell-research real-builder fixture
-tests and three routine-suite npm-install tests failing inside npm's own install machinery during the
-first clean-source `npm test` run; all adjudicated ENVIRONMENTAL with controlled reproduction
-evidence — failures-with-cause, never silently green) and the pending-backfill codex review state
-(§11.3).
+records the close-out's environmental npm adjudication, with the occurrences enumerated exactly as
+§13.9 enumerates them — the shell-research real-builder fixture pair failed in the SHELL-RESEARCH suite
+runs (§13.8's full-suite gate, then this close-out's run), the three routine-suite npm-install tests
+failed inside the FIRST clean-source `npm test` run, and the single-variable `package-install`
+experiment separately isolates the host package-transport environment — all inside npm's own install
+machinery, all adjudicated ENVIRONMENTAL with controlled reproduction evidence (failures-with-cause,
+never silently green) — together with the pending-backfill codex review state (§11.3).
 
 ## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
@@ -1018,7 +1020,7 @@ installed generic behavior all `not-proven` with precise recorded causes; every 
 production invariant re-verified by the close-out regression matrix. The rows above stand unchanged as
 historical scope.
 
-### 11.2 Proposed next delta (updated through R5; no production rollout recommended yet)
+### 11.2 Proposed next delta (updated through the 2026-10-13/14 follow-up; no production rollout recommended yet)
 
 The spec's positive managed-Rescue recommendation requires the actual Child route, a discriminating long
 observation against measured M, repeat, reduced re-entry, exact handle/terminal linkage, and observed
@@ -1178,7 +1180,7 @@ assignment touched **only after** generic parity is demonstrated. No wrapper pra
 no token-savings claim is made (no measurements). The unproven interruption dimension does not block a
 human decision on the measured wait-behavior findings; it remains a recorded release dimension.
 
-### 11.3 Execution handoff (updated through R5, 2026-10-08)
+### 11.3 Execution handoff (updated through the 2026-10-13/14 follow-up, 2026-10-08)
 
 - Provenance: Tasks 4–6 live runs on installed `0.160.1` (auto-updated mid-pipeline from `0.160.0`); R5
   live runs on installed **0.161.0** (auto-updated again; re-pinned before the trials, §1.2.2); fixture
