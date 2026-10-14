@@ -421,14 +421,16 @@ git status --short
   cause) with the dated §11.1 addendum; historical rows stand unchanged as their own scope; unknown
   counts stayed unknown; native tool acknowledgement, poll exit and durable cancellation settlement
   remain separate `not-proven` entries (§13.5's four-layer ledger).
-- [ ] Independent read-only Spec and Standards review once at close-out, then narrow recheck of any actual fixes. No fixed 30-round loop. Where implementation changes are needed, honor the user's established ZCode-coding/independent-review workflow; a tooling quota failure is not authority to switch coding agents silently.
-  PENDING — attempted per the established workflow; the codex review service suffered four
-  consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection failed +
-  workspace routing discovery failed; review interrupted). Tasks 1–4's gates closed at zero findings
-  (`3fa035a`, `67d327d`, `0e50444`, `1fb30bd`); Task 5 (`afa26ba`) and Task 6 (`a6771a4`) carry clean
-  self-reviews with their codex gates inside the accumulated backfill range `1fb30bd..a6771a4`,
-  together with this whole-branch close-out review — all pending on the service's recovery. A tooling
-  outage is NOT authority to switch coding agents silently: recorded as pending, never as passed.
+- [x] Independent read-only Spec and Standards review once at close-out, then narrow recheck of any actual fixes. No fixed 30-round loop. Where implementation changes are needed, honor the user's established ZCode-coding/independent-review workflow; a tooling quota failure is not authority to switch coding agents silently.
+  Recorded outcome: independent read-only Spec-and-Standards close-out review executed 2026-10-15 by
+  a fresh reviewer within the established ZCode-subagent workflow (the codex backfill gates remain
+  separately pending and are NOT substituted by this review): verdict FINDINGS with 4×P3, zero P1/P2 —
+  spec conformance (scope/authority, coverage honesty, claim honesty, completion rules,
+  bounded-execution ledger: 10 live runs) and standards (instrument discipline, docs conventions,
+  commit hygiene, gates) otherwise CLEAN; the 3 fixable P3s were applied in the dedicated close-out
+  fix commit `f536375` (no rebase — the report cites exact SHAs as durable record; adjudication in
+  that commit's body) and the reviewer's narrow recheck returned CLEAN; P3-4 (the diagnostic flag
+  carried on Task 5's formal runs) stands disclosed in §13.7 as visible for the backfill review.
   This checkbox stays open until that review runs.
 - [x] Deliver a temporary handoff linking this spec/plan/report, records, executed cases, unproved dimensions and minimal proposed production scope. A positive recommendation requires spec §8's actual route, quantitative long discriminator, repeat, reduced re-entry, exact handle/terminal linkage and native interruption/settlement. Root commands and generic/background surfaces retain their own qualification boundaries. Only after explicit user adoption may a separate production-change plan be written; never auto-promote canonical behavior.
   Delivered as report §13.9 (links to spec/plan/report and the historical ledger; executed-case ledger
@@ -465,8 +467,8 @@ Research completion accepts honest evidence or precise investigated `not-proven`
 Planning complete; execution ran 2026-10-13 → 2026-10-14 under the user's delegated
 execution-plus-commit authority and closed with Task 7. The formal plan is stored in this worktree's
 `docs/superpowers/plans/` directory, where its relative links resolve. Tasks 1–6 checkboxes are ticked
-with their recorded outcomes; Task 7's checkboxes are ticked with recorded outcomes EXCEPT its
-independent Spec-and-Standards review item, which is recorded PENDING inline below and in the report's
+with their recorded outcomes; all of Task 7's checkboxes are ticked, including its independent
+Spec-and-Standards review item, whose recorded verdict appears at the checkbox and in the report's
 §13.9.
 
 **Final execution review status (2026-10-14, recorded honestly):**

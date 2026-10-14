@@ -4242,6 +4242,20 @@ Standards review item) is also pending on the same service recovery. A tooling o
 to switch coding agents silently: this state is recorded as pending, never as passed, and no coding
 agent was switched.
 
+**Close-out independent Spec-and-Standards review: EXECUTED and recorded (2026-10-15).** A fresh
+reviewer within the established ZCode-subagent workflow — NOT a substitution for the codex gates —
+returned verdict FINDINGS with 4×P3 and zero P1/P2: spec conformance (scope/authority, coverage
+honesty, claim honesty, completion rules, bounded-execution ledger: 10 live runs) and standards
+(instrument discipline, docs conventions, commit hygiene, gates) otherwise CLEAN. The 3 fixable P3s
+were applied in the dedicated close-out fix commit `f536375` — no rebase, because this report cites
+exact SHAs as durable record (the attribution adjudication is that commit's body) — and the reviewer's
+narrow recheck returned CLEAN with zero collateral change. P3-4 — the retention-only diagnostic flag
+carried on Task 5's three formal runs — stands disclosed in §13.7 and is visible for the backfill
+review. This closes the plan's Task 7 item 5 (recorded at its checkbox). The codex backfill state is
+UNCHANGED and still pending: per-task gates for Task 5 (`afa26ba`), Task 6 (`a6771a4`) and Task 7
+(`5224a76` onward, including this verdict record) plus the whole-branch review — the accumulated
+backfill range now extends `1fb30bd..HEAD` — recorded pending, never passed.
+
 **Proposed production scope: ZERO changes (decision handoff).** The campaign's positive recommendation
 criteria (spec §8: the actual Child route, a discriminating long observation and repeat, reduced
 re-entry, exact handle/terminal linkage, and observed native interruption/settlement) are NOT met on
