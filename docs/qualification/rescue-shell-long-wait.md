@@ -13,7 +13,10 @@ coverage/delta/handoff section, updated through R5. §2–§6 retain the source/
 §10 is the current not-proven register (updated through R5), and §12 records fixture-tested instrument
 behavior and its limits (§12.9 records the R5 campaign's instrument facts). §13 opens the 2026-10-13
 follow-up campaign (Task 1: provenance re-pin and measurement-seam verification, no live run;
-§1.2.3 records the re-pinned provenance).
+§1.2.3 records the re-pinned provenance). §13.10–§13.11 record the 2026-10-15 documentation
+close-out amendment (a boundary-assessment scope correction and a read-only Codex source
+re-investigation at a new source pin; no host launch, no code change, production scope still
+ZERO changes).
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -989,6 +992,24 @@ experiment separately isolates the host package-transport environment — all in
 machinery, all adjudicated ENVIRONMENTAL with controlled reproduction evidence (failures-with-cause,
 never silently green) — together with the pending-backfill codex review state (§11.3).
 
+2026-10-15 close-out amendment (documentation-only; no host launch, no code change; no row above
+changed): the register's current-state reading is corrected in one respect. The §13.6-derived
+next-step wording in the noise row above ("further measurement needs content-level evidence … or a
+host/form change — no parser expansion") is ACCURATE for the two cells §13.6 actually scanned, but it
+must NOT be read family-wide: the five §13.4/§13.5 rescue-family cells ran BEFORE the diagnostic gate
+existed (observer provenance `e28ec619…` in all five records vs `b237a6e1…` in §13.6; the gate code
+landed in commit `1fb30bd`), so their `wholeBodyStatementMatch` is UNMEASURED, and "only relax privacy
+or wait for a host change" is over-strong as a conclusion about those five (§13.10 — corrected scope,
+exact `wholeBodyStatementMatch` semantics, irretraceable boundaries, and the Path A next-phase
+candidate). The measured values, run ledger and original verdicts in every row above stand
+byte-unchanged. The current recommendation, restated: production scope remains ZERO changes
+(canonical/config unchanged); §13.11's 2026-10-15 read-only source re-investigation at new source pin
+`dffa0deb…` (three distinct wait layers, effective-Config inheritance to the actual Child, the
+2026-08-07-introduced outer default, and the 2026-10-07 `code_mode_interrupt` Stable/default-true
+flip — source-only, presence evidence only on the installed 0.162.1, no source/binary mapping) is
+recorded as a next-phase input, and §13.10's Path A gated diagnostic run is a NEXT-PHASE CANDIDATE
+only (not implemented, not run, no allowance reset).
+
 ## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
 ### 11.1 Spec coverage mapping
@@ -1168,6 +1189,34 @@ under that resolved prerequisite. The 0.161.0 records (bounded-but-imprecise M c
 POSITIVE-but-M-imprecise propagation clue, QUALIFIED repeat) keep their own recorded scope; no
 cross-version claim is made in either direction.
 
+2026-10-15 close-out amendment (documentation-only; no host launch, no code change): the
+recommendation state above is corrected in scope and extended with read-only source findings
+(§§13.10–13.11), on three points. (i) Corrected feasibility boundary: the §13.6 two-cell adjudication
+limit does NOT extrapolate to the five §13.4/§13.5 rescue-family cells — they predate the diagnostic
+gate (observer `e28ec619…` vs `b237a6e1…`; gate code landed in `1fb30bd`) and their
+`wholeBodyStatementMatch` is unmeasured and retroactively unmeasurable (records deleted); a fresh
+gated run adjudicates only the fresh cell it observes, so a defect-path resolution for the family is
+NOT excluded, and §13.10's Path A (one gated diagnostic run on a new delegation) is a NEXT-PHASE
+CANDIDATE only. (ii) Source findings (source pin `dffa0deb…`, distinct from the executed campaign's
+`67727e7c`; presence evidence only on the installed 0.162.1): the three wait layers are distinct —
+inner terminal observation capped by `background_terminal_max_timeout` (default 300000 ms, an upper
+bound that still requires an explicit long yield; an omitted yield is ≈5000 ms, so the Skill's
+60000-ms window does not become an hour by raising the cap alone), the outer code-mode cell default
+`features.code_mode.default_exec_yield_time_ms` (core default 30000 ms, no fixed 30-second hard cap
+in the examined paths; an explicit shorter `@exec` pragma wins; an already-yielded outer `wait` keeps
+its own 10000-ms default), and Root-for-Child V2 `default_wait_timeout_ms` (source default 30000 ms,
+hard max 3600000 ms); both reachable Child keys travel through the full parent effective-Config
+clone, not prompt-only inheritance, and are NOT Role-whitelist fields. The outer default is NOT new —
+introduced 2026-08-07 by `d0c8f422…` and present in the old pin `67727e7c` — so it is a previously
+under-exploited/unverified entry point, never "the host only now supports long waits". The genuine
+default change is `72c95952…` (2026-10-07) flipping `code_mode_interrupt` to Stable/default true,
+which supports cancelling an active cell/pending poll without waiting out the observation window but
+is NOT terminal-process stop, Companion/ZCode-job stop or durable settlement. (iii) The production
+recommendation is UNCHANGED: ZERO changes; canonical/config unchanged; spec §8's positive
+managed-Rescue criteria remain unmet on every measured pin. The 0.162.1 `unsupported-call-shape`
+outcome was insufficient evidence, not a host-capability removal — the shell route is not concluded
+infeasible.
+
 (Pre-close-out formulation, retained unchanged: it describes what a production change WOULD have looked
 like had the human adoption happened on the 0.161.0-era evidence — the 2026-10-14 Task 7 close-out
 paragraph above records that the adoption criteria are NOT met on the current pin and proposes ZERO
@@ -1306,6 +1355,18 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   regressions). Review state complete: Tasks 1–4 per-task zero-finding gates plus Tasks 5–7
   backfilled via the whole-branch zero-finding review — recorded as executed and passed, resolving
   (never silently replacing) the pending record above.
+- **2026-10-15 documentation close-out gate status (the §13.10–13.11 amendment; recorded as its own
+  state):** the amendment is documentation-only, uncommitted working-tree state at HEAD `a386b73`
+  pending the user's delegated commit/PR step, and its recorded verification is `git diff --check`
+  clean, `node scripts/check-line-endings.mjs` clean, and `node --test tests/test-selection.test.mjs`
+  6/6 (the isolation check) — no full-suite rerun was manufactured for a documentation edit. Gate
+  attribution stays separated: the boundary assessment's own review provenance (an independent
+  double-adversarial verifier returning CONFIRMED-WITH-CORRECTIONS with 4×P3 fixed, then a read-only
+  codex adversarial gate ×3 converging to CORRECTIONS-ADEQUATE on 65 assertions) is ASSESSMENT-side
+  record, restated in §13.10, not re-executed by this session; the per-task and whole-branch reviews
+  above belong to their tested HEADs and reviewed range (`41e5b0aa..a1420f7`), which does NOT include
+  this amendment; and this amendment's own commit-level CI/review, once a doc commit exists, will be
+  recorded as its own — no result is reused across them.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
@@ -3662,6 +3723,19 @@ its fingerprints and both cases stop here. The pre-existing OS-temporary
 `zcode-shell-wait-fixture-fHFp3c` scratch directory recorded in §13.5 was again found untouched and
 left in place; both of this task's fixtures were disposed by the driver.
 
+**2026-10-15 scope correction (superseded in scope by §13.10; everything above byte-unchanged).**
+The adjudication above is ACCURATE for the two cells this task actually scanned (noise fingerprint
+`38c33f61…`, background fingerprint `a9d65bb2…`; observer digest `b237a6e1…` — the post-gate
+instrument, the gate code having landed in commit `1fb30bd`). It must NOT be read as a family-wide
+conclusion: the five §13.4/§13.5 rescue-family cells were collected by the PRE-gate instrument
+(observer digest `e28ec619…` in every one of those records) and were never diagnostic-scanned — their
+`wholeBodyStatementMatch` is UNMEASURED — so the closing "only a privacy-authority decision or a
+host/form change" wording above is over-strong for them. A feasible defect class
+(whole-body-parseable, per-line-rejected shapes) is consistent with those cells' retained line/byte
+envelopes. The historical measured values, run ledger and original verdicts above remain the record
+unchanged; §13.10 states the corrected scope, the exact `wholeBodyStatementMatch` semantics, the
+irretraceable boundaries and the next-phase candidate.
+
 ### 13.7 Follow-up campaign Task 5: Root Review, Adversarial Review and Status qualified separately (2026-10-13, installed 0.162.1) — adversarial-review-wait QUALIFIED end to end behind the corrected production-contract marker, status-wait QUALIFIED on the owned two-turn flow with the query deadline verified un-extended, review-wait `not-proven` on a confirmed early host exit traced with redacted bounded evidence; live Status-observation cancellation `not-proven` (no supported interaction reachable)
 
 Task 5 executed the plan's three listed live cases, exactly one run per case label, plus the no-launch
@@ -4307,12 +4381,192 @@ expansion) — and (b) re-measurement of M, raised-cap propagation, repeat, re-e
 delivery/settlement on a current 0.162.x pin under that resolved prerequisite. Only after an explicit
 human adoption decision may a separate production-change plan be written.
 
+**2026-10-15 scope correction (superseded in scope by §13.10; everything above byte-unchanged).**
+The "(a)" prerequisite above restates §13.6's adjudication limit; as a statement about the blocked
+FAMILY it is over-strong — §13.6 adjudicated only the two cells its gate scanned, while the five
+§13.4/§13.5 rescue-family cells predate the gate (observer provenance `e28ec619…` vs `b237a6e1…`;
+the gate code landed in commit `1fb30bd`) and their `wholeBodyStatementMatch` is unmeasured and
+retroactively unmeasurable. §13.10 records the corrected boundary (including the exact
+`wholeBodyStatementMatch` semantics and the Path A next-phase candidate — not implemented, not run,
+no allowance reset) and §13.11 the 2026-10-15 read-only source re-investigation at source pin
+`dffa0deb…` (distinct from the executed campaign's `67727e7c…`; presence evidence only on the
+installed binary, no source/binary mapping). The production scope above (ZERO changes) is unchanged.
+
 **Temporary handoff (links).** Spec:
 [2026-10-05-rescue-shell-long-wait-design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md)
 (read-only; S1–S7, Q1–Q6, §8). Follow-up plan:
 [2026-10-13-rescue-shell-wait-follow-up](../superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md)
 (Tasks 1–7 checkboxes with recorded outcomes; §5 final review status). This report: §§1.2.3, 6.2, 7.7,
-10, 11.1–11.3 and 13.1–13.9. Historical execution ledger:
+10, 11.1–11.3 and 13.1–13.11. Historical execution ledger:
 [2026-10-05-rescue-shell-long-wait plan](../superpowers/plans/2026-10-05-rescue-shell-long-wait.md). Records: all ten live
 case records are OS-temporary and now gone (ledger above + §13.4–§13.7 tables are the durable
 summaries, as the plan intends); the campaign's durable review record is §11.3's gate/backfill state.
+
+### 13.10 Close-out amendment (2026-10-15): boundary-assessment scope correction — the §13.6 two-cell adjudication limit does not extrapolate to the five pre-gate rescue-family cells; `wholeBodyStatementMatch` semantics stated exactly; Path A recorded as a NEXT-PHASE CANDIDATE only (documentation-only; no host launch, no code change, no allowance change)
+
+This amendment incorporates a 2026-10-15 read-only feasibility assessment of the probe's call-shape
+recognition boundary. The assessment's own provenance: scratch experiments against the REAL
+instrument modules only (`evidence.mjs`/`driver.mjs` as committed at this HEAD), synthetic
+candidates only, no repository file modified, no withheld content reconstructed, no host launched,
+no user configuration read. This session verified the assessment's repo-side and checkout-side facts
+directly before recording them (worktree HEAD `a386b73`, clean; the Codex checkout facts in §13.11).
+The amendment changes no run record, no measured value, no verdict and no allowance; §13.6's and
+§13.9's original texts above stand byte-unchanged, each with a dated superseded-in-scope pointer.
+
+**The corrected conclusion scope.** §13.6's adjudication covered exactly TWO cells — the noise cell
+(fingerprint `38c33f61…`) and the background cell (fingerprint `a9d65bb2…`) — both scanned by the
+diagnostic gate (observer digest `b237a6e1…`; the gate code landed in commit `1fb30bd`, §13.6). The
+five §13.4/§13.5 rescue-family cells (§13.4 runs 1–4: `exec_command` cells of 3 lines/443 B,
+2/246, 4/336, 3/443; §13.5's run: 3/314 — all directive-less, content withheld) ran BEFORE the gate
+existed: every one of those records carries the pre-gate observer digest `e28ec619…`, so their
+`wholeBodyStatementMatch` is UNMEASURED. The assessment demonstrated — against the real modules —
+that shapes consistent with those five cells' retained line/byte envelopes exist on BOTH sides of
+the discriminator: defect-class members the module's own whole-body parser already accepts today
+(e.g. a pretty-printed two-line `const r` form, or a >16-line single statement — the line bound is
+splitter-only), and members outside both parsers. Line/byte facts do not discriminate. Therefore the
+family-wide reading "only a privacy-authority decision or a host/form change can move this" is
+OVER-STRONG for the five unmeasured cells; it remains correct for the two cells §13.6 actually
+adjudicated (their whitelisted structural facts cannot select among the constructible form classes,
+§13.6).
+
+**Irretraceable boundaries are preserved, not relaxed.** All raw records are deleted (§13.9's
+cleanup verification; §11.3); the withheld content of every historical cell is unresolvable without
+new evidence — and unresolvable PERIOD for the five historical cells. The synthetic examples in the
+assessment are FEASIBLE DEFECT CLASSES consistent with retained structural facts, NOT recovered
+historical calls. A future gated run adjudicates only the NEW cell it observes; it can never
+adjudicate the five historical flags retroactively. The model's shapes also varied run to run and
+case to case (§13.4's varying byte/line facts; §13.6's two distinct fingerprints), so a fresh run may
+show yet another shape or none at all.
+
+**`wholeBodyStatementMatch` semantics, exactly.** The flag is computed by
+`parseWrappedToolInput(raw)` (`tools/shell-wait-probe/evidence.mjs:284`) — the anchored WRAPPER+INLINE
+statement patterns ONLY, not the full `parseCallEvent`, which additionally tries
+`PREPARATION_PATTERN` and `ROOT_CONTROL_WRAPPER_PATTERN` first
+(`tools/shell-wait-probe/evidence.mjs:685,713`). Consequences, per the final assessment: TRUE proves
+a wrapper/inline-shaped, per-line-splitter-rejected cell — the pre-registered defect row (§13.6's
+table). FALSE rules out the wrapper/inline-form defect classes ONLY — it does NOT exclude shapes the
+existing `parseCallEvent` already accepts: demonstrated, a pretty-printed preparation with a LITERAL
+envelope is accepted whole-body via `PREPARATION_PATTERN` (its envelope group spans newlines) and
+reconstructs `chars` byte-identically to the pinned one-line form, while the flag records FALSE. Only
+for the confirmed `exec_command` family — precisely the five §13.4/§13.5 cells — does FALSE carry the
+narrowed exclusion "outside the whole-body grammar", because the preparation/root-control patterns
+match only `write_stdin` / `interrupt_agent`|`send_input` heads and have no `exec_command` path, so
+both FALSE readings coincide there.
+
+**Path A: a NEXT-PHASE CANDIDATE, nothing more.** The candidate is ONE gated diagnostic run
+(the existing `--unclassified-structural-diagnostic 1` retention-only gate; zero code change needed
+for the diagnostic itself) of one rescue-family case (e.g. `rescue-long`) on a re-pinned current
+binary, under a NEW plan delegation. `wholeBodyStatementMatch: true` → the campaign's own
+pre-registered defect row (§13.6's table) → only then consider the minimal RED→GREEN fallback below.
+FALSE → for an `exec_command` cell, that coincides with "outside the whole-body grammar" on that
+FRESH run, and the §13.6-style conservative adjudication holds for it. NOT implemented, NOT run in
+this close-out; no historical allowance is reset or silently reused — the `rescue-long` group's
+formally unspent follow-up remains unreachable inside the closed plan (§13.4's ledger), and a Path A
+run is a new plan's budget, recorded as such, with the binary re-pinned first (auto-update risk, §10).
+
+**Candidate fallback safety constraints (recorded so a future implementation cannot drift).** Any
+minimal fallback reuses the module's OWN parser (`parseCallEvent`) on the RAW body — directive
+INCLUDED, never pre-stripped; strip-then-parse is FORBIDDEN (it bypasses directive validation and
+silently drops a valid directive). It must preserve: directive validation and reattachment
+(invalid-directive cells keep rejecting exactly as today; a parsed directive is reattached to the
+returned statement so reconstruction/preparation semantics are unchanged); whole-body anchoring with
+hidden-trailing-statement rejection (the anchored patterns reject any cell with content beyond the
+one statement — no smuggling path); and all existing bounds. Honest coverage limit: the
+PREPARATION and ROOT_CONTROL branches match the unstripped input first and cannot match
+directive-prefixed input, so a raw-parse fallback would NOT admit directive-prefixed
+preparation/root-control cells — a fail-closed COVERAGE LIMITATION, not a safety problem; one branch
+does not cover all forms. NOT permitted in the candidate: unknown statements, skipping unparseable
+lines, trailing content after a statement, widening the tool alternation, trailing commas or unknown
+literal syntax, eval/Function/vm, any general interpreter — the spec's own boundary ("no general
+interpreter", spec §4/§7).
+
+**Review provenance (attribution kept precise).** The assessment carries its own recorded review
+chain — the assessor's boundary assessment; an independent double-adversarial verifier returning
+CONFIRMED-WITH-CORRECTIONS with four P3 findings, all fixed; then a read-only codex adversarial gate
+executed three times, converging to CORRECTIONS-ADEQUATE (65 assertions checked). These are
+ASSESSMENT-side records: this close-out session did not re-execute them and inherits them as
+recorded history only. The campaign's existing test and whole-branch reviews belong to their tested
+HEADs and reviewed range (§11.3 — the whole-branch review covered `41e5b0aa..a1420f7`, which does
+not include this amendment). This amendment's own verification is recorded as its own state in
+§11.3's dated note; any commit-level CI/review for the eventual doc commit will be recorded as its
+own. No result is reused across them.
+
+**Delivery boundary (unchanged).** Production recommendation: ZERO changes; canonical/config
+unchanged; spec untouched; no closed-plan task reopened. The two qualified Root observations (§13.7)
+and the Status-observation-cancellation `not-proven` keep their own boundaries — no extrapolation to
+all commands.
+
+### 13.11 Source re-investigation (2026-10-15, read-only, source pin `dffa0deb…`): the three wait layers are distinct, inheritance is config-real, the outer default is NOT new, and the genuine default change is `code_mode_interrupt` — presence evidence only on the installed binary; no source/binary mapping, no production change
+
+All claims in this section are `source-confirmed` at
+`dffa0deb69268ed4ac31578794c9ea897b336ae3` unless labelled otherwise; every citation reproduces as
+`git show dffa0deb69268ed4ac31578794c9ea897b336ae3:<path>` at the recorded line range. The user's
+Codex source checkout (`/Users/zhangzikai/Workspace/Codes/github/codex`; from this worktree
+`../../../codex`) was re-verified 2026-10-15: this NEW pin is DISTINCT from the executed campaign's
+pin `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (2026-09-30), which remains the pin of §§2/3/13.5/13.8's
+`source-confirmed` records — both pins are recorded and never mixed. Read-only throughout: no fetch,
+build, test run, or edit; no user configuration was read. The installed CLI at investigation time was
+0.162.1 (the §1.2.3 pin); a read-only strings-level check found the three known configuration-name
+strings (`background_terminal_max_timeout`, `default_exec_yield_time_ms`, `code_mode_interrupt`) in
+the installed binary — PRESENCE EVIDENCE ONLY: no source/binary correspondence is claimed, no
+configuration is claimed effective, deployed or verified, installed interruption behavior is not
+claimed, and no token measurement exists anywhere in this section.
+
+**The three wait layers are DISTINCT — no single configuration is a universal switch.**
+
+| Layer | Mechanism at the pin | Limits that must be preserved |
+| --- | --- | --- |
+| Inner terminal observation (empty `write_stdin`) | Empty-input polls clamp to `[5000, manager cap]`; the manager cap resolves `background_terminal_max_timeout.unwrap_or(300000).max(5000)` (constants `MIN_EMPTY_YIELD_TIME_MS = 5000`, `DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300000` — `codex-rs/core/src/unified_exec/mod.rs:68-74`; clamp `codex-rs/core/src/unified_exec/process_manager.rs:1029-1043`; resolution `codex-rs/core/src/config/mod.rs:4027-4030`; TOML field `codex-rs/config/src/config_toml.rs:345-347`) | The cap is an UPPER BOUND — a long observation still requires an explicit long `yield_time_ms`; an omitted yield is ≈5000 ms (the argument's 250-ms default is clamped up — `codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs:23-32`). Non-empty writes stay ≤30000 ms and the first `exec_command` yield clamps to `[250, 30000]` ms (Windows floor 10000) regardless of config (`codex-rs/core/src/unified_exec/mod.rs:212-218`). Raising the cap alone lengthens nothing: the production Skill's 60000-ms window does not become an hour by raising the cap alone |
+| Outer code-mode cell | `features.code_mode.default_exec_yield_time_ms` (`codex-rs/features/src/feature_configs.rs:36-43`) is the wait filled into exec requests WITHOUT an explicit pragma — core default 30000 ms (`codex-rs/core/src/config/mod.rs:1200,1219`; resolution `:2778-2792`; filled via `get_or_insert`, `codex-rs/core/src/tools/code_mode/mod.rs:130-135`). The protocol's bare 10000-ms constants are NOT the effective core default (`codex-rs/code-mode-protocol/src/runtime.rs:15-16`). In the examined core-default paths there is NO fixed 30-second outer hard cap: the runtime applies `min()` only against a session-EXPLICIT `max_yield_time_ms` (`codex-rs/code-mode-runtime/src/service.rs:29,71,140,201`) | An explicit shorter `@exec` pragma wins over the configured default; an ALREADY-YIELDED cell's outer `wait` has its own independent 10000-ms default and does NOT read the exec default (`codex-rs/core/src/tools/code_mode/wait_handler.rs:30,37-39,134-141`); an active explicit yield, user input/preempt, resource limits, cancellation and REAL JS completion can each return earlier than any configured window (ordinary output buffers do not end the observation; only the `Result`-terminated completion path does — `codex-rs/core/src/tools/code_mode/execute_handler.rs:135,146-147`) |
+| Root-for-Child V2 wait | `features.multi_agent_v2.default_wait_timeout_ms` with min/max — source defaults 30000 / 10000 / 3600000 ms (`codex-rs/core/src/config/mod.rs:257-264`; struct `:1369`; validation `:3957-3992`); the V2 wait handler reads them from the per-turn config (`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:53`) | A Child's long wait says nothing about the Root not waking early: mailbox/user-input activity can wake the wait before the deadline (`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:213-220`). The machine's ACTUAL runtime configuration was NOT read this round — only source defaults are recorded |
+
+**Inheritance is config-real, not prompt-only.** The inner cap and the code-mode default reach the
+actual Child through the full parent effective-`Config` clone — `build_agent_shared_config` starts
+from `turn.config.clone()` (`codex-rs/core/src/agent/child_config.rs:110-164`; the same clone-based
+helper serves fresh spawn and resume) — and the Child session constructs its terminal manager and
+code-mode service from that config: `UnifiedExecProcessManager::new(config.background_terminal_max_timeout)`
+(`codex-rs/core/src/session/session.rs:1725-1732`) and `CodeModeService::new(…, &config.code_mode, …)`,
+which copies `default_exec_yield_time_ms` into the service field
+(`codex-rs/core/src/session/session.rs:1818-1823`; `codex-rs/core/src/tools/code_mode/mod.rs:86-103`).
+The two keys are NOT in the Role typed whitelist (`codex-rs/core/src/agent/role.rs:36-47`) — adding
+arbitrary fields to a Role file does not achieve a Role-scoped override. Loaded sessions do not
+hot-reload: an already-loaded Child is reused as-is, and an owner-validated reload builds a NEW
+Session from a fresh clone — a running service never picks up config-file edits automatically.
+
+**The outer default is NOT new.** It was introduced 2026-08-07 by
+`d0c8f422eaaa40b3927b43a0fff7e753e8514f34` ("Configure the default code-mode exec yield timeout
+(#37352)", 2026-08-07T01:41:54Z), which is an ancestor of the OLD pin `67727e7c…` (verified by
+merge-base), so the executed campaign's own source pin already contained it. Correct framing: a
+PREVIOUSLY UNDER-EXPLOITED/UNDER-VERIFIED entry point whose verification coverage should be filled
+in — never "the host only now supports long waits".
+
+**The genuine default change is interruption.** `72c959528ee4ca74abdb8575fbbc4e36960a8c47`
+(2026-10-07, "Enable code mode interruption by default (#51835)") flipped `code_mode_interrupt` from
+UnderDevelopment/default-false to Stable/default-true (`codex-rs/features/src/lib.rs:1197-1202` at
+`dffa0deb…`; the old pin records `Stage::UnderDevelopment` / `default_enabled: false` at
+`codex-rs/features/src/lib.rs:1103-1108`). Consequence chain at the new pin: the turn-abort path
+awaits `interrupt_active_cells()` when the abort reason is `Interrupted` AND the feature is enabled
+(`codex-rs/core/src/tasks/mod.rs:960-971`), which terminates each active code-mode cell
+(`codex-rs/core/src/tools/code_mode/mod.rs:164-178`) and cancels nested pending tool futures — so a
+native Interrupt, or an exact-Child `interrupt_agent`, need not wait out a long observation window.
+Boundaries that survive: this does NOT auto-clear the terminal process store (a cancelled poll future
+releases only its own process clone; the terminate-all path is the separate clean/shutdown route); it
+is NOT Companion-process stop, ZCode-job stop or durable settlement — the plugin's exact
+stop/reconciliation/no-collateral-cancellation contract still needs its own verification; and the
+interrupt tool's `previous_status` is a PRE-interruption status snapshot, not a completion
+confirmation (consistent with §13.5's recording).
+
+**Token framing (mechanism only; nothing measured).** The source turn loop awaits the drain of
+in-flight tool futures within one sampling (`codex-rs/core/src/session/turn.rs:2565,3280`) — there is
+no wall-clock re-sampling that restarts the model on a timer. Shortened observations that return to
+the model add repeat decision/sampling opportunities, so lengthened windows have a MECHANISTIC BASIS
+for fewer repeat samplings — and nothing more: no whole-task-zero-token claim, no infinite-wait
+claim, no percentage-savings claim.
+
+**Priority framing.** The 0.162.1 campaign's `unsupported-call-shape` outcome (§13.4–§13.6) was
+INSUFFICIENT EVIDENCE — it is not evidence that the host removed or lacks long-wait capability, and
+the shell route must not be concluded infeasible from the inconclusive. The sensible next sequence
+(as the source investigation itself recommends): first confirm the installed host's two-layer
+effective configuration and interruption capability, and resolve the probe recognition boundary
+(§13.10's Path A candidate); only then consider small-scale verification. This section authorizes no
+production Skill/Role/config change (spec S7; §13.10's delivery boundary).

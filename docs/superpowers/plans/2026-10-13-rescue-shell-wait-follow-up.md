@@ -502,6 +502,22 @@ Spec-and-Standards review item, whose recorded verdict appears at the checkbox a
   environmental npm adjudication, the executed-case ledger, the S1–S7/Q1–Q6 close-out mapping, and the
   ZERO-production-scope handoff).
 
+**2026-10-15 documentation close-out clarification (pointer only; no checkbox becomes new-trial
+authorization).** The follow-up campaign remains closed with ZERO proposed production changes. A
+later read-only boundary assessment corrected the SCOPE of §13.6's two-cell adjudication: the five
+pre-gate §13.4/§13.5 rescue-family cells were never diagnostic-scanned (observer provenance
+`e28ec619…` vs `b237a6e1…`; the gate code landed in commit `1fb30bd`), so their
+`wholeBodyStatementMatch` is unmeasured and retroactively unmeasurable — a fresh gated run adjudicates
+only the fresh cell it observes — and a read-only Codex source re-investigation at new source pin
+`dffa0deb…` (distinct from the executed campaign's `67727e7c…`) recorded the three distinct wait
+layers, effective-Config inheritance to the actual Child, the 2026-08-07-introduced outer default
+(previously under-exploited, not new capability), and the 2026-10-07 `code_mode_interrupt`
+Stable/default-true flip (source-only; presence evidence only on the installed 0.162.1; no
+source/binary mapping; no production change). Details, pinned citations, the exact flag semantics,
+the candidate fallback safety constraints and the Path A next-phase candidate (NOT implemented, NOT
+run, no allowance reset) are recorded in report §§13.10–13.11. The checkboxes above are unchanged
+historical execution records.
+
 The six bullets below are the PLANNING-session records, preserved unchanged.
 
 - Fresh clean baseline at `41e5b0aa24189903f77acb971931df6de04a170e`: `npm ci` succeeded without dependency-file changes. `npm test` exited 0: routine **3397 tests / 3394 pass / 0 fail / 3 skipped**, plus marketplace snapshot **2/2 pass**. The plan was drafted outside the worktree until that clean-source run completed. Log: `/tmp/zcode-shell-wait-next-baseline-2026-10-13.log`. These are planning-baseline tests, not verification of future instrument changes or installed long-wait behavior.
