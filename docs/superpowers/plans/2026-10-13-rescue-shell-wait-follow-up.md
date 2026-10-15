@@ -424,7 +424,9 @@ git status --short
 - [x] Independent read-only Spec and Standards review once at close-out, then narrow recheck of any actual fixes. No fixed 30-round loop. Where implementation changes are needed, honor the user's established ZCode-coding/independent-review workflow; a tooling quota failure is not authority to switch coding agents silently.
   Recorded outcome: independent read-only Spec-and-Standards close-out review executed 2026-10-15 by
   a fresh reviewer within the established ZCode-subagent workflow (the codex backfill gates remain
-  separately pending and are NOT substituted by this review): verdict FINDINGS with 4×P3, zero P1/P2 —
+  separately pending and are NOT substituted by this review; RESOLVED 2026-10-15: the codex backfill
+  + whole-branch review executed with zero findings — see plan §5 and report §11.3/§13.9.): verdict
+  FINDINGS with 4×P3, zero P1/P2 —
   spec conformance (scope/authority, coverage honesty, claim honesty, completion rules,
   bounded-execution ledger: 10 live runs) and standards (instrument discipline, docs conventions,
   commit hygiene, gates) otherwise CLEAN; the 3 fixable P3s were applied in the dedicated close-out
@@ -471,16 +473,31 @@ with their recorded outcomes; all of Task 7's checkboxes are ticked, including i
 Spec-and-Standards review item, whose recorded verdict appears at the checkbox and in the report's
 §13.9.
 
-**Final execution review status (2026-10-14, recorded honestly):**
+**Final execution review status (2026-10-14 state, RESOLVED 2026-10-15; recorded honestly):**
 
 - Tasks 1–4 closed with codex review gates at ZERO findings (final amended SHAs `3fa035a`, `67d327d`,
   `0e50444`, `1fb30bd`).
-- Task 5 (`afa26ba`) and Task 6 (`a6771a4`) have CLEAN self-reviews but their codex gates are PENDING
-  BACKFILL — the codex review service suffered four consecutive network failures (2026-10-14
-  14:26→15:22 local: chatgpt.com connection failed + workspace routing discovery failed; review
-  interrupted). Accumulated backfill range: `1fb30bd..a6771a4`. The whole-branch close-out codex review
-  is also pending on the same service recovery. A tooling outage is NOT authority to switch coding
-  agents silently — this state is recorded as pending, never as passed.
+- Task 5 (`afa26ba`) and Task 6 (`a6771a4`) have CLEAN self-reviews; at the 2026-10-14 close their
+  codex gates were recorded as PENDING BACKFILL — the codex review service had then suffered four
+  consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection failed +
+  workspace routing discovery failed; review interrupted), accumulating backfill range
+  `1fb30bd..a6771a4`, with the whole-branch close-out codex review also pending on the same service
+  recovery. A tooling outage is NOT authority to switch coding agents silently — that state was
+  recorded as pending, never as passed. **RESOLVED (2026-10-15):** after the host proxy
+  (`127.0.0.1:7890`) was restored — the outage ultimately totaling SIX consecutive connection
+  failures (2026-10-14 14:26→17:23 local; the 2026-10-14 record above captured the first four,
+  14:26→15:22) — the whole-branch codex review EXECUTED: `codex review --base
+  41e5b0aa24189903f77acb971931df6de04a170e` over the full branch diff (`41e5b0aa..a1420f7`) returned
+  ZERO findings ("No actionable regressions were identified"). This single review serves as BOTH the
+  whole-branch overall review AND the backfill for the pending per-task codex gates of Task 5
+  (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) — all inside the reviewed range.
+  The reviewer's own sandbox run showed 4 test failures it attributed to its own sandbox permissions
+  (npm cache access, process inspection), consistent with the campaign's environmental adjudication,
+  which was then VERIFIED BY PREDICTION: with the proxy restored, `npm run test:shell-research` re-run
+  on HEAD `a1420f7` on 2026-10-15 returned 451 tests / 451 pass / 0 fail / 0 skipped (46 suites,
+  ≈29.5 s) — the two previously-failing real-builder fixture tests now pass (details in report
+  §13.9). Review state complete: Tasks 1–4 per-task zero-finding gates plus Tasks 5–7 backfilled via
+  the whole-branch zero-finding review.
 - Task 7's close-out record: report §13.9 (regression matrix, final clean-source `npm test`, the
   environmental npm adjudication, the executed-case ledger, the S1–S7/Q1–Q6 close-out mapping, and the
   ZERO-production-scope handoff).

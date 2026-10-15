@@ -1288,6 +1288,24 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   A tooling outage is NOT authority to switch coding agents silently — this state is recorded as
   pending, never as passed. Cleanup verified at close-out: ZERO surviving
   `zcode-shell-wait-fixture-*` or campaign case-output directories in OS temp (§13.9).
+- **2026-10-15 codex backfill review EXECUTED (zero findings); the pending state above is RESOLVED:**
+  after the host proxy (`127.0.0.1:7890`) was restored — the outage above ultimately totaling SIX
+  consecutive connection failures (2026-10-14 14:26→17:23 local; the 2026-10-14 record captured the
+  first four, 14:26→15:22) — the whole-branch codex review ran to completion: `codex review --base
+  41e5b0aa24189903f77acb971931df6de04a170e` over the full branch diff (`41e5b0aa..a1420f7`) returned
+  ZERO findings ("No actionable regressions were identified"). This single review serves as BOTH the
+  whole-branch overall review AND the backfill for the pending per-task codex gates of Task 5
+  (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) — their commits are all inside
+  the reviewed range. The reviewer's own sandbox run showed 4 test failures it attributed to its own
+  sandbox permissions (npm cache access, process inspection), consistent with the campaign's
+  environmental adjudication (§13.9) — which was then VERIFIED BY PREDICTION: with the proxy
+  restored, `npm run test:shell-research` re-run on HEAD `a1420f7` on 2026-10-15 returned **451
+  tests / 451 pass / 0 fail / 0 skipped** (46 suites, ≈29.5 s) — the two previously-failing
+  real-builder fixture tests now pass, confirming the recorded verdict (the failures were the host's
+  dead proxy + npm's install machinery under the fixture's sandboxed HOME, not instrument or product
+  regressions). Review state complete: Tasks 1–4 per-task zero-finding gates plus Tasks 5–7
+  backfilled via the whole-branch zero-finding review — recorded as executed and passed, resolving
+  (never silently replacing) the pending record above.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
@@ -4255,6 +4273,25 @@ review. This closes the plan's Task 7 item 5 (recorded at its checkbox). The cod
 UNCHANGED and still pending: per-task gates for Task 5 (`afa26ba`), Task 6 (`a6771a4`) and Task 7
 (`5224a76` onward, including this verdict record) plus the whole-branch review — the accumulated
 backfill range now extends `1fb30bd..HEAD` — recorded pending, never passed.
+
+**Codex backfill review: EXECUTED and recorded (2026-10-15); both pending records above are
+RESOLVED.** After the host proxy (`127.0.0.1:7890`) was restored — the review service's outage
+ultimately totaling SIX consecutive connection failures (2026-10-14 14:26→17:23 local; the
+2026-10-14 records above captured the first four, 14:26→15:22) — the whole-branch codex review ran
+to completion: `codex review --base 41e5b0aa24189903f77acb971931df6de04a170e` over the full branch
+diff (`41e5b0aa..a1420f7`) returned ZERO findings ("No actionable regressions were identified").
+This single review serves as BOTH the whole-branch overall review AND the backfill for the pending
+per-task codex gates of Task 5 (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) —
+their commits are all inside the reviewed range. The reviewer's own sandbox run showed 4 test
+failures it attributed to its own sandbox permissions (npm cache access, process inspection),
+consistent with this section's environmental adjudication — which was then VERIFIED BY PREDICTION:
+with the proxy restored, `npm run test:shell-research` was re-run on HEAD `a1420f7` on 2026-10-15
+and returned **451 tests / 451 pass / 0 fail / 0 skipped** (46 suites, ≈29.5 s) — the two
+previously-failing real-builder fixture tests now pass, confirming the recorded verdict (the
+failures were the host's dead proxy + npm's install machinery under the fixture's sandboxed HOME,
+not instrument or product regressions). Review state complete: Tasks 1–4 per-task zero-finding gates
+plus Tasks 5–7 backfilled via the whole-branch zero-finding review — recorded as executed and
+passed, resolving (never silently replacing) the pending records above.
 
 **Proposed production scope: ZERO changes (decision handoff).** The campaign's positive recommendation
 criteria (spec §8: the actual Child route, a discriminating long observation and repeat, reduced
