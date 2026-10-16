@@ -24,6 +24,7 @@
  * still running, or a cap return can never qualify completion. No general
  * rollout interpreter lives here.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { RESCUE_ENVELOPE_MAX_BYTES, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
@@ -224,6 +225,122 @@ function classifyToolName(name) {
   return typeof name === 'string' && KNOWN_TOOL_NAMES.has(name) ? name : null;
 }
 
+// Fixed-token prefix classes for the unclassified-cell line diagnostic: each
+// is tested against the EXISTING grammar heads with anchored patterns, so no
+// new grammar and no content-derived token is ever retained. An unrecognized
+// line degrades to the fixed literal 'other'.
+const DIAGNOSTIC_LINE_PREFIX_TESTS = /** @type {readonly (readonly [string, RegExp])[]} */ ([
+  ['const-r-await', /^const r = await tools\./u],
+  ['text-await-tools', /^text\(await tools\./u],
+  ['text(', /^text\(/u],
+]);
+const MAX_DIAGNOSTIC_LINES = 16;
+const MAX_DIAGNOSTIC_LINE_TOOLS = 4;
+
+/**
+ * Bounded STRUCTURAL diagnostic facts for one unclassified string cell body —
+ * the follow-up plan's Task 4 bounded-diagnostic whitelist (research gate).
+ * Computed ONLY when the caller explicitly enables the gate; default retention
+ * is unchanged. Every fact is an instrument-constructed primitive:
+ *  - `wholeBodyStatementMatch`: whether the module's OWN single-statement
+ *    wrapper parser (`parseWrappedToolInput` — the same pinned patterns, never
+ *    a new grammar) accepts the WHOLE body. Together with the per-line facts
+ *    this discriminates a grammar-valid statement that only the per-line cell
+ *    splitter rejects (an instrument defect) from a foreign/departed shape.
+ *  - `lines`: per CONTENT line (directive already stripped, blank separator
+ *    lines skipped, bounded), a 1-based position within the directive-stripped
+ *    source (it coincides with the raw position only when no directive is
+ *    present), a fixed-token prefix
+ *    class, a NAIVE cumulative bracket-depth balance at the line's end (per-
+ *    line deltas accumulated across the RETAINED content lines — the
+ *    accumulation stops at the retained bound, so for a body with withheld
+ *    lines the balance covers only the retained prefix; string literals are
+ *    not lexed — a bracket character inside content can skew the count; it is
+ *    a diagnostic hint, never an admission fact), a trailing-semicolon flag,
+ *    and the allowlisted public tool names referenced on that line (unknown
+ *    names stay withheld behind a count, exactly like the top-level tool
+ *    fact).
+ *  - `sha256`: the withheld body's one-way digest — a recurrence fingerprint
+ *    across runs and cases that carries no content.
+ * RETENTION BOUND: `budgetChars` is the serialized size the caller's excerpt
+ * budget leaves for these facts. Line facts are dropped from the END (counted
+ * into `withheldLines`) until the serialized object fits, BEFORE serialization
+ * reaches the caller's excerpt scrubber — the fingerprint, the omission count
+ * and the closing delimiters survive for any body size, and the scrubber never
+ * truncates the diagnostic mid-JSON. The digest and the match flag are never
+ * dropped: with the fixed-vocabulary base facts the smallest serialized object
+ * always fits the 2048-char excerpt budget.
+ * No raw content, nothing content-revealing or content-recoverable, and no
+ * content-extracted number enters these facts; the sole content-derived value
+ * is the one-way sha256 recurrence fingerprint.
+ * @param {string} raw the unclassified body (only structural facts are derived)
+ * @param {number} budgetChars the serialized character budget for these facts
+ * @returns {Record<string, unknown>}
+ */
+function unclassifiedStructuralDiagnosticFacts(raw, budgetChars) {
+  let source = raw;
+  const directive = DIRECTIVE_PATTERN.exec(source);
+  if (directive) source = source.slice(directive[0].length);
+  const wholeBodyStatementMatch = parseWrappedToolInput(raw) !== null;
+  const rawLines = source.replace(/\n$/u, '').split('\n');
+  const lines = /** @type {Record<string, unknown>[]} */ ([]);
+  let withheldLines = 0;
+  let braceDepth = 0;
+  for (const [index, line] of rawLines.entries()) {
+    if (line.trim().length === 0) continue;
+    if (lines.length >= MAX_DIAGNOSTIC_LINES) { withheldLines += 1; continue; }
+    for (const character of line) {
+      if (character === '(' || character === '[' || character === '{') braceDepth += 1;
+      else if (character === ')' || character === ']' || character === '}') braceDepth -= 1;
+    }
+    const tools = /** @type {string[]} */ ([]);
+    let withheldToolNames = 0;
+    const toolNamePattern = /\btools\.([A-Za-z_][A-Za-z0-9_]{0,63})/gu;
+    for (const match of line.matchAll(toolNamePattern)) {
+      if (classifyToolName(match[1]) !== null) {
+        if (!tools.includes(match[1]) && tools.length < MAX_DIAGNOSTIC_LINE_TOOLS) tools.push(match[1]);
+      } else withheldToolNames += 1;
+    }
+    lines.push({
+      line: index + 1,
+      // Match against the TRIMMED line, exactly like the per-line splitter this
+      // diagnostic probes: an indented statement the scan would accept must
+      // keep its grammar-head class instead of degrading to 'other'.
+      prefix: DIAGNOSTIC_LINE_PREFIX_TESTS.find(([, pattern]) => pattern.test(line.trim()))?.[0] ?? 'other',
+      braceDepthEnd: braceDepth,
+      endsWithSemicolon: line.trimEnd().endsWith(';'),
+      tools,
+      ...(withheldToolNames > 0 ? { withheldToolNames } : {}),
+    });
+  }
+  // Retention bound: drop line facts from the END while the serialized object
+  // would exceed the caller's excerpt budget, so the scrubber never truncates
+  // the JSON mid-object and the digest/omission count always survive.
+  const candidate = () => JSON.stringify({
+    wholeBodyStatementMatch,
+    lines,
+    ...(withheldLines > 0 ? { withheldLines } : {}),
+    sha256: createHash('sha256').update(raw, 'utf8').digest('hex'),
+  });
+  while (lines.length > 0 && candidate().length > budgetChars) {
+    lines.pop();
+    withheldLines += 1;
+  }
+  return JSON.parse(candidate());
+}
+
+/**
+ * Serialized room for the gated diagnostic facts inside one excerpt: the
+ * excerpt limit minus the base facts' own serialization — the diagnostic is
+ * inserted before the base object's closing brace as `,"diagnostic":{…}`, so
+ * its serialized length must leave those 14 characters plus one brace of room.
+ * @param {Record<string, unknown>} baseFacts the excerpt facts without the diagnostic
+ * @returns {number}
+ */
+function diagnosticBudgetChars(baseFacts) {
+  return MAX_EXCERPT_CHARS - JSON.stringify(baseFacts).length - ',"diagnostic":'.length - 1;
+}
+
 /**
  * Build the STRUCTURAL excerpt for a call whose raw body cannot safely be
  * classified as a supported shape. Path-only scrubbing cannot certify that a
@@ -243,8 +360,12 @@ function classifyToolName(name) {
  * @param {string} classification the observer's failure classification
  * @param {readonly string[]} redactions
  * @param {string | null} [knownTool] the payload-declared tool name when available
+ * @param {boolean} [diagnosticEnabled] the research gate: when true AND the body
+ *   is a string, the excerpt additionally carries the bounded structural
+ *   diagnostic facts (`unclassifiedStructuralDiagnosticFacts`), budgeted against
+ *   the excerpt limit so the serialized JSON always stays parseable; default retention is unchanged
  */
-function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null) {
+function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null, diagnosticEnabled = false) {
   const isString = typeof rawInput === 'string';
   const raw = isString ? rawInput : '';
   const bodyType = isString ? 'string'
@@ -282,7 +403,7 @@ function structuralExcerptForUnclassifiedInput(rawInput, classification, redacti
   try {
     // The facts are instrument-constructed primitives, so this cannot throw
     // today; the guard keeps a future field from reintroducing an abort path.
-    excerptFactsJson = JSON.stringify({
+    const baseFacts = {
       suppressed: 'the call body could not be classified as a supported shape; its raw content is withheld',
       classification,
       tool,
@@ -292,7 +413,18 @@ function structuralExcerptForUnclassifiedInput(rawInput, classification, redacti
       directiveKeys,
       withheldDirectiveKeys,
       inputBytes: isString ? Buffer.byteLength(raw, 'utf8') : null,
-    });
+    };
+    excerptFactsJson = JSON.stringify(
+      // The research gate (follow-up plan Task 4): only an explicitly enabled
+      // string-body diagnostic extends the fact set; default retention above
+      // is unchanged and pinned by test. The diagnostic's serialized size is
+      // budgeted against the excerpt limit (see the retention-bound note on
+      // unclassifiedStructuralDiagnosticFacts) so the scrubber can never
+      // truncate the gated JSON mid-object.
+      diagnosticEnabled === true && isString
+        ? { ...baseFacts, diagnostic: unclassifiedStructuralDiagnosticFacts(raw, diagnosticBudgetChars(baseFacts)) }
+        : baseFacts,
+    );
   } catch {
     excerptFactsJson = '{"suppressed":"the call body could not be classified as a supported shape; its structural facts are withheld"}';
   }
@@ -1887,6 +2019,15 @@ export function inspectShellWaitEvidence(input) {
   const command = boundedText(input.command);
   if (!command) throw invalidEvidenceInput('command must be the bounded exact launcher command string.');
   const redactions = Array.isArray(input.redactions) ? input.redactions : [];
+  // The research gate (follow-up plan Task 4): an explicitly enabled boolean
+  // extends ONLY the unclassified-cell excerpt's structural facts; any
+  // non-boolean value is refused, and the absent/false default keeps every
+  // retained byte identical to the pinned schema.
+  const unclassifiedDiagnostic = input.unclassifiedStructuralDiagnostic;
+  if (unclassifiedDiagnostic !== undefined && unclassifiedDiagnostic !== null && typeof unclassifiedDiagnostic !== 'boolean') {
+    throw invalidEvidenceInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
+  }
+  const diagnosticEnabled = unclassifiedDiagnostic === true;
   if (rollouts.length === 0) return inconclusive('rollouts-unavailable', 'No rollout evidence was collected.');
   for (const events of rollouts) {
     if (events.length > MAX_EVENTS_PER_ROLLOUT) return inconclusive('rollouts-overflow', 'A rollout exceeds the observer event bound.');
@@ -1908,6 +2049,8 @@ export function inspectShellWaitEvidence(input) {
           payload.input,
           'unclassified-script-cell',
           redactions,
+          null,
+          diagnosticEnabled,
         );
         return inconclusive('unsupported-call-shape',
           'A collected tool call does not match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual adjudication.',
@@ -1926,6 +2069,7 @@ export function inspectShellWaitEvidence(input) {
             'non-string-direct-arguments',
             redactions,
             payload.name,
+            diagnosticEnabled,
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has non-string arguments; the body type is recorded and its content withheld.',
@@ -1938,6 +2082,7 @@ export function inspectShellWaitEvidence(input) {
             'unparsable-direct-arguments',
             redactions,
             payload.name,
+            diagnosticEnabled,
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has truncated or unparsable arguments; the case needs manual adjudication.',
@@ -1949,6 +2094,7 @@ export function inspectShellWaitEvidence(input) {
             'unsupported-direct-argument-shape',
             redactions,
             payload.name,
+            diagnosticEnabled,
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has arguments of an unsupported shape; the case needs manual adjudication.',
@@ -2950,6 +3096,7 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
  *   observedWallMs?: number | null,
  *   workerDurationMs?: number | null,
  *   workerStillAliveAfterObservation?: boolean | null,
+ *   unclassifiedStructuralDiagnostic?: boolean | null,
  *   redactions?: string[],
  * }} ShellWaitEvidenceInput
  */

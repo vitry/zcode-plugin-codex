@@ -11,7 +11,12 @@ precise limits (§7.7 adds the R5 campaign of 2026-10-08); §8–§9 record Task
 inconclusive and `not-proven` outcomes preserved (§9.4 adds the R5 root-family outcomes); §11 is the
 coverage/delta/handoff section, updated through R5. §2–§6 retain the source/design findings,
 §10 is the current not-proven register (updated through R5), and §12 records fixture-tested instrument
-behavior and its limits (§12.9 records the R5 campaign's instrument facts).
+behavior and its limits (§12.9 records the R5 campaign's instrument facts). §13 opens the 2026-10-13
+follow-up campaign (Task 1: provenance re-pin and measurement-seam verification, no live run;
+§1.2.3 records the re-pinned provenance). §13.10–§13.11 record the 2026-10-15 documentation
+close-out amendment (a boundary-assessment scope correction and a read-only Codex source
+re-investigation at a new source pin; no host launch, no code change, production scope still
+ZERO changes).
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -63,6 +68,27 @@ The documentation amendment changes this worktree's final HEAD; it does not rewr
 | Fixture source | `5026009b6199f5f2d43ca8a567e536078e95080d` — the fixture installs committed source; the R0–R4 instrument corrections are working-tree-only and never enter the installed snapshot |
 | Observer | `working-tree-uncommitted` with a per-record sha256 digest in `provenance.observer` (§12.5): `27bc1715…` for the eight pre-fix trials, `cd41ef07…` for the two post-defaults-fix `r5c` trials (the R5 driver defaults fix changed `driver.mjs` bytes mid-campaign — §7.7, §12.9) |
 | Trials and artifacts | Ten retained records under `/tmp/shell-wait-r5*` (§7.7); eight additional empty output directories are recorded orchestrator invocation artifacts that ran NO trial and carry no measurement |
+
+### 1.2.3 Follow-up Task 1 provenance re-pin (2026-10-13; no live run)
+
+Task 1 of the follow-up plan re-pinned the provenance before any live run, with the same conventions as
+§1.2.1/§1.2.2. No host was launched; the planning-session `0.162.1` observation (follow-up plan §2) is
+confirmed by this non-authenticated probe.
+
+| Fact | Value |
+| --- | --- |
+| Installed executable | `/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex` |
+| Resolution | `realpath` of `command -v codex` (`/Users/zhangzikai/.local/bin/codex` resolves through the standalone package family, §1.2.2); the driver requires a regular executable, so any later case passes this absolute target to `--codex`/`CODEX_BINARY`. This is NOT the `node_modules/@openai/codex` development pin (`0.147.0`), which remains the repo dependency default |
+| Version/platform | `codex-cli 0.162.1`, macOS arm64 (`Darwin arm64`, macOS 26.5.2). **Auto-updated from 0.161.0 since R5 and re-pinned 2026-10-13.** The 0.160.1/0.161.0 qualified records keep their own recorded scope; cross-version comparison stops here — every follow-up live measurement re-pins and records its own boundary (follow-up plan Task 1) |
+| Follow-up source pin | `e9751d9fe7ee53d11c3f556dcda1527d5547fce7` — worktree `.worktrees/rescue-shell-wait-qualification-next`, branch `docs/rescue-shell-wait-qualification-next`, HEAD "docs: add 2026-10-13 shell long-wait follow-up qualification plan", one setup commit on the merged baseline `41e5b0aa24189903f77acb971931df6de04a170e`; `git status --short` clean at the pin (the documentation commit recording this section postdates it and does not rewrite the pin) |
+| Fixture source | The same pin — the fixture installs committed source, and with a clean tree the committed source and the working-tree bytes coincide (`shell_source_sha` = `git rev-parse HEAD` = `e9751d9f…`) |
+| Executing observer | Schema revision label `working-tree-uncommitted` with the §12.5/§12.9 per-record construction (`zcode-shell-wait-observer-v1`, NUL-separated module-init snapshot of `evidence.mjs` + `driver.mjs`): digest `e28ec61949e24c027c4d2b85934ffd91c60344b3d3e67063a75b9ba4d91a6dfe`. The tree being clean, these bytes are identical to the committed pin; live records recompute the digest at case start with record-time reconciliation (round-28/29) |
+| Module digests (informational sha256) | `evidence.mjs` `aad51e632860df15507f748c2ce433b9fa17db8ef10b67c8b00ab89e53f2e018`; `driver.mjs` `ba42eebf2592702109e377a095ea0a274a9e537962771b9c5c481c93ed4b7e4e`; `fixture.mjs` `8b93ecc8ab1237d3073fec611b1223d81f692adadcc7062a5ba36f9c76cc0335`. The observer digest covers `evidence.mjs` + `driver.mjs` only |
+| Codex source checkout | Unchanged from §1.3: `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (main), `git status --short` clean on 2026-10-13. Read-only throughout; the checkout's existence still proves no source/binary correspondence |
+| Driver check | `node tools/shell-wait-probe/driver.mjs --help` prints the usage line and all nine case labels (`rescue-baseline`, `rescue-long`, `rescue-repeat`, `rescue-noise`, `rescue-interrupt`, `review-wait`, `adversarial-review-wait`, `status-wait`, `background`) |
+| Per-run fields (model, effective isolated configuration, route, instruction variant) | **Captured at first live run.** The record schema defines the retention (`buildCaseRecord`, `driver.mjs`): numeric wait bounds (`requestedCapMs`/`requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs`/`requestedStatusQueryTimeoutMs`), the observation-cap key's verified application as the record persists it — `requestedCapMs` plus the `isolatedSetup` verified facts incl. `capVerified` (the post-setup regex check that `background_terminal_max_timeout = <capMs>` survived the isolated production setup's configuration writes). The fixture ALSO computes a `capConfiguration` before/after sha256 pair for the config write (fixture.mjs), but that object is fixture-INTERNAL provenance: `buildCaseRecord` never reads it and it is NOT persisted in the case record — if a later executing task needs those hashes in the record, persisting them is a recorded instrument gap for that task to decide, not an existing retention. File digest/mode is retained only for the touched instruction artifacts (`instructionVariants.appliedArtifacts`, `renderedNamedRoleSha256`/`genericMessageSha256`, `commandSkillVariants` — never paragraph text), beside the verified setup booleans, `route.requested`/`route.actual`, and the live `codexVersion`. The executing model is deliberately `null` (`provenance.observer.model` — the instrument cannot observe it and never infers it from hashes) |
+| Retention boundary | Verified against the record builder: only the whitelisted redacted facts above persist — never full TOML, authentication, tokens, private preparation input or arbitrary environment values; schema-unknown values stay `null` |
+| Selection tests | `node --test tests/test-selection.test.mjs` — 6 tests, 6 pass, 0 fail (recorded before any live attempt, §13.1) |
 
 ### 1.3 Codex source checkout (read-only; not matched to any binary)
 
@@ -940,21 +966,49 @@ useful next step for each is recorded in §10 and §11.2.
 
 | Unresolved claim | Evidence and reason | Useful next step / owner |
 | --- | --- | --- |
-| Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to the installed binary (0.160.1 at Tasks 4–5; re-pinned **0.161.0** by R4's non-authenticated probe, 2026-10-08, §3.3 — **0.161.0 was the R5 live-run version**, §1.2.2); 0.160.0 was the historical Task 1/Root version. The R5-observed unraised Child return differs from the pinned source default (300000 ms, §2.5) — recorded as facts on different surfaces, never a mapping claim | Keep source facts separate; qualify any later installed version independently (Task 7) |
-| Installed unraised Child cap M | **BOUNDED-BUT-IMPRECISE (2026-10-08 observed; adjudication corrected by the post-trials review loop, `installed-observed`, 0.161.0)**: the qualified unraised trial's cap-limited return is established QUALITATIVELY (returned to the model with the 420000-ms worker still running, strictly below the requested 3600000-ms yield, no other ender), but its exact duration was NOT separately retained — the record's `decisiveWallMs` (85000) is the TERMINAL observation, the earlier nonterminal return has no surviving timing, and the retained excerpts carry call arguments only (§7.7). M is bounded by [>0, return-before-worker-end]; it is not a usable number. The four Task 4 0.160.1 records (§7.3) remain historical attempts | Re-measure M with the per-poll-timing observer (§12.8) before any numeric use; re-measure on any future installed version before reuse |
-| Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7) | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist) |
-| Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7) | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred |
-| Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical | Repeat is closed on 0.161.0; a future version repeats the measurement independently |
-| Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7) |
-| Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan | The R4-wired path exists and is untested by a completed on-script run; one cause-directed retry through the same owning-session prompt path (with the observation surviving long enough for evidence collection) is the remaining step |
+| Source/binary mapping | **`not-proven`**: Codex source `67727e7c` is not mapped to the installed binary (0.160.1 at Tasks 4–5; re-pinned **0.161.0** by R4's non-authenticated probe, 2026-10-08, §3.3 — **0.161.0 was the R5 live-run version**, §1.2.2); 0.160.0 was the historical Task 1/Root version; the 2026-10-13 follow-up Task 1 re-pin found the installed CLI auto-updated again to **0.162.1** before any follow-up live run (§1.2.3). The R5-observed unraised Child return differs from the pinned source default (300000 ms, §2.5) — recorded as facts on different surfaces, never a mapping claim | Keep source facts separate; qualify any later installed version independently (Task 7) |
+| Installed unraised Child cap M | **BOUNDED-BUT-IMPRECISE (2026-10-08 observed; adjudication corrected by the post-trials review loop, `installed-observed`, 0.161.0)**: the qualified unraised trial's cap-limited return is established QUALITATIVELY (returned to the model with the 420000-ms worker still running, strictly below the requested 3600000-ms yield, no other ender), but its exact duration was NOT separately retained — the record's `decisiveWallMs` (85000) is the TERMINAL observation, the earlier nonterminal return has no surviving timing, and the retained excerpts carry call arguments only (§7.7). M is bounded by [>0, return-before-worker-end]; it is not a usable number. The four Task 4 0.160.1 records (§7.3) remain historical attempts. **2026-10-13 re-measurement attempt on 0.162.1 (§13.4): the unraised control ended inconclusive (`unsupported-call-shape`, unclassified `exec_command` cell, cause not established) — M is `not-proven` on that pin (not even bounded); the 0.161.0 bounded-but-imprecise state stands for its own pin** | Re-measure M with the per-poll-timing observer (§12.8) before any numeric use; re-measure on any future installed version before reuse; on 0.162.1 the unclassified-cell adjudication (§13.4) is the blocking prerequisite |
+| Raised fixture cap propagation onto the Child | **POSITIVE-but-M-imprecise (2026-10-08, `installed-observed`; adjudication corrected by the post-trials review loop)**: fresh raised Case B ran one 388300-ms observation with zero outer re-entries, worker held to natural completion; same binary/paragraph/yields/worker as the M trial, differing ONLY in the fixture cap key — the positive discriminator shape. The NUMERIC comparison (≈4.57× M) and the M + 30000 ≤ 388169 precondition verification inherited the withdrawn M number and are withdrawn; the remaining-lifetime measurements (388169/388188 ms, conservative lower bounds) stand (§7.7). **2026-10-13 raised run on 0.162.1 (§13.4): also inconclusive (`unsupported-call-shape`, same family; `capVerified: true` is fixture-configuration retention only) — the M + 30000 precondition is UNEVALUABLE and propagation is `not-proven` on that pin; no positive shape is attributable there, so 0.162.1 does not even reach POSITIVE-but-M-imprecise** | Re-run the precondition against a re-measured M (§12.8) before the human adoption decision (§11.2); never promote a Role cap field (§2 whitelist); on 0.162.1 the unclassified-cell adjudication blocks the measurement itself (§13.4) |
+| Case A qualified completion | **`not-proven`**: Task 4's consecutive `wait cell_id` linkage unresolved in the observer; original-handle check false/pending tail true. Cadence 15 returns and exit/sentinel facts remain `installed-observed`. The R5 raised re-run of the baseline control also ended inconclusive (`unsupported-call-shape`, cause not established, recorded exactly as found, §7.7). **The 2026-10-13 baseline re-run on 0.162.1 (§13.4) ended inconclusive on the same family — no outer-return count is attributable on that pin; the re-entry comparison stays unknown there, never zero** | Narrow observer work on the actual continuation sequence, with linkage negatives preserved; no host rejection inferred; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
+| Repeat qualification | **QUALIFIED (2026-10-08, `installed-observed`)**: fresh raised `rescue-repeat` — 388300 ms, 0 outer returns, sentinel true, exit 0, on a DISTINCT Child (`01a11857-f6e4-…` vs Case B fresh's `01a11850-998d-…`); the equal wall time is a return-granularity coincidence (§7.7). The Task 4 attempts (§7.4) remain historical. **2026-10-13 repeat attempt on 0.162.1 (§13.4): no qualified raised run exists on that pin to repeat; the executed `rescue-repeat` run itself ended inconclusive (`unsupported-call-shape`, same family). QUALIFIED stands on 0.161.0 only** | Repeat is closed on 0.161.0; a future version repeats the measurement independently; on 0.162.1 the unclassified-cell adjudication blocks it (§13.4) |
+| Generic route and broader instruction support | **`not-proven`** installed; only named was observed (Task 4 and all qualified R5 runs). Artifact synchronization/structural parity is `fixture-tested`; the candidate's named invocation is `installed-observed`; no R5 trial forced a generic fallback. **2026-10-14 Task 6 on 0.162.1 (§13.8): the plan's unavailable branch CLOSED with a structural cause — the host genuinely SUPPORTS the generic spawn shape (pinned-source `67727e7c`: `agent_type` an optional parser-known field; no-`agent_type` calls resolve the built-in `default` role and yield an `agentRole: null` child = the planner's `'generic'` class), but it is NOT genuinely reachable under ordinary capability conditions: the managed-Role registration that makes the preflight `ready` IS an `agent_roles` entry, so every route-decision-capable state exposes `agent_type` in the V2 schema and mandates named, while the exposing-free state fails closed before any preparation exists; no fixture seam, no live run, no code change** | Keep conclusion named-scoped; no generic fallback after Role-value rejection, no universal wrapper claim (Tasks 5/7); a generic observation would require a genuinely changed host/form (e.g. an installed binary whose schema omits `agent_type` while the Role preflight passes — impossible at the pinned source by construction), recorded per the §13.8 decision |
+| Exact native interrupt/tool-family availability and pending-inner cancellation | **Family and delivery path ESTABLISHED by R4** (§3.3, §12.8): family = V2, enabled on the live machine by the `features.multi_agent_v2` block present in the live config (`enabled = true`; the block's AUTHORSHIP is not established — the plugin's own setup writes only `features.hooks`, `hooks.state`, the metadata leaf and `[agents.zcode-rescue]`; the `features list` true/false probe is reproduced either way) (installed binary re-pinned 0.161.0); `interrupt_agent` is registered in the owning normal-exec Root turn (source pin 67727e7c) and targets the exact known non-root non-self child via the shared in-process registry; the case prompt is wired and the record carries measured delivery/settlement facts or an explicit investigated reason (14 new R4 instrument tests). **Live delivery remains `not-proven` after R5**: both wired-path runs ended inconclusive before delivery on an unclassified cell (cause not established — attributed neither to model nonadherence nor to host rejection) — the retained R5 record shows the intent was requested (`requested: true`, `previousStatus: "running"`, `family: "v2"`) with `attempted`/`delivered`/`settled` null and the explicit missing-prerequisite reason (evidence collection did not complete; `unsupported-call-shape` unclassified cell, §7.7). Turn interrupt alone is insufficient (`code_mode_interrupt` installed-observed false). **Post-R5 instrument correction:** the R5 failure cause — a Root-side `interrupt_agent` wrapper cell failing the whole-case scan (`unsupported-call-shape`, §12.8) — is fixed by the narrow root-control-call path, so a retry adjudicates the Child evidence instead of failing the scan. **2026-10-13 Task 3 run on 0.162.1 (§13.5): that one retry executed and again ended inconclusive — but the model DID emit exactly ONE V2 `interrupt_agent` interaction whose tool response success-decoded to the ACTIVE `previous_status: "running"`, the first run with a parsed AND counted V2 interrupt interaction (`callCount: 1`, target-shape facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (the R5 record had already retained a parsed interaction with the same active `previous_status` and `family: "v2"`, §7.7, but under the since-corrected unanchored grammar — §7.7's retained R5 row lists no count or target facts, and its case failed the whole-case scan); the call's target was suppressed (23 chars, neither id-shaped nor the fixture marker) and the ordering never bound (the case evidence failed fail-closed on the same unclassified `exec_command`-cell family, new 3-line/314-B shape), so exact-target delivery, pending-window ordering, settlement and every production layer stay `not-proven` on this pin** | On 0.162.1 the one run and its cause-directed follow-up decision are consumed/recorded (§13.5); the remaining step on this pin is the narrow unclassified-cell adjudication (§13.4's blocking prerequisite, reserved to Task 4's allowance) before any further interrupt measurement; the 0.160.1/0.161.0 records keep their own scope |
 | Installed `multi_agent_v2` configuration/bounds | **Partially established by R4** (`installed-observed`, non-authenticated file/CLI probes, §3.3): the live config sets `features.multi_agent_v2.enabled = true` with `default_wait_timeout_ms = 600000` and `min_wait_timeout_ms = 600000` (max unset → source default 3 600 000 ms); `wait_agent_enabled`/`disable_direct_message` are unset → source defaults true/false at the pin. A live `wait_agent` timeout-bound measurement on the installed binary was still unmeasured at R5 (the qualified R5 runs recorded Root joins but no timeout-bound probe) | Record actual wait/timeout bounds only if a later campaign needs them; source defaults stay separate |
-| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell shape needs its own bounded adjudication before noise/background measurements can complete. Budget/failure cleanup is never native user interruption |
-| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). Root commands remain `not-proven`, each with its own recorded outcome | Per-command cause-directed follow-ups: review-wait needs the host to survive its held boundary; adversarial-review-wait needs the renderer-marker contract re-examined against the actual rendered bytes (the flow itself completed); status-wait needs a live run whose turn-1 launch acknowledgement is actually emitted and observable; the instrument is no longer the blocker (§12.6, §12.9) |
+| Noise, progress relay, Status sidecar latency, background placement, stop/loss/ceiling | **`not-proven`** as new installed evidence: Task 5 ran each live case once — `rescue-noise` has an instrument grammar limitation (manually adjudicated excerpt; execution behavior unknown, §8.2), `background` ended with the host exiting before the boundary and zero launches (§8.3), the Status sidecar stayed structural (§8.4), and stop/reconciliation live checks were not exercised. **R5 re-runs with the corrected instrument also ended inconclusive on unclassified cells** (§7.7; cause not established): `rescue-noise` hit `unsupported-call-shape` again (a DIFFERENT unclassified-cell shape than the R1-fixed preparation grammar; R0 suppression held), and `background` (R3-corrected prompt/lifecycle) ended before the background flow with an unclassified cell (`unsupported-call-shape`, budget-cleanup at 600021 ms, Root acknowledgement recorded at 41333 ms, no Child linkage). Neither run establishes model nonadherence. **2026-10-13 Task 4 on 0.162.1 (§13.6): both cases ran exactly once each behind the plan's new bounded structural diagnostic — both again inconclusive `unsupported-call-shape`, but the family is now SHAPE-ADJUDICATED** (noise: a single-content-line `write_stdin`-headed script statement, 387 B, failing both pinned grammars — a variant outside them, defect and nonadherence both non-demonstrable, fingerprint `38c33f61…`; background: a 4-statement cell whose leading statements reference no observational tool, 583 B, fingerprint `a9d65bb2…`, Root host result at 46384 ms with the Child-settlement watch running the full budget to a 600010-ms budget-cleanup termination, never labelled interruption). Noise checks, noise and background placement stay `not-proven` on this pin; the sidecar structural policy re-verified 162/162 + 76/76 while installed sidecar latency stays `not-proven` (no qualified pending observation existed to steer) | The R1 grammar fix removed the OLD blocker; the remaining unclassified-cell family is adjudicated to the retention design's limit (§13.6): further measurement needs content-level evidence (a privacy-authority decision outside the plan's authority) or a host/form change — no parser expansion. Budget/failure cleanup is never native user interruption |
+| Review/Adversarial Review/Status waiting commands | **`not-proven`**: Task 6 ran each once (§9.1) — two retain only ASSISTANT-REPORTED `ARGUMENT_INVALID` diagnostics. **R5 produced the first real Root-side outcomes** (§9.4, 0.161.0): the R2 root-family contract adjudicated all three — `review-wait` host ended before the held boundary after the observed companion invocation; `adversarial-review-wait` ran end-to-end through the Root observer (launch/send/98.1-s observation recorded) but the command-rendered result markers were missing from the linked terminal output; `status-wait` failed closed exactly as designed (`statusQuery.validation.valid: false` — no unambiguous reserved-job acknowledgement in the live rollout). **2026-10-13 Task 5 on 0.162.1 (§13.7), one run each behind the corrected production-contract marker: `adversarial-review-wait` QUALIFIED (`inconclusive: null` — exact Root linkage, launch 1/send 1, one 97800-ms poll on the original handle, `processExit` 0, the rendered findings-document marker matched, natural completion, no termination; the R5 miss was a demonstrated probe-side instrument/dependency mismatch — the review pipeline renders only the schema-validated findings document, never the sentinel — corrected RED→GREEN in the probe spec only); `status-wait` QUALIFIED (`inconclusive: null` — `validateStatusWaitFlow` `valid: true` on the in-session owned acknowledgement → exact-id query in the SAME session, the production 120000-ms query deadline fired un-extended (exit 1, JOB_WAIT_TIMEOUT framing matched, one 87500-ms poll against a 3600000-ms window request), natural completion through the hold gate, no termination; live Status-observation cancellation stays `not-proven` — no supported native interaction owns a Root session's own running observation, source-pinned root/self rejection at `67727e7c`); `review-wait` `not-proven` with the R5 early-exit shape CONFIRMED and traced (launch 1/send 0, no poll, host exit 0 at 15214 ms, cause: the command reached its own terminal without ever sending the review turn, so the gate-held observation never existed; why no-send is not adjudicable from retained facts)** | Per-command state on 0.162.1: adversarial-review-wait and status-wait carry single-run qualified long-wait observations (no repeat claimed — the plan requested none for Root commands); review-wait needs its command-side no-send cause established (production-scope investigation, outside the probe); review-wait's follow-up was NOT consumed. Status-observation cancellation would need a supported native interaction that does not exist at the source pin |
 | Production release/version generalization/token savings | **`not-proven`**: disposable sandbox/hook bypass and no token measurements throughout. Qualified claims span two installed versions measured at execution time — 0.160.1 (Task 4) and 0.161.0 (R5, §1.2.2); auto-update limits attribution in both directions and no release generalization is claimed | Obtain a separate human adoption decision (§11.2); no production rollout implied |
 
 The earlier absence of managed-Child wrapper observations is resolved **only within §7's scope**:
 Case B's single long observation and Case A's outer continuation cadence are `installed-observed`.
 The fail-closed M discriminator and every independent release dimension above remain intact.
+
+2026-10-14 Task 7 close-out: no row above changed state in the close-out itself — Task 7 launched no
+host. The register stands with §13.9's executed-case ledger as its run ledger. §13.9 additionally
+records the close-out's environmental npm adjudication, with the occurrences enumerated exactly as
+§13.9 enumerates them — the shell-research real-builder fixture pair failed in the SHELL-RESEARCH suite
+runs (§13.8's full-suite gate, then this close-out's run), the three routine-suite npm-install tests
+failed inside the FIRST clean-source `npm test` run, and the single-variable `package-install`
+experiment separately isolates the host package-transport environment — all inside npm's own install
+machinery, all adjudicated ENVIRONMENTAL with controlled reproduction evidence (failures-with-cause,
+never silently green) — together with the pending-backfill codex review state (§11.3).
+
+2026-10-15 close-out amendment (documentation-only; no host launch, no code change; no row above
+changed): the register's current-state reading is corrected in one respect. The §13.6-derived
+next-step wording in the noise row above ("further measurement needs content-level evidence … or a
+host/form change — no parser expansion") is ACCURATE for the two cells §13.6 actually scanned, but it
+must NOT be read family-wide: the five §13.4/§13.5 rescue-family cells ran BEFORE the diagnostic gate
+existed (observer provenance `e28ec619…` in all five records vs `b237a6e1…` in §13.6; the gate code
+landed in commit `1fb30bd`), so their `wholeBodyStatementMatch` is UNMEASURED, and "only relax privacy
+or wait for a host change" is over-strong as a conclusion about those five (§13.10 — corrected scope,
+exact `wholeBodyStatementMatch` semantics, irretraceable boundaries, and the Path A next-phase
+candidate). The measured values, run ledger and original verdicts in every row above stand
+byte-unchanged. The current recommendation, restated: production scope remains ZERO changes
+(canonical/config unchanged); §13.11's 2026-10-15 read-only source re-investigation at new source pin
+`dffa0deb…` (three distinct wait layers, effective-Config inheritance to the actual Child, the
+2026-08-07-introduced outer default, and the 2026-10-07 `code_mode_interrupt` Stable/default-true
+flip — source-only, presence evidence only on the installed 0.162.1, no source/binary mapping) is
+recorded as a next-phase input, and §13.10's Path A gated diagnostic run is a NEXT-PHASE CANDIDATE
+only (not implemented, not run, no allowance reset).
 
 ## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
@@ -967,7 +1021,7 @@ The fail-closed M discriminator and every independent release dimension above re
 | S3 exact public/terminal/control outcomes | 4 (§7.1: byte-exact sentinel present in linked terminal output, `processExit: 0`); production result/choice/error suites re-recorded §8.5 |
 | S4 placement/background/Status observation-only | 5 (§8.3 background case inconclusive — early host exit, cause unknown; §8.4 sidecar structural-only); inherited placement matrix suites §8.5; R5 re-ran the R3-corrected background prompt/lifecycle — ended inconclusive before the flow (unclassified cell, cause not established), `not-proven` (§7.7) |
 | S5 interruption/loss/timeouts/ceiling | 5 (§8.1: pending observation qualified; native interrupt delivery NOT exercised); R4 wired the established V2 delivery path (§12.8); R5's wired runs ended inconclusive before delivery (unclassified cell, cause not established) — live delivery/settlement `not-proven` (§7.7); budget cleanup never labelled interruption; 100-hour ceiling untouched (production semantics unchanged) |
-| S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced) |
+| S6 named/generic parity and no fallback weakening | 1 (§3/§4 route authority); 4 (§7.1: route actually selected = `named`; generic `not-proven`, no fallback forced); 6 (§13.8: generic route host-supported but NOT reachable under the ordinary capability conditions — pinned-source + installed preflight evidence recorded; no seam, no run, nothing forced) |
 | S7 isolation/no production changes | 2 (§ selection isolation), 3 (§12 fixture-owned clone/homes/cleanup), 7 (§1 provenance; final diff = docs + probe files only; production Skills/Role/Companion/config/packaging untouched) |
 | Q1/Q2 effective Child configuration/instructions | 1 (§2 config layers); 4 (§7.3 historical attempts; §7.1 candidate instructions delivered and followed on the named route); **R5 (§7.7, corrected by the post-trials review loop): cap-limited return OBSERVED (M bounded-but-imprecise — exact duration not separately retained) and raised-cap propagation POSITIVE-but-M-imprecise (388300 ms, zero re-entries; numeric ratio and precondition withdrawn with the M number), `installed-observed` on 0.161.0** |
 | Q3 cadence and repeat | 4 (§7.2 A 15 returns vs §7.1 B 0, `installed-observed`); **R5 (§7.7): repeat QUALIFIED — two independent qualified 388.3-s raised runs on distinct Children**; Task 4's repeat attempts (§7.4) remain historical |
@@ -978,7 +1032,16 @@ The fail-closed M discriminator and every independent release dimension above re
 No missing evidence is silently marked passed: every row above names its label, and §10 carries the full
 `not-proven` register with causes and next steps.
 
-### 11.2 Proposed next delta (updated through R5; no production rollout recommended yet)
+2026-10-14 Task 7 close-out addendum: the follow-up campaign's final per-item labels are recorded in
+§13.9's close-out mapping table — adversarial-review-wait and status-wait QUALIFIED
+(`installed-observed`, 0.162.1, single runs, no repeat claimed; status's timeout non-extension
+confirmed with observation cancellation separately `not-proven`); review-wait, noise/background
+placement, native interruption/settlement, M/propagation/repeat/re-entry on the current pin and
+installed generic behavior all `not-proven` with precise recorded causes; every S1–S7 inherited
+production invariant re-verified by the close-out regression matrix. The rows above stand unchanged as
+historical scope.
+
+### 11.2 Proposed next delta (updated through the 2026-10-13/14 follow-up; no production rollout recommended yet)
 
 The spec's positive managed-Rescue recommendation requires the actual Child route, a discriminating long
 observation against measured M, repeat, reduced re-entry, exact handle/terminal linkage, and observed
@@ -1001,15 +1064,163 @@ the smallest useful next delta is still a **scoped follow-up campaign**, not a p
    enough for evidence collection.
 2. Noise and background placement: both R5 re-runs ended inconclusive on unclassified cells
    (`unsupported-call-shape`); each needs its own bounded adjudication of that cell shape before the
-   measurements can complete.
+   measurements can complete. **2026-10-13 Task 4 update: that bounded adjudication was built and
+   executed (§13.6) — a gated structural whitelist in the observer plus the two case runs on 0.162.1.
+   The family is adjudicated to the retention design's limit (script cells outside the two pinned
+   grammars, per-run structural fingerprints retained; defect and nonadherence both
+   non-demonstrable), and both measurements remain `not-proven` on this pin. The next step is no
+   longer an instrument task: it needs content-level evidence via a privacy-authority decision
+   outside the plan's authority, or a host/form change.**
 3. Root command qualification: the instrument is no longer the blocker (R2 contract implemented §12.6;
    exercised §9.4). Per-command causes: review-wait's host must survive its held boundary;
    adversarial-review-wait's flow completed but its renderer-marker contract needs re-examination
    against the actual rendered bytes; status-wait needs a live run whose turn-1 launch acknowledgement is
-   actually emitted and observable.
+   actually emitted and observable. **2026-10-13 Task 5 update (§13.7): executed on 0.162.1 —
+   adversarial-review-wait QUALIFIED (the marker contract WAS the re-examination: a demonstrated
+   probe-side instrument/dependency mismatch, corrected in the probe spec only) and status-wait
+   QUALIFIED (the acknowledgement was emitted, observed and owned-queried in-session, with the query
+   deadline verified un-extended); review-wait's early exit is now CONFIRMED and traced with the
+   command-side no-send cause recorded, remaining `not-proven` on a production-scope question; live
+   Status-observation cancellation stays `not-proven` (no supported native interaction exists for a
+   Root session's own observation).**
 4. Generic route parity: never observed or forced; the candidate paragraph reaches the generic
-   assignment only as `fixture-tested` structural parity.
+   assignment only as `fixture-tested` structural parity. **2026-10-14 Task 6 update (§13.8): the
+   follow-up plan's discovery question is CLOSED on this pin — generic is host-supported but not
+   genuinely reachable under ordinary capability conditions (the Role preflight's own registration
+   populates the `agent_roles` map that forces the V2 schema to expose `agent_type`, mandating named;
+   the omitting state fails closed before any preparation), so the unavailable branch was executed
+   with source + installed evidence and NO seam/run; any future generic observation requires a
+   genuinely changed host/form, not a forced call.**
 
+2026-10-13 Task 2 update: delta item 0 (M re-measurement) was executed on the re-pinned 0.162.1 host
+together with the raised candidate, repeat and baseline runs (§13.4) — all four ended inconclusive on
+the recurring `unsupported-call-shape` family (unclassified `exec_command` cells, cause not established,
+instruction-variant-independent, 4/4 runs). On this pin M is `not-proven` (not even bounded), the
+M + 30000 precondition is unevaluable, propagation/repeat/re-entry comparisons are `not-proven`, and no
+positive raised shape is attributable. The campaign's measured dimensions on a current pin are now
+blocked by that single prerequisite: the narrow unclassified-cell adjudication (bounded diagnostic with
+only whitelisted structural facts) that the follow-up plan reserves to Task 4's allowance must extend to
+the rescue-family cases it now blocks before any of items 0–4 can complete on this host. The 0.160.1/0.161.0
+records (including the 0.161.0 POSITIVE-but-M-imprecise propagation clue and QUALIFIED repeat) keep their
+own recorded scope; no cross-version claim is made in either direction.
+
+2026-10-13 Task 3 update: delta item 1 (native interrupt live delivery-to-settlement) was executed once
+on the SAME 0.162.1 pin (§13.5) — the first run with a parsed, counted V2 interrupt interaction
+(`callCount: 1`, target-shape facts retained) under the corrected anchored grammar and the first on
+this pin (the R5 record had already retained a parsed interaction with an active
+`previous_status: "running"` under the since-corrected unanchored grammar, §7.7/§12.8); its tool
+response success-decoded to that ACTIVE status, but the case evidence again failed fail-closed on the
+recurring unclassified-cell family (new 3-line/314-B shape), so exact-target delivery, pending-window
+ordering,
+delivery-to-settlement latency, all four settlement layers (native Child turn interruption, inner
+poll-cell settlement, exact Companion process cleanup, durable job/reconciler settlement) and live
+no-collateral preservation stay `not-proven` on this pin. The separately named
+`native-short-window-responsiveness-control` run was deliberately NOT spent: its latency reference
+serves only the delivery-to-settlement comparison, which is `not-proven`. No code changed (no
+instrument defect demonstrated); item 1 on this pin remains behind the same unclassified-cell
+prerequisite as items 0 and 2 (§13.4).
+
+2026-10-13 Task 4 update: the plan's bounded-diagnostic mechanism (the §13.4 blocking prerequisite
+reserved to Task 4's allowance) was built and executed (§13.6) — the campaign's first instrument
+change (a gated structural whitelist in the unclassified-cell excerpt; default retention unchanged
+and pinned; observer digest `e28ec619…` → `b237a6e1…`) — and the two Task 4 cases each ran exactly
+once on the SAME 0.162.1 pin: `rescue-noise`'s initial run WAS the diagnostic (formal flags plus the
+retention-only gate), and `background` ran its formal trial with the same gate. Both ended
+inconclusive on the adjudicated unclassified-cell family with NEW structural fingerprints
+(noise `38c33f61…`, background `a9d65bb2…`); both cases' cause-directed follow-ups were NOT consumed
+(no concrete cause with a single changeable variable), and both cases stopped per §3. Delta items 0–2
+all remain behind the same family on this pin, now adjudicated to the retention design's limit: the
+next step needs content-level evidence (a privacy-authority decision outside the plan's authority) or
+a host/form change — never a parser expansion. The sidecar structural policy re-verified (162/162 +
+76/76); installed sidecar latency stays `not-proven` (no qualified pending observation existed to
+steer).
+
+2026-10-13 Task 5 update: delta item 3 (root command qualification) was executed on the SAME 0.162.1
+pin (§13.7) — one run per command behind a corrected probe instrument. The R5
+adversarial-review-wait marker miss was demonstrated to be a probe-side instrument/dependency
+mismatch (the production review pipeline renders only the schema-validated structured findings
+document; the Rescue sentinel can appear in no render path) and corrected RED→GREEN in the probe
+spec only (`resultMarkers` → the rendered findings-document line; observer digest
+`b237a6e1…` → `562981ce…`). Outcomes, each on its own record: **`adversarial-review-wait` QUALIFIED**
+(exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll, `processExit` 0, the corrected
+marker matched, natural completion, no termination) and **`status-wait` QUALIFIED**
+(`validateStatusWaitFlow` `valid: true` on the in-session owned acknowledgement → exact-id query in
+the SAME session with the fixture reserving NO job; the production 120000-ms query deadline fired
+UN-EXTENDED against the requested 3600000-ms observation window — exit 1 with the JOB_WAIT_TIMEOUT
+framing matched; natural completion through the hold gate, no termination) — each a single-run
+qualification on this pin with NO repeat claimed. **`review-wait` stays `not-proven`** with the R5
+early-exit shape CONFIRMED and traced with redacted bounded evidence (launch 1/send 0, no poll ever,
+host exit 0 at 15214 ms — the command reached its own terminal without ever sending the review turn,
+so the gate-held observation never existed; WHY no send is not adjudicable from retained facts, a
+production-scope question outside the probe). Live Status-observation cancellation stays
+`not-proven`: no supported native interaction owns a Root session's own running observation
+(source-pinned root/self rejection at `67727e7c`; app-server `turn/interrupt` excluded by rule;
+SIGINT never assumed observation-only). Background Review/Adversarial remain enqueue-only — no live
+background run was launched; the controlled timeout/ownership/result tests re-ran unmodified
+(451/451 + the focused R3/background suites 25/25 — `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs` — corrected from the unreproducible `18/18`, §13.7 + selection 6/6).
+
+2026-10-14 Task 6 update: delta item 4 (generic route parity) was adjudicated on the SAME 0.162.1 pin
+with NO host launch and NO code change (§13.8): the trace (production preflight + pinned source
+`67727e7c`, clean) established that the host genuinely supports the generic spawn shape (optional
+`agent_type`, built-in `default` role resolution, `agentRole: null` children = the planner's
+`'generic'` class) but the generic route is NOT genuinely reachable under ordinary capability
+conditions — the managed-Role registration that satisfies the Role preflight is itself an
+`agent_roles` entry, so every state in which the Rescue flow can act exposes `agent_type` in the V2
+`spawn_agent` schema and the Skill mandates named, while any role-free state fails closed before a
+preparation exists. The plan's unavailable branch was executed: source + installed schema/preflight
+evidence recorded (features list, read-only config probes, the non-authenticated prompt-input render
+surface limitation, and the historical all-named spawn records), no fixture seam added, no run
+forced, the group's one run deliberately unspent. Installed generic long-wait behavior stays
+`not-proven` with this precise structural cause; the closing paragraph's "generic assignment touched
+only after generic parity is demonstrated" guard stands unchanged, and parity now has a defined
+unreachable-condition boundary instead of an open question.
+
+2026-10-14 Task 7 close-out: the follow-up campaign is CLOSED on this pin with ZERO proposed production
+changes (§13.9). Spec §8's positive managed-Rescue recommendation criteria are NOT met on 0.162.1: the
+actual Child route, discriminating long observation, repeat, reduced re-entry and native
+interruption/settlement are all `not-proven` on this pin behind the single unclassified-cell
+prerequisite (§13.4–§13.6), while adversarial-review-wait and status-wait carry single-run
+qualifications and review-wait keeps its traced early-exit cause (§13.7). A future campaign that could
+reopen the recommendation needs, minimally: (a) the unclassified-cell shape-classification prerequisite
+resolved — which requires content-level evidence via a privacy-authority decision outside the plan's
+authority, or a genuinely changed host/form (§13.6's adjudication limit; no parser expansion) — and
+(b) re-measurement of M, propagation, repeat, re-entry and interrupt delivery on a current 0.162.x pin
+under that resolved prerequisite. The 0.161.0 records (bounded-but-imprecise M clue,
+POSITIVE-but-M-imprecise propagation clue, QUALIFIED repeat) keep their own recorded scope; no
+cross-version claim is made in either direction.
+
+2026-10-15 close-out amendment (documentation-only; no host launch, no code change): the
+recommendation state above is corrected in scope and extended with read-only source findings
+(§§13.10–13.11), on three points. (i) Corrected feasibility boundary: the §13.6 two-cell adjudication
+limit does NOT extrapolate to the five §13.4/§13.5 rescue-family cells — they predate the diagnostic
+gate (observer `e28ec619…` vs `b237a6e1…`; gate code landed in `1fb30bd`) and their
+`wholeBodyStatementMatch` is unmeasured and retroactively unmeasurable (records deleted); a fresh
+gated run adjudicates only the fresh cell it observes, so a defect-path resolution for the family is
+NOT excluded, and §13.10's Path A (one gated diagnostic run on a new delegation) is a NEXT-PHASE
+CANDIDATE only. (ii) Source findings (source pin `dffa0deb…`, distinct from the executed campaign's
+`67727e7c`; presence evidence only on the installed 0.162.1): the three wait layers are distinct —
+inner terminal observation capped by `background_terminal_max_timeout` (default 300000 ms, an upper
+bound that still requires an explicit long yield; an omitted yield is ≈5000 ms, so the Skill's
+60000-ms window does not become an hour by raising the cap alone), the outer code-mode cell default
+`features.code_mode.default_exec_yield_time_ms` (core default 30000 ms, no fixed 30-second hard cap
+in the examined paths; an explicit shorter `@exec` pragma wins; an already-yielded outer `wait` keeps
+its own 10000-ms default), and Root-for-Child V2 `default_wait_timeout_ms` (source default 30000 ms,
+hard max 3600000 ms); both reachable Child keys travel through the full parent effective-Config
+clone, not prompt-only inheritance, and are NOT Role-whitelist fields. The outer default is NOT new —
+introduced 2026-08-07 by `d0c8f422…` and present in the old pin `67727e7c` — so it is a previously
+under-exploited/unverified entry point, never "the host only now supports long waits". The genuine
+default change is `72c95952…` (2026-10-07) flipping `code_mode_interrupt` to Stable/default true,
+which supports cancelling an active cell/pending poll without waiting out the observation window but
+is NOT terminal-process stop, Companion/ZCode-job stop or durable settlement. (iii) The production
+recommendation is UNCHANGED: ZERO changes; canonical/config unchanged; spec §8's positive
+managed-Rescue criteria remain unmet on every measured pin. The 0.162.1 `unsupported-call-shape`
+outcome was insufficient evidence, not a host-capability removal — the shell route is not concluded
+infeasible.
+
+(Pre-close-out formulation, retained unchanged: it describes what a production change WOULD have looked
+like had the human adoption happened on the 0.161.0-era evidence — the 2026-10-14 Task 7 close-out
+paragraph above records that the adoption criteria are NOT met on the current pin and proposes ZERO
+production changes, §13.9.)
 If a human adopts the now-measured configuration/instruction findings, the smallest production change
 would be: session/user-level `background_terminal_max_timeout` configuration guidance (never a Role
 field — §2 whitelist), the candidate directive-led waiting paragraph in the named Role, and
@@ -1018,7 +1229,7 @@ assignment touched **only after** generic parity is demonstrated. No wrapper pra
 no token-savings claim is made (no measurements). The unproven interruption dimension does not block a
 human decision on the measured wait-behavior findings; it remains a recorded release dimension.
 
-### 11.3 Execution handoff (updated through R5, 2026-10-08)
+### 11.3 Execution handoff (updated through the 2026-10-13/14 follow-up, 2026-10-08)
 
 - Provenance: Tasks 4–6 live runs on installed `0.160.1` (auto-updated mid-pipeline from `0.160.0`); R5
   live runs on installed **0.161.0** (auto-updated again; re-pinned before the trials, §1.2.2); fixture
@@ -1070,6 +1281,37 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
   `/tmp/shell-wait-t4-*` and `/tmp/shell-wait-t5-*`, `/tmp/shell-wait-t6-*`; the ten R5 records live
   under `/tmp/shell-wait-r5*` with eight additional empty invocation-artifact directories (§7.7). All
   are OS-temporary; the report's tables are the durable summaries, as the plan intends.
+  **2026-10-13 follow-up (Task 1):** the follow-up plan's Task 1 re-pinned provenance before any live
+  run — installed CLI **0.162.1** (auto-updated again; §1.2.3), plugin pin `e9751d9f`, executing-observer
+  digest `e28ec619…`, Codex source unchanged `67727e7c` clean — and re-ran the existing seam regressions
+  green (§13.1). No live run had executed under the follow-up plan at that point. **2026-10-13 Task 2
+  update:** the four Task 2 live runs have now executed on the 0.162.1 pin (§13.4) — all four inconclusive
+  on the unclassified-cell family; the §11.2 delta list's measured dimensions stay `not-proven` on this
+  pin, and no code changed (no instrument defect demonstrated). **2026-10-13 Task 3 update:** the
+  `rescue-interrupt` run has now executed on the same pin (§13.5) — inconclusive on the same family; the
+  first parsed-and-counted on-script V2 interrupt interaction under the corrected anchored grammar on
+  this pin (one call, success-decoded active `previous_status`; the R5 record had already retained a
+  parsed interaction with the same active status under the since-corrected grammar, §7.7/§12.8) is
+  recorded there as surviving structural facts, every dependent production
+  dimension stays `not-proven`, the responsiveness control was deliberately not spent, and no code
+  changed. **2026-10-13 Task 4 update:** the noise diagnostic (the case's initial run, formal flags
+  plus a retention-only gate) and the background formal trial have now executed on the same pin
+  (§13.6) — both inconclusive on the adjudicated unclassified-cell family with new structural
+  fingerprints (`38c33f61…` / `a9d65bb2…`); the bounded-diagnostic instrument seam was added (the
+  campaign's first code change: gated, default retention unchanged, RED→GREEN + privacy regressions,
+  observer digest `b237a6e1…`); both cases' follow-ups were NOT consumed and both cases stopped; the
+  sidecar structural policy re-verified (162/162 + 76/76) and its installed latency stays
+  `not-proven` (no qualified pending observation existed to steer). The two Task 4 records live under
+  private OS-temp dirs `…/tmp.Y8ONkaeHm6` (noise, record digest `f0f677ca…`) and `…/tmp.MwsOB6nhkP`
+  (background, record digest `32db5479…`) with the §13.4 per-run convention. Editorial note: this
+  update rewrote the Task 1 note's stale closing sentence IN PLACE — "No live run has executed under the follow-up plan yet;
+  the §11.2 delta list stands." became "No live run had executed under the follow-up plan at that
+  point." — to avoid leaving a falsehood in the current-state handoff; the remainder of the Task 1 note
+  is unchanged, and no earlier section was touched. **2026-10-14 Task 6 update:** the generic-route
+  discovery item has executed with NO host launch, NO instrument change, and NO new record (§13.8) —
+  the trace closed the plan's unavailable branch (generic host-supported, not genuinely reachable
+  under ordinary capability conditions; precise structural cause recorded), so no generic-case record
+  exists and the §13.4–§13.7 record set is unchanged; the pin stayed 0.162.1 throughout.
 - Backfill cause/provenance correction: noise, Case 0 run4 and repeat2 are manually adjudicated
   **INSTRUMENT GRAMMAR LIMITATIONS**, with execution behavior unknown and inconclusive verdicts preserved.
   The R1 fix removed that preparation-grammar blocker; the R5 noise re-run failed on a DIFFERENT
@@ -1078,7 +1320,53 @@ human decision on the measured wait-behavior findings; it remains a recorded rel
 - Human decisions open (updated 2026-10-10; commit authorization was granted and exercised — see the
   Current closure status bullet above): PR #66 merge, the §11.2 follow-up campaign (per-poll M
   re-measurement and the numeric discriminator, live interrupt delivery, noise/background, Root
-  commands, generic route), and any eventual production adoption.
+  commands, generic route), and any eventual production adoption. **2026-10-14 status of the generic
+  route within that list: adjudicated `not-proven` with a structural unreachable-condition cause
+  (§13.8) — no live generic observation is obtainable on this pin without a genuinely changed host or
+  form; the remaining open decisions are unchanged.**
+- **2026-10-14 Task 7 close-out review and gate status:** the campaign's contract regression matrix,
+  final clean-source `npm test`, environmental npm adjudication, executed-case ledger and S1–S7/Q1–Q6
+  close-out mapping are recorded in §13.9 (plugin HEAD `a6771a4`, clean tree — committed bytes are the
+  executing bytes under the delegated commit authority; observer digest `562981ce…`). Review-state
+  handoff, recorded honestly: Tasks 1–4 closed at codex review gates with ZERO findings (final amended
+  SHAs `3fa035a`, `67d327d`, `0e50444`, `1fb30bd`); Task 5 (`afa26ba`) and Task 6 (`a6771a4`) carry
+  clean self-reviews while their codex review gates are PENDING BACKFILL — the codex review service
+  suffered four consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection
+  failed + workspace routing discovery failed; review interrupted), accumulating backfill range
+  `1fb30bd..a6771a4`; the whole-branch close-out codex review is pending on the same service recovery.
+  A tooling outage is NOT authority to switch coding agents silently — this state is recorded as
+  pending, never as passed. Cleanup verified at close-out: ZERO surviving
+  `zcode-shell-wait-fixture-*` or campaign case-output directories in OS temp (§13.9).
+- **2026-10-15 codex backfill review EXECUTED (zero findings); the pending state above is RESOLVED:**
+  after the host proxy (`127.0.0.1:7890`) was restored — the outage above ultimately totaling SIX
+  consecutive connection failures (2026-10-14 14:26→17:23 local; the 2026-10-14 record captured the
+  first four, 14:26→15:22) — the whole-branch codex review ran to completion: `codex review --base
+  41e5b0aa24189903f77acb971931df6de04a170e` over the full branch diff (`41e5b0aa..a1420f7`) returned
+  ZERO findings ("No actionable regressions were identified"). This single review serves as BOTH the
+  whole-branch overall review AND the backfill for the pending per-task codex gates of Task 5
+  (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) — their commits are all inside
+  the reviewed range. The reviewer's own sandbox run showed 4 test failures it attributed to its own
+  sandbox permissions (npm cache access, process inspection), consistent with the campaign's
+  environmental adjudication (§13.9) — which was then VERIFIED BY PREDICTION: with the proxy
+  restored, `npm run test:shell-research` re-run on HEAD `a1420f7` on 2026-10-15 returned **451
+  tests / 451 pass / 0 fail / 0 skipped** (46 suites, ≈29.5 s) — the two previously-failing
+  real-builder fixture tests now pass, confirming the recorded verdict (the failures were the host's
+  dead proxy + npm's install machinery under the fixture's sandboxed HOME, not instrument or product
+  regressions). Review state complete: Tasks 1–4 per-task zero-finding gates plus Tasks 5–7
+  backfilled via the whole-branch zero-finding review — recorded as executed and passed, resolving
+  (never silently replacing) the pending record above.
+- **2026-10-15 documentation close-out gate status (the §13.10–13.11 amendment; recorded as its own
+  state):** the amendment is documentation-only, uncommitted working-tree state at HEAD `a386b73`
+  pending the user's delegated commit/PR step, and its recorded verification is `git diff --check`
+  clean, `node scripts/check-line-endings.mjs` clean, and `node --test tests/test-selection.test.mjs`
+  6/6 (the isolation check) — no full-suite rerun was manufactured for a documentation edit. Gate
+  attribution stays separated: the boundary assessment's own review provenance (an independent
+  double-adversarial verifier returning CONFIRMED-WITH-CORRECTIONS with 4×P3 fixed, then a read-only
+  codex adversarial gate ×3 converging to CORRECTIONS-ADEQUATE on 65 assertions) is ASSESSMENT-side
+  record, restated in §13.10, not re-executed by this session; the per-task and whole-branch reviews
+  above belong to their tested HEADs and reviewed range (`41e5b0aa..a1420f7`), which does NOT include
+  this amendment; and this amendment's own commit-level CI/review, once a doc commit exists, will be
+  recorded as its own — no result is reused across them.
 
 ## 12. Fixture (Task 3) — instrument facts only, no live claims
 
@@ -2851,3 +3139,1434 @@ typecheck, line-ending and `git diff --check` gates green at worktree state
   conclusion. (R2 added the exact rendered-command contract, the candidate-policy delivery seam and the
   command-specific renderer markers, §12.6; the R5 root runs used them, §9.4 — the command
   qualifications themselves remain `not-proven`.)
+
+## 13. Follow-up campaign Task 1: provenance re-pin and measurement-seam verification (2026-10-13; no live run)
+
+Task 1 of the follow-up plan
+[2026-10-13-rescue-shell-wait-follow-up](../superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md):
+verification and documentation only. No live host was launched, no instrument code changed, and no new
+installed behavior is claimed anywhere in this section. The re-pinned provenance is §1.2.3; the plan
+required §§7.7, 10, 11.2 and 12.8 to be read before any of this work, and they were.
+
+### 13.1 Already-repaired seam regressions (re-run before authentication)
+
+The plan's Task 1 regression selection — the R4-era review-round corrections ("review adjudication
+fixes" and rounds 2–3), native interrupt interaction recording, the root-family observer contract, and
+the unsupported-call/final-message preparation privacy set — all pass at the re-pinned pin, zero
+failures as the plan expects:
+
+| Command | Result |
+| --- | --- |
+| `node --test --test-name-pattern='review adjudication fixes\|review round 2 refinements\|review round 3 refinements\|native interrupt interaction recording\|root-family observer contract\|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs` | **79 tests / 79 pass / 0 fail / 0 skipped** (6 suites: R0 canaries, R2 root-family observer contract, R4 interrupt recording, and the three R4+ review-round suites) |
+| `node --test tests/test-selection.test.mjs` | **6 tests / 6 pass / 0 fail / 0 skipped** |
+
+The fail-closed boundaries the plan calls out are unchanged and pinned by these suites: `pollWallTimesMs`
+covers individual polls only (a sanctioned preparation continuation contributes no duration; a
+shared-cell wall time is not a cap duration), and the Root-control wrapper recognition
+(`interrupt_agent`/`send_input` as root-control calls) stays forbidden inside the identified Child
+rollout, where those calls still count as discipline violations.
+
+### 13.2 How a nonterminal poll's own timing links to the live original process, pending cell and eventual exit
+
+Survey result for the plan's named functions (`mapShellWaitLiveFacts`, `extractInterruptInteraction`,
+`analyzeCallSequence`, `waitForPollObservation`, `waitForChildSettlementObservation` and their tests):
+the linkage is complete with the EXISTING seams. No new API is required, and no instrument defect was
+demonstrated, so no code changed. This is the reading rule Tasks 2–3 adjudication uses.
+
+1. **One original handle, grounded independently on three surfaces.** Post-run, `analyzeCallSequence`
+   grounds `originalHandleId` from the exact launcher `exec_command`'s own completed output
+   (`launch.output.result.session_id`, `tools/shell-wait-probe/evidence.mjs`, `analyzeCallSequence`
+   opening), and every poll is a `write_stdin` to that id. Live, both watches re-ground the SAME id
+   from the launch's own response decoded at its statement position (`waitForPollObservation` and
+   `waitForChildSettlementObservation`, `tools/shell-wait-probe/driver.mjs` — `statementOutputAt` for
+   shared cells) and fire only on empty-input polls to THAT handle. The interrupt ordering binding
+   (`deriveChildObservationBinding`, `evidence.mjs`) reuses the sequence machinery so only that
+   handle's polls and accepted `wait` continuations are attributable ordering evidence
+   (`attributableCallIds`/`attributableStatements`/`pollIntervals`).
+2. **A poll's own duration exists only when its OWN response completes.** `analyzeCallSequence` pushes
+   the output's tool-reported wall-time header onto `pollWallTimesMs` at its event position when a poll
+   is answered by its own completed output (`null` when no trusted header), and marks the terminal from
+   that result's `exit_code` (`terminalIndex`). A poll that YIELDS instead opens the event-order
+   `pendingCell` (cell id + owning call id) and contributes no timing; if an accepted `wait`
+   continuation with the exact canonical `cell_id` resolves the cell, the poll's entry stays `null` —
+   the continuation's header measures the wait request, never the poll (§12.8 round 3), and the
+   preparation exemption keeps the array 1:1 with actual polls. The cap-limited return — a poll whose
+   own completed response carries a still-running result and no exit code — is therefore a numeric
+   `pollWallTimesMs` entry at its event position, while the eventual exit is the entry whose result
+   carries the exit code (or, when the terminal resolves through a continuation,
+   `decisiveWallMs = sequence.lastCompletedOnHandle.wallTimeMs`).
+3. **Identification convention in the persisted record (documented; no new field).** The record
+   retains `observations.pollWallTimesMs` in event order beside `decisiveWallMs` and the timeline facts
+   (`buildCaseRecord`). The terminal entry is the LAST poll-owned completed response (its header equals
+   `decisiveWallMs` when the terminal was poll-owned; a continuation-resolved terminal leaves its array
+   entry `null` while `decisiveWallMs` carries the header). Every EARLIER numeric entry is a
+   nonterminal original-handle return — the M candidate — attributable only with the linked return
+   shape: `remainingLifetimeMs > 0` on basis `hold-deadline-at-poll-start` (the worker's hold deadline
+   had not passed at the poll-start detection), no interrupt intent/outcome
+   (`interrupt.requested`/`delivered` null or false), cleanup label `observation` (no other ender), and
+   the worker still running. Missing fields stay `null` on every path (the pre-turn failure branch maps
+   every observation field to `null`).
+4. **The live remaining-lifetime arithmetic is measured, never derived from wall times.**
+   `runHeldHostTurn` records `timeline.holdDeadlineElapsedMs` from the absolute monotonic hold
+   deadline; the concurrent poll-start watch stamps `timeline.pollStartedAtElapsedMs` only for a
+   detection at or before that deadline on one clock (§12.8 round 7); `mapShellWaitLiveFacts` computes
+   `remainingLifetimeMs = holdDeadlineElapsedMs − pollStartedAtElapsedMs` with basis
+   `hold-deadline-at-poll-start` — a conservative lower bound (detection lags the true poll start).
+   The §6.2 validity precondition compares ACROSS the two comparable runs: `M + 30000 ≤
+   remainingLifetimeMs`, where `M` is the UNRAISED control run's attributable cap-return duration
+   (identified per the point-3 convention from the unraised run's own record) and `remainingLifetimeMs`
+   is the RAISED trial's `hold-deadline-at-poll-start` measurement at its decisive poll start. The
+   historical §12.8/§6.2 formula `firstPollMs + 30000 ≤ remainingLifetimeMs` names the same UNRAISED
+   measurement — in the unraised M trial the cap return was expected to be that run's first poll — and
+   never substitutes the raised trial's first `pollWallTimesMs` entry (which in a natural-completion
+   raised shape is the raised terminal duration, not a cap; using it would wrongly reject valid
+   discriminator trials). The first-poll-stamp caveat applies ONLY to the lifetime measurement:
+   `timeline.pollStartedAtElapsedMs` is stamped ONCE, by the first-poll watch
+   (`waitForPollObservation` returns on the first empty-input poll to the exact handle), so in a
+   multi-poll raised shape the recorded remaining lifetime is measured at the first poll's detection and
+   could overstate the lifetime at a later decisive poll — a later-decisive-poll shape therefore leaves
+   the precondition UNEVALUABLE from the record.
+5. **Pending-cell and eventual-exit linkage for interruption adjudication (feeds Task 3).**
+   `extractInterruptInteraction` binds ordering to the exact Child: `boundObservations` carry each
+   bound response's resolution kind (`pending` / `completed-exit` / `completed-running` /
+   `unparseable`) — a still-running nonterminal completion RESOLVES a historical pending header — and
+   an outstanding poll's call-to-response interval (`binding.pollIntervals`, `callAtMs`/`responseAtMs`)
+   is pending-state evidence. `pendingBeforeCall.atMs` anchors `interrupt.pendingIntervalMs`, and
+   `deliveryToSettlementMs`/`timingBasis` (`rollout-event-timestamps`) are attributed only for a
+   settled exact-target delivery. The live settlement watch resolves only through the launch handle's
+   own polls/linked continuations decoding a completed exit-code result at the linked statement's own
+   position (`basis: 'exact-launch-handle-linked-completed-exit-code-output'`).
+
+### 13.3 Research note: per-entry resolution labels beside `pollWallTimesMs` (optional hardening; NOT implemented, NOT needed)
+
+One seam candidate surfaced during the survey and was investigated to a "not needed" verdict.
+`pollWallTimesMs` carries durations only — no per-entry resolution kind or event index — so identifying
+which entry is the cap-limited return relies on the §13.2 positional convention (terminal = the entry
+matching `decisiveWallMs` / the last poll-owned completed response; earlier numeric entries =
+nonterminal returns). For the plan's adjudication shapes this is unambiguous: the M trial expects at
+most one nonterminal cap return plus one terminal poll (or a continuation-resolved terminal), and event
+order preserves relative position even with multiple nonterminal returns. No attribution gap exists, so
+per the plan's bounded-execution rule no code changed. Should a future measured shape ever make the
+positional convention insufficient, the minimal research-only seam would be a PARALLEL array, never a
+reinterpretation of `pollWallTimesMs` itself — e.g. `observations.pollResolutionKinds`
+(`'completed-running' | 'completed-exit' | 'continuation-resolved' | 'preparation'`) pushed at exactly
+the same sites that push to `pollWallTimesMs` (`analyzeCallSequence`, the own-response branch and the
+continuation-resolution branch), asserted 1:1 by a regression extending the existing round-2/3 timing
+fixtures in `tests/shell-wait-probe.test.mjs` with one nonterminal return plus one terminal poll.
+Recorded here so Tasks 2–3 adjudication documents its reading rule instead of assuming one.
+
+### 13.4 Follow-up campaign Task 2: M measurement and cap-discriminator adjudication on one comparable host (2026-10-13, installed 0.162.1) — all four live runs inconclusive on the recurring unclassified-cell family; M `not-proven` on this pin
+
+Task 2 executed the follow-up plan's four listed live runs on ONE pinned executable, exactly one run per
+listed case label/group, no cause-directed follow-up consumed anywhere (see the allowance ledger below).
+Every run: fixture installed from committed source `3fa035a9eed568d163f6057fbf26623d3adc84a7` (worktree
+HEAD at execution, clean tree), the pinned executable in both `--codex` and `CODEX_BINARY`, fresh private
+`mktemp -d` output (OS-temporary; only redacted/whitelisted facts are repeated here), and the per-record
+observer digest recomputed at case start — every record carries `e28ec619…` (`working-tree-uncommitted`,
+`sourcesChangedDuringRun: false`), matching §1.2.3. The pin was re-verified (`realpath` of `command -v
+codex` → the 0.162.1 standalone binary, `codex-cli 0.162.1`, worktree HEAD, clean tree) immediately before
+EVERY run; the pin never changed, so all four records share one comparable pin. Driver exit 0 in all four
+runs means execution/cleanup completed — it does NOT mean any case qualified.
+
+Per-run provenance (the fields §1.2.3 defined as "captured at first live run"): `codexVersion` 0.162.1 in
+all four records; the executing model is retained as `null` — the instrument cannot observe it and never
+infers it from hashes (§1.2.3); the observation-cap key's verified application facts are
+`requestedCapMs` + `isolatedSetup.capVerified` (run 1: `requestedCapMs: null`, unraised control — no cap
+verification applies; runs 2–4: `requestedCapMs: 3600000`, `capVerified: true` — the raised cap verifiably
+survived the isolated production setup's configuration writes; this is fixture-configuration retention,
+NOT propagation evidence); wait bounds `requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs`
+as listed per run; `roleStatus: "ready"`, `setupAttempts: 2` (the fixture's documented normal data-root
+bootstrap re-run — documented in the fixture source, the `tools/shell-wait-probe/fixture.mjs` bootstrap
+re-run comment), `fixtureVariant` candidate/candidate/candidate/baseline; instruction artifacts carry
+before/after sha256 + mode per record (baseline run: before == after on both artifacts, byte-identical
+as designed).
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 — UNRAISED M control | `rescue-long`, NO `--cap-ms`, worker 420000, poll 3600000, budget 1200000 | `8df4026ff0b95fcdaa28beadfb805302c5bc8d9adb582d4c0b4fdbda1efa4620` (`…/tmp.a4Da3YEWp1`) | `executed`, **inconclusive `unsupported-call-shape`**: one unclassified `exec_command` script cell (3 content lines, 443 bytes, `directivePresent: false`, content withheld by the R0 structural-suppression design) failed the whole-case fail-closed scan. Route/linkage/observations all `null`; M **not established** |
+| 2 — RAISED candidate | `rescue-long --cap-ms 3600000`, worker 420000, poll 3600000, budget 1200000 | `befd4e76c2b46afd9b13aa427253011eb23f5ff38c36801db9a09d3fd3af3b05` (`…/tmp.rixDv8c4uN`) | `executed`, **inconclusive `unsupported-call-shape`**: same family, DIFFERENT shape facts (2 lines, 246 bytes, no directive). `capVerified: true`. All attributable observations `null` |
+| 3 — repeat | `rescue-repeat`, same raised flags/worker/budget as run 2 | `43b9496f10c71db2ed99c610f2932ac23e8e933f9709b9926e5d6a711c43ded6` (`…/tmp.h8sQOMlOjU`) | `executed`, **inconclusive `unsupported-call-shape`**: same family again (4 lines, 336 bytes, no directive). `capVerified: true`. All attributable observations `null` |
+| 4 — baseline instruction control | `rescue-baseline --cap-ms 3600000 --poll-ms 60000`, worker 420000, budget 1200000 (baseline variant: artifacts byte-identical) | `341a26890a54d42b5274a0f263ef4d8894db6c60989654c874a877025b2dce78` (`…/tmp.pUvpLEtU8T`) | `executed`, **inconclusive `unsupported-call-shape`**: same family (3 lines, 443 bytes — same shape facts as run 1). `capVerified: true`. All attributable observations `null`; outer-re-entry counts UNKNOWN, never zero |
+
+Facts that ARE attributable in every run (all four): the live flow demonstrably progressed — the driver's
+held-turn watch detected the observation (40018/62640/47451/53056 ms) and the first empty-input poll on
+the original handle (77372/95631/82659/85479 ms, basis `held-turn-monotonic-elapsed-ms`), the turn ended
+naturally at the hold gate (`cleanupLabel: "observation"`, `gateReleased: true`, `endedBeforeGate: false`),
+host exit 0, cleanup complete with 0 errors, fixture disposed; `interrupt.requested: false` everywhere.
+Facts that are NOT attributable anywhere: route actually selected, parent/Child linkage, companion
+launch/send, `originalHandleChecked`, `outerReturns`/`modelCalls`/`rootJoins`, `decisiveWallMs`,
+**`pollWallTimesMs` (no per-poll timings exist in any record)**, `remainingLifetimeMs`, sentinel/terminal
+checks — each `null` with the recorded fail-closed cause, never zero.
+
+**Adjudications.**
+
+- **M (unraised Child cap on 0.162.1): `not-proven`.** The §13.2 point-3 convention has nothing to
+  attribute: no nonterminal original-handle return is observable because the whole-case fail-closed scan
+  blocks every record at the first unclassified cell, so no `pollWallTimesMs` entry, no linked return
+  shape, and no cap-limited return exists. M is not even bounded on this pin. The R5 0.161.0
+  bounded-but-imprecise state (§7.7) stands for that version only.
+- **Raised-run precondition: UNEVALUABLE.** The §13.2 point-4 arithmetic needs M (unattributable) AND the
+  raised trial's `hold-deadline-at-poll-start` `remainingLifetimeMs` at its decisive poll start — the
+  raised run retains no attributable decisive poll at all, so neither side of `M + 30000 ≤
+  remainingLifetimeMs` exists. The first-poll-stamp caveat never came into play.
+- **Raised-cap propagation on 0.162.1: `not-proven` — the campaign does not even reach
+  `POSITIVE-but-M-imprecise` on this pin.** No raised observation shape is attributable (no single long
+  observation, no re-entry counts), so there is no positive discriminator signal here. The 0.161.0
+  POSITIVE-but-M-imprecise clue (§7.7/§10) stands unchanged for that pin.
+- **Repeat on 0.162.1: not executable as designed — no qualified raised run exists on this pin to
+  repeat.** The executed `rescue-repeat` run (run 3) is itself inconclusive with the same cause. Repeat
+  remains QUALIFIED only on 0.161.0 (§7.7); the 0.160.1 attempts (§7.4) remain historical.
+- **Baseline/re-entry comparison on 0.162.1: inconclusive.** Runs 2 and 4 differ in instruction variant
+  and poll request exactly as designed, but no outer-return count is attributable in either, so the
+  current-version re-entry comparison could not be established. Unknown linkage/counts stay unknown, not
+  zero. The Task 4-era 15-vs-0 comparison remains pinned to its own recorded versions.
+- **Cause adjudication of the blocker (the only cause-directed investigation, performed on retained
+  records — no host was relaunched for it):** the `unsupported-call-shape` family recurred in 4/4 runs,
+  across BOTH instruction variants (run 4 rules out candidate-paragraph linkage), with VARYING shape
+  facts (3 lines/443 B, 2/246, 4/336, 3/443 — the last identical to the first), always an
+  `exec_command` `custom_tool_call` with no directive and withheld content. This is the same
+  unknown-shape family R5 recorded for baseline/noise/background/interrupt on 0.161.0 (§7.7, cause not
+  established there either), now systematic on 0.162.1 and instruction-independent. The retained
+  structural facts cannot adjudicate WHY the cells fail classification: content is withheld by the R0
+  privacy design (§12.4, §12.10 — working exactly as documented), and no additional live diagnostic is
+  permitted (every case's one-run allowance is spent; a fresh diagnostic would count against it).
+
+**Instrument defect: none demonstrated — no code changed.** The fail-closed scan, structural excerpt
+retention and privacy suppression behaved exactly as documented and test-pinned (§12.4/§12.10, §13.1);
+what is not demonstrable is that the parser SHOULD have accepted the withheld cell shapes (no byte-level
+evidence can exist under the retention design), so the plan's defect path (regression RED → minimal
+correction) has no demonstrated trigger. The grammar limitation is real and is now the campaign's
+blocking prerequisite: any future measured dimension on this pin needs the narrow unclassified-cell
+adjudication the follow-up plan reserves to Task 4's bounded-diagnostic allowance, extended to the
+rescue-family cases it now blocks. Per §3 the recurring unknown shape is retained and every case stops
+here; no generic parser expansion was attempted.
+
+**Run/follow-up allowance ledger.** `rescue-long` comparable group: BOTH planned runs consumed (unraised
+control + raised candidate), both inconclusive; the group's one cause-directed follow-up was NOT consumed
+— no concrete cause with a single changeable variable exists (the blocker is instruction-independent and
+shape-variable; no case flag governs it; a re-run would be a forbidden model-behavior retry; the §6.2
+resized-group remediation targets lifetime sizing, which is not the observed cause, and its
+`workerDurationMs = max(420000, ceil(M) + 90000)` formula has no input while M is unattributable).
+`rescue-repeat`: one run consumed, inconclusive, no follow-up (same cause). `rescue-baseline`: one run
+consumed, inconclusive, no follow-up (same cause). No other host was launched.
+
+### 13.5 Follow-up campaign Task 3: native pending-observation interruption and owned settlement (2026-10-13, installed 0.162.1) — one run, again inconclusive on the unclassified-cell family; the delivery contract and every settlement layer `not-proven` on this pin
+
+Task 3 executed its single listed live run plus the two no-launch work items (delivery-path trace and
+strict adjudication). No cause-directed follow-up was consumed, the optional responsiveness control was
+NOT spent, and no code changed (no instrument defect demonstrated — see the defect note below).
+
+**Delivery-path trace (no host launched).** Re-confirmed against the read-only Codex source checkout,
+unchanged and clean at `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (`git rev-parse HEAD` + `git status
+--short` re-run 2026-10-13; the checkout still proves no source/binary correspondence). The concrete
+mechanism the repaired case uses is the historical V2 hypothesis, confirmed at the pin:
+
+1. **Registration in the owning session.** `codex-rs/core/src/tools/spec_plan.rs`:
+   `add_collaboration_tools` (:1299) registers the V2 `interrupt_agent` tool UNCONDITIONALLY inside the
+   V2 branch (it is gated by neither `wait_agent_enabled` nor `disable_direct_message`; :1382–1391),
+   whenever `collab_tools_enabled` (:672) holds — for V2 that is
+   `session_source.get_agent_path().is_none() || model_info.multi_agent_version == Some(V2)`, so the
+   ROOT of a normal `codex exec` session (the owning Root of the Rescue Child) qualifies.
+   `config.multi_agent_version_override()` (`core/src/config/mod.rs` :1592) hard-resolves V2 when
+   `features.multi_agent_v2` is enabled (the live user config's block, §3.3 — authorship not
+   established); in the fixture's isolated home (which carries only the production setup's
+   `[agents.zcode-rescue]` role and hook writes, never a `features.multi_agent_v2.enabled` block —
+   `scripts/lib/managed-agent-role.mjs` :132/:296/:727) the version can still resolve V2 through the
+   model catalog declaration (`multi_agent_version_for_model` :1612; §3.3's `codex debug models`
+   corroboration). The qualified live `wait_agent` joins recorded since R5 (§7.7) corroborate that the
+   fixture's owning sessions resolve the V2 family in practice.
+2. **Exact tool/flag the repaired case sends.** The case prompt (`SHELL_WAIT_CASE_SPECS['rescue-interrupt']`,
+   `tools/shell-wait-probe/driver.mjs`) directs exactly ONE model-facing V2 `interrupt_agent` call with
+   `{ "target": <the exact agent id the spawn acknowledgement returned> }`, only while the observation is
+   pending, with collateral interruption forbidden. Source spec (`multi_agents_spec.rs` :355
+   `create_interrupt_agent_tool_v2`): `ToolSpec::Function`, name `interrupt_agent`, single required
+   `target` argument. The legacy V1 `send_input` is recognized ONLY with `{interrupt: true}` (V1 is not
+   the resolved family on this machine, §3.3, and was not used); no separate app-server `turn/interrupt`
+   was touched.
+3. **Delivery and status semantics.** `core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs`:
+   handler `ToolName::plain("interrupt_agent")`, args `{target}` (`deny_unknown_fields`), resolves the
+   target then calls `agent_control.interrupt(session.thread_id, AgentTarget::Id, V2)` →
+   `interrupt_spawned_agent` (`core/src/agent/control/interrupt.rs`): registry-known check, root and
+   self rejection, status SNAPSHOT FIRST (`inspect_agent` — the returned `previous_status` is the status
+   observed before the interrupt request was handled), then `Op::Interrupt` to the live Child thread
+   (`core/src/agent/control.rs` :299), tolerating `ThreadNotFound`/`InternalAgentDied` as success;
+   returns `{ previous_status }` (pinned snake_case `AgentStatus`, protocol.rs — `running` is the
+   ACTIVE label; `completed`/`errored`/`shutdown`/`not_found`/`interrupted` are the terminal set the
+   driver pins at `TERMINAL_INTERRUPT_PREVIOUS_STATUSES`).
+4. **Inner settlement is NOT part of the delivery.** `core/src/tasks/mod.rs` :925–936: the turn-abort
+   path cancels nested code-mode cells only under `TurnAbortReason::Interrupted` AND
+   `Feature::CodeModeInterrupt` — installed `code_mode_interrupt false` (§3.3) — so an exact-Child turn
+   interruption guarantees nothing about an already-yielded poll cell. Companion-process cleanup and
+   durable job/reconciler settlement are separate production layers entirely.
+5. **Installed 0.162.1 rollout grammar (probe parsers).** `tools/shell-wait-probe/evidence.mjs`
+   recognizes the interaction in TWO shapes: a direct `function_call` named `interrupt_agent`
+   (dotted namespaces tolerated) with JSON args, and a code-mode cell statement in the anchored awaited
+   form `text(await tools.interrupt_agent({...}));` (bounded per-statement parser, ≤4096-char body,
+   JSON-first with a string-aware JS-literal fallback; the unanchored-substring false-attempt hole is
+   closed, §12.8). The run below is itself the installed-grammar datum: the 0.162.1 host emitted a
+   recognizable V2 interaction that the parsers counted (once), family-classified (`v2`) and
+   success-decoded — the record does not retain which event shape carried it (not a persisted field).
+
+**Re-pin before the run.** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex` (regular
+executable), `codex --version` → `codex-cli 0.162.1` — IDENTICAL to §1.2.3/§13.4; the pin did not move,
+so this run stays on the Task 2 comparable pin and cross-version comparison rules are unchanged.
+Worktree HEAD `67d327d7fd206bd2fb87245b6d720d29d73e4924`, clean tree.
+
+**The run (exactly one).** `rescue-interrupt` with the plan's exact flags (worker 420000, cap 3600000,
+poll 3600000, budget 900000), the pinned executable in both `--codex` and `CODEX_BINARY`, fixture
+installed from committed source `67d327d7…` (clean tree, committed bytes = working tree), fresh private
+`mktemp -d` output — retained record sha256
+`592675051bd0f87147531d798bc2084b6a2b7772fbfb3022cbc94c8db8ba706a` (`…/tmp.iX0612W7DO`, OS-temporary
+private dir, the §13.4 per-run convention) — observer digest recomputed at case start `e28ec619…`
+(`working-tree-uncommitted`, `sourcesChangedDuringRun: false`, `model: null`) — matching §1.2.3.
+Per-run provenance per the Task 1 schema: `codexVersion` "0.162.1", `requestedCapMs` 3600000 with
+`isolatedSetup.capVerified: true` (fixture-configuration retention, NOT propagation evidence),
+`requestedPollMs`/`requestedWorkerDurationMs`/`requestedBudgetMs` as listed, `roleStatus: "ready"`,
+`setupAttempts: 2` (the fixture's documented normal bootstrap re-run), `fixtureVariant: "candidate"`,
+instruction artifacts with before/after sha256 + mode retained in the record. Driver exit 0 —
+execution/cleanup completed (`fixtureDisposed: true`, `cleanupComplete: true`, 0 errors, no budget
+kill, no external termination: `verifiedTerminated`/`codexTerminated` both false), which does NOT mean
+the case qualified.
+
+**Outcome: `executed`, INCONCLUSIVE `unsupported-call-shape` — the same recurring family as §13.4, new
+shape facts.** The whole-case fail-closed scan blocked on one unclassified `exec_command` script cell
+(3 content lines, **314 bytes**, `directivePresent: false`, content withheld by the R0
+structural-suppression design — §13.4's runs: 443/246/336/443 bytes). Whether that cell is a parser gap
+or a model departure remains unestablishable from withheld content. Driver-watch timeline (monotonic,
+NOT rollout-attributable): observation detected at 50121 ms, Root host result resolved at 72767 ms,
+turn ended naturally at the hold gate (`endedAtElapsedMs: 470128`, `holdDeadlineElapsedMs: 470121`,
+`gateReleased: true`, `endedBeforeGate: false`, cleanup label `observation`), host exit 0.
+
+**The interrupt block: degraded nulls with cause, PLUS surviving structural facts that advance the
+campaign.** Because the case evidence failed fail-closed, the driver persisted the could-not-observe
+form (`attempted: null`, `delivered: null`, the explicit evidence-collection `missingPrerequisite`;
+`driver.mjs`'s evidence-failed branch overrides these two fields) — the nulls are a DEGRADED-RECORD
+consequence, not an observed "no call". The fields the override does not touch record what the
+extractor actually parsed from the collected rollouts:
+
+| Field | Persisted value | Reading |
+| --- | --- | --- |
+| `requested` | `true` | case directive active |
+| `callCount` | `1` | exactly ONE interrupt-shaped interaction existed |
+| `family` | `"v2"` | the V2 `interrupt_agent` grammar (V1 would need `{interrupt:true}`) |
+| `previousStatus` | `"running"` | the call's own output success-decoded to the PINNED ACTIVE AgentStatus label — the target agent was mid-turn when the interrupt landed (tool-acknowledgement level only) |
+| `target` | `{ kind: "unknown", value: null, suppressed: true, chars: 23 }` | the target string was NEITHER id-shaped NOR the known fixture task marker → suppressed to its structural length (23 chars) by the R0 sanitizer; WHAT it named is not retained |
+| `exactTargetMatch` | `null` | unbindable: the target is suppressed AND the case evidence carried no child thread id to bind against |
+| `orderingBound` | `false` | no supported evidence → no exact-Child binding options → fail-closed ordering |
+| `settled` / `settledBasis` | `null` / `"ordering-unbound-not-attributed"` | the basis is itself proof the underlying interaction was attempted with a non-rejected outcome, then failed the ordering gate |
+| `pendingIntervalMs` / `deliveryToSettlementMs` / `timingBasis` | `null` / `null` / `"unavailable"` | no attributable pending anchor, no attributable settlement, no rollout-event timing |
+
+This is the first run with a PARSED AND COUNTED V2 interrupt interaction (`callCount: 1`, target-shape
+facts retained) under the §12.8-corrected anchored grammar, and the first on this pin (0.162.1). The
+novelty is scoped, not absolute: the R5 0.161.0 record had ALREADY retained a parsed on-script
+interaction with the same active `previousStatus: "running"` and `family: "v2"` (§7.7), but that parse
+ran under the since-corrected unanchored grammar (§12.8 — a shape that could fabricate attempts);
+§7.7's retained R5 row lists no count or target-shape facts (the row's basis: the record itself is
+gone, so absence is verifiable only from the retained row, never from the artifact), and its case
+failed the whole-case scan; §13.4's four runs all
+had no interrupt interaction at all. The model demonstrably ANSWERED the interrupt directive with
+exactly one V2 call whose tool response reported an active (`running`) previous status. It still
+qualifies nothing.
+
+**Adjudication (strict, per the plan's qualification rule).** NOT QUALIFIED — `attempted`/`delivered`
+are null-with-cause in the persisted record, `exactTargetMatch: null`, `callCount: 1` (the only field
+on its side of the contract), `orderingBound: false`, `settled: null`, `settledBasis:
+"ordering-unbound-not-attributed"`, all timing null. There is no ONE exact-target delivery, no active
+prior status bound to the EXACT Child (`previousStatus: "running"` attributes an active turn to the
+UNNAMED target only), no attributable pending original-handle observation at delivery, and no linked
+post-delivery outcome. Terminal-before-interrupt, wrong target, multiple delivery, unreadable
+continuation and external budget kill did not arise; the case is inconclusive on the fail-closed scan,
+which never qualifies.
+
+**The four distinctions the plan requires (all `not-proven` on this pin).**
+
+- **Native Child turn interruption (exact): `not-proven`.** A successful interrupt TOOL response alone
+  proves none of the layers below, and here even the tool response is unbound: the target was withheld
+  (23 suppressed chars) and the ordering was never bound to the exact Child's pending observation.
+- **Inner poll-cell settlement: `not-proven`.** No attributable observation exists (`pollWallTimesMs`
+  null), no settlement watch fact is attributable, `settled: null`. Whether an interrupted turn left
+  the pending poll alive is UNADJUDICABLE in this record — `orderingBound: false` means the
+  `turn-interrupted-pending-observation-survives` shape could not even be evaluated, let alone
+  recorded as observed.
+- **Exact Companion process cleanup: `not-proven`.** No companion launch/send/handle linkage survived
+  the fail-closed scan (all null); `child.settlement.observed: false` with basis null.
+- **Durable job/reconciler settlement: `not-proven`.** The bounded production-store read was NOT
+  exercised: with every linkage field null there was no attributable original job, stop cause/intent or
+  terminal winner to read through the existing seams, and no accepted running work became untracked.
+  Nothing sanitized existed to retain.
+
+**Distinction ledger demanded by the plan.** Missing model call: RULED OUT (callCount 1 — the model
+called). Tool rejection: RULED OUT (the response success-decoded; `rejection: null`). Interrupt-parser
+failure: RULED OUT (the interaction was parsed, counted, family-classified and decoded). Case-level
+unknown-shape failure: PRESENT (the unclassified `exec_command` cell blocked the scan — the same
+family as §13.4, cause not establishable under the retention design). Delivered-but-unsettled work:
+UNADJUDICABLE (ordering unbound; settlement null) — recorded as unknown, never as survival or as
+settlement.
+
+**No-collateral control: NOT REACHED, claim `not-proven`.** The control requires the lifecycle to get
+far enough to carry an unrelated harmless owned job/Child with independently observed survival; this
+run's case evidence failed fail-closed before any qualifying shape existed, so the control was not
+spent and live no-collateral preservation is NOT claimed from the instrument's unit tests alone.
+
+**`native-short-window-responsiveness-control`: deliberately NOT spent (0 runs).** The control is a
+separately named one-run group with no retry, and its only purpose is a latency REFERENCE for a
+delivery-to-settlement comparison. The candidate produced no attributable
+`deliveryToSettlementMs` (null on the guards: `settled` null), so the comparison it would serve is
+`not-proven`; spending the control without the claim it serves would waste its single run. The sole
+experimental change it would have carried (the temporary waiting paragraph requesting the baseline
+60000-ms window) was therefore never issued.
+
+**Instrument defect: none demonstrated — no code changed.** The interrupt-interaction grammar
+DEMONSTRABLY worked on this run's installed shapes (it parsed, counted, family-classified and
+success-decoded the V2 call), and for the unclassified `exec_command` cell the §13.4 rationale applies
+unchanged: no byte-level evidence can exist under the retention design, so the RED→GREEN defect path
+has no demonstrated trigger. Per §3 the recurring unknown shape is retained and this case stops here.
+
+**Run/follow-up allowance ledger.** `rescue-interrupt`: the ONE listed run consumed, inconclusive; the
+case's one cause-directed follow-up NOT consumed — no concrete cause with a single changeable variable
+exists (the blocker is the instruction-independent unclassified-cell family of §13.4 with yet another
+shape; no Task 3 case flag governs it; the §12.8 root-control wrapper fix already addressed the OLD R5
+wrapper shape and this is a DIFFERENT, script-cell-shaped blocker; a same-config re-run would be the
+forbidden model-behavior retry). `native-short-window-responsiveness-control`: 0 of 1 runs spent
+(deliberate; see above). No other host was launched. A pre-existing OS-temporary
+`zcode-shell-wait-fixture-fHFp3c` directory (mtime 2026-10-13 04:13 local, BEFORE this task's run) was
+found untouched and left in place per §3's unrelated-scratch preservation rule; this run's own fixture
+was disposed by the driver.
+
+### 13.6 Follow-up campaign Task 4: noisy output, background placement and the sidecar opportunity (2026-10-13, installed 0.162.1) — the plan's bounded diagnostic executed as the noise case's initial run; both live cases inconclusive on the same unclassified-cell family, now structurally adjudicated; noise/background placement stay `not-proven`; sidecar structural policy re-verified, installed latency unreachable
+
+Task 4 executed the plan's two listed live cases plus its diagnostic prerequisite, exactly one run per
+case, with the bounded diagnostic mechanism the plan reserves to this task's allowance (§13.4/§13.5's
+blocking prerequisite). **Diagnostic accounting (recorded before any launch):** the diagnostic ran as
+the `rescue-noise` case's INITIAL run — the plan orders the diagnostic before "run each case once
+after that concrete prerequisite is understood", and §3 counts a host-launching diagnostic as that
+case's initial run or its follow-up. Choosing initial-run placement (rather than formal-first +
+diagnostic-as-follow-up) preserves a usable noise measurement path if the adjudication had
+demonstrated a correctable cause, keeps the background case's full allowance intact, and matched the
+observed recurrence (the family had blocked every inconclusive recorded run on the 0.161.0/0.162.1
+pins — R5's four retrials, §13.4's four runs, §13.5's run), so a formal-first order would most likely
+have burned the formal run inconclusively before the adjudication existed. The single delta of the
+diagnostic run versus the plan's formal invocation is a RETENTION-ONLY research gate; host behavior is
+byte-identical.
+
+**The diagnostic instrument (the campaign's first instrument change; plan-authorized as an instrument
+need, not a defect fix).** A gated extension of the unclassified-cell structural excerpt
+(`tools/shell-wait-probe/evidence.mjs`): when the evidence input carries the explicit boolean
+`unclassifiedStructuralDiagnostic: true` (threaded from the new `--unclassified-structural-diagnostic 1`
+CLI marker, which only accepts the literal `1`, through `validateCaseInput` into the evidence request,
+and recorded top-level in the case record ONLY when enabled), the excerpt of an unclassified STRING
+body additionally retains whitelisted structural facts and nothing else:
+
+- `wholeBodyStatementMatch` — whether the module's OWN single-statement wrapper parser
+  (`parseWrappedToolInput`, the same pinned patterns, no new grammar) accepts the whole body; the
+  discriminator between "a grammar-valid statement only the per-line cell splitter rejects" (a
+  demonstrable instrument defect) and a foreign/departed shape;
+- `lines[]` — per CONTENT line (directive stripped, blank separators skipped, bounded 16): 1-based raw
+  line number, a fixed-token prefix class tested against the EXISTING grammar heads
+  (`const-r-await` / `text-await-tools` / `text(` / `other`), a NAIVE cumulative bracket-depth balance
+  (string literals are not lexed; a diagnostic hint, never an admission fact), a trailing-semicolon
+  flag, and the allowlisted public tool names referenced on that line (unknown names stay withheld
+  behind a count);
+- `sha256` — the withheld body's one-way digest: a recurrence fingerprint across runs and cases.
+
+No raw content, no content-derived string, and no number extracted from content is retained; the
+verdict stays `unsupported-call-shape`/inconclusive either way. **Default retention is unchanged and
+pinned:** without the gate the excerpt JSON carries exactly the previous nine facts
+(`suppressed/classification/tool/bodyType/inputLines/directivePresent/directiveKeys/withheldDirectiveKeys/inputBytes`).
+TDD evidence: the seven focused regressions in the new `unclassified-cell structural diagnostic` test
+section failed 6/7 before implementation (the FIRST of the seven pins the default-retention invariance
+and passed before and after; the other six — ending with the `shellWaitEvidenceRequest`/gate-validation
+test — failed before implementation for the missing gate and passed after), passed 7/7 after; the full
+shell-wait suite went 449/449 (from 442), the Task 1 seam
+selection stayed 79/79, selection 6/6, `npm run lint` and `npm run typecheck` clean. The R0 canary
+discipline holds under the gate: synthetic canaries planted in unsupported cells never reach the gated
+excerpt, the evidence object, or the persisted record (pinned by regression).
+
+Post-review correction (same commit; one reproduced P2 review finding): a sixteen-line gated cell's
+serialized line facts could exceed the 2048-char excerpt budget, so the scrubber truncated the JSON
+mid-object — losing the fingerprint, the omission count and parseability. Fixed by budgeting the
+serialized diagnostic against the caller's excerpt room and dropping trailing line facts into
+`withheldLines` BEFORE the scrubber (the digest and closing delimiters survive for any body size;
+retention whitelist unchanged). Regression evidence: RED with the excerpt truncated
+(`truncated: true`, unparseable JSON), GREEN after — the diagnostic section 8/8, the full suite
+**450/450** (from the 449 recorded above at the original execution), selection 6/6, lint, typecheck,
+line endings and `git diff --check` clean at the amended commit.
+
+**Pre-registered adjudication table (stated before the runs):** `wholeBodyStatementMatch: true` →
+demonstrated instrument defect → minimal whole-body fallback correction (RED→GREEN) and the formal
+noise trial as the case's cause-directed follow-up (single changed variable = that correction);
+`false` with a recognizable supported head and an open-then-closed depth profile → a statement variant
+outside the pinned grammar → adjudicate gap-vs-departure conservatively, no code change unless the
+cell is clearly a sanctioned shape; foreign statements / no observational tool references → departure
+shape, recorded, case stops. The table's content is fully consistent with the executed adjudication;
+the PRE-RUN TIMING itself is not independently verifiable from retained artifacts — the records carry
+no timestamped pre-registration, so the "stated before the runs" claim rests on this section's
+recorded account alone.
+
+**Re-pin before EACH run:** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL before both runs; the pin never moved, so both
+records share the §13.4/§13.5 comparable pin and no cross-version comparison was started. Worktree
+HEAD `0e50444e…` — the fixture installed committed source at that pin; the working tree carried the
+uncommitted instrument seam (executing module sha256 `evidence.mjs af15dd90…`, `driver.mjs 53e7de4e…`,
+`fixture.mjs 8b93ecc8…` unchanged), and both records carry the recomputed observer digest
+`b237a6e1…` (`working-tree-uncommitted`, `sourcesChangedDuringRun: false`) — the post-seam
+instrument, distinct from §13.4/§13.5's `e28ec619…`. Per-run provenance per the Task 1 schema (both
+runs): `codexVersion` "0.162.1", `requestedCapMs` 3600000 with `isolatedSetup.capVerified: true`
+(fixture-configuration retention, NOT propagation evidence), `requestedPollMs` 3600000,
+`requestedWorkerDurationMs`/`requestedBudgetMs` 130000/360000 (noise) and 120000/600000 (background),
+`roleStatus: "ready"`, `setupAttempts: 2` (the fixture's documented normal bootstrap re-run),
+`fixtureVariant: "candidate"`, instruction artifacts with before/after sha256 + mode retained in the
+records (candidate paragraph applied to both artifacts; the three command Skills byte-identical),
+executing model `null` (never inferred). Driver exit 0 in both runs — execution/cleanup completed
+(`fixtureDisposed: true`, `cleanupComplete: true`, 0 disposal errors), NOT that any case qualified.
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 — diagnostic = noise INITIAL run | `rescue-noise`, plan's exact flags (worker 130000, cap 3600000, poll 3600000, budget 360000) + `--unclassified-structural-diagnostic 1` | `f0f677caf50becd22e10d51f77876c8dff4f20635f43c5f5fe5de7312149b00b` (`…/tmp.Y8ONkaeHm6`) | `executed`, **inconclusive `unsupported-call-shape`** — one unclassified `custom_tool_call` script cell, content withheld, NOW structurally adjudicated (below). Route/linkage/observations all `null`; the noise checks (same handle, terminal bytes, no stderr/progress substitution, no relay to Root, actual extra interventions) are `null`-with-cause, never zero |
+| 2 — background formal trial | `background`, plan's exact flags (worker 120000, cap 3600000, poll 3600000, budget 600000) + the same retention-only gate (recorded in the record; host behavior identical to the plan's invocation) | `32db54797aed8aec1bca50db61668d1e535bec95fec697e664b4eb2784564406` (`…/tmp.MwsOB6nhkP`) | `executed`, **inconclusive `unsupported-call-shape`** — same family, DIFFERENT shape (below); budget-cleanup at 600010 ms; Root host result resolved at 46384 ms with no Child linkage; background placement `not-proven` |
+
+**Diagnostic adjudication (retained structural facts only).**
+
+- **Run 1 (noise).** The blocked cell is a `write_stdin`-referencing single-content-line script
+  statement (2 raw segments = one line + trailing newline; 387 bytes; no directive; prefix
+  `text-await-tools`; bracket balance 0 at line end; semicolon-terminated; tool fact `write_stdin`;
+  fingerprint sha256 `38c33f61215028e44ef443da30e7e37088ebe95d3501fc7b8ab28cb548d13164`;
+  `wholeBodyStatementMatch: false`). A plain poll write parses through the inline wrapper and would
+  have classified, so a balanced one-line `text(await tools.write_stdin(…));` statement that fails
+  BOTH the byte-pinned sanctioned preparation grammar (§12.4's `PREPARATION_PATTERN` — the by-design
+  exact form of the one sanctioned nonempty write) AND the wrapper-argument literal parser implies
+  argument EXPRESSION SYNTAX outside both — most plausibly the preparation envelope's
+  `JSON.stringify(…)` construction in a form that departs from the pinned byte form. **Adjudication:
+  a statement variant OUTSIDE the pinned grammar — neither a demonstrable instrument defect nor
+  demonstrable model nonadherence.** The strict pattern is deliberately pinned to the taught form, so
+  widening it would be the forbidden generic parser expansion; the content is withheld by the R0
+  design, so the departure cannot be labelled nonadherence either (§3's rule). No case flag governs
+  the model's script form.
+- **Run 2 (background).** The blocked cell (where the prompted `$zcode:rescue --background --fresh`
+  invocation was expected) is a 4-content-line script cell (5 raw segments; 583 bytes; no directive;
+  `wholeBodyStatementMatch: false`; fingerprint sha256
+  `a9d65bb252cabafafa8e2087070280cc5e01497b3b2a1148b3b3f93f34cdfe70`) whose first TWO content lines
+  are balanced, semicolon-terminated statements referencing NO observational tool at all (prefix
+  `other`, empty tool facts), followed by two balanced, semicolon-terminated
+  `text(await tools.exec_command(…));`-headed lines. Any single unparseable line rejects the whole
+  cell fail-closed, so the failing statements are (at least) the two non-tool leading lines — shapes
+  outside the observational grammar by construction, not a demonstrably sanctioned form. **Same
+  adjudication: variant outside the pinned grammar; defect and nonadherence both non-demonstrable
+  under the retention design.** The two fingerprints (`38c33f61…`, `a9d65bb2…`) differ — the family's
+  shapes keep varying run to run and case to case, consistent with §13.4's varying byte/line facts.
+- **What this settles:** the §13.4 blocking prerequisite is adjudicated as far as the retention design
+  permits — the family is code-mode script cells whose statements fall outside the two pinned
+  grammars, with per-run structural fingerprints now retained for recurrence comparison. It does NOT
+  settle whether the cells are benign form variants or departures: that needs content-level evidence,
+  which only a privacy-authority decision (outside this plan's authority) or a host/form change could
+  provide. No parser correction follows, because no defect is demonstrable (§3: no code change just
+  to create a diff — the seam above is the plan-authorized diagnostic instrument, the only code
+  change).
+
+**Noise outcome (`not-proven` on this pin).** The case ran once with the noise environment active; the
+whole-case fail-closed scan blocked on the adjudicated cell before any attributable linkage, so
+same-handle discipline, terminal-byte exactness, the no-substitution and no-relay rules, and the count
+of ACTUAL extra interventions are all `null`-with-cause (never zero). The held turn itself ran
+cleanly: observation detected at 36258 ms, first poll-start detection at 68181 ms, turn ended
+naturally at the hold gate (hold deadline 166258 ms, ended 174728 ms, `endedBeforeGate: false`,
+cleanup label `observation`), host exit 0, no termination, `interrupt.requested: false`.
+
+**Background outcome (`not-proven` on this pin; every placement sub-fact recorded).** The Root host
+RESULT resolved at 46384 ms (`rootAcknowledgementAtElapsedMs`) — closely mirroring R5's 41333 ms
+"host ended before the background flow" shape (§7.7), now recurring on 0.162.1. The required
+sub-adjudications: Root's decoded acknowledgement is NOT established as launch-only for the exact
+Child (the result's decoded content is unattributable — every linkage field `null`); positively
+observed Root joins are UNKNOWN (`rootJoins: null`, never zero); the Child-side settlement watch DID
+execute — the held turn stayed open for the full remaining budget exactly as the R3 lifecycle
+requires, and settlement was never detected (`settlement.observed: false`,
+`settlementDetectedAtElapsedMs: null`); the final process outcome is BUDGET-CLEANUP termination at
+600010 ms (`codexTerminated: true`, `nativeInterruptionClaimed: false` — cleanup, never native user
+interruption), with `hostExit: null` because the terminated host result never resolved. A completed
+Root alone could not qualify background placement in any case, and here even the Root completion is
+unattributable: the case evidence failed fail-closed on the adjudicated cell.
+
+**Sidecar outcome (structural policy re-verified; installed latency `not-proven` — interface
+limitation).** The existing between-polls-only sidecar policy is unchanged and re-verified on this
+tree by its existing suites on 2026-10-13: `tests/codex-rescue-qualification.test.mjs` 162/162 (the
+status-sidecar mutation set: exactly one sidecar, between polls while the original handle is live,
+the constant no-argument command with no extra arguments, unique call id, bounded public projection
+keys, private progress-preview suppression) and `tests/integration/skills.test.mjs` 76/76 (the bound
+sidecar exposes only the safe fixed fields; missing/sibling/stale-turn/ambiguous bindings rejected).
+The intents (`zcode status`, `$zcode:status`, `/zcode:status`, trim only) are pinned verbatim in the
+skill-contract fixtures. Installed latency was NOT observed because the interface precondition never
+materialized: safe steering requires a qualified live session with a pending original-handle
+observation, and on this pin neither case reached an attributable observation (both fail-closed
+before linkage), so there was no session to steer and no legitimate occasion to issue anything beside
+the held observation. No parallel poll was issued and Status was not made the waiting engine; the
+concrete limitation is retained: sidecar response delay under a long wait remains unmeasurable on
+this pin until a case first produces a qualified pending observation.
+
+**Instrument defect: none demonstrated — the seam is the only code change.** The diagnostic
+adjudications above are the defect path's input: no blocked cell is a demonstrably sanctioned shape
+(the noise cell fails the by-design pinned preparation form; the background cell's leading statements
+reference no observational tool), so no grammar correction was made and none of the pinned
+fail-closed boundaries moved. The gated seam itself is the plan's own bounded-diagnostic mechanism
+("use one fresh bounded diagnostic retaining only whitelisted structural facts and manually adjudicate
+the observed narrow shape"), built test-first with default-retention invariance pinned.
+
+**Run/follow-up allowance ledger.** `rescue-noise`: the ONE initial run consumed — by the diagnostic
+(plan flags + the retention-only gate, the case's own formal attempt simultaneously); inconclusive;
+the case's one cause-directed follow-up NOT consumed — no concrete cause with a single changeable
+variable exists (content withheld; the pinned preparation form is a design decision, not a defect; a
+same-config re-run would be the forbidden model-behavior retry; no case flag governs the script
+form). `background`: the ONE listed run consumed (formal trial); inconclusive on a new shape
+(fingerprint `a9d65bb2…`); the follow-up NOT consumed for the same reason. No other host was
+launched; the sidecar work launched none. Per §3 the recurring unknown-shape family is retained with
+its fingerprints and both cases stop here. The pre-existing OS-temporary
+`zcode-shell-wait-fixture-fHFp3c` scratch directory recorded in §13.5 was again found untouched and
+left in place; both of this task's fixtures were disposed by the driver.
+
+**2026-10-15 scope correction (superseded in scope by §13.10; everything above byte-unchanged).**
+The adjudication above is ACCURATE for the two cells this task actually scanned (noise fingerprint
+`38c33f61…`, background fingerprint `a9d65bb2…`; observer digest `b237a6e1…` — the post-gate
+instrument, the gate code having landed in commit `1fb30bd`). It must NOT be read as a family-wide
+conclusion: the five §13.4/§13.5 rescue-family cells were collected by the PRE-gate instrument
+(observer digest `e28ec619…` in every one of those records) and were never diagnostic-scanned — their
+`wholeBodyStatementMatch` is UNMEASURED — so the closing "only a privacy-authority decision or a
+host/form change" wording above is over-strong for them. A feasible defect class
+(whole-body-parseable, per-line-rejected shapes) is consistent with those cells' retained line/byte
+envelopes. The historical measured values, run ledger and original verdicts above remain the record
+unchanged; §13.10 states the corrected scope, the exact `wholeBodyStatementMatch` semantics, the
+irretraceable boundaries and the next-phase candidate.
+
+### 13.7 Follow-up campaign Task 5: Root Review, Adversarial Review and Status qualified separately (2026-10-13, installed 0.162.1) — adversarial-review-wait QUALIFIED end to end behind the corrected production-contract marker, status-wait QUALIFIED on the owned two-turn flow with the query deadline verified un-extended, review-wait `not-proven` on a confirmed early host exit traced with redacted bounded evidence; live Status-observation cancellation `not-proven` (no supported interaction reachable)
+
+Task 5 executed the plan's three listed live cases, exactly one run per case label, plus the no-launch
+work items (the renderer-contract comparison, the observation-cancellation survey and the controlled
+re-runs). One instrument correction preceded the runs (below — the plan's own ordering: "test the
+correct framing with existing renderer contracts before changing a probe marker"); no other code
+changed.
+
+**Pre-registered adjudication reading (fixed before any Task 5 live run).** The same convention as
+§13.6's table: **the PRE-RUN TIMING itself is not independently verifiable from retained artifacts —
+the records carry no timestamped pre-registration, so the "stated before the runs" claim rests on
+this section's recorded account alone.** The reading, per command:
+
+- **Pin rule (all cases).** Re-pin `realpath` of `command -v codex` + `--version` immediately before
+  EACH run; the §1.2.3/§13.4 pin was 0.162.1. A changed binary/version stops cross-version
+  comparison, repins, and records the boundary.
+- **Diagnostic-gate reading (all cases).** The Task 4 retention-only diagnostic gate is carried on
+  every run (zero behavioral delta — the §13.6 precedent; per-run structural fingerprints for free).
+  If an unclassified cell blocks a case, the Task 4 whitelist facts are read structurally only:
+  `wholeBodyStatementMatch: true` → demonstrated instrument defect → RED→GREEN whole-body fallback
+  and that case's single cause-directed follow-up (the correction is the only changed variable);
+  `false` with a recognizable supported head and an open-then-closed depth profile → a variant
+  outside the pinned grammars → NEITHER defect NOR nonadherence demonstrable under the retention
+  design; foreign statements / no observational tool references → departure shape, recorded, case
+  stops.
+- **review-wait qualifies ONLY on its own record:** exact Root observation linkage; exactly one
+  observed `invoke review` companion invocation; same-handle observation discipline; settled outer
+  continuations; terminal exit on the Root handle; every command-specific rendered result marker
+  present in the linked terminal output; the host NOT ended before the held completion boundary
+  (natural completion or the production timeout envelope); no non-natural process termination. Any
+  early host exit is adjudicated for its CONCRETE cause from redacted bounded evidence (timeline
+  facts, structural output facts, final-agent structural markers only — assistant text is never
+  evidence); an early exit never qualifies.
+- **adversarial-review-wait: the identical contract** with `invoke adversarial-review`. The R5
+  rendered-marker miss is pre-adjudicated as an instrument/dependency mismatch (demonstrated below
+  from the production modules); the live run tests the corrected framing. The correction must not
+  weaken any terminal/exit check and must not touch production output.
+- **status-wait qualifies ONLY if** `validateStatusWaitFlow` passes on the record (exactly one launch
+  acknowledgement with a reserved 64-hex job id extracted from observed TOOL OUTPUTS — never
+  assistant text; the queried id extracted from renderJob's `Job:` line or the confirmed
+  JOB_WAIT_TIMEOUT framing; launch session == query session; exact id match; explicit query timeout
+  120000) AND the root-family completion contract accepts either the rendered success markers or the
+  confirmed JOB_WAIT_TIMEOUT framing as the alternative set. The query-deadline expiry is the
+  EXPECTED terminal of this deadline-measurement trial — never labelled an early exit. Timeout
+  non-extension evidence: the query turn ends at the Status command's own 120000-ms production
+  deadline while the requested shell observation window stays 3600000 ms;
+  `requestedPollMs` and `requestedStatusQueryTimeoutMs` remain separate provenance fields. No
+  pre-reserved foreign-owner job, guessed id, assistant-reported result or unrelated final reply
+  substitutes for the acknowledgement/linked command.
+- **Observation cancellation (status-wait only).** Pre-registered survey reading: the V2
+  `interrupt_agent` handler rejects root targets ("root is not a spawned agent") and self targets
+  ("an agent cannot interrupt itself") at source `67727e7c` (`core/src/agent/control/interrupt.rs`
+  `interrupt_spawned_agent`), and its registry is the per-process in-process `LocalAgentControl`, so
+  no supported native interaction owns a Root session's own running observation; the app-server's
+  `turn/interrupt` is excluded by the standing rule and SIGINT is process-level, never assumed
+  observation-only. Expected outcome: live cancellation retained `not-proven`; the existing
+  AbortController wait-boundary test stays instrument-level. Only a run-discovered supported
+  interaction could change this.
+- **Follow-up discipline.** At most ONE cause-directed follow-up per case, spent only on a concrete
+  cause with a single changeable variable; a model-behavior recurrence with no governing case flag
+  consumes nothing (§13.4–§13.6 precedent); a recurring unknown shape after the bounded follow-up is
+  retained and that case stops.
+
+**The instrument correction (the only code change; the plan's demonstrated-defect path).** The
+Task 5 briefing ordered the renderer-contract comparison FIRST, and it demonstrated a probe-side
+instrument/dependency mismatch: for `review`/`adversarial-review` the production review pipeline
+NEVER renders the raw peer text — `scripts/lib/review.mjs` `extractFinalResult` validates the final
+turn against the findings schema (`schemas/review-output.schema.json`) and returns ONLY
+`JSON.stringify(structured, null, 2)` (a raw-text fallback throws `REVIEW_RESULT_INVALID`),
+`scripts/zcode-companion.mjs` returns the invoke output `{ job, result }`, and
+`scripts/lib/render.mjs` `renderOutput` prints `${result}\n` — while the fake peer's structured
+review payload is `{ findings: [] }` (`tests/fixtures/fake-zcode-cli.mjs`). Verified by executing
+the REAL production modules against the fake-peer payload: the rendered bytes are
+`{\n  "findings": []\n}\n\n` and the Rescue sentinel `ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C` appears in
+NO render path (not the structured success, not the error envelope, and markdown-escaped in any
+progress preview). This fully explains R5's adversarial-review-wait miss (`sentinelPresent: false`
+after a flow that completed end to end, §9.4): the probe's
+`resultMarkers: [PUBLIC_RESULT_SENTINEL]` was unsatisfiable for the review family by construction.
+TDD evidence (plan §3; skill-conformant): regression FIRST in the existing
+`root-family observer contract (R2)` section with its existing builders re-derived from the real
+production modules (`extractFinalResult` + `renderOutput` applied to the fake peer's payload — an
+independent source of truth, never the observer under test); RED shown as THREE failures for the
+expected reason (the new production-contract regression plus the two existing spec-binding pins:
+`review-wait marker "ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C" must appear in the production-rendered
+review output — false !== true`); the smallest research-only correction changed ONLY the two
+review-family `resultMarkers` (now `['"findings": []']`, the rendered empty-findings document line)
+and their `resultCheckLabel` basis (`tools/shell-wait-probe/driver.mjs`); GREEN with the full
+shell-wait suite at **451/451** (from 450 — one added regression), `tests/test-selection.test.mjs`
+6/6, and the focused selections re-run by exact command at this revision: the plan's Task 1 seam +
+privacy/ownership pattern `node --test --test-name-pattern='review adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction recording|root-family observer contract|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs` →
+**80/80** (6 suites), and the R3/background pattern `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs` →
+**25/25** (2 suites: 17 status-wait-owned-job + 8 background-placement; combined, the two patterns
+select **105/105** across 8 suites), `npm run lint`, `npm run typecheck`,
+`scripts/check-line-endings.mjs` and `git diff --check` clean. Correction: the originally cited
+`105/105` (attributed to the Task 1 seam + privacy/ownership selection) and `18/18` (R3/background)
+could not be reconstructed as stated — at this revision the Task 1 pattern alone selects 80 tests
+and no reconstructed R3/background pattern yields 18 — so both counts are corrected above to the
+exactly-reproducible selections (105 reproduces only as the combined eight-suite selection). No
+terminal/exit check moved, no
+production output changed, and the Status markers were already the production-contract set.
+
+**Re-pin before EACH run:** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL before all three runs; the pin never moved, so
+all three records share the §13.4–§13.6 comparable pin and no cross-version comparison was started.
+Worktree HEAD `1fb30bd…` — the fixture installed committed source at that pin; the working tree
+carried the uncommitted marker correction (both modified files: `driver.mjs`, the test file), and
+all three records carry the recomputed observer digest `562981ce…` (`working-tree-uncommitted`,
+`sourcesChangedDuringRun: false`) — distinct from §13.6's `b237a6e1…` BECAUSE the correction changed
+`driver.mjs` bytes; that is the expected, self-explained provenance delta. Per-run provenance per
+the Task 1 schema (all three runs): `codexVersion` "0.162.1", executing model `null` (never
+inferred), `requestedCapMs` 3600000 with `isolatedSetup.capVerified: true` (fixture-configuration
+retention, NOT propagation evidence), `requestedPollMs` 3600000,
+`requestedWorkerDurationMs`/`requestedBudgetMs` 130000/600000,
+`requestedStatusQueryTimeoutMs` 120000 (status-wait only; null elsewhere), `roleStatus: "ready"`,
+`setupAttempts: 2` (the fixture's documented normal bootstrap re-run), `fixtureVariant: "candidate"`,
+instruction artifacts with before/after sha256 + mode retained per record (the candidate
+waiting-paragraph edits applied to all three command Skills, hashes retained), `statusJob: null`
+even for status-wait — the fixture reserved NO job (the R3 design: the job is created inside the
+live host session). The diagnostic gate is recorded top-level in all three records
+(`unclassifiedStructuralDiagnostic: true`); NO unclassified blocking cell appeared in any of the
+three runs, so the whitelist reading above never came into play. Driver exit 0 in all three runs —
+execution/cleanup completed (`fixtureDisposed: true`, `cleanupComplete: true`, 0 errors), NOT that
+any case qualified.
+
+| Run | Case and flags | Retained record digest (sha256; private OS-temp dir) | Outcome |
+| --- | --- | --- | --- |
+| 1 | `review-wait`, plan flags (worker 130000, cap 3600000, poll 3600000, budget 600000) + the retention-only gate | `6ad5d85616900be392950ca7d6ad8ed658cd5c8487d63e1147e8d3c138e11eb9` (`…/tmp.MHGiyctREG`) | `executed`, **inconclusive — early host exit at 15214 ms** (host exit 0), the R5 shape CONFIRMED on 0.162.1; Root linkage `mode: "root"` (`rootThreadId 01a136e0-…`), launch 1, send 0, no poll ever; long-wait qualification **`not-proven`** with the concrete traced cause (below) |
+| 2 | `adversarial-review-wait`, same flags + the gate | `681c22a132f3c36f103d96eceeb1c82f58ce970caf22bd9c33ce47ddfbf4ef5d` (`…/tmp.lvM4qcEvrt`) | `executed`, **`inconclusive: null` — QUALIFIED**: the full R2 root-family contract held end to end on the corrected production-contract marker (below); natural completion, exit 0, no termination |
+| 3 | `status-wait`, same flags plus `--status-query-timeout-ms 120000` + the gate | `225b7614c3e09c77c6aafa3fa03dd2b18b378da40d8e604836a694fcf9ac734f` (`…/tmp.uQFGxIcAXr`) | `executed`, **`inconclusive: null` — QUALIFIED**: the owned two-turn flow validated (`statusQuery.validation.valid: true`) and the production query deadline fired un-extended (below); natural completion through the hold gate, host exit 0, no termination |
+
+**Run 1 — review-wait: the concrete early host exit, traced with redacted bounded evidence.** The
+model made exactly ONE observed tool call: the exact companion launch
+(`invoke review`, `yield_time_ms` 30000 — the candidate paragraph's directive-led initial yield;
+retained tool-call excerpt). The fake peer's app-server call log records **zero session sends**
+(`companionSendCount: 0`) — the review turn was never sent to the fake peer, so the completion gate
+(the mechanism that holds the peer's turn for the 130000-ms hold) was never consulted and the
+companion command reached its own terminal inside the initial 30000-ms yield. No live handle ever
+existed to observe: `pollWallTimesMs: []` (empty — no polls), `modelCalls: 1`,
+`observationDetectedAtElapsedMs: null`, no poll-start stamp. The host result resolved at
+**15214 ms** with exit 0; the model returned a 170-char final agent message (withheld — assistant
+text is never evidence; only presence and length recorded) and the turn ended naturally
+**114786 ms before** the 130000-ms hold boundary: `endedBeforeGate: true`, cleanup `early-exit`,
+`gateReleased: true`, `verifiedTerminated: false`, `codexTerminated: true` (the early-exit cleanup
+path's own terminate call — cleanup, never native interruption,
+`nativeInterruptionClaimed: false`), host exit 0. NOT adjudicable from retained facts: WHY the
+command produced no send — the command's own linked output was never captured (no terminal exit was
+attributable on the Root handle without a poll: `processExit: null`, `decisiveWallMs: null`, all
+`null`-with-cause, never zero), and the fake-peer call log beyond counts is not persisted. The shape
+matches R5's 0.161.0 record exactly (14477 ms, launch 1, send 0, §9.4) and is now CONFIRMED on
+0.162.1. **Verdict per the pre-registration: `not-proven`** — Root placement and the real
+`invoke review` entry are kept; no Rescue-shaped replacement; the follow-up was NOT consumed (no
+concrete cause with a single changeable probe-side variable: the command-side no-send behavior is
+production behavior no case flag governs; a same-config re-run would be the forbidden
+model-behavior retry; no instrument defect is demonstrable — the observer adjudicated the run
+honestly under the R2 contract).
+
+**Run 2 — adversarial-review-wait: QUALIFIED (`installed-observed`, 0.162.1) — the first qualified
+Root-family command.** Every contract field on the run's own record: exact Root observation linkage
+(`mode: "root"`, `rootThreadId 01a136e2-…`); exactly one companion invocation
+(`invoke adversarial-review`, launch 1, send 1 — the fake peer's review turn WAS sent); same-handle
+observation discipline (`originalHandleChecked: true`; ONE empty-input poll on the launch's own
+handle, `yield_time_ms` 3600000); settled outer continuations (`outerReturns: 0`, no unresolved
+continuation, `pendingInnerAtEnd: false`); terminal exit on the Root handle (`processExit: 0`); the
+command-specific rendered result markers present in the linked terminal output
+(`publicResultMatchedSentinel: true`, `terminalStdoutChecked: true` — the corrected
+`"findings": []` production-contract marker, i.e. the schema-validated structured findings document
+the review pipeline actually renders); the host did NOT end before the held completion boundary
+(`endedBeforeGate: false`, cleanup `observation`, `gateReleased: true`). One decisive observation:
+`decisiveWallMs: 97800` with its own tool-reported wall time retained (`pollWallTimesMs: [97800]`),
+`pollStartedAtElapsedMs: 47293`, hold deadline 144974, remaining lifetime 97681 ms (basis
+`hold-deadline-at-poll-start`), observation detected at 14974 ms; the held turn ran to the hold
+gate, the gate released, the command completed, and the host ended naturally at 151465 ms —
+`rootAcknowledgementAtElapsedMs: 151461`, host exit 0, `verifiedTerminated: false`,
+`codexTerminated: false` (NO process termination — natural completion), `interrupt.requested:
+false`. One ACTUAL extra intervention is recorded per the noise-case discipline: one pre-launch
+diagnostic `exec_command` (170-char withheld command content, retained as a suppressed bounded
+excerpt) — it did not substitute for the observation and did not block the case. **The decisive
+diagnosis of the R5-era finding is closed: the flow R5 recorded (98.1-s observation, launch/send/exit
+0) was a compliant flow all along; the marker the probe tested was the wrong dependency's contract.**
+The R5 `not-proven` verdict keeps its own scope; this run qualifies adversarial-review-wait's long
+wait on THIS pin only (one run; the repeat dimension is not claimed — no repeat was requested for
+Root commands).
+
+**Run 3 — status-wait: QUALIFIED (`installed-observed`, 0.162.1) on the owned two-turn flow, with
+the query deadline verified un-extended.** Every sub-fact on the run's own record:
+
+- **Owned acknowledgement (the R5-era miss, now closed):** turn 1 launched
+  `$zcode:review --background` inside the live host session; the launch acknowledgement was
+  extracted from observed TOOL OUTPUTS with exactly ONE distinct reserved job id
+  (`acknowledgementJobId 6a1db22c…`, `acknowledgementDistinctJobIdCount: 1`); the fixture reserved
+  NO foreign-owner job (`statusJob: null` — the job was created in-session, owner-correct by
+  construction); turn 2 resumed THAT SAME session (`launchSessionId == querySessionId ==
+  rootThreadId 01a136e5-…`) with the invocation built ONLY from the observed id
+  (`statusWaitInvocation`: `$zcode:status <id> --wait --timeout-ms 120000` — never guessed, never
+  assistant-reported); the queried id came back from the linked terminal output with exactly one
+  distinct id on the query side too. **`validateStatusWaitFlow`: `valid: true`** — same-session
+  ownership, exact id match, explicit 120000-ms query timeout.
+- **Timeout NOT extended by the requested shell observation window:** the query turn's Status
+  command observed with ONE empty-input poll requesting `yield_time_ms` 3600000 — and returned at
+  its OWN observed wall time of **87500 ms** (`pollWallTimesMs: [87500]`) because the command exited
+  at its own production deadline: `processExit: 1` (the production timeout category's exit code) with
+  the confirmed JOB_WAIT_TIMEOUT framing matched in the linked terminal output
+  (`publicResultMatchedSentinel: true` via the alternative query-deadline marker set;
+  `terminalStdoutChecked: true`). Timeline corroboration on one clock: the `invoke status` launch
+  was detected at 24605 ms and the command's terminal resolved at ≈144800 ms (24605 + 120000 = 144605
+  plus detection lag) — the 120000-ms production deadline fired; the 3600000-ms window never held the
+  observation. `requestedPollMs` 3600000 and `requestedStatusQueryTimeoutMs` 120000 remain separate
+  record fields.
+- **Natural completion / production timeout envelope / termination:** this case's EXPECTED terminal
+  is the deadline expiry — recorded as its own lifecycle outcome, never the generic early exit:
+  `endedBeforeGate: false`, cleanup `observation`, `gateReleased: true` (the held phase ran to its
+  130000-ms hold deadline, released the gate, and the query result joined naturally at 163445 ms;
+  host ended at 163451 ms, host exit 0), `verifiedTerminated: false`, `codexTerminated: false` —
+  NO process termination, `interrupt.requested: false`.
+- **Root Status observation cancellation is SEPARATE from Child interruption — live cancellation
+  `not-proven` retained.** The pre-registered survey was executed against the read-only source pin
+  `67727e7c` (clean, unchanged — re-verified): `interrupt_spawned_agent` rejects root targets and
+  self targets outright, and its registry is per-process, so NO supported native interaction can own
+  the Root session's own running Status observation; no run-discovered supported interaction
+  existed either (the run's flow contains exactly the launch and the one poll — `interrupt.callCount:
+  0`). The app-server `turn/interrupt` remains excluded by the standing rule and SIGINT is never
+  assumed observation-only. Live cancellation therefore stays **`not-proven`** with this precise
+  cause; the existing AbortController wait-boundary regression remains instrument-level evidence
+  only. The cancellation subcase does not reduce the flow qualification above: what IS proved is the
+  owned acknowledgement, the un-extended query deadline and the observation-only expiry framing.
+
+**Background Review/Adversarial stay enqueue-only — no live background run was launched for them.**
+The controlled timeout/ownership/result tests re-ran with expectations UNMODIFIED on the corrected
+tree: the full `node --test tests/shell-wait-probe.test.mjs` 451/451 (including the R3
+`status-wait owned-job setup and query-deadline separation` section — query-deadline expiry
+independent of job completion with the job staying held; the live case never requests the fixture
+reservation; queried-id extraction; invalid-flow inconclusive; explicit-timeout option accepted for
+status-wait only — and the background enqueue-only acknowledgement/lifecycle tests), the focused
+R3/background suites **25/25** via `node --test --test-name-pattern='status-wait owned-job setup and query-deadline separation|background placement flow and child-settlement lifecycle' tests/shell-wait-probe.test.mjs`
+(corrected from the unreproducible `18/18`, §13.7 above), `tests/test-selection.test.mjs` 6/6. No Root command's
+qualification is inferred from generic Root shell support or from another command's run: each of
+the three carries its own verdict above.
+
+**Instrument defect: exactly one, demonstrated and corrected (the marker mismatch above); nothing
+else changed.** The review-family marker correction is the plan's own anticipated framing ("a
+fixture marker mismatch can be an instrument/dependency mismatch"); it was implemented RED→GREEN in
+the existing section with existing builders, and the corrected framing is what the live
+adversarial-review run then exercised. No unclassified-cell parser change, no grammar expansion, no
+production output change, and no expectation was modified to manufacture the result: the terminal
+and exit checks (`processExit`, `terminalStdoutChecked`, same-handle discipline, settled
+continuations) are the unchanged R2 contract.
+
+**Run/follow-up allowance ledger.** `review-wait`: the ONE listed run consumed, inconclusive with
+the traced cause; the case's one cause-directed follow-up NOT consumed (no single changeable
+variable — see the verdict above). `adversarial-review-wait`: the ONE listed run consumed,
+QUALIFIED; no follow-up needed or spent. `status-wait`: the ONE listed run consumed, QUALIFIED; no
+follow-up needed or spent. The observation-cancellation subcase consumed NO run (a source-survey
+conclusion plus the run's own recorded `interrupt.callCount: 0`). No other host was launched (the
+renderer-contract comparison and the TDD cycle launched none). Per §3 each case label keeps its own
+verdict; failure of review-wait neither disqualifies nor qualifies the other two.
+
+### 13.8 Follow-up campaign Task 6: supported generic route, without weakening admission (2026-10-14, installed 0.162.1) — the trace closes the plan's unavailable branch: the host genuinely SUPPORTS the generic spawn shape, but it is NOT genuinely reachable under the host's ordinary capability conditions; no fixture seam, no live run, installed generic long-wait behavior stays `not-proven` with a precise structural cause
+
+Task 6 executed with NO host launch and NO code change. The work was the plan's trace item (production
+preflight + the pinned Codex source), the re-pin, non-authenticated installed-surface probes, and the
+reachability decision. Because the decision closed the unavailable branch, the plan's conditional seam
+and live-run items never became executable (below).
+
+**Re-pin (2026-10-14, before any probe).** `realpath` of `command -v codex` →
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.162.1-aarch64-apple-darwin/bin/codex`,
+`codex --version` → `codex-cli 0.162.1` — IDENTICAL to the §1.2.3/§13.4 pin, so no cross-version
+boundary arose and all §13.4–§13.7 records remain on one comparable pin. The Codex source checkout was
+re-verified: `67727e7cf114cf3e1b71db368d74b24e32f6cb12`, `git status --short` empty (clean), and every
+source fact below was read from that checkout (`git`-verified revision; read-only, nothing fetched,
+built, or edited). Source/binary mapping stays `not-proven` (§10): source facts and installed facts are
+recorded on separate surfaces and never merged into a mapping claim.
+
+**Trace, part 1 — the production preflight's actual named/generic selection (repository-text facts).**
+
+- The Rescue Skill's admission table (`skills/rescue/SKILL.md` L138–148) is the sole route authority
+  after a prepared `spawn` directive: **named spawn is PREFERRED when "the active `spawn_agent` tool
+  schema exposes `agent_type`"** (L126–135: the exact named call with `agent_type: 'zcode-rescue'`);
+  **the generic route is the mandated action ONLY for "The active tool schema omits `agent_type`"**
+  (row 1) or a **proven pre-child schema rejection of the `agent_type` FIELD** (row 2 — "unknown/
+  unrecognized/unsupported/reserved field/key/parameter `agent_type`", with proof no child started);
+  a **Role-VALUE rejection** (`zcode-rescue` unknown/unavailable/invalid) **fails closed with
+  `$zcode:setup` and must never use generic fallback** (row 3), and collision/timeout/ambiguity/any
+  returned agent ID is terminal (row 4). The generic shape itself is fixed (L150–173):
+  `spawn_agent({ task_name: prepared.route.taskName, fork_turns: 'none', no agent_type, message: the
+  fixed task-blind forwarder message with the one immutable launcher substitution })`. The same
+  assignment duality exists on the follow-up side (L118–124): a v2 directive's `assignment` selects the
+  named literal (`zcode-rescue`) or the complete fixed generic message (`default`), failing closed on
+  anything else.
+- The route planner (`marketplace/plugins/zcode/scripts/lib/rescue-route-planner.mjs`) recognizes BOTH
+  child classes: `classifyRescueChildHost` (L293–298) returns `'named'` for `agentRole === 'zcode-rescue'`,
+  **`'generic'` for `agentRole === null`**, and `'occupancy'` otherwise; the v2 follow-up directive
+  admits `assignment: 'zcode-rescue' | 'default'` (L212–215), and the persisted-binding validation maps
+  a discovered `agentRole === null` host to expected executor agentType `'default'` (L331–332). The
+  planner emits `spawn` directives only with a task name (L199–205) — the named/generic choice happens
+  in the Skill's schema negotiation, never in the planner.
+- The fixture already exercises the INSTRUCTION side of both routes: the candidate waiting paragraph is
+  applied to the named Role template AND the generic assignment skill (`tools/shell-wait-probe/
+  fixture.mjs` `applyVariantArtifacts`, the `generic-skill` artifact), recording before/after sha256 +
+  mode per record. That is the §7.3/§10 structural paragraph parity — `fixture-tested` only, and it
+  says nothing about which route a live host ever takes.
+
+**Trace, part 2 — the pinned host's supported spawn schema (source `67727e7c`, clean).**
+
+- **Schema exposure is a config function, not a model choice.** The V2 `spawn_agent` tool is built by
+  `create_spawn_agent_tool_v2` (`core/src/tools/handlers/multi_agents_spec.rs` L105–160): required =
+  `["task_name", "message"]`, `fork_turns` optional, and **`if !options.expose_agent_type {
+  properties.remove("agent_type") }`** (L120–122). `expose_agent_type` is set at registration
+  (`core/src/tools/spec_plan.rs` L1329, V2 branch of `add_collaboration_tools`) to
+  **`!turn_context.config.agent_roles.is_empty()`** — the schema exposes `agent_type` exactly when at
+  least one agent Role is configured. (`hide_spawn_agent_metadata`, whose pinned default is `true` —
+  `core/src/config/mod.rs` L1369 — affects only the V2 output schema/description guidance in this
+  branch; the property-removing helper `hide_spawn_agent_metadata_options` is called only by the V1
+  spec builder, L83–85.)
+- **The handler genuinely supports the generic shape.** `SpawnAgentArgs` parses
+  `{ message, task_name, agent_type: Option<String>, model, reasoning_effort, fork_turns,
+  fork_context }` with `#[serde(deny_unknown_fields)]` (`core/src/tools/handlers/multi_agents_v2/
+  spawn.rs` L262–269): `agent_type` is an OPTIONAL, parser-known field, so a no-`agent_type` call is
+  accepted (and even an unexposed-but-passed `agent_type` would not be field-rejected — schema hiding
+  is not argument rejection). `role_name` is the trimmed `agent_type` or `None` (L125–128).
+  `prepare_agent_spawn_config` (`core/src/agent/child_config.rs` L51–99) applies a role for a
+  `fork_turns: 'none'` spawn UNCONDITIONALLY (`!options.full_history_fork` → `apply_spawn_agent_role`),
+  resolving `None` to the built-in `DEFAULT_ROLE_NAME = "default"` (`core/src/agent/role.rs` L33,
+  L51–55; the built-in `default` role has `config_file: None` → no overrides → success). The child's
+  recorded spawn-source role stays `None` (and the child metadata `agentRole` therefore `null` — the
+  production `'generic'` class) unless the caller passed a role or the config ALSO defines a
+  user `default` role with a `config_file` (child_config.rs L87–98). **So on an ordinary plugin config
+  (which defines only `zcode-rescue`), the host's generic spawn shape would succeed and produce exactly
+  the child class the production planner classifies `'generic'` — the two surfaces correspond.**
+- **The two ordinary conditions are mutually exclusive BY CONSTRUCTION.** The Rescue flow can reach a
+  route decision ONLY after its Role preflight observes `ready` (`skills/rescue/SKILL.md` L50–54; the
+  probe fixture fail-closes otherwise — `fixture.mjs` L766–769 `the isolated Role preflight did not
+  reach ready`). That preflight inspects the managed registration `agents.zcode-rescue =
+  { description, config_file }` (`scripts/zcode-companion.mjs` L102–137 →
+  `inspectRescueRoleStatus` in `scripts/lib/codex-config.mjs` L67–82 →
+  `inspectManagedRescueRole`; written by setup via `expectedRegistration`,
+  `scripts/lib/managed-agent-role.mjs` L133/L663). **`agents.zcode-rescue` IS an `agent_roles` entry**
+  (config `[agents.zcode-rescue]`): the same registration that makes the preflight `ready` makes
+  `config.agent_roles` non-empty, which at the pinned source forces `expose_agent_type: true` and the
+  schema EXPOSES `agent_type`. Therefore: **with the Role installed (the only state in which the flow
+  ever reaches the route table), the schema exposes `agent_type` and the Skill's NAMED row is
+  mandatory; without the Role, the flow has already failed closed before any route decision exists.**
+  There is no reachable ordinary state in which the generic row's condition ("the active tool schema
+  omits `agent_type`") holds while a Rescue preparation is alive.
+
+**Trace, part 3 — installed-schema and preflight evidence (non-authenticated probes; no session, no
+turn, no host run launched).**
+
+- `codex features list` on the re-pinned binary: `multi_agent_v2 — stable — true` (and
+  `multi_agent — stable — true`): the V2 collaboration family is ACTIVE on the installed 0.162.1.
+- Live user config, read-only: `[agents.zcode-rescue]` present (config line 208) — `agent_roles` is
+  non-empty on the live machine; `[features.multi_agent_v2] enabled = true` with the two wait timeouts
+  (unchanged from §3.3); **no `[multi_agent_v2]` settings table exists** (so `hide_spawn_agent_metadata`
+  sits at its pinned default, which does not touch the V2 parameter properties — see part 2).
+- `codex debug prompt-input` (a local render of the model-visible input list; it starts no session):
+  the rendered developer context contains the V2 multi-agent collaboration framing and names the
+  namespaced recipient `functions.collaboration.spawn_agent` — consistent with the pinned V2
+  registration path (namespace default) — but this surface renders no tool JSON schemas, so the
+  installed schema's exact property list is not observable without a live turn. Recorded as a surface
+  limitation, not as absence of evidence.
+- Installed behavioral corroboration (historical, this campaign): every established route was named —
+  the probe's route detection reads `agent_type` from the observed `spawn_agent` call arguments
+  (`tools/shell-wait-probe/evidence.mjs` L2228), and Case B (§7.1), the R5 qualified runs (§7.7) all
+  recorded named spawns carrying `agent_type: 'zcode-rescue'`. The §13.7 root-family launches are
+  terminal-command based (`invoke review`/`invoke adversarial-review` via `exec_command`), so they add
+  no spawn-route evidence either way.
+
+**Decision (the plan's unavailable branch, executed).** The generic route is genuinely SUPPORTED by the
+host (optional schema-conditional field, accepted generic call shape, built-in default role resolution,
+and a child class the production planner recognizes), but it is NOT genuinely REACHABLE under the
+installed host's ordinary capability conditions: every state in which the Rescue flow can act exposes
+`agent_type` and mandates the named route, and every state that would omit `agent_type` fails closed
+before any preparation exists. The only ways to a generic observation would be (a) manufacturing an
+agent-role-free host — i.e. deleting the plugin's managed Role to dodge the very preflight the flow
+fail-closes on, a non-ordinary broken-install state and precisely "routing around a recognized Role
+state", which this plan forbids; (b) faking a named-Role rejection — forbidden; or (c) issuing the
+generic call anyway and hoping the host accepts an unexposed field — a forced run for a checkbox that
+would be model nonadherence by the Skill's own admission table, not qualification. None was attempted.
+**Consequently: no research-fixture seam was added** (the plan authorizes a seam only to exercise an
+admissible ordinary generic condition, which does not exist — and any seam able to reach generic would
+have to weaken the fixture's own fail-closed Role gate, production binding/assignment authority in
+research clothing), **no live run was launched**, and the exact admissible-condition/named-rejection
+negative RED→GREEN pair the plan requests for the seam case has no seam to pin. **Installed generic
+long-wait behavior remains `not-proven`** — now with this precise structural cause instead of merely
+"the model selected named".
+
+**Instrument defect: none.** No probe module, parser, or observer code is implicated in this outcome;
+no code changed anywhere (the report, the plan checkboxes, and nothing else differ from `afa26ba`).
+
+**Documentation-amendment gates (no .mjs/test changed, so lint/typecheck are not required by the
+convention and were not the gate).** `node --test tests/test-selection.test.mjs` → **6 tests / 6 pass /
+0 fail**; the Task 1 seam + privacy/ownership selection `node --test --test-name-pattern='review
+adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction
+recording|root-family observer contract|unsupported-call and final-message preparation privacy'
+tests/shell-wait-probe.test.mjs` → **80 tests / 80 pass / 0 fail / 0 skipped** (6 suites, the §13.1
+selection at its current count); `git diff --check` clean;
+`node scripts/check-line-endings.mjs` → LF verified in 534 tracked files. The FULL
+`node --test tests/shell-wait-probe.test.mjs` returned **451 tests / 449 pass / 2 fail / 0 skipped**,
+the 2 failures being EXACTLY the two real-builder fixture tests of the briefing's known environmental
+issue (`the real builder failure-path prune…` and `the real marketplace build and plugin install
+path…`), both dying inside the builder's `npm ci` with npm's own "Exit handler never called!" crash —
+**adjudicated environmental with fresh reproduction evidence**: the same manifests
+(`package.json` + `npm-shrinkwrap.json`, byte-identical to this tree) `npm ci` cleanly in 1 s under the
+real HOME, and crash with the identical npm error twice under an empty sandboxed `HOME` (the exact
+condition the fixture builder creates by design), with npm's debug log showing the crash inside
+tarball extraction under the sandbox cache; the probe code path is byte-identical to `afa26ba`, where
+§13.7 recorded this suite 451/451. Nothing about this task's outcome depends on those two builder
+tests (no fixture was built and no host launched).
+
+**Run/follow-up allowance ledger.** The generic qualification group's ONE listed run was deliberately
+NOT launched: its precondition (a genuinely reachable ordinary generic condition) is the precise thing
+this task adjudicated false, and per the plan the run must not be forced for a checkbox. No
+cause-directed follow-up was consumed (none exists — the cause is structural, not a changed variable);
+no diagnostic was consumed; no other host was launched. The §13.4–§13.7 pins and verdicts are untouched.
+
+### 13.9 Follow-up campaign Task 7 close-out (2026-10-14, plugin HEAD `a6771a4`; no host launch) — contract regression matrix and final clean-source `npm test` recorded, the environmental npm failures adjudicated with controlled reproduction, baseline diff and fixture cleanup verified, executed-case ledger and S1–S7/Q1–Q6 mapping closed, production scope ZERO changes
+
+Task 7 is documentation-only close-out: no host was launched, no `.mjs` or test file changed, and no new
+installed behavior is claimed anywhere in this section. The plan's Task 7 file ownership (this report's
+§§10/11 plus this dated section, and the plan's checkboxes/§5) was kept; the spec
+([2026-10-05 design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md)) was read, not
+edited.
+
+**Executing-tree provenance (recorded before the matrix).**
+
+| Fact | Value |
+| --- | --- |
+| Plugin source pin | `a6771a4e1b953da68445df7e9b2ef1ed2b4dad4f` — branch `docs/rescue-shell-wait-qualification-next`, HEAD "docs: probe the supported generic route without weakening admission (task 6)"; `git status --short` EMPTY at every recorded gate (the committed source IS the executing source — commit authority was explicitly granted for this branch and all implementation is committed) |
+| Executing observer digest | `562981ce8300c1a83ff3084b9fedebdbc5049459758aff1ef8c042f1a09c09ac` (`zcode-shell-wait-observer-v1`, the §12.5/§12.9 module-init construction, recomputed for this section) — IDENTICAL to §13.7's post-marker-correction digest: the §13.7 instrument correction is this branch's final instrument state, and the clean tree makes committed bytes = executing bytes |
+| Module sha256s (informational) | `evidence.mjs` `8b00ecf7d2d520f8c862988c24c8b2fb1feb35a97b7179b740ad8c4761ac2af2`; `driver.mjs` `b9f1a73d91f535c5272b82f6787f0fb0c6530988443d5c7efc838c2621c0e829`; `fixture.mjs` `8b93ecc8ab1237d3073fec611b1223d81f692adadcc7062a5ba36f9c76cc0335` — the fixture bytes never changed in this campaign (§1.2.3) |
+| Codex source checkout | `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (main), `git status --short` clean, re-verified 2026-10-14; read-only throughout; still proves no source/binary correspondence |
+
+**Contract regression matrix (exact commands, counts, skips, failures).**
+
+| Command | Result |
+| --- | --- |
+| `npm run test:shell-research` | **451 tests / 449 pass / 2 fail / 0 skipped** (46 suites). The 2 failures are EXACTLY the known real-builder fixture pair (`the real builder failure-path prune stays inside clone metadata and preserves shared registrations`, `the real marketplace build and plugin install path yields an installable isolated fixture`) — adjudicated ENVIRONMENTAL below; recorded as failures-with-cause, never silently green |
+| `node --test tests/test-selection.test.mjs` | **6 / 6 pass**, 0 skipped |
+| `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | **417 / 417 pass**, 0 skipped |
+| `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | **126 / 126 pass**, 0 skipped |
+| `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | **213 / 213 pass**, 0 skipped |
+| `npm run lint` | exit 0, clean |
+| `npm run typecheck` | exit 0, clean |
+| `node scripts/check-line-endings.mjs` | LF verified in 534 tracked files |
+| `git diff --check` | clean (exit 0) |
+| `git status --short` | EMPTY |
+
+Instrument-scope note: `git diff afa26ba..HEAD --stat -- tools/ tests/` is EMPTY — the shell-wait
+instrument and test bytes at this HEAD are byte-identical to the §13.7 tree where the same suite
+recorded **451/451**, so the two builder failures below cannot be an instrument or content regression.
+
+**Environmental adjudication: the two real-builder shell-research failures (fresh reproduction on this
+watch).** Both failures die inside the fixture's real marketplace-snapshot builder
+(`buildMarketplaceSnapshot`), at the builder's consumer-side `npm install` step
+(`scripts/build-marketplace-snapshot.mjs:175`), with the identical signature: the harness's own
+`ZCODE_PROCESS_TIMEOUT` at 120000 ms and `capturedOutputBytes: 0` — npm hung without emitting anything,
+npm's documented "Exit handler never called!" failure class. The builder runs under the fixture's
+BY-DESIGN isolated home (`HOME`/`USERPROFILE` pointed at a fixture-owned empty sandbox directory,
+`fixture.mjs`). Controlled reproduction for this close-out used byte-identical manifests
+(`package.json` + `npm-shrinkwrap.json` copied to OS temp), so the only variable in each pair is the
+HOME/cache environment:
+
+| Arm | Environment | Result |
+| --- | --- | --- |
+| Control | real HOME (warm cache) | `npm ci --ignore-scripts --no-audit --no-fund` exit 0, 185 packages, ≈1 s |
+| Experimental, twice | EMPTY sandboxed HOME (fresh cache), live registry | npm's own internal failure **"Exit handler never called!" both times** (70.2 s / 70.3 s); the npm debug log shows the run dying inside its fetch/extraction phase under the sandbox cache |
+| Experimental, seeded | sandboxed HOME with the npm cache pre-seeded from the warm cache, `--prefer-offline` | **exit 0**, 185 packages, ≈2 s — the sandboxed HOME itself is NOT fatal; the failures track npm's fetch/extract path under the changed HOME |
+
+Host-context facts recorded honestly: this host routes package traffic through a local proxy
+(`http(s)_proxy` = `127.0.0.1:7890` in the inherited environment), and that proxy was observed REFUSING
+connections during the reproduction window (a port probe was refused), which is why the two
+empty-sandbox arms' debug logs show `ECONNREFUSED` on registry fetches. The failing test run itself had
+progressed PAST the builder's `npm ci` and `npm pack` (both succeeded inside the fixture) before
+hanging at the consumer install, so the test-run hang is the same npm-internal zero-output failure
+class rather than the proxy refusal itself. The common adjudicated fact across the recorded occurrences
+of this npm-install failure family — enumerated explicitly so the count is reconstructible: §13.8's
+full-suite gate at this same HEAD (451 tests / 449 pass / 2 fail, EXACTLY this pair), this close-out's
+shell-research run (the second recorded suite run with this exact pair), the first `npm test` run's
+three npm-install tests, and the single-variable `package-install` experiment — is: npm malfunctions
+inside its own install machinery specifically under the fixture's by-design sandboxed-HOME condition on
+this host, every non-builder test passes regardless, and the identical instrument bytes recorded
+451/451 at §13.7 under a healthy host environment.
+
+**Verdict: ENVIRONMENTAL** — not an instrument, content or product regression; this is the SECOND
+recorded suite run in which exactly this pair failed inside the builder (after §13.8's gate), within
+the wider recorded npm-install failure family enumerated above. Reported as
+failures-with-cause; no test was retried out of the record and no expectation was relaxed.
+
+**Final `npm test` gate on clean exact source.** Commit authority WAS explicitly granted for this
+branch, all implementation is committed, and the tree is clean — so the fully committed source at HEAD
+`a6771a4` is the clean exact source, and no parking was needed for the IMPLEMENTATION. Three runs are
+recorded, in order:
+
+1. **First run, inherited host environment:** **3397 tests / 3391 pass / 3 fail / 3 skipped** (exit 1).
+   The 3 failures — `isolated Codex marketplace lists and installs the eight-skill snapshot`
+   (`tests/integration/marketplace-install.test.mjs:130`), `packed production install loads and locks
+   on Node 22.13` (`tests/integration/package-install.test.mjs:25`), `future writable-concurrency ADR
+   remains absent from real package and marketplace artifacts`
+   (`tests/release-contracts.test.mjs:281`) — are the SAME environmental npm family as the
+   shell-research pair: all three died as `ZCODE_PROCESS_TIMEOUT` at 120000 ms with
+   `capturedOutputBytes: 0`, two inside `buildMarketplaceSnapshot`'s consumer `npm install` step and
+   one inside the package-install test's own `npm install` step. None of the three test files is
+   touched by this branch (`git diff 41e5b0aa..HEAD --stat` over them is EMPTY).
+2. **Decisive single-variable experiment** (same committed source, same window): the identical
+   `package-install` test FAILS with the host's proxy environment and **PASSES 1/1 with the proxy
+   environment variables removed** (npm's direct egress works from this host) — isolating the host
+   package-transport environment, not the source, as the failing variable.
+3. **Full rerun with the proxy environment removed:** **3397 tests / 3393 pass / 1 fail / 3 skipped**.
+   The single remaining failure is `isolated Codex marketplace lists and installs the eight-skill
+   snapshot` failing in 31 ms with `Marketplace source tree must be clean, including tracked and
+   untracked files.` — the clean-tree marketplace check running against THIS TASK'S OWN uncommitted
+   close-out documentation edits, which were being written in the same worktree while that rerun
+   executed. That is the spec §2-documented execution-order artifact (the same shape as the
+   planning-session drafting failure recorded there), not a source or environment defect; every other
+   routine test passed in that run.
+4. **Definitive gate** (proxy environment removed AND the two close-out documentation files parked per
+   the spec §2 owned park-and-restore method — documentation only, all tested implementation present,
+   pre/post content hashes recorded and verified identical: report `c9b441b6…`, plan `a38380c8…`):
+   **exit 0 — 3397 tests / 3394 pass / 0 fail / 3 skipped, plus the marketplace snapshot 2/2 pass** —
+   exactly the planning baseline (**3397 tests / 3394 pass / 0 fail / 3 skipped** + marketplace
+   snapshot **2/2**; the 3 skips are the inherited opt-in E2E guards, not win32). The parked files
+   (exact paths `docs/qualification/rescue-shell-long-wait.md` and
+   `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`, sole occupants of stash entry
+   "task7 close-out docs park for clean-tree npm test") were restored immediately afterwards and their
+   restored bytes verified hash-identical. `test:mcp-research` and authenticated ordinary E2E were NOT
+   run — the plan forbids inventing them as a new routine gate.
+
+**Baseline diff and cleanup verification.**
+
+- `git diff 41e5b0aa24189903f77acb971931df6de04a170e..HEAD --stat -- skills/ agents/ scripts/ hooks/
+  .codex-plugin/ marketplace/ docs/superpowers/specs/` is **EMPTY** — no production, spec or
+  marketplace change anywhere on the branch.
+- The branch's TOTAL diff touches exactly five files: `docs/qualification/rescue-shell-long-wait.md`,
+  `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`,
+  `tools/shell-wait-probe/driver.mjs`, `tools/shell-wait-probe/evidence.mjs`,
+  `tests/shell-wait-probe.test.mjs`. `fixture.mjs` is untouched.
+- Fixture-owned cleanup: a scan of the OS temp roots (`/tmp`, `$TMPDIR`) found **ZERO** surviving
+  `zcode-shell-wait-fixture-*` directories (the fixture's mkdtemp prefix; the failed builder runs'
+  disposal guarantee held on the failure path) and **ZERO** surviving campaign case-output directories
+  (all ten §13.4–§13.7 private record directories are gone; §13.5's pre-existing
+  `zcode-shell-wait-fixture-fHFp3c` scratch is no longer present either) and no
+  `zcode-marketplace-build-*` leftovers. Nothing was deleted by this task.
+- Unrelated OS-temp scratch observed and left untouched, recorded basename-only per the plan's
+  preservation rule: `$TMPDIR/tmp.sKRbsPhH0o` (contains only a `package.json`; not campaign-owned), and
+  this task's own reproduction scratch under `/tmp/task7-*` (six directories and nine log/hash files —
+  known-temporary, disposable).
+
+**Executed case ledger (Tasks 2–6: every live run of the follow-up campaign, all on the single
+re-pinned 0.162.1 comparable pin of §1.2.3; Task 7 launched no host).**
+
+| Task | Case / group | Runs | Outcome | Cause-directed follow-up |
+| --- | --- | --- | --- | --- |
+| 2 | `rescue-long` UNRAISED (M control) | 1 | inconclusive `unsupported-call-shape`; M `not-proven` on this pin | NOT consumed (no concrete cause with a single changeable variable) |
+| 2 | `rescue-long` RAISED candidate | 1 | inconclusive, same family; `capVerified: true` is fixture-configuration retention only | (the comparable group's one follow-up left unspent) |
+| 2 | `rescue-repeat` | 1 | inconclusive, same family; no qualified raised run exists on this pin to repeat | not consumed |
+| 2 | `rescue-baseline` | 1 | inconclusive, same family; outer-return counts UNKNOWN, never zero | not consumed |
+| 3 | `rescue-interrupt` | 1 | inconclusive; the first parsed AND counted V2 interrupt interaction on this pin (`callCount: 1`, success-decoded `previous_status: "running"`); target suppressed, ordering unbound | NOT consumed |
+| 3 | `native-short-window-responsiveness-control` | **0 of 1** | deliberately NOT spent (no attributable `deliveryToSettlementMs` exists for it to serve) | n/a (separately named one-run group, no retry) |
+| 4 | `rescue-noise` (its initial run WAS the plan's bounded diagnostic, retention-only gate) | 1 | inconclusive; the family is STRUCTURALLY ADJUDICATED (a statement variant outside both pinned grammars; fingerprint `38c33f61…`) | NOT consumed |
+| 4 | `background` | 1 | inconclusive (fingerprint `a9d65bb2…`); budget-cleanup at 600010 ms; the settlement watch executed and never detected settlement; never labelled interruption | NOT consumed |
+| 5 | `review-wait` | 1 | inconclusive — the early host exit CONFIRMED and traced (launch 1 / send 0, no poll, host exit 0 at 15214 ms; the command-side no-send cause is production-scope) | NOT consumed |
+| 5 | `adversarial-review-wait` | 1 | **QUALIFIED** (`inconclusive: null`, §13.7) | none needed |
+| 5 | `status-wait` | 1 | **QUALIFIED** (`inconclusive: null`; query deadline verified un-extended, §13.7) | none needed |
+| 6 | generic qualification group | **0 of 1** | deliberately unspent — the precondition (a genuinely reachable ordinary generic condition) was adjudicated FALSE by the trace (§13.8) | none exists (structural cause) |
+| 7 | close-out | 0 host runs | this section (matrix, final gate, mapping, handoff) | n/a |
+
+Total: **10 live runs on one comparable pin**; every case-level cause-directed follow-up left
+deliberately unspent; both separately named one-run groups (`native-short-window-responsiveness-control`
+and the generic qualification group) left unspent. No case was retried out of the record.
+
+**S1–S7 / Q1–Q6 close-out mapping** (per-item label, version, scope and precise remaining cause; the
+historical rows of §11.1 stand unchanged as their own scope):
+
+| Spec item | Close-out state |
+| --- | --- |
+| S1 preparation, atomic binding, one-shot/resume authority | `fixture-tested` fail-closed seams (§12) plus the inherited controlled suites re-verified green in the matrix above (preparation/binding/route-planner 417/417); `installed-observed` named-route launch-1/send-1/original-handle linkage on 0.160.1 (§7.1) and 0.161.0 (§7.7); on 0.162.1 the Rescue-Child-side preparation/binding linkage is `not-proven` (blocked by the unclassified-cell family, §13.4), while the Root-family qualified runs re-observed the owned two-turn flow (§13.7). Production negatives unchanged (zero production diff, below) |
+| S2 one launch, original handle, empty observations, pending-cell ownership | `installed-observed` 0.161.0 (§7.7: one launch, one poll on the original handle, zero outer returns to natural completion); `fixture-tested` fail-closed observer (§12.4); 0.162.1 Root-family same-handle discipline observed in both qualified runs (§13.7); Rescue-Child pending-cell ownership on this pin `not-proven` (blocked) |
+| S3 exact public output, errors, choice/resume/control | inherited result/choice/error suites re-verified green (job-control + mcp-result 213/213); byte-exact sentinel with `processExit: 0` `installed-observed` 0.161.0 (§7.7); on 0.162.1 the production-contract rendered marker matched in adversarial-review-wait and the confirmed JOB_WAIT_TIMEOUT framing matched in status-wait (§13.7); Rescue-Child terminal-byte linkage on this pin `not-proven` (blocked) |
+| S4 placement matrix, background and Status observation-only | inherited placement suites green (matrix); background placement `not-proven` (R5 §7.7; 0.162.1 §13.6 — Root acknowledgement unattributable, budget-cleanup termination, settlement watch executed, never labelled interruption); Status observation-only behavior CONFIRMED on the qualified run's own record — the production 120000-ms query deadline fired UN-EXTENDED against the requested 3600000-ms observation window (`requestedPollMs`/`requestedStatusQueryTimeoutMs` remain separate record fields, §13.7); Review/Adversarial background enqueue-only re-verified by the controlled suites with no live background run |
+| S5 interruption, reconciliation/loss, deadlines and ceiling | inherited loss/timeout/ceiling suites re-verified green (lifecycle/reconciliation/relay 126/126; no literal 100-hour run); native interruption: delivery path `source-confirmed` (V2 `interrupt_agent`, registered unconditionally in the owning exec Root at `67727e7c`, §13.5 trace) with ONE parsed counted interaction retained on 0.162.1 (`callCount: 1`, success-decoded active `previous_status`), delivery/settlement `not-proven` (§13.5); live Status-observation cancellation `not-proven` (no supported native interaction exists at the pin, §13.7); budget cleanup never labelled interruption (§13.6) |
+| S6 named/generic alignment, no fallback weakening | named route `installed-observed` 0.160.1/0.161.0 (§7.1/§7.7); the generic spawn shape `source-confirmed` SUPPORTED at `67727e7c` yet PRECISELY UNAVAILABLE under ordinary capability conditions — mutually exclusive by construction (Role-preflight-ready ⇒ `agent_roles` non-empty ⇒ the V2 schema exposes `agent_type` ⇒ named is mandatory; the omitting state fails closed before any preparation exists, §13.8); parity guard unchanged; no fallback forced, faked or routed around |
+| S7 isolation, no production/canonical/config changes | VERIFIED at close-out (below): the production/spec/marketplace diff against `41e5b0aa` is EMPTY; the branch's total diff is the report + plan + `driver.mjs`/`evidence.mjs` + `tests/shell-wait-probe.test.mjs` only, with `fixture.mjs` untouched; zero surviving fixture/case-output temp dirs; no user config, cache or Codex-source change |
+| Q1/Q2 effective Child configuration and delivered instructions | configuration layers `source-confirmed` at `67727e7c` (§2); the installed Child's effective unraised cap M `not-proven` on 0.162.1 (§13.4 — the unclassified-cell blocker; the 0.161.0 bounded-but-imprecise state stands for its own pin, §7.7); delivered route instructions `installed-observed` named on 0.160.1/0.161.0 and `not-proven` on this pin (blocked); `capVerified: true` is fixture-configuration retention, never propagation evidence |
+| Q3 timing, discriminator, re-entry and repeat | M `not-proven` (0.162.1, §13.4); raised-cap propagation `not-proven` on this pin with the M + 30000 precondition UNEVALUABLE (the 0.161.0 POSITIVE-but-M-imprecise clue stands for its own pin, §7.7); repeat QUALIFIED on 0.161.0 ONLY (§7.7 — the 0.162.1 repeat run itself ended inconclusive); the current-version re-entry comparison NOT ESTABLISHED (unknown counts stay unknown, §13.4) |
+| Q4 noise, native interruption and sidecar latency | noise `not-proven` (the family shape-adjudicated to the retention design's limit, §13.6); native interruption delivery/settlement `not-proven` (§13.5); the sidecar structural policy `fixture-tested` and re-verified (162/162 + 76/76, §13.6; both suites re-green in the matrix), installed sidecar latency `not-proven` (no qualifying pending observation ever existed on this pin to steer) |
+| Q5 Root waiting Skills | `adversarial-review-wait` QUALIFIED (`installed-observed`, 0.162.1, single run, no repeat claimed — exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll, `processExit: 0`, the corrected production-contract marker matched, natural completion, no termination, §13.7); `status-wait` QUALIFIED (owned in-session acknowledgement → exact-id query, `validateStatusWaitFlow` `valid: true`, deadline un-extended; observation cancellation separately `not-proven`); `review-wait` `not-proven` (early exit confirmed and traced; launch 1/send 0; the command-side no-send cause is a production-scope question outside the probe). Each command carries its own verdict; none is inferred from another |
+| Q6 smallest supported/version-scoped next delta | CLOSED at this close-out: proposed production scope = **ZERO changes** (below); spec §8's positive-recommendation criteria are NOT met on this pin; a future campaign needs the cell-shape classification prerequisite plus a current-pin re-measurement; version scope recorded per pin (0.160.1 / 0.161.0 / 0.162.1), never merged |
+
+**Review-state record (honest, at close-out).** Tasks 1–4 closed with codex review gates at ZERO
+findings (final amended SHAs `3fa035a`, `67d327d`, `0e50444`, `1fb30bd`). Task 5 (`afa26ba`) and Task 6
+(`a6771a4`) carry clean self-reviews; their codex review gates are PENDING BACKFILL — the codex review
+service suffered four consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com
+connection failed + workspace routing discovery failed; review interrupted), accumulating backfill
+range `1fb30bd..a6771a4`. The whole-branch close-out codex review (the plan's independent Spec and
+Standards review item) is also pending on the same service recovery. A tooling outage is NOT authority
+to switch coding agents silently: this state is recorded as pending, never as passed, and no coding
+agent was switched.
+
+**Close-out independent Spec-and-Standards review: EXECUTED and recorded (2026-10-15).** A fresh
+reviewer within the established ZCode-subagent workflow — NOT a substitution for the codex gates —
+returned verdict FINDINGS with 4×P3 and zero P1/P2: spec conformance (scope/authority, coverage
+honesty, claim honesty, completion rules, bounded-execution ledger: 10 live runs) and standards
+(instrument discipline, docs conventions, commit hygiene, gates) otherwise CLEAN. The 3 fixable P3s
+were applied in the dedicated close-out fix commit `f536375` — no rebase, because this report cites
+exact SHAs as durable record (the attribution adjudication is that commit's body) — and the reviewer's
+narrow recheck returned CLEAN with zero collateral change. P3-4 — the retention-only diagnostic flag
+carried on Task 5's three formal runs — stands disclosed in §13.7 and is visible for the backfill
+review. This closes the plan's Task 7 item 5 (recorded at its checkbox). The codex backfill state is
+UNCHANGED and still pending: per-task gates for Task 5 (`afa26ba`), Task 6 (`a6771a4`) and Task 7
+(`5224a76` onward, including this verdict record) plus the whole-branch review — the accumulated
+backfill range now extends `1fb30bd..HEAD` — recorded pending, never passed.
+
+**Codex backfill review: EXECUTED and recorded (2026-10-15); both pending records above are
+RESOLVED.** After the host proxy (`127.0.0.1:7890`) was restored — the review service's outage
+ultimately totaling SIX consecutive connection failures (2026-10-14 14:26→17:23 local; the
+2026-10-14 records above captured the first four, 14:26→15:22) — the whole-branch codex review ran
+to completion: `codex review --base 41e5b0aa24189903f77acb971931df6de04a170e` over the full branch
+diff (`41e5b0aa..a1420f7`) returned ZERO findings ("No actionable regressions were identified").
+This single review serves as BOTH the whole-branch overall review AND the backfill for the pending
+per-task codex gates of Task 5 (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) —
+their commits are all inside the reviewed range. The reviewer's own sandbox run showed 4 test
+failures it attributed to its own sandbox permissions (npm cache access, process inspection),
+consistent with this section's environmental adjudication — which was then VERIFIED BY PREDICTION:
+with the proxy restored, `npm run test:shell-research` was re-run on HEAD `a1420f7` on 2026-10-15
+and returned **451 tests / 451 pass / 0 fail / 0 skipped** (46 suites, ≈29.5 s) — the two
+previously-failing real-builder fixture tests now pass, confirming the recorded verdict (the
+failures were the host's dead proxy + npm's install machinery under the fixture's sandboxed HOME,
+not instrument or product regressions). Review state complete: Tasks 1–4 per-task zero-finding gates
+plus Tasks 5–7 backfilled via the whole-branch zero-finding review — recorded as executed and
+passed, resolving (never silently replacing) the pending records above.
+
+**Proposed production scope: ZERO changes (decision handoff).** The campaign's positive recommendation
+criteria (spec §8: the actual Child route, a discriminating long observation and repeat, reduced
+re-entry, exact handle/terminal linkage, and observed native interruption/settlement) are NOT met on
+this pin — on 0.162.1 every measured managed-Rescue dimension is blocked by the single
+unclassified-cell prerequisite (§13.4–§13.6), and the two qualified Root commands do not carry the
+managed-Rescue recommendation. The current canonical remains the existing shell adapter and
+instructions; MCP remains in its prior recorded state; nothing is auto-promoted. A future campaign that
+could reopen the recommendation needs, minimally: (a) the unclassified-cell shape-classification
+prerequisite resolved — which requires content-level evidence via a privacy-authority decision outside
+the plan's authority, or a genuinely changed host/form (§13.6's adjudication limit; never a parser
+expansion) — and (b) re-measurement of M, raised-cap propagation, repeat, re-entry and native interrupt
+delivery/settlement on a current 0.162.x pin under that resolved prerequisite. Only after an explicit
+human adoption decision may a separate production-change plan be written.
+
+**2026-10-15 scope correction (superseded in scope by §13.10; everything above byte-unchanged).**
+The "(a)" prerequisite above restates §13.6's adjudication limit; as a statement about the blocked
+FAMILY it is over-strong — §13.6 adjudicated only the two cells its gate scanned, while the five
+§13.4/§13.5 rescue-family cells predate the gate (observer provenance `e28ec619…` vs `b237a6e1…`;
+the gate code landed in commit `1fb30bd`) and their `wholeBodyStatementMatch` is unmeasured and
+retroactively unmeasurable. §13.10 records the corrected boundary (including the exact
+`wholeBodyStatementMatch` semantics and the Path A next-phase candidate — not implemented, not run,
+no allowance reset) and §13.11 the 2026-10-15 read-only source re-investigation at source pin
+`dffa0deb…` (distinct from the executed campaign's `67727e7c…`; presence evidence only on the
+installed binary, no source/binary mapping). The production scope above (ZERO changes) is unchanged.
+
+**Temporary handoff (links).** Spec:
+[2026-10-05-rescue-shell-long-wait-design](../superpowers/specs/2026-10-05-rescue-shell-long-wait-design.md)
+(read-only; S1–S7, Q1–Q6, §8). Follow-up plan:
+[2026-10-13-rescue-shell-wait-follow-up](../superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md)
+(Tasks 1–7 checkboxes with recorded outcomes; §5 final review status). This report: §§1.2.3, 6.2, 7.7,
+10, 11.1–11.3 and 13.1–13.11. Historical execution ledger:
+[2026-10-05-rescue-shell-long-wait plan](../superpowers/plans/2026-10-05-rescue-shell-long-wait.md). Records: all ten live
+case records are OS-temporary and now gone (ledger above + §13.4–§13.7 tables are the durable
+summaries, as the plan intends); the campaign's durable review record is §11.3's gate/backfill state.
+
+### 13.10 Close-out amendment (2026-10-15): boundary-assessment scope correction — the §13.6 two-cell adjudication limit does not extrapolate to the five pre-gate rescue-family cells; `wholeBodyStatementMatch` semantics stated exactly; Path A recorded as a NEXT-PHASE CANDIDATE only (documentation-only; no host launch, no code change, no allowance change)
+
+This amendment incorporates a 2026-10-15 read-only feasibility assessment of the probe's call-shape
+recognition boundary. The assessment's own provenance: scratch experiments against the REAL
+instrument modules only (`evidence.mjs`/`driver.mjs` as committed at this HEAD), synthetic
+candidates only, no repository file modified, no withheld content reconstructed, no host launched,
+no user configuration read. This session verified the assessment's repo-side and checkout-side facts
+directly before recording them (worktree HEAD `a386b73`, clean; the Codex checkout facts in §13.11).
+The amendment changes no run record, no measured value, no verdict and no allowance; §13.6's and
+§13.9's original texts above stand byte-unchanged, each with a dated superseded-in-scope pointer.
+
+**The corrected conclusion scope.** §13.6's adjudication covered exactly TWO cells — the noise cell
+(fingerprint `38c33f61…`) and the background cell (fingerprint `a9d65bb2…`) — both scanned by the
+diagnostic gate (observer digest `b237a6e1…`; the gate code landed in commit `1fb30bd`, §13.6). The
+five §13.4/§13.5 rescue-family cells (§13.4 runs 1–4: `exec_command` cells of 3 lines/443 B,
+2/246, 4/336, 3/443; §13.5's run: 3/314 — all directive-less, content withheld) ran BEFORE the gate
+existed: every one of those records carries the pre-gate observer digest `e28ec619…`, so their
+`wholeBodyStatementMatch` is UNMEASURED. The assessment demonstrated — against the real modules —
+that shapes consistent with those five cells' retained line/byte envelopes exist on BOTH sides of
+the discriminator: defect-class members the module's own whole-body parser already accepts today
+(e.g. a pretty-printed two-line `const r` form, or a >16-line single statement — the line bound is
+splitter-only), and members outside both parsers. Line/byte facts do not discriminate. Therefore the
+family-wide reading "only a privacy-authority decision or a host/form change can move this" is
+OVER-STRONG for the five unmeasured cells; it remains correct for the two cells §13.6 actually
+adjudicated (their whitelisted structural facts cannot select among the constructible form classes,
+§13.6).
+
+**Irretraceable boundaries are preserved, not relaxed.** All raw records are deleted (§13.9's
+cleanup verification; §11.3); the withheld content of every historical cell is unresolvable without
+new evidence — and unresolvable PERIOD for the five historical cells. The synthetic examples in the
+assessment are FEASIBLE DEFECT CLASSES consistent with retained structural facts, NOT recovered
+historical calls. A future gated run adjudicates only the NEW cell it observes; it can never
+adjudicate the five historical flags retroactively. The model's shapes also varied run to run and
+case to case (§13.4's varying byte/line facts; §13.6's two distinct fingerprints), so a fresh run may
+show yet another shape or none at all.
+
+**`wholeBodyStatementMatch` semantics, exactly.** The flag is computed by
+`parseWrappedToolInput(raw)` (`tools/shell-wait-probe/evidence.mjs:284`) — the anchored WRAPPER+INLINE
+statement patterns ONLY, not the full `parseCallEvent`, which additionally tries
+`PREPARATION_PATTERN` and `ROOT_CONTROL_WRAPPER_PATTERN` first
+(`tools/shell-wait-probe/evidence.mjs:685,713`). Consequences, per the final assessment: TRUE proves
+a wrapper/inline-shaped, per-line-splitter-rejected cell — the pre-registered defect row (§13.6's
+table). FALSE rules out the wrapper/inline-form defect classes ONLY — it does NOT exclude shapes the
+existing `parseCallEvent` already accepts: demonstrated, a pretty-printed preparation with a LITERAL
+envelope is accepted whole-body via `PREPARATION_PATTERN` (its envelope group spans newlines) and
+reconstructs `chars` byte-identically to the pinned one-line form, while the flag records FALSE. Only
+for the confirmed `exec_command` family — precisely the five §13.4/§13.5 cells — does FALSE carry the
+narrowed exclusion "outside the whole-body grammar", because the preparation/root-control patterns
+match only `write_stdin` / `interrupt_agent`|`send_input` heads and have no `exec_command` path, so
+both FALSE readings coincide there.
+
+**Path A: a NEXT-PHASE CANDIDATE, nothing more.** The candidate is ONE gated diagnostic run
+(the existing `--unclassified-structural-diagnostic 1` retention-only gate; zero code change needed
+for the diagnostic itself) of one rescue-family case (e.g. `rescue-long`) on a re-pinned current
+binary, under a NEW plan delegation. `wholeBodyStatementMatch: true` → the campaign's own
+pre-registered defect row (§13.6's table) → only then consider the minimal RED→GREEN fallback below.
+FALSE → for an `exec_command` cell, that coincides with "outside the whole-body grammar" on that
+FRESH run, and the §13.6-style conservative adjudication holds for it. NOT implemented, NOT run in
+this close-out; no historical allowance is reset or silently reused — the `rescue-long` group's
+formally unspent follow-up remains unreachable inside the closed plan (§13.4's ledger), and a Path A
+run is a new plan's budget, recorded as such, with the binary re-pinned first (auto-update risk, §10).
+
+**Candidate fallback safety constraints (recorded so a future implementation cannot drift).** Any
+minimal fallback reuses the module's OWN parser (`parseCallEvent`) on the RAW body — directive
+INCLUDED, never pre-stripped; strip-then-parse is FORBIDDEN (it bypasses directive validation and
+silently drops a valid directive). It must preserve: directive validation and reattachment
+(invalid-directive cells keep rejecting exactly as today; a parsed directive is reattached to the
+returned statement so reconstruction/preparation semantics are unchanged); whole-body anchoring with
+hidden-trailing-statement rejection (the anchored patterns reject any cell with content beyond the
+one statement — no smuggling path); and all existing bounds. Honest coverage limit: the
+PREPARATION and ROOT_CONTROL branches match the unstripped input first and cannot match
+directive-prefixed input, so a raw-parse fallback would NOT admit directive-prefixed
+preparation/root-control cells — a fail-closed COVERAGE LIMITATION, not a safety problem; one branch
+does not cover all forms. NOT permitted in the candidate: unknown statements, skipping unparseable
+lines, trailing content after a statement, widening the tool alternation, trailing commas or unknown
+literal syntax, eval/Function/vm, any general interpreter — the spec's own boundary ("no general
+interpreter", spec §4/§7).
+
+**Review provenance (attribution kept precise).** The assessment carries its own recorded review
+chain — the assessor's boundary assessment; an independent double-adversarial verifier returning
+CONFIRMED-WITH-CORRECTIONS with four P3 findings, all fixed; then a read-only codex adversarial gate
+executed three times, converging to CORRECTIONS-ADEQUATE (65 assertions checked). These are
+ASSESSMENT-side records: this close-out session did not re-execute them and inherits them as
+recorded history only. The campaign's existing test and whole-branch reviews belong to their tested
+HEADs and reviewed range (§11.3 — the whole-branch review covered `41e5b0aa..a1420f7`, which does
+not include this amendment). This amendment's own verification is recorded as its own state in
+§11.3's dated note; any commit-level CI/review for the eventual doc commit will be recorded as its
+own. No result is reused across them.
+
+**Delivery boundary (unchanged).** Production recommendation: ZERO changes; canonical/config
+unchanged; spec untouched; no closed-plan task reopened. The two qualified Root observations (§13.7)
+and the Status-observation-cancellation `not-proven` keep their own boundaries — no extrapolation to
+all commands.
+
+### 13.11 Source re-investigation (2026-10-15, read-only, source pin `dffa0deb…`): the three wait layers are distinct, inheritance is config-real, the outer default is NOT new, and the genuine default change is `code_mode_interrupt` — presence evidence only on the installed binary; no source/binary mapping, no production change
+
+All claims in this section are `source-confirmed` at
+`dffa0deb69268ed4ac31578794c9ea897b336ae3` unless labelled otherwise; every citation reproduces as
+`git show dffa0deb69268ed4ac31578794c9ea897b336ae3:<path>` at the recorded line range. The user's
+Codex source checkout (`/Users/zhangzikai/Workspace/Codes/github/codex`; from this worktree
+`../../../codex`) was re-verified 2026-10-15: this NEW pin is DISTINCT from the executed campaign's
+pin `67727e7cf114cf3e1b71db368d74b24e32f6cb12` (2026-09-30), which remains the pin of §§2/3/13.5/13.8's
+`source-confirmed` records — both pins are recorded and never mixed. Read-only throughout: no fetch,
+build, test run, or edit; no user configuration was read. The installed CLI at investigation time was
+0.162.1 (the §1.2.3 pin); a read-only strings-level check found the three known configuration-name
+strings (`background_terminal_max_timeout`, `default_exec_yield_time_ms`, `code_mode_interrupt`) in
+the installed binary — PRESENCE EVIDENCE ONLY: no source/binary correspondence is claimed, no
+configuration is claimed effective, deployed or verified, installed interruption behavior is not
+claimed, and no token measurement exists anywhere in this section.
+
+**The three wait layers are DISTINCT — no single configuration is a universal switch.**
+
+| Layer | Mechanism at the pin | Limits that must be preserved |
+| --- | --- | --- |
+| Inner terminal observation (empty `write_stdin`) | Empty-input polls clamp to `[5000, manager cap]`; the manager cap resolves `background_terminal_max_timeout.unwrap_or(300000).max(5000)` (constants `MIN_EMPTY_YIELD_TIME_MS = 5000`, `DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300000` — `codex-rs/core/src/unified_exec/mod.rs:68-74`; clamp `codex-rs/core/src/unified_exec/process_manager.rs:1029-1043`; resolution `codex-rs/core/src/config/mod.rs:4027-4030`; TOML field `codex-rs/config/src/config_toml.rs:345-347`) | The cap is an UPPER BOUND — a long observation still requires an explicit long `yield_time_ms`; an omitted yield is ≈5000 ms (the argument's 250-ms default is clamped up — `codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs:23-32`). Non-empty writes stay ≤30000 ms and the first `exec_command` yield clamps to `[250, 30000]` ms (Windows floor 10000) regardless of config (`codex-rs/core/src/unified_exec/mod.rs:212-218`). Raising the cap alone lengthens nothing: the production Skill's 60000-ms window does not become an hour by raising the cap alone |
+| Outer code-mode cell | `features.code_mode.default_exec_yield_time_ms` (`codex-rs/features/src/feature_configs.rs:36-43`) is the wait filled into exec requests WITHOUT an explicit pragma — core default 30000 ms (`codex-rs/core/src/config/mod.rs:1200,1219`; resolution `:2778-2792`; filled via `get_or_insert`, `codex-rs/core/src/tools/code_mode/mod.rs:130-135`). The protocol's bare 10000-ms constants are NOT the effective core default (`codex-rs/code-mode-protocol/src/runtime.rs:15-16`). In the examined core-default paths there is NO fixed 30-second outer hard cap: the runtime applies `min()` only against a session-EXPLICIT `max_yield_time_ms` (`codex-rs/code-mode-runtime/src/service.rs:29,71,140,201`) | An explicit shorter `@exec` pragma wins over the configured default; an ALREADY-YIELDED cell's outer `wait` has its own independent 10000-ms default and does NOT read the exec default (`codex-rs/core/src/tools/code_mode/wait_handler.rs:30,37-39,134-141`); an active explicit yield, user input/preempt, resource limits, cancellation and REAL JS completion can each return earlier than any configured window (ordinary output buffers do not end the observation; only the `Result`-terminated completion path does — `codex-rs/core/src/tools/code_mode/execute_handler.rs:135,146-147`) |
+| Root-for-Child V2 wait | `features.multi_agent_v2.default_wait_timeout_ms` with min/max — source defaults 30000 / 10000 / 3600000 ms (`codex-rs/core/src/config/mod.rs:257-264`; struct `:1369`; validation `:3957-3992`); the V2 wait handler reads them from the per-turn config (`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:53`) | A Child's long wait says nothing about the Root not waking early: mailbox/user-input activity can wake the wait before the deadline (`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:213-220`). The machine's ACTUAL runtime configuration was NOT read this round — only source defaults are recorded |
+
+**Inheritance is config-real, not prompt-only.** The inner cap and the code-mode default reach the
+actual Child through the full parent effective-`Config` clone — `build_agent_shared_config` starts
+from `turn.config.clone()` (`codex-rs/core/src/agent/child_config.rs:110-164`; the same clone-based
+helper serves fresh spawn and resume) — and the Child session constructs its terminal manager and
+code-mode service from that config: `UnifiedExecProcessManager::new(config.background_terminal_max_timeout)`
+(`codex-rs/core/src/session/session.rs:1725-1732`) and `CodeModeService::new(…, &config.code_mode, …)`,
+which copies `default_exec_yield_time_ms` into the service field
+(`codex-rs/core/src/session/session.rs:1818-1823`; `codex-rs/core/src/tools/code_mode/mod.rs:86-103`).
+The two keys are NOT in the Role typed whitelist (`codex-rs/core/src/agent/role.rs:36-47`) — adding
+arbitrary fields to a Role file does not achieve a Role-scoped override. Loaded sessions do not
+hot-reload: an already-loaded Child is reused as-is, and an owner-validated reload builds a NEW
+Session from a fresh clone — a running service never picks up config-file edits automatically.
+
+**The outer default is NOT new.** It was introduced 2026-08-07 by
+`d0c8f422eaaa40b3927b43a0fff7e753e8514f34` ("Configure the default code-mode exec yield timeout
+(#37352)", 2026-08-07T01:41:54Z), which is an ancestor of the OLD pin `67727e7c…` (verified by
+merge-base), so the executed campaign's own source pin already contained it. Correct framing: a
+PREVIOUSLY UNDER-EXPLOITED/UNDER-VERIFIED entry point whose verification coverage should be filled
+in — never "the host only now supports long waits".
+
+**The genuine default change is interruption.** `72c959528ee4ca74abdb8575fbbc4e36960a8c47`
+(2026-10-07, "Enable code mode interruption by default (#51835)") flipped `code_mode_interrupt` from
+UnderDevelopment/default-false to Stable/default-true (`codex-rs/features/src/lib.rs:1197-1202` at
+`dffa0deb…`; the old pin records `Stage::UnderDevelopment` / `default_enabled: false` at
+`codex-rs/features/src/lib.rs:1103-1108`). Consequence chain at the new pin: the turn-abort path
+awaits `interrupt_active_cells()` when the abort reason is `Interrupted` AND the feature is enabled
+(`codex-rs/core/src/tasks/mod.rs:960-971`), which terminates each active code-mode cell
+(`codex-rs/core/src/tools/code_mode/mod.rs:164-178`) and cancels nested pending tool futures — so a
+native Interrupt, or an exact-Child `interrupt_agent`, need not wait out a long observation window.
+Boundaries that survive: this does NOT auto-clear the terminal process store (a cancelled poll future
+releases only its own process clone; the terminate-all path is the separate clean/shutdown route); it
+is NOT Companion-process stop, ZCode-job stop or durable settlement — the plugin's exact
+stop/reconciliation/no-collateral-cancellation contract still needs its own verification; and the
+interrupt tool's `previous_status` is a PRE-interruption status snapshot, not a completion
+confirmation (consistent with §13.5's recording).
+
+**Token framing (mechanism only; nothing measured).** The source turn loop awaits the drain of
+in-flight tool futures within one sampling (`codex-rs/core/src/session/turn.rs:2565,3280`) — there is
+no wall-clock re-sampling that restarts the model on a timer. Shortened observations that return to
+the model add repeat decision/sampling opportunities, so lengthened windows have a MECHANISTIC BASIS
+for fewer repeat samplings — and nothing more: no whole-task-zero-token claim, no infinite-wait
+claim, no percentage-savings claim.
+
+**Priority framing.** The 0.162.1 campaign's `unsupported-call-shape` outcome (§13.4–§13.6) was
+INSUFFICIENT EVIDENCE — it is not evidence that the host removed or lacks long-wait capability, and
+the shell route must not be concluded infeasible from the inconclusive. The sensible next sequence
+(as the source investigation itself recommends): first confirm the installed host's two-layer
+effective configuration and interruption capability, and resolve the probe recognition boundary
+(§13.10's Path A candidate); only then consider small-scale verification. This section authorizes no
+production Skill/Role/config change (spec S7; §13.10's delivery boundary).

@@ -2358,15 +2358,34 @@ if (process.env[selfTestGuard] === '1') {
     // The command-specific rendered success results, built here from the real
     // renderers' documented output shapes (scripts/lib/render.mjs renderOutput/
     // renderJob), NOT from the observer under test:
-    //  - review/adversarial-review: renderOutput returns `${value.result}\n…`
-    //    — the stored final result presented verbatim. Under the fixture the
-    //    fake peer's final public result is the documented sentinel, so the
-    //    rendered review output carries that sentinel (a NARROWER check; full
-    //    rendered-output equality is not claimed).
+    //  - review/adversarial-review: the companion's review pipeline
+    //    (scripts/lib/review.mjs extractFinalResult) validates the final
+    //    assistant turn against the findings schema and returns ONLY the
+    //    structured document (`JSON.stringify(structured, null, 2)`); the
+    //    invoke output is `{ job, result }` and renderOutput prints
+    //    `${result}\n`. The fake peer's structured review payload is
+    //    `{ findings: [] }` (tests/fixtures/fake-zcode-cli.mjs), so the
+    //    production-rendered review output is that document — the raw gate
+    //    text is never the rendered review result. The markers below are
+    //    derived from the REAL production modules applied to the fake peer's
+    //    payload (a NARROWER check; full rendered-output equality is not
+    //    claimed).
     //  - status: a single-job status view is renderJob's fixed field lines —
     //    `Job: `, `Command: `, `Status: `, … `Progress:` (also narrower).
     const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
-    const REVIEW_MARKERS = [SENTINEL];
+    const { extractFinalResult } = await import('../scripts/lib/review.mjs');
+    const { renderOutput } = await import('../scripts/lib/render.mjs');
+    const fakePeerReviewSnapshot = {
+      messages: [
+        { info: { messageId: 'message-user-current', sessionId: 'fake-session', role: 'user' }, parts: [{ type: 'text', text: 'hello' }] },
+        { info: { messageId: 'message-assistant-current', sessionId: 'fake-session', role: 'assistant', structured: { findings: [] } }, parts: [{ type: 'text', text: SENTINEL }] },
+      ],
+    };
+    const renderedReviewOutput = renderOutput({
+      job: { id: 'aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee', command: 'review', status: 'succeeded' },
+      result: extractFinalResult(fakePeerReviewSnapshot, 'review', {}),
+    });
+    const REVIEW_MARKERS = ['"findings": []'];
     const STATUS_JOB_ID = 'aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee';
     const renderedStatusOutput = [
       `Job: ${STATUS_JOB_ID}`,
@@ -2383,8 +2402,8 @@ if (process.env[selfTestGuard] === '1') {
     ].join('\n') + '\n';
     const STATUS_MARKERS = ['Job: ', 'Command: ', 'Status: ', 'Progress:'];
     const CASE_CONTRACTS = {
-      'review-wait': { command: REVIEW_COMMAND, terminalOutput: `${SENTINEL}\n`, markers: REVIEW_MARKERS, outerReturns: 1 },
-      'adversarial-review-wait': { command: ADVERSARIAL_REVIEW_COMMAND, terminalOutput: `${SENTINEL}\n`, markers: REVIEW_MARKERS, outerReturns: 1 },
+      'review-wait': { command: REVIEW_COMMAND, terminalOutput: renderedReviewOutput, markers: REVIEW_MARKERS, outerReturns: 1 },
+      'adversarial-review-wait': { command: ADVERSARIAL_REVIEW_COMMAND, terminalOutput: renderedReviewOutput, markers: REVIEW_MARKERS, outerReturns: 1 },
       'status-wait': { command: STATUS_COMMAND, terminalOutput: renderedStatusOutput, markers: STATUS_MARKERS, outerReturns: 2 },
     };
 
@@ -2673,6 +2692,28 @@ if (process.env[selfTestGuard] === '1') {
       // The Rescue family keeps its own contract unchanged.
       assert.equal(SHELL_WAIT_CASE_SPECS['rescue-long'].family, 'rescue');
       assert.equal(SHELL_WAIT_CASE_SPECS['rescue-long'].companionCommand, undefined);
+    });
+
+    test('review/adversarial-review markers follow the production renderer contract: the schema-validated findings render, never the fake-peer gate text', () => {
+      // The R5 adversarial-review run completed the whole flow (launch/send/
+      // 98.1-s observation/exit 0) and failed ONLY the marker check: the probe
+      // pinned the Rescue fake-peer sentinel, but the production review
+      // pipeline never renders the raw peer text — extractFinalResult validates
+      // the final turn against the findings schema and renders ONLY the
+      // structured document, and renderOutput prints `${result}\n` for the
+      // `{ job, result }` invoke output. The expected bytes here come from the
+      // REAL production modules applied to the fake peer's review payload (the
+      // section's renderedReviewOutput builder), an independent source of
+      // truth — never from the observer under test.
+      assert.equal(renderedReviewOutput.includes(SENTINEL), false, 'the production review render never carries the fake-peer gate text');
+      assert.match(renderedReviewOutput, /"findings": \[\]/u);
+      for (const label of ['review-wait', 'adversarial-review-wait']) {
+        const markers = SHELL_WAIT_CASE_SPECS[label].resultMarkers ?? [];
+        assert.ok(markers.length > 0, `${label} binds command-specific rendered result markers`);
+        for (const marker of markers) {
+          assert.equal(renderedReviewOutput.includes(marker), true, `${label} marker ${JSON.stringify(marker)} must appear in the production-rendered review output`);
+        }
+      }
     });
 
     test('the live evidence request selects the Root contract for root-family cases and the Rescue sentinel for Rescue cases', () => {
@@ -3528,6 +3569,248 @@ if (process.env[selfTestGuard] === '1') {
       const unsupportedSerialized = JSON.stringify({ evidence: unsupportedEvidence, facts: unsupportedFacts });
       for (const canary of [CANARY_TASK, CANARY_PIN, CANARY_ECHO]) {
         assert.equal(unsupportedSerialized.includes(canary), false, `the unsupported path must never retain ${canary}`);
+      }
+    });
+  });
+
+  describe('unclassified-cell structural diagnostic (bounded whitelist, research gate)', async () => {
+    // The 2026-10-13 follow-up plan's Task 4 bounded-diagnostic mechanism: a
+    // privacy-suppressed `unsupported-call-shape` cell cannot be adjudicated
+    // from the default excerpt facts (tool name, line count, bytes, directive
+    // absence). This gate extends the excerpt ONLY when the caller explicitly
+    // enables `unclassifiedStructuralDiagnostic`, retaining instrument-
+    // constructed structural facts and never raw content. Default retention
+    // must stay byte-identical.
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { parseShellWaitArguments, runShellWaitCase, shellWaitEvidenceRequest } = await import('../tools/shell-wait-probe/driver.mjs');
+
+    const PARENT = 'diag-parent';
+    const CHILD = 'diag-child';
+    const AGENT_PATH = '/root/diag_task_1';
+    const LAUNCHER = 'node "/installed/diag/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    // Synthetic canaries invented for these regressions: ANY occurrence in the
+    // returned evidence is a privacy leak by construction.
+    const CANARY_TASK = 'CANARY-DIAG-TASK-8F3K';
+    const CANARY_ARGS = 'CANARY-DIAG-ARGS-2M9Q';
+
+    const meta = (id, extra = {}) => ({ type: 'session_meta', payload: { id, ...extra } });
+    const childMeta = () => meta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+    const scriptCell = (callId, input) => ({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } });
+    const evidenceInput = (rollouts, overrides = {}) => ({
+      rollouts,
+      zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+      command: LAUNCHER,
+      publicResult: SENTINEL,
+      workerStillAliveAfterObservation: false,
+      redactions: [],
+      ...overrides,
+    });
+
+    // A GRAMMAR-VALID single wrapped statement spread over multiple content
+    // lines (pretty-printed arguments, the pinned `text(JSON.stringify(r))`
+    // tail — INDENTED, so the diagnostic's prefix class must match the TRIMMED
+    // line exactly like the per-line splitter it probes): the module's own
+    // single-statement parser accepts this whole body while the per-line cell
+    // splitter rejects every line. The diagnostic's whole-body probe must
+    // expose exactly this inconsistency.
+    const multiLineWrapperBody = [
+      'const r = await tools.exec_command({',
+      `  "cmd": ${JSON.stringify(LAUNCHER)},`,
+      '  "yield_time_ms": 3600000',
+      '});',
+      '  text(JSON.stringify(r))',
+      '',
+    ].join('\n');
+
+    test('default retention invariance: without the gate the unclassified excerpt keeps exactly the pinned fact set and no diagnostic', () => {
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', multiLineWrapperBody)]];
+      const result = inspectShellWaitEvidence(evidenceInput(rollouts));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.deepEqual(Object.keys(excerpt).sort(), [
+        'bodyType', 'classification', 'directiveKeys', 'directivePresent',
+        'inputBytes', 'inputLines', 'suppressed', 'tool', 'withheldDirectiveKeys',
+      ], 'the default excerpt fact set is pinned; the diagnostic must not appear without the gate');
+      assert.equal(excerpt.tool, 'exec_command');
+      assert.equal(excerpt.directivePresent, false);
+    });
+
+    test('with the gate the excerpt adds bounded structural facts that expose a grammar-valid multi-line single statement', () => {
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', multiLineWrapperBody)]];
+      const result = inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: true }));
+      assert.equal(result.status, 'inconclusive', 'the diagnostic enriches the excerpt; it never changes the fail-closed verdict');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.ok(excerpt.diagnostic, 'the gated excerpt carries the diagnostic facts');
+      // The whole-body single-statement probe uses the module's OWN existing
+      // wrapper grammar: true here proves the cell is a supported-shape
+      // statement that only the per-line splitter rejects.
+      assert.equal(excerpt.diagnostic.wholeBodyStatementMatch, true);
+      // Recurrence fingerprint: the digest of the withheld body, computed here
+      // independently from the known literal.
+      assert.equal(excerpt.diagnostic.sha256, createHash('sha256').update(multiLineWrapperBody, 'utf8').digest('hex'));
+      // Per-content-line facts: fixed-token prefix classes, bracket-depth
+      // counters, a terminator flag, allowlisted tool names only.
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.prefix), [
+        'const-r-await', 'other', 'other', 'other', 'text(',
+      ]);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.braceDepthEnd), [2, 2, 2, 0, 0]);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.endsWithSemicolon), [false, false, false, true, false]);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.tools), [
+        ['exec_command'], [], [], [], [],
+      ]);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.line), [1, 2, 3, 4, 5]);
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(LAUNCHER), false, 'the launcher command content must stay withheld even with the gate on');
+      assert.equal(serialized.includes('3600000'), false, 'no numeric argument value may leak through the diagnostic facts');
+    });
+
+    test('with the gate a real newline inside a string literal splits the statement and the facts stay content-free', () => {
+      const body = `text(await tools.exec_command({cmd:'${CANARY_ARGS}\nsecond half'}));\n`;
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
+      const result = inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: true }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      // inputLines is the pinned raw split-segment count (a trailing newline
+      // adds one empty segment); the diagnostic lists the 2 CONTENT lines.
+      assert.equal(excerpt.inputLines, 3);
+      // Pinned probe behavior: the whole-body JS-literal fallback normalizes
+      // quotes but a raw newline inside a string literal cannot survive
+      // JSON.parse, so this shape is NOT a whole-body statement match — the
+      // per-line facts are what expose the split (a wrapper head opening three
+      // brackets that only close on the next line). This distinguishes the
+      // string-split shape from a pretty-printed pinned-tail wrapper, whose
+      // whole-body probe IS true.
+      assert.equal(excerpt.diagnostic.wholeBodyStatementMatch, false);
+      assert.equal(excerpt.diagnostic.lines.length, 2);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.prefix), ['text-await-tools', 'other']);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.braceDepthEnd), [3, 0]);
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_ARGS), false, 'the private string content must never survive the diagnostic facts');
+      assert.equal(serialized.includes('second half'), false, 'continuation-line content must never survive');
+      assert.equal(excerpt.diagnostic.sha256, createHash('sha256').update(body, 'utf8').digest('hex'));
+    });
+
+    test('with the gate a directive-bearing cell keeps wholeBodyStatementMatch false and the digest covers the RAW body including the directive', () => {
+      // The leading sanctioned directive makes raw differ from the
+      // directive-stripped source the line enumeration sees, so the pinned
+      // digest discriminates WHICH bytes are hashed. The raw digest below is a
+      // HAND-WORKED precomputed value (sha256 of the exact literal above),
+      // independent of the implementation's hashing construction; the stripped
+      // digest is computed independently from the separately written
+      // directive-free literal.
+      const directiveLine = '// @exec: {"yield_time_ms": 3600000}\n';
+      const statementPart = `const r = await tools.exec_command({cmd:${JSON.stringify(LAUNCHER)}}); text(JSON.stringify(r));\nconsole.log("${CANARY_TASK}");\n`;
+      const body = `${directiveLine}${statementPart}`;
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
+      const result = inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: true }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      // The directive itself stays a top-level structural fact; the diagnostic
+      // enumerates the content lines BELOW it (directive stripped).
+      assert.equal(excerpt.directivePresent, true);
+      assert.deepEqual(excerpt.directiveKeys, ['yield_time_ms']);
+      assert.equal(excerpt.inputLines, 4, 'four raw segments: directive, two statements, trailing newline');
+      assert.equal(excerpt.diagnostic.wholeBodyStatementMatch, false, 'two statements are not a single-statement grammar match');
+      assert.equal(excerpt.diagnostic.lines.length, 2);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.prefix), ['const-r-await', 'other']);
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.line), [1, 2], 'positions within the directive-stripped source');
+      assert.deepEqual(excerpt.diagnostic.lines.map((entry) => entry.braceDepthEnd), [0, 0]);
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_TASK), false, 'the canary must never survive the diagnostic facts');
+      // RAW-vs-SOURCE discrimination: the digest covers the whole raw body
+      // INCLUDING the directive, never the directive-stripped source.
+      const strippedSource = statementPart;
+      assert.equal(excerpt.diagnostic.sha256, 'fa6e43fab520ebc6f6a6fd64cc27a4c5eeec68d529be52ae384aead472e53730',
+        'the hand-worked raw digest (directive included)');
+      assert.notEqual(excerpt.diagnostic.sha256, createHash('sha256').update(strippedSource, 'utf8').digest('hex'),
+        'the directive-stripped source is NOT what is hashed');
+    });
+
+    test('with the gate a many-line cell stays within the excerpt budget: the JSON stays parseable and the digest plus omission count survive', () => {
+      // Reviewer-reproduced defect shape: sixteen supported inline-wrapper
+      // lines plus one unsupported statement carry line facts whose serialized
+      // diagnostic exceeds MAX_EXCERPT_CHARS. The excerpt must NEVER truncate
+      // mid-JSON: the serialized facts stay within the existing budget, the
+      // recurrence fingerprint and the withheld-line count survive, and the
+      // dropped line facts are counted into withheldLines.
+      const body = `${Array.from({ length: 16 }, () => 'text(await tools.exec_command({cmd:"x"}));').join('\n')}\nconsole.log("${CANARY_TASK}");\n`;
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
+      const result = inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: true }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = result.inconclusive.excerpt;
+      assert.equal(excerpt.truncated, false, 'the excerpt must never be truncated mid-JSON');
+      assert.equal(excerpt.text.length <= 2048, true, 'the serialized facts must respect the existing excerpt budget');
+      const parsed = JSON.parse(excerpt.text);
+      assert.match(parsed.diagnostic.sha256, /^[0-9a-f]{64}$/u, 'the recurrence fingerprint must survive any budget trimming');
+      assert.equal(parsed.diagnostic.sha256, createHash('sha256').update(body, 'utf8').digest('hex'));
+      assert.equal(parsed.diagnostic.lines.length < 16, true, 'line facts must be dropped before the budget is exceeded');
+      assert.equal(parsed.diagnostic.withheldLines >= 1, true, 'every dropped line fact must be counted as withheld');
+      assert.equal(JSON.stringify(result).includes(CANARY_TASK), false, 'the canary must never survive the diagnostic facts');
+    });
+
+    test('the driver CLI accepts --unclassified-structural-diagnostic only with the value 1 and defaults to false', () => {
+      const base = ['--case', 'rescue-noise', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+      assert.equal(parseShellWaitArguments([...base, '--unclassified-structural-diagnostic', '1']).unclassifiedStructuralDiagnostic, true);
+      assert.equal(parseShellWaitArguments(base).unclassifiedStructuralDiagnostic, false);
+      for (const bad of ['0', 'true', '', 'on']) {
+        assert.throws(() => parseShellWaitArguments([...base, '--unclassified-structural-diagnostic', bad]),
+          `the value ${JSON.stringify(bad)} must be refused`);
+      }
+      assert.throws(() => parseShellWaitArguments([...base, '--unclassified-structural-diagnostic', '1', '--unclassified-structural-diagnostic', '1']),
+        'a duplicate diagnostic flag must be refused');
+    });
+
+    test('the validated case input and the record carry the gate only when explicitly enabled', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-diag-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const base = {
+        case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+      };
+      const fixture = {
+        workspace: '/private/tmp/diag-ws', codexHome: '/private/tmp/diag-home',
+        installedRoot: '/private/tmp/diag-installed', env: { HOME: '/private/tmp/diag-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      let seenInput;
+      const record = await runShellWaitCase({ ...base, output: root, unclassifiedStructuralDiagnostic: true }, {
+        createFixture: async () => fixture,
+        executeLiveCase: async (request) => {
+          seenInput = request.input;
+          return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+        },
+      });
+      assert.equal(seenInput.unclassifiedStructuralDiagnostic, true, 'the live executor must receive the gate on the diagnostic run');
+      assert.equal(record.unclassifiedStructuralDiagnostic, true, 'the persisted record must name the single changed variable');
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-diag-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plainRecord = await runShellWaitCase({ ...base, output: plainRoot }, {
+        createFixture: async () => fixture,
+        executeLiveCase: async (request) => {
+          seenInput = request.input;
+          return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+        },
+      });
+      assert.equal(seenInput.unclassifiedStructuralDiagnostic, false, 'the live executor must see the default-off gate');
+      assert.equal(Object.hasOwn(plainRecord, 'unclassifiedStructuralDiagnostic'), false, 'default records stay byte-compatible with the pinned schema');
+    });
+
+    test('shellWaitEvidenceRequest stays gate-free; the evidence input validation refuses a non-boolean gate', () => {
+      const request = shellWaitEvidenceRequest({ case: 'rescue-noise', command: LAUNCHER, rollouts: [], zcodeCalls: [], pollMs: 3_600_000, workerDurationMs: 130_000, workerStillAliveAfterObservation: false });
+      assert.equal(Object.hasOwn(request, 'unclassifiedStructuralDiagnostic'), false);
+      const rollouts = [[meta(PARENT)], [childMeta(), scriptCell('cell-1', multiLineWrapperBody)]];
+      // The module's optional-input convention treats null as absent (like
+      // publicResultMarkers); any other non-boolean value is refused.
+      for (const bad of [1, 'yes', '1', []]) {
+        assert.throws(() => inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: bad })),
+          'a non-boolean diagnostic gate must be refused');
       }
     });
   });

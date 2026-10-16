@@ -1,0 +1,528 @@
+# Shell Long-Wait Follow-up Qualification Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to execute this plan task-by-task after user delegation. Independent read-only review is required before close-out. Steps use checkbox syntax. This document is a qualification plan, not authorization to ship a new wait policy.
+
+**Goal:** Resolve the remaining shell long-wait qualification questions under the unchanged spec, preserving every binding, lifecycle, result and placement requirement.
+
+**Architecture:** Reuse the merged shell-only driver, fixture and fail-closed observer. Pin one installed host per comparable case group, retain poll-owned timing and exact interruption evidence, and make only cause-directed changes to isolated research tooling when a measured gap requires them. Production entry points and user configuration remain untouched.
+
+**Tech Stack:** Node.js ESM and `node:test`; installed Codex CLI; read-only Codex Rust source; existing production Companion with a harmless fake ZCode dependency in disposable workspaces.
+
+---
+
+## 1. Authority, location and scope
+
+- Unchanged authority: [2026-10-05 spec](../specs/2026-10-05-rescue-shell-long-wait-design.md), especially S1–S7, Q1–Q6 and §8. Do not edit the spec to fit an unsuccessful measurement.
+- Prior executed plan: [2026-10-05 plan](2026-10-05-rescue-shell-long-wait.md); it is a historical execution ledger, not instructions to rerun R0–R5.
+- Retained findings and remaining causes: [qualification report](../../qualification/rescue-shell-long-wait.md), §§7.7, 10, 11.2 and 12.8. Read these before attempting a case.
+- PR [#66](https://github.com/vitry/zcode-plugin-codex/pull/66) is merged. New baseline: `41e5b0aa24189903f77acb971931df6de04a170e`.
+- Branch: `docs/rescue-shell-wait-qualification-next`.
+- Worktree: `/Users/zhangzikai/Workspace/Codes/github/zcode-plugin-codex/.worktrees/rescue-shell-wait-qualification-next`.
+- Codex source: `/Users/zhangzikai/Workspace/Codes/github/codex`, or `../../../codex` from this worktree. This is NOT the plugin's `.codex` configuration directory. Record its revision/dirty state, inspect pinned files with `git show`, and do not fetch/build/edit that repository as part of a probe.
+
+The current request authorizes drafting and independently reviewing this plan only. Execution needs a later user delegation. Execution delegation permits bounded harmless qualification and necessary research-only instrument corrections, not production changes, user cache/config edits, new adapters, commit/push/PR/merge or automatic promotion. Commit authority must be explicit; do not commit merely to satisfy a clean-tree test.
+
+Keep the original 100-hour safety ceiling, configured operation deadlines, one-shot private preparation, atomic binding and exact-child resume unchanged. Empty terminal observations do NOT prohibit the separate private preparation write. No six-hour ceiling, inactivity detector, MCP reopening, hidden polling script or Codex fork.
+
+## 2. What is already proved, and what is not
+
+| Dimension | Prior evidence | Follow-up responsibility |
+| --- | --- | --- |
+| Named managed Rescue long wait | Installed 0.160.1/0.161.0: exact route/handle, one launch/send, terminal exit and byte-exact sentinel; fresh 0.161.0 Case B/repeat each 388.3 s with zero outer waiting returns on distinct Children | Preserve these historical facts. Revalidate only the necessary current-version comparison group, not every prior trial |
+| Default/unraised cap M | A nonterminal return was observed; exact duration was not retained. `85000` is a terminal poll, NOT M | Measure the actual nonterminal original-handle poll; close the numeric discriminator only with attributable timing |
+| Re-entry reduction | Historical cap-matched instruction comparison: 15 outer continuations versus 0 | Current-version comparison if host/provenance differs. Count Root joins separately; no token-savings or whole-job zero-decisions claim |
+| Native interruption | Owning-session path investigated and wired; Root-wrapper parser gap already fixed. Actual delivery/settlement unproved | Exercise the repaired path during a demonstrably pending observation; verify stop/reconciliation and unrelated control survival |
+| Noise/background | Unclassified cells; no proof of model nonadherence | Bounded cause adjudication, then separate compatibility cases |
+| Root waiting Skills | Review host early exit; adversarial rendered marker miss; Status missing owned acknowledgement | Diagnose each specific cause and qualify each entry point independently |
+| Generic route | Structural paragraph parity only; no installed generic observation | Discover whether a genuinely supported route is reachable; never force fallback after named-Role rejection |
+
+Planning-session `codex --version` returned `0.162.1`. This is a non-authenticated version observation, NOT a live qualification. Re-pin at execution time; the binary may auto-update. Historical qualification cannot be generalized to another binary/version/configuration/instruction variant.
+
+## 3. File ownership and bounded execution rules
+
+| File | Responsibility |
+| --- | --- |
+| `tools/shell-wait-probe/driver.mjs` | Case orchestration, prompts, exact lifecycle/timeline and persisted facts; conditional minimal changes only |
+| `tools/shell-wait-probe/evidence.mjs` | Bounded call/output adjudication and poll/interrupt attribution; reuse existing parsing and privacy projections |
+| `tools/shell-wait-probe/fixture.mjs` | Disposable installs, harmless dependencies, candidate paragraph seam and exact owned cleanup |
+| `tests/shell-wait-probe.test.mjs` | Focused RED→GREEN regressions for any new measured instrument gap; no new mixed-MCP interpreter |
+| `tests/test-selection.test.mjs` / `tools/run-test-suite.mjs` | Inspect existing isolation; modify only if an actual selection defect is found |
+| `docs/qualification/rescue-shell-long-wait.md` | Append dated follow-up evidence and update §§10/11 current mapping/recommendation; preserve historical records |
+| This plan | Execution checkboxes, exact tested revisions and final review status |
+
+Do not modify `skills/`, `agents/`, `scripts/`, `hooks/`, `.codex-plugin/`, marketplace snapshots, production qualification gates, user data/config or Codex source. Preserve unrelated root/old-worktree scratch files. If a future production fix is needed, report its scope and request separate authority instead of including it here.
+
+One execution per listed live label/group, with at most one concrete cause-directed follow-up for an inconclusive/failed case. A fresh diagnostic that launches a host counts as that case's initial run or its follow-up, not an extra free run before a formal trial. Before a follow-up, identify the cause and state the single changed variable. A resized comparable cap group counts as that group's follow-up. Task 3's optional native short-window responsiveness control is a separately named, predefined group with exactly ONE run and no retry; it cannot be used to retry the candidate or replace its qualification. Never retry model behavior until it disappears. Stop only dependent claims; finish independent tasks with evidence or precise `not-proven` reasons. If the same new unknown shape recurs after its bounded follow-up, retain it and stop that case; no generic parser expansion or 30-round review campaign.
+
+For a discovered instrument defect: first add a regression to the relevant existing test section using its existing rollout builders, show RED, implement the smallest research-only correction, show GREEN, and run the focused privacy/ownership regressions. If no defect is demonstrated, do not change code just to create a commit.
+
+## Task 1: Re-pin provenance and check the already repaired measurement seams
+
+**Files:** Inspect the three shell probe modules and relevant test sections; record facts in the report. Conditional fixes belong only to their owning module/test.
+
+- [x] Verify baseline/source/status and pin the actual installed executable, not `node_modules/@openai/codex`'s development pin:
+
+```bash
+git status --short
+git rev-parse HEAD
+shell_codex_binary=$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$(command -v codex)")
+"$shell_codex_binary" --version
+shell_source_sha=$(git rev-parse HEAD)
+git -C ../../../codex rev-parse HEAD
+git -C ../../../codex status --short
+node tools/shell-wait-probe/driver.mjs --help
+```
+
+- [x] Record executable/version, plugin source/artifact digests, executing observer digest, model, effective isolated configuration, route and instruction variant per run. Configuration retention uses the existing fixture's redacted provenance/hash convention: only the observation-cap key, relevant feature booleans and numeric wait bounds, file digest/mode and verified application facts may be retained. Never persist full TOML, authentication, tokens, private preparation or arbitrary environment values; schema-unknown values are suppressed. Source checkout existence never proves source/binary correspondence. If a later case observes a changed binary/version, stop cross-version comparisons, repin and record the boundary; do not restart the whole campaign silently.
+- [x] Run the existing timing/interrupt/Root/privacy regressions before authenticating:
+
+```bash
+node --test --test-name-pattern='review adjudication fixes|review round 2 refinements|review round 3 refinements|native interrupt interaction recording|root-family observer contract|unsupported-call and final-message preparation privacy' tests/shell-wait-probe.test.mjs
+node --test tests/test-selection.test.mjs
+```
+
+Expected: zero failures. Existing `pollWallTimesMs` covers individual polls; a preparation continuation or shared-cell wall time is not a cap duration. The existing Root-control wrapper exemption must stay forbidden inside the observed Rescue Child.
+
+- [x] Read `mapShellWaitLiveFacts`, `extractInterruptInteraction`, `analyzeCallSequence`, `waitForPollObservation`, `waitForChildSettlementObservation` and their tests. Determine how an actual nonterminal poll's timing, live original process, pending cell and eventual exit are linked. Missing fields stay null. Do not introduce a fixed undocumented API requirement; record any needed minimal evidence seam as a research task, with an example regression, before changing it.
+
+**Exit:** measurement/cleanup/privacy seams are understood and test-backed; no new installed behavior has yet been claimed.
+
+## Task 2: Measure M and adjudicate the cap discriminator on one comparable host
+
+**Files:** Existing `rescue-long`/`rescue-repeat`/`rescue-baseline` cases; conditional timing correction in evidence/driver/test; report §§7/10/11.
+
+- [x] Execute one unraised candidate control. Omit `--cap-ms` completely; `0` is invalid. Use private fresh output for every invocation:
+
+```bash
+shell_case_output=$(mktemp -d)
+ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
+  node tools/shell-wait-probe/driver.mjs --case rescue-long \
+  --codex "$shell_codex_binary" --source-sha "$shell_source_sha" \
+  --output "$shell_case_output" --worker-duration-ms 420000 \
+  --poll-ms 3600000 --budget-ms 1200000
+```
+
+  Executed 2026-10-13 on the re-pinned 0.162.1 executable (§13.4): driver exit 0, fixture cleanup
+  complete, but the case is inconclusive `unsupported-call-shape` (one unclassified 3-line 443-byte
+  `exec_command` cell, content withheld by the R0 design, cause not established).
+- [x] Adjudicate M from the nonterminal original-handle poll's OWN `pollWallTimesMs` value and linked return shape: worker/process still running, request window not expired, no interrupt or other ender. Do not take the last terminal poll, whole-cell duration or source default. No nonterminal return or null poll timing means M remains imprecise/unproved; investigate one cause-directed follow-up, not a fabricated number. Preserve poll/result ordering without persisting private output.
+  Adjudicated `not-proven` with its cause recorded (§13.4): the fail-closed scan blocked every record
+  before any attributable poll timing existed — `pollWallTimesMs` is null in all four records. The one
+  allowed cause-directed follow-up was NOT consumed: no concrete cause with a single changeable variable
+  exists (the blocker recurred 4/4 runs, both instruction variants, varying shapes; no case flag governs
+  it; a re-run would retry model behavior; no instrument defect is demonstrable under the retention
+  design, so no code changed).
+- [x] Execute a raised `rescue-long` with the SAME executable, model, paragraph, requested yield and worker duration, adding only `--cap-ms 3600000`. A causal comparison requires matching pins/configuration apart from that key. At decisive poll start, the independently measured remaining lifetime must be at least `M + 30000`; its basis remains the conservative hold-deadline-at-poll-start measurement, not `workerDurationMs - decisiveWallMs`.
+  Executed once (§13.4 run 2): `capVerified: true` (fixture configuration only), but the case ended
+  inconclusive on the same family — no attributable decisive poll, so the precondition is UNEVALUABLE and
+  propagation is `not-proven` on this pin (0.162.1 does not even reach POSITIVE-but-M-imprecise; the
+  0.161.0 clue stands for its own pin).
+- [x] If the initial hold cannot meet that precondition, record it as inconclusive. A single cause-directed resized group may use `workerDurationMs = max(420000, ceil(M) + 90000)` with enough finite probe budget; measure actual remaining lifetime again and keep worker duration matched across its unraised/raised runs. If M is at/above the candidate cap, do not claim propagation from this candidate or enlarge the cap without first reporting the changed experimental scope.
+  Trigger evaluated and recorded inconclusive (§13.4); the resized-group option was NOT exercised — the
+  observed cause is the unclassified-cell scan blocker, not lifetime sizing, so a resize would not be
+  cause-directed (§3), and the resize formula has no input while M is unattributable. M is unknown, so
+  the M-at/above-cap branch cannot arise; no cap was enlarged.
+- [x] On the current comparable pin, execute one fresh `rescue-repeat` with the qualified raised flags and a distinct actual Child. Because the planning binary differs from 0.161.0, the historical repeat does not replace this current-version repeat. If an exactly matching historical pin is actually reused, retain its qualified repeat without re-running it merely for ceremony; explain all provenance matches.
+  Executed once with the raised flags (§13.4 run 3); inconclusive on the same family. No qualified
+  raised run exists on this pin to repeat, so repeat qualification is not executable on 0.162.1; the
+  0.161.0 QUALIFIED verdict keeps its own scope.
+- [x] Where current-version re-entry benefit lacks a comparable instruction control, run one `rescue-baseline` with the SAME cap/worker/budget and `--poll-ms 60000`. This isolates instructions from cap configuration. Unknown baseline linkage/counts remain unknown, not zero. Reuse qualified matching evidence if available; do not recreate four historical M attempts.
+  Executed once (§13.4 run 4, baseline variant byte-identical artifacts, `capVerified: true`);
+  inconclusive on the same family — no outer-return count is attributable on this pin; unknown counts
+  stay unknown.
+- [x] Record exact route, parent/Child linkage, one launch/send, original handle, directive and inner yield, individual poll outcomes, outer returns, Root joins, terminal exit and sentinel. Exit 0 from the DRIVER means execution/cleanup completed, not that the case qualified. Calculate ratio/precondition only when M is attributable; otherwise keep `POSITIVE-but-M-imprecise` as a clue, not spec Q3 acceptance.
+  Recorded per §13.4: every attributable fact is in the run table; route/linkage/poll/cadence/terminal
+  facts are `null`-with-cause in all four records (never zero); no ratio or precondition was computed
+  because M is unattributable. The 0.161.0 POSITIVE-but-M-imprecise clue is preserved as a clue only.
+
+**Exit:** exact M and the quantitative discriminator are proved on the comparable pin, or the missing fact/cause is explicit. Natural completion/repeat evidence remains useful regardless of the causal verdict.
+  Outcome: the missing fact/cause is explicit (§13.4) — the recurring unclassified-cell family is the
+  single blocking prerequisite for every measured dimension on this pin; no natural-completion/repeat
+  evidence was obtainable on it.
+
+## Task 3: Native pending-observation interruption and owned settlement
+
+**Files:** Existing `rescue-interrupt`, Root-control extraction and lifecycle fixture/tests; report S5/Q4.
+
+- [x] Trace the current installed family's owning-session delivery path using the report/source starting points. The historical V2 `interrupt_agent` path is the starting hypothesis, not a mandate to use a nonexistent API. Use V1 only if the current host actually exposes its interrupt flag; never use a separate app-server's `turn/interrupt` to pretend it owns the CLI's Child. No MCP or fork.
+  Executed 2026-10-13 with no host launch (§13.5 trace): the V2 hypothesis is CONFIRMED at source
+  `67727e7c` (clean) — `add_collaboration_tools` registers `interrupt_agent` unconditionally in the V2
+  branch; the owning exec Root qualifies via `collab_tools_enabled`; handler resolves
+  `AgentTarget::Id` → snapshot-first `previous_status` → `Op::Interrupt` to the live Child thread.
+  The repaired case sends exactly one V2 `interrupt_agent {target: <spawn-ack id>}`; V1
+  `send_input {interrupt:true}` unused; no app-server/Fork/MCP. Inner settlement is NOT part of the
+  delivery (`code_mode_interrupt` false at the pin).
+- [x] Run the repaired case once, with a long enough held original observation for pending-window evidence:
+
+```bash
+shell_case_output=$(mktemp -d)
+ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
+  node tools/shell-wait-probe/driver.mjs --case rescue-interrupt \
+  --codex "$shell_codex_binary" --source-sha "$shell_source_sha" \
+  --output "$shell_case_output" --worker-duration-ms 420000 \
+  --cap-ms 3600000 --poll-ms 3600000 --budget-ms 900000
+```
+
+  Executed once 2026-10-13 on the unchanged 0.162.1 pin (§13.5): driver exit 0, cleanup complete,
+  fixture disposed, but the case is inconclusive `unsupported-call-shape` again — one unclassified
+  `exec_command` script cell (3 lines, 314 bytes, no directive, content withheld) failed the
+  whole-case fail-closed scan. Same family as §13.4, new shape facts.
+- [x] Require ONE actual exact-target delivery, active prior status, an attributable pending original-handle observation at delivery, and linked post-delivery outcome. Record `attempted`, `delivered`, `exactTargetMatch`, `callCount`, `orderingBound`, `settled`, `settledBasis` and timing. Nulls, terminal-before-interrupt, wrong target, multiple delivery, unreadable continuation and external budget kill never qualify.
+  Adjudicated NOT QUALIFIED with all fields recorded (§13.5): record `attempted`/`delivered` null with
+  the degraded could-not-observe cause; surviving structural facts show exactly one V2 interaction
+  (`callCount: 1`, `family: "v2"`) whose response success-decoded to ACTIVE `previous_status:
+  "running"`, but the target was suppressed (23 chars, not id-shaped/marker → `exactTargetMatch:
+  null`) and `orderingBound: false` (`settled: null`, `settledBasis:
+  "ordering-unbound-not-attributed"`, all timing null). First run with a parsed, counted on-script V2
+  interrupt interaction (`callCount: 1`, target-shape facts retained) under the corrected anchored
+  grammar, and the first on this pin — the R5 record had already retained a parsed interaction with
+  the same active previous_status under the since-corrected unanchored grammar (§7.7/§12.8); it still
+  qualifies nothing.
+- [x] Distinguish native Child turn interruption, inner poll/cell settlement, exact Companion process cleanup and durable job/reconciler settlement. A successful interrupt tool response alone proves none of the latter. Read the isolated production stores through existing bounded seams to establish the original job, stop cause/intent and terminal winner; no accepted running work may become untracked. Retain only sanitized ownership/settlement facts.
+  All four layers recorded `not-proven` with causes (§13.5): exact turn interruption unproven (target
+  + ordering unbound); inner poll-cell settlement unadjudicable (no attributable observation; the
+  survive-or-settle shape could not be evaluated); Companion cleanup unproven (no linkage survived);
+  job/reconciler settlement unproven — the bounded store read was NOT exercised because no
+  attributable original job existed to read (all linkage null; no accepted running work became
+  untracked). Distinction ledger: missing model call RULED OUT (the model called once); tool rejection
+  RULED OUT (success decode); interrupt-parser failure RULED OUT (parsed/counted/decoded);
+  case-level unknown-shape failure PRESENT; delivered-but-unsettled UNADJUDICABLE (ordering unbound).
+- [x] Establish no collateral cancellation using one unrelated harmless owned job/Child control in the same relevant host lifecycle, with independently observed survival. Reuse the existing lifecycle fixture/production seams; investigate the minimum isolated control if not already available. No new binding, separate owner authority or parallel original-handle poll. Without live control evidence, do not claim live no-collateral preservation from a unit test alone.
+  Evaluated and recorded `not-proven` (§13.5): the control is only reachable once the lifecycle
+  produces a qualifying shape; this run's case evidence failed fail-closed before that, so the control
+  was not spent and live no-collateral preservation is NOT claimed from unit tests alone.
+- [x] For responsiveness, compare delivery-to-settlement against the native short-window expectation on the same host. Inspect source plus existing controlled baseline first; if neither provides a comparable measured latency, allow ONE separately recorded `native-short-window-responsiveness-control` run (a report/group name, not a new assumed CLI option), with no retry. State the sole experimental change before running: the temporary waiting paragraph requests the baseline 60000-ms window; executable/model/cap/worker/entry/ownership/delivery method and evidence rules remain matched to the candidate. Use only the minimum tested isolated fixture seam if current case selection cannot express that control. This control neither consumes nor adds retries to the candidate's one-run-plus-one-cause-follow-up allowance, and cannot substitute for candidate delivery/settlement qualification. Record the measured delay instead of inventing a universal SLA or waiting secretly until the one-hour window ends.
+  Evaluated; comparison `not-proven` and the control deliberately NOT spent (§13.5): the candidate
+  produced no attributable `deliveryToSettlementMs` (null on the settlement guards), so the latency
+  reference the one-run control would provide has no claim to serve; spending it would waste the
+  group's single run.
+- [x] If the host interrupts the turn but the pending poll survives, record that exact result and keep production blocked. Investigate one cause-directed follow-up using existing supported host mechanisms; never substitute process-budget cleanup for native cancellation. A missing model call stays distinct from tool rejection, parser failure and delivered-but-unsettled work.
+  Evaluated and recorded (§13.5): the survival shape could NOT be established (`orderingBound: false`;
+  the case never qualified), so it was recorded as unadjudicable — never as observed survival. No
+  budget kill occurred (cleanup `observation`), so no cleanup-for-cancellation substitution arose. The
+  cause-directed follow-up was NOT consumed: the blocker is the instruction-independent
+  unclassified-cell family with yet another shape; no case flag governs it; a same-config re-run is
+  the forbidden model-behavior retry. Production stays blocked on this pin (§13.4's prerequisite).
+
+**Exit:** pending delivery, responsive owned settlement and unrelated control survival are proved, or each dependent production dimension stays precisely `not-proven`. The 100-hour ceiling is exercised through inherited controlled tests, not a 100-hour live run.
+
+## Task 4: Noisy output, background placement and sidecar opportunity
+
+**Files:** Existing `rescue-noise` and `background`; conditional narrow evidence/fixture/test corrections; report S2–S4/Q4.
+
+- [x] Before retrying, inspect the recorded shape facts/known grammar fixes. A privacy-suppressed unknown cell cannot be retroactively reconstructed or labelled model nonadherence. If needed, use one fresh bounded diagnostic retaining only whitelisted structural facts and manually adjudicate the observed narrow shape; no raw private rollout archive or general JS interpreter.
+  Executed 2026-10-13 (§13.6): the §12.8 grammar corrections were inspected first and cover none of the
+  observed shapes; the already-retained facts (tool/lines/bytes/directive-presence) were confirmed
+  insufficient for adjudication, so the plan's bounded diagnostic was built — a gated structural
+  whitelist in the unclassified-cell excerpt (`wholeBodyStatementMatch`, per-line fixed-token prefix /
+  cumulative bracket depth / semicolon / allowlisted tool names, content sha256), default retention
+  byte-identical and pinned, with 7 focused RED→GREEN + privacy regressions. The diagnostic launched as
+  the noise case's initial run and its narrow shape was manually adjudicated: a single-line
+  `write_stdin`-headed script statement outside BOTH pinned grammars — neither a demonstrable defect
+  nor demonstrable nonadherence under the retention design.
+- [x] Run each case once after that concrete prerequisite is understood:
+
+```bash
+shell_case_output=$(mktemp -d)
+ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
+  node tools/shell-wait-probe/driver.mjs --case rescue-noise \
+  --codex "$shell_codex_binary" --source-sha "$shell_source_sha" \
+  --output "$shell_case_output" --worker-duration-ms 130000 \
+  --cap-ms 3600000 --poll-ms 3600000 --budget-ms 360000
+
+shell_case_output=$(mktemp -d)
+ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
+  node tools/shell-wait-probe/driver.mjs --case background \
+  --codex "$shell_codex_binary" --source-sha "$shell_source_sha" \
+  --output "$shell_case_output" --worker-duration-ms 120000 \
+  --cap-ms 3600000 --poll-ms 3600000 --budget-ms 600000
+```
+
+  Executed 2026-10-13 on the unchanged 0.162.1 pin (re-verified before EACH run), one run per case,
+  driver exit 0, cleanup complete in both (§13.6): `rescue-noise` — its initial run WAS the diagnostic
+  (plan flags + the retention-only gate; host behavior identical); inconclusive
+  `unsupported-call-shape`, fingerprint `38c33f61…`. `background` — the formal trial with the same
+  retention-only gate; inconclusive `unsupported-call-shape`, fingerprint `a9d65bb2…`, budget-cleanup
+  at 600010 ms after the Root host result resolved at 46384 ms. Both follow-ups NOT consumed (no
+  concrete cause with a single changeable variable); both cases stopped per §3.
+- [x] Noise: same handle and terminal bytes; ordinary stderr/progress must not substitute for completion or be routinely relayed to Root. Record actual extra interventions, not just requested long yields.
+  Adjudicated `not-proven` with cause (§13.6): the fail-closed scan blocked the case on the adjudicated
+  cell before any attributable linkage, so same-handle discipline, terminal-byte exactness,
+  no-substitution, no-relay and the ACTUAL extra-intervention count are all `null`-with-cause (never
+  zero). The held turn itself ran cleanly to the natural hold-gate end (host exit 0, no termination,
+  `interrupt.requested: false`).
+- [x] Background: Root's decoded acknowledgement is launch-only for the exact Child, with zero positively observed Root joins; the exact Child remains responsible for attached Companion observation to terminal. Root acknowledgement is not Child settlement; verify the existing settlement watch and final process outcome. A completed Root alone cannot qualify background placement.
+  Adjudicated `not-proven` with every sub-fact recorded (§13.6): the decoded acknowledgement is NOT
+  established (content unattributable; all linkage `null`); Root joins UNKNOWN (`rootJoins: null`,
+  never zero); the settlement watch DID execute — the held turn stayed open the full remaining budget
+  and settlement was never detected (`settlement.observed: false`); the final process outcome is
+  BUDGET-CLEANUP termination (`codexTerminated: true`, `nativeInterruptionClaimed: false` — cleanup,
+  never native interruption); the completed Root alone qualified nothing.
+- [x] Preserve existing between-polls-only sidecar intents (`zcode status`, `$zcode:status`, `/zcode:status`, trim only). Inspect/test the structural policy and observe installed latency only if the same native session supports safe steering. Do not issue a parallel poll or turn Status into the waiting engine. If unreachable, retain the concrete interface limitation; do not demand a new undocumented steering API.
+  Executed 2026-10-13 (§13.6): the intents and the between-polls-only/trim-only policy are unchanged and
+  re-verified by the existing suites (`tests/codex-rescue-qualification.test.mjs` 162/162 including the
+  status-sidecar mutation set; `tests/integration/skills.test.mjs` 76/76); no probe code changed.
+  Installed latency NOT observed — the interface precondition never materialized (no qualified pending
+  original-handle observation existed on this pin to steer), so the concrete limitation is retained:
+  sidecar latency `not-proven`; no parallel poll was issued and Status was never made the waiting engine.
+
+**Exit:** each placement/noise surface has its own result; uncertainty does not erase the already measured named foreground behavior.
+
+## Task 5: Root Review, Adversarial Review and Status remain separate
+
+**Files:** Existing Root-family case specs/observer, `validateStatusWaitFlow`, renderer fixture/test seams; report Q5.
+
+- [x] Review: trace the concrete early host exit with redacted bounded evidence. Keep Root placement and the real `invoke review` entry; no Rescue-shaped replacement or invented new process.
+  Executed 2026-10-13 on the unchanged 0.162.1 pin (§13.7 run 1): the R5 early-exit shape is CONFIRMED
+  and traced — exactly one observed companion launch (`invoke review`, initial 30000-ms yield),
+  `companionSendCount: 0` (the review turn was never sent, so the gate-held observation never
+  existed), no poll ever, host result at 15214 ms exit 0, a 170-char withheld final message,
+  `endedBeforeGate: true`/cleanup `early-exit` — long-wait qualification `not-proven` with the cause
+  recorded; why the command sent nothing is not adjudicable from retained facts (production-scope);
+  the follow-up was NOT consumed.
+- [x] Adversarial Review: compare the production renderer's actual contract with the fake peer payload and linked bytes. A fixture marker mismatch can be an instrument/dependency mismatch; test the correct framing with existing renderer contracts before changing a probe marker. Never remove exact terminal/exit checks or change production output to manufacture qualification.
+  Executed 2026-10-13 (§13.7): the comparison DEMONSTRATED the probe-side instrument/dependency
+  mismatch — the production review pipeline renders only the schema-validated structured findings
+  document (`extractFinalResult` → `renderOutput`; verified by executing the real production modules
+  against the fake peer's `{findings: []}` payload), so the sentinel marker was unsatisfiable by
+  construction and R5's miss is fully explained. Corrected RED→GREEN in the owning probe spec only
+  (resultMarkers → the rendered findings-document line; 3 RED failures for the expected reason,
+  451/451 GREEN); no terminal/exit check moved; no production output changed.
+- [x] Status: use the existing two-turn owner-session flow. Turn 1 launches `review --background`; turn 2 uses ONLY the actually observed reserved job id in that SAME session, with an explicit Status query timeout. No pre-reserved foreign-owner job, guessed id, assistant-reported result or unrelated final reply substitutes for the acknowledgement/linked command.
+  Executed 2026-10-13 (§13.7 run 3): `validateStatusWaitFlow` returned `valid: true` — exactly one
+  distinct reserved job id extracted from observed tool outputs in the launch session, turn 2 resumed
+  the SAME session with the invocation built only from the observed id
+  (`$zcode:status <id> --wait --timeout-ms 120000`), exact id match on the queried side; the fixture
+  reserved no foreign-owner job (`statusJob: null`).
+- [x] Run `review-wait` and `adversarial-review-wait` separately with the existing CLI, each using fresh output, `--worker-duration-ms 130000 --cap-ms 3600000 --poll-ms 3600000 --budget-ms 600000`. Run `status-wait` separately with those flags plus `--status-query-timeout-ms 120000`. Record per-case verdicts, natural completion OR the production timeout envelope, and original process termination. Confirm Status's timeout is not extended by the requested shell observation window.
+  Executed 2026-10-13, one run each on the unchanged 0.162.1 pin, re-pinned before EVERY run, driver
+  exit 0, cleanup complete in all three (§13.7): `review-wait` — inconclusive, early host exit at
+  15214 ms (host exit 0), `not-proven` (above). `adversarial-review-wait` — QUALIFIED
+  (`inconclusive: null`): exact Root linkage, launch 1/send 1, one 97800-ms same-handle poll,
+  `processExit` 0, the corrected production-contract marker matched, natural completion at the hold
+  gate, NO process termination. `status-wait` — QUALIFIED (`inconclusive: null`): the production
+  120000-ms query deadline fired UN-EXTENDED (exit 1 with the confirmed JOB_WAIT_TIMEOUT framing
+  matched; one 87500-ms poll against the requested 3600000-ms window; `requestedPollMs` and
+  `requestedStatusQueryTimeoutMs` separate record fields), natural completion through the hold gate,
+  no termination. Retention-only diagnostic gate carried on all three (zero behavioral delta, §13.6
+  precedent); no unclassified cell blocked any of the three runs.
+- [x] Qualify Root Status observation cancellation separately from Child interruption: discover a supported native interaction owning that EXACT running Root observation, prove it ends while the selected job remains authorized/running and receives no stop/cancel intent. Do not call Root self-interrupt, target another agent, or assume SIGINT means observation-only cancellation. If no supported interaction is reachable, retain live cancellation `not-proven`; the existing AbortController wait-boundary test is instrument-level only.
+  Executed 2026-10-13 as a source survey plus the run's own facts (§13.7): NO supported interaction
+  is reachable — `interrupt_spawned_agent` rejects root and self targets at source `67727e7c` and its
+  registry is per-process, the app-server `turn/interrupt` stays excluded by rule, SIGINT is never
+  assumed observation-only, and the run recorded `interrupt.callCount: 0`. Live cancellation is
+  retained `not-proven` with this precise cause; the AbortController wait-boundary regression stays
+  instrument-level. The cancellation subcase does not reduce status-wait's flow qualification.
+- [x] Background Review/Adversarial stay enqueue-only. Re-run controlled timeout/ownership/result tests as relevant without modifying their expectations. Do not infer these commands' qualification from generic Root shell support or one successful command.
+  Executed 2026-10-13 (§13.7): no live background run was launched for either command; the
+  controlled tests re-ran with expectations unmodified — full shell-wait suite 451/451 (including the
+  R3 status-wait owned-job/query-deadline and background enqueue-only sections), focused
+  R3/background selections 18/18, `tests/test-selection.test.mjs` 6/6. Each Root command carries its
+  own verdict; none is inferred from another's run or from generic Root shell support.
+
+**Exit:** each real Root command has a bounded, owned, command-specific conclusion; failure of one does not disqualify or qualify the others.
+
+## Task 6: Supported generic route, without weakening admission
+
+**Files:** Read Rescue Skill/route planner/Role preflight; conditional isolated route selection in fixture/driver/tests only; report S6/Q2.
+
+- [x] Trace the current host's actual named/generic selection and supported spawn schema from existing production preflight. Decide whether the generic route is genuinely reachable under that host's ordinary capability conditions. Do not fake a named-Role rejection or route around a recognized-but-rejected Role.
+  Executed 2026-10-14 with NO host launch (§13.8): selection = the Skill's admission table
+  (L138–148) over the host's exposed `spawn_agent` schema; supported schema (pinned source
+  `67727e7c`, re-verified clean) = required `task_name`+`message`, optional `fork_turns`, and
+  `agent_type` present in the V2 properties IFF `config.agent_roles` is non-empty
+  (`spec_plan.rs` L1329; `multi_agents_spec.rs` L120–122), with `agent_type` an optional
+  parser-known field (`multi_agents_v2/spawn.rs` L262–269) so the generic shape is genuinely
+  supported. **Decision: NOT genuinely reachable under ordinary conditions** — the managed-Role
+  registration that makes the Role preflight `ready` IS an `agent_roles` entry, so every
+  route-decision-capable state exposes `agent_type` and mandates named, while the omitting state
+  fails closed before any preparation exists; no named rejection was faked and no recognized Role
+  state was routed around.
+- [x] If supported, add only the minimum explicit research-fixture seam needed to exercise that ordinary generic condition, recording the condition and delivered immutable assignment hash. No CLI flag/API name is pre-required by this plan. Define any new seam in the report, test the exact admissible condition and named-rejection negative RED→GREEN, and keep production planner/binding/assignment authority unchanged.
+  Condition evaluated FALSE with recorded evidence (§13.8): the ordinary generic condition ("the
+  active tool schema omits `agent_type`") does not exist in any state the Rescue flow can act in, so
+  no seam was added, no assignment hash was delivered, and the RED→GREEN pair has no seam to pin —
+  a seam able to reach generic would have to weaken the fixture's fail-closed Role gate
+  (`fixture.mjs` refuses a non-`ready` preflight), i.e. weaken admission. Production
+  planner/binding/assignment authority untouched; no .mjs changed.
+- [x] Execute one generic qualification with matched candidate cap/paragraph and enough measured remaining lifetime. Require actual generic linkage, one mapped Companion launch/send, original handle, exact terminal output and no fallback weakening. Its installed result remains distinct from fixture paragraph parity.
+  NOT EXECUTED — recorded `not-proven` with the precise cause (§13.8): its precondition (a genuinely
+  reachable ordinary generic condition) is the exact fact the trace adjudicated false, and the plan
+  forbids forcing a generic run for a checkbox. The group's ONE run was deliberately unspent; no
+  generic linkage/launch/send/handle/terminal facts exist, and none were fabricated. The
+  fixture-tested paragraph parity (§7.3) remains distinct from and does not substitute for an
+  installed observation.
+- [x] If unavailable, record source and installed schema/preflight evidence, not merely that the model selected named. Do not force a generic run for a checkbox. Any later rollout recommendation must explicitly describe the named/generic scope and preserve parity before broader promotion.
+  Executed 2026-10-14 (§13.8): source evidence (schema exposure = `agent_roles` non-empty; handler
+  accepts the generic shape; built-in `default` role resolution; child `agentRole: null` = the
+  planner's `'generic'` class) plus installed evidence (re-pinned 0.162.1 unchanged; `codex features
+  list` `multi_agent_v2 stable true`; live-config `[agents.zcode-rescue]` present and no
+  `[multi_agent_v2]` table; the `debug prompt-input` render's schema-less surface limitation; all
+  historical established routes named) — the route recommendation scope stays named-only with the
+  unreachable-condition boundary recorded; parity guard unchanged.
+
+**Exit:** generic is independently proved or precisely unavailable/unproved; no false universal qualification.
+
+## Task 7: Contract regression, evidence matrix and decision handoff
+
+**Files:** Report §§10/11 and a dated follow-up section; this plan checkboxes; no spec/production updates.
+
+- [x] Run the changed shell instrument, isolation and inherited authority/lifecycle/result regressions. Record exact source plus executing-tree digests, commands, counts, skips and failures:
+
+```bash
+npm run test:shell-research
+node --test tests/test-selection.test.mjs
+node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs
+node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs
+node --test tests/job-control.test.mjs tests/mcp-result.test.mjs
+npm run lint
+npm run typecheck
+node scripts/check-line-endings.mjs
+git diff --check
+git status --short
+```
+
+  Executed 2026-10-14 at HEAD `a6771a4` (clean tree; observer digest `562981ce…`; module sha256s and
+  source pins recorded, §13.9): shell-research **451 tests / 449 pass / 2 fail / 0 skipped** — the 2
+  failures are exactly the known real-builder fixture pair, adjudicated ENVIRONMENTAL with fresh
+  controlled reproduction evidence (byte-identical manifests `npm ci` cleanly in ≈1 s under the real
+  HOME; npm's own "Exit handler never called!" twice under an empty sandboxed HOME; a seeded-cache
+  sandboxed-HOME run succeeded — npm's fetch/extract path under the by-design isolated HOME is the
+  failing surface, host-proxy-dependent; instrument bytes byte-identical to the §13.7 tree that
+  recorded 451/451); recorded as failures-with-cause, never silently green. Selection **6/6**;
+  rescue-preparation/binding/route-planner **417/417**; rescue-lifecycle/child-reconciliation/
+  progress-relay **126/126**; job-control + mcp-result **213/213**; lint, typecheck, line endings
+  (534 tracked files), `git diff --check` and `git status --short` all clean.
+- [x] For final `npm test`, use a clean exact source. Without explicit commit authority, use the existing spec §2 owned park-and-restore method ONLY for documentation/scratch, leaving all tested implementation present; record the exact parked paths, pre/post content hashes, test result and successful restoration, without touching unrelated user files. If uncommitted implementation prevents a clean exact-source run and the existing builder cannot stage it faithfully without a commit, report that final gate as blocked pending authorization; do not commit to make it pass. Only when separate explicit commit authority is actually granted may a fully committed source be used. Never hide implementation or cite the clean planning baseline as current changed-tree verification. Do not run `test:mcp-research` or authenticated ordinary E2E merely as a new routine gate.
+  Executed on the FULLY COMMITTED source at HEAD `a6771a4` — commit authority was explicitly granted
+  for this branch and the tree is clean, so the committed bytes are the exact executing source (no
+  implementation parking needed). Recorded runs (§13.9): inherited-environment run **3397 tests /
+  3391 pass / 3 fail / 3 skipped**, the 3 failures the same environmental npm family (all
+  `ZCODE_PROCESS_TIMEOUT` at 120 s with zero captured bytes inside npm-install steps; none of the three
+  test files touched by this branch); the decisive single-variable experiment (the identical
+  `package-install` test FAILS with the host's proxy env and PASSES 1/1 without it); a full
+  proxy-free rerun **3397 / 3393 / 1 fail / 3 skipped** whose only failure is the clean-tree
+  marketplace check (31 ms) against this task's OWN uncommitted close-out docs mid-edit (the spec §2
+  execution-order artifact); and the DEFINITIVE gate with those two documentation files parked per the
+  spec §2 owned method (exact paths `docs/qualification/rescue-shell-long-wait.md` and
+  `docs/superpowers/plans/2026-10-13-rescue-shell-wait-follow-up.md`, pre/post hashes recorded
+  identical: `c9b441b6…` / `a38380c8…`): **exit 0 — 3397 tests / 3394 pass / 0 fail / 3 skipped plus
+  the marketplace snapshot 2/2 pass, exactly the planning baseline.** `test:mcp-research` and
+  authenticated ordinary E2E were NOT run.
+- [x] Verify no production/spec/marketplace diff against `41e5b0aa24189903f77acb971931df6de04a170e`. Check exact fixture-owned process/worktree/config/credential cleanup; keep redacted outcome summaries and decisive tool evidence only. A cleanup failure is reported, not silently called success or resolved by broad directory deletion.
+  Verified (§13.9): the production/spec/marketplace diff against `41e5b0aa` is EMPTY; the branch's
+  total diff touches exactly the report, this plan, `tools/shell-wait-probe/{driver,evidence}.mjs` and
+  `tests/shell-wait-probe.test.mjs` (`fixture.mjs` untouched). Cleanup: ZERO surviving
+  `zcode-shell-wait-fixture-*` or campaign case-output directories in OS temp (the failed builder
+  runs' disposal guarantee held; §13.5's pre-existing `fHFp3c` scratch is gone too); unrelated scratch
+  recorded basename-only and left untouched; nothing deleted.
+- [x] Update S1–S7 and Q1–Q6 coverage with source-confirmed, fixture-tested and installed-observed labels, versions, scope and precise remaining causes. Do not rewrite historical facts, fold unknown counts into zero or collapse native tool acknowledgement, poll exit and durable cancellation settlement into one boolean.
+  Recorded in §13.9's close-out mapping table (per-item label, version, scope, precise remaining
+  cause) with the dated §11.1 addendum; historical rows stand unchanged as their own scope; unknown
+  counts stayed unknown; native tool acknowledgement, poll exit and durable cancellation settlement
+  remain separate `not-proven` entries (§13.5's four-layer ledger).
+- [x] Independent read-only Spec and Standards review once at close-out, then narrow recheck of any actual fixes. No fixed 30-round loop. Where implementation changes are needed, honor the user's established ZCode-coding/independent-review workflow; a tooling quota failure is not authority to switch coding agents silently.
+  Recorded outcome: independent read-only Spec-and-Standards close-out review executed 2026-10-15 by
+  a fresh reviewer within the established ZCode-subagent workflow (the codex backfill gates remain
+  separately pending and are NOT substituted by this review; RESOLVED 2026-10-15: the codex backfill
+  + whole-branch review executed with zero findings — see plan §5 and report §11.3/§13.9.): verdict
+  FINDINGS with 4×P3, zero P1/P2 —
+  spec conformance (scope/authority, coverage honesty, claim honesty, completion rules,
+  bounded-execution ledger: 10 live runs) and standards (instrument discipline, docs conventions,
+  commit hygiene, gates) otherwise CLEAN; the 3 fixable P3s were applied in the dedicated close-out
+  fix commit `f536375` (no rebase — the report cites exact SHAs as durable record; adjudication in
+  that commit's body) and the reviewer's narrow recheck returned CLEAN; P3-4 (the diagnostic flag
+  carried on Task 5's formal runs) stands disclosed in §13.7 as visible for the backfill review.
+  This checkbox stays open until that review runs.
+- [x] Deliver a temporary handoff linking this spec/plan/report, records, executed cases, unproved dimensions and minimal proposed production scope. A positive recommendation requires spec §8's actual route, quantitative long discriminator, repeat, reduced re-entry, exact handle/terminal linkage and native interruption/settlement. Root commands and generic/background surfaces retain their own qualification boundaries. Only after explicit user adoption may a separate production-change plan be written; never auto-promote canonical behavior.
+  Delivered as report §13.9 (links to spec/plan/report and the historical ledger; executed-case ledger
+  with allowances consumed/unspent; unproved dimensions with precise causes; the pending-backfill
+  review state; the environmental npm adjudication) plus this plan's §5 final review-status block.
+  Proposed production scope: **ZERO changes** — spec §8's positive-recommendation criteria are NOT met
+  on this pin; a future campaign needs the unclassified-cell shape-classification prerequisite
+  (content-level evidence via a privacy-authority decision outside the plan's authority, or a genuinely
+  changed host/form) plus a current-pin re-measurement of M, propagation, repeat, re-entry and native
+  interrupt delivery/settlement. Root commands and the generic/background surfaces keep their own
+  recorded boundaries; nothing is auto-promoted.
+
+## 4. Coverage and completion
+
+| Requirement | This plan |
+| --- | --- |
+| S1 preparation, atomic binding, one-shot/resume authority | Tasks 1/2/6/7; unchanged production negatives |
+| S2 one launch, original handle, empty observations, pending-cell ownership | Tasks 1–4/7 |
+| S3 exact public output, errors, choice/resume/control outcomes | Tasks 2/4/5/7; inherited result/choice tests |
+| S4 placement matrix, background and Status observation-only | Tasks 4/5/7 |
+| S5 interruption, reconciliation/loss, deadlines and ceiling | Tasks 3/5/7; controlled inherited loss/ceiling tests, no literal 100-hour run |
+| S6 named/generic alignment, no fallback weakening | Tasks 2/6/7 |
+| S7 isolation, no production/canonical/config changes | All tasks, final diff/cleanup in Task 7 |
+| Q1/Q2 effective config and delivered route instructions | Tasks 1/2/6 |
+| Q3 timing, discriminator, re-entry and repeat | Task 2 |
+| Q4 noise, interruption and sidecar latency | Tasks 3/4 |
+| Q5 Root waiting Skills | Task 5 |
+| Q6 smallest supported/version-scoped next delta | Task 7 |
+
+Research completion accepts honest evidence or precise investigated `not-proven` causes. Production acceptance does not. Current canonical remains the existing shell adapter and instructions; MCP remains in its prior recorded state.
+
+## 5. Planning verification and independent review
+
+Planning complete; execution ran 2026-10-13 → 2026-10-14 under the user's delegated
+execution-plus-commit authority and closed with Task 7. The formal plan is stored in this worktree's
+`docs/superpowers/plans/` directory, where its relative links resolve. Tasks 1–6 checkboxes are ticked
+with their recorded outcomes; all of Task 7's checkboxes are ticked, including its independent
+Spec-and-Standards review item, whose recorded verdict appears at the checkbox and in the report's
+§13.9.
+
+**Final execution review status (2026-10-14 state, RESOLVED 2026-10-15; recorded honestly):**
+
+- Tasks 1–4 closed with codex review gates at ZERO findings (final amended SHAs `3fa035a`, `67d327d`,
+  `0e50444`, `1fb30bd`).
+- Task 5 (`afa26ba`) and Task 6 (`a6771a4`) have CLEAN self-reviews; at the 2026-10-14 close their
+  codex gates were recorded as PENDING BACKFILL — the codex review service had then suffered four
+  consecutive network failures (2026-10-14 14:26→15:22 local: chatgpt.com connection failed +
+  workspace routing discovery failed; review interrupted), accumulating backfill range
+  `1fb30bd..a6771a4`, with the whole-branch close-out codex review also pending on the same service
+  recovery. A tooling outage is NOT authority to switch coding agents silently — that state was
+  recorded as pending, never as passed. **RESOLVED (2026-10-15):** after the host proxy
+  (`127.0.0.1:7890`) was restored — the outage ultimately totaling SIX consecutive connection
+  failures (2026-10-14 14:26→17:23 local; the 2026-10-14 record above captured the first four,
+  14:26→15:22) — the whole-branch codex review EXECUTED: `codex review --base
+  41e5b0aa24189903f77acb971931df6de04a170e` over the full branch diff (`41e5b0aa..a1420f7`) returned
+  ZERO findings ("No actionable regressions were identified"). This single review serves as BOTH the
+  whole-branch overall review AND the backfill for the pending per-task codex gates of Task 5
+  (`afa26ba`), Task 6 (`a6771a4`) and Task 7 (`5224a76`..`a1420f7`) — all inside the reviewed range.
+  The reviewer's own sandbox run showed 4 test failures it attributed to its own sandbox permissions
+  (npm cache access, process inspection), consistent with the campaign's environmental adjudication,
+  which was then VERIFIED BY PREDICTION: with the proxy restored, `npm run test:shell-research` re-run
+  on HEAD `a1420f7` on 2026-10-15 returned 451 tests / 451 pass / 0 fail / 0 skipped (46 suites,
+  ≈29.5 s) — the two previously-failing real-builder fixture tests now pass (details in report
+  §13.9). Review state complete: Tasks 1–4 per-task zero-finding gates plus Tasks 5–7 backfilled via
+  the whole-branch zero-finding review.
+- Task 7's close-out record: report §13.9 (regression matrix, final clean-source `npm test`, the
+  environmental npm adjudication, the executed-case ledger, the S1–S7/Q1–Q6 close-out mapping, and the
+  ZERO-production-scope handoff).
+
+**2026-10-15 documentation close-out clarification (pointer only; no checkbox becomes new-trial
+authorization).** The follow-up campaign remains closed with ZERO proposed production changes. A
+later read-only boundary assessment corrected the SCOPE of §13.6's two-cell adjudication: the five
+pre-gate §13.4/§13.5 rescue-family cells were never diagnostic-scanned (observer provenance
+`e28ec619…` vs `b237a6e1…`; the gate code landed in commit `1fb30bd`), so their
+`wholeBodyStatementMatch` is unmeasured and retroactively unmeasurable — a fresh gated run adjudicates
+only the fresh cell it observes — and a read-only Codex source re-investigation at new source pin
+`dffa0deb…` (distinct from the executed campaign's `67727e7c…`) recorded the three distinct wait
+layers, effective-Config inheritance to the actual Child, the 2026-08-07-introduced outer default
+(previously under-exploited, not new capability), and the 2026-10-07 `code_mode_interrupt`
+Stable/default-true flip (source-only; presence evidence only on the installed 0.162.1; no
+source/binary mapping; no production change). Details, pinned citations, the exact flag semantics,
+the candidate fallback safety constraints and the Path A next-phase candidate (NOT implemented, NOT
+run, no allowance reset) are recorded in report §§13.10–13.11. The checkboxes above are unchanged
+historical execution records.
+
+The six bullets below are the PLANNING-session records, preserved unchanged.
+
+- Fresh clean baseline at `41e5b0aa24189903f77acb971931df6de04a170e`: `npm ci` succeeded without dependency-file changes. `npm test` exited 0: routine **3397 tests / 3394 pass / 0 fail / 3 skipped**, plus marketplace snapshot **2/2 pass**. The plan was drafted outside the worktree until that clean-source run completed. Log: `/tmp/zcode-shell-wait-next-baseline-2026-10-13.log`. These are planning-baseline tests, not verification of future instrument changes or installed long-wait behavior.
+- `npm ci` reported three high-severity dependency audit advisories. No automatic dependency change or audit fix was performed; this planning session does not adjudicate those advisories.
+- Independent read-only Spec review: `closure_spec_review`, no blocking P1/P2. Its optional clarification was incorporated: fresh host diagnostics count against the case's finite run/follow-up allowance.
+- Independent read-only executability review: `final_plan_review`; configuration privacy, the optional short-window-control quota and the no-authority clean-source branch were clarified. The same reviewer narrowly rechecked and confirmed all P2 corrections sufficient, with no remaining blocker. Its temporary-link note is resolved by placing this file at its formal path.
+- Main-agent self-review mapped S1–S7 and Q1–Q6, checked existing command/file names, and found no speculative mandatory API or lowered production requirement. No authenticated trial, research implementation, spec/production/config change, commit, push or PR was performed during planning.
+- Final document checks: LF/newline/trailing whitespace and all three local Markdown links passed; `git diff --check` passed, tracked diff against the baseline was empty, and selection tests passed **6/6**. The new plan is the only untracked file in this worktree. Spec and implementation remain unchanged.
