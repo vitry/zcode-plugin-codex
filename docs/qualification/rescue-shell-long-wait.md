@@ -4775,3 +4775,50 @@ M/raised-cap propagation claim, no interrupt or settlement claim, no config-effe
 production or user configuration change followed (zero production/config edits; the only repo writes
 are this log's block and the plan's ledger/checkbox updates). Current-state pointers remain for the
 close-out task; §§1–13 and all historical records above stand byte-unchanged.
+
+**Tasks 3–4 adjudicated NOT APPLICABLE (recorded 2026-10-16, Task 4's record commit; purely
+additive).** The root adjudicated both conditional tasks under the plan's own conditional discipline;
+no host was launched, no code or test file changed (the tracked `tools/`/`tests/` diff against the
+merged baseline `61853ab…` remains EMPTY), and only the plan and this log were written.
+
+**Task 3 (conditional raw-body fallback + A1): NOT APPLICABLE.** Cause: A0's fresh cell was
+`exec_command` with `wholeBodyStatementMatch: false` — §3 branch 2 — so no parser defect was
+demonstrated, and the fallback algorithm could not have accepted that shape: `parseCallEvent` has no
+`exec_command` whole-body path outside the wrapper/inline patterns (verified instrument-side at this
+HEAD, `evidence.mjs` :49/:53/:67/:284/:853-873/:1052; consistent with §13.10's recorded semantics).
+A1 is therefore unspent/not justified. Governing plan rule: "No speculative parser implementation if
+A0 did not demonstrate the defect."
+
+**Task 4 (config-default seam + C0/C1): NOT APPLICABLE as a live comparison, and its code work
+skipped.** Cause chain, kept precise: Task 1 DID find a supported transport — this is NOT the
+no-seam case — but Task 4's own gate fails: "Only proceed to model turns if the managed route can be
+admitted/measured after Tasks 2/3." A0 left `route.actual: null` with admission blocked at
+`unsupported-call-shape`, and §3 branch 2 orders "stop dependent managed-Child trials". C0 and C1
+are therefore unspent/blocked; no comparison pair ran, and the one-changed-variable discipline was
+never reached. The `--wait-policy`/`--exec-default-ms` options, the isolated waiting-paragraph
+variant and the synthetic comparison tests are NOT implemented: their only consumer under this
+plan's finite ledger would be the blocked C0/C1, and the conditional discipline (Task 3's
+"no speculative parser implementation" analogue) forbids building unreachable instrument code. A
+future plan may re-derive its own instrument fresh; nothing here presumes or pre-provisions it.
+Task 1's transport acceptance evidence stands unchanged as acceptance-only (never propagation
+proof), and its hygiene rules (closed validation, whitelisted provenance) remain the recorded
+template for any re-derivation.
+
+**Classification and ledger.** The C-prerequisite is classified **`not-proven` with a precise
+bounded cause**: recognition/admission blocked at A0 — the actual named managed route was not
+measurable in this campaign, so the configured outer exec default's effect was never exercised.
+Run ledger after adjudication: **A0 SPENT; A1 unspent/not-justified; C0 unspent/blocked; C1
+unspent/blocked (dependent on C0). Total live runs spent: 1 of 4. No new run authority is created.**
+
+**Two conclusions kept separate, and the standing boundaries.** Recognition was NOT restored — the
+fresh `exec_command` cell remains excluded by the executing observer's whole-body grammar, and no
+grammar change was made or authorized. Config-default efficacy was NOT demonstrated — and, equally,
+it was NOT refuted: FALSE `wholeBodyStatementMatch` classifies one cell against one observer
+grammar; it does NOT prove long waits impossible, does not exclude shapes on other surfaces, and
+carries no claim about the host's wait capability. The §13.10/§13.11 boundaries all stand: the five
+historical 0.162.1 pre-gate flags remain unknowable and unrelabeled; `code_mode_interrupt` remains
+presence/acceptance evidence only with installed cancellation still unproven; Task 1's `-c`
+transport remains acceptance-only; S5's installed-interruption obligation, S6's generic route, and
+spec §8's production scope remain open and untouched. Production/config/user-cache changes: ZERO.
+Current-state pointers remain for the close-out task (plan Task 5), which must also carry the
+S1–S7/Q1–Q6 mapping — no mapping is asserted here.
