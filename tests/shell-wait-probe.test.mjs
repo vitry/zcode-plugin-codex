@@ -684,16 +684,23 @@ if (process.env[selfTestGuard] === '1') {
       assert.notEqual(observer.digest, record.provenance.sourceSha, 'the observer digest is a separate fact from the fixture source SHA');
       assert.equal(observer.model, null, 'the model is not observable in this instrument and stays unknown');
       assert.equal(observer.reachableToolFamily, null, 'the runtime-reachable tool family is not established and stays unknown');
-      // The digest is derived from the ACTUAL working-tree instrument modules.
+      // The digest is derived from the ACTUAL working-tree instrument modules
+      // under the v2 construction (plan Task 2): evidence.mjs +
+      // shape-diagnostic.mjs + driver.mjs, NUL-separated under the version
+      // tag — the shape-diagnosis helper is part of the adjudicating
+      // instrument, so a two-file v1 hash would misattribute it.
       const evidenceSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url)));
+      const shapeSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v1\0')
+        .update('zcode-shell-wait-observer-v2\0')
         .update(evidenceSource)
+        .update('\0')
+        .update(shapeSource)
         .update('\0')
         .update(driverSource)
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -3812,6 +3819,2091 @@ if (process.env[selfTestGuard] === '1') {
         assert.throws(() => inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: bad })),
           'a non-boolean diagnostic gate must be refused');
       }
+    });
+  });
+
+  describe('controlled shape diagnosis (opt-in memory classifier, schema v1)', async () => {
+    // Plan Task 2: the pure, non-evaluating memory-only shape classifier in
+    // tools/shell-wait-probe/shape-diagnostic.mjs implementing the frozen
+    // schema v1 (report §15.1). Every retained fact is a boolean or a member
+    // of a closed enum over PUBLIC syntax relations; string/comment content,
+    // binding spellings, identifiers, literals and numbers never survive.
+    const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+    const { parseCallStatements } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+    // Synthetic public placeholders only; any occurrence of a marker in the
+    // returned facts is a privacy leak by construction.
+    const CANARY_CMD = 'synthetic-command-text';
+    const CANARY_STRING_FACTS = 'PRIVATE_MARKER_A';
+    const CANARY_BINDING = 'alias';
+
+    // The plan's pinned example, verbatim (Task 2 first bullet).
+    const pinnedRaw = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_STRING_FACTS}"}); text(${CANARY_BINDING});`;
+
+    test('the pinned plan example projects closed facts without the string content, the binding spelling, or admission', () => {
+      const facts = inspectCallShape(pinnedRaw);
+      assert.equal(facts.version, 1);
+      assert.equal(facts.tool, 'exec_command');
+      assert.equal(facts.head, 'bound-await');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(JSON.stringify(facts).includes(CANARY_STRING_FACTS), false,
+        'the private string literal must never survive the classification');
+      assert.equal(JSON.stringify(facts).includes(CANARY_BINDING), false,
+        'the binding spelling must never survive the classification');
+      // Diagnosis/admission separation pinned on this noncanonical synthetic
+      // binding: the existing grammar rejects the whole cell.
+      assert.equal(parseCallStatements({ payload: { type: 'custom_tool_call', input: pinnedRaw } }), null);
+    });
+
+    // The §15.1 eight-record synthetic alternative set. The canonical control
+    // is the ACCEPTED single-line wrapper family; each other record diverges
+    // on specific closed facts only.
+    const canonical = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);`;
+    const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', input } });
+    const canonicalFacts = {
+      version: 1,
+      coverage: 'complete',
+      statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' }],
+      statementCount: 1,
+      tool: 'exec_command',
+      head: 'bound-await',
+      tail: 'text-binding',
+      bindingEquality: 'equal',
+      parserStage: 'parse-accepted',
+      directive: 'absent',
+      wholeInputConsumed: true,
+    };
+
+    test('record 1 S-canonical: the accepted wrapper control projects the full frozen fact set and the existing parser accepts it', () => {
+      const facts = inspectCallShape(canonical);
+      assert.deepEqual(facts, canonicalFacts);
+      assert.notEqual(parseCallStatements(event(canonical)), null,
+        'the falsifiability control must stay inside the already-admitted family');
+    });
+
+    test('record 2 S-binding: a changed binding keeps every syntax fact identical and reports the wrapper stage the pinned grammar fails at', () => {
+      const changed = 'const responseText = await tools.exec_command({cmd:"synthetic-command-text"}); text(responseText);';
+      const facts = inspectCallShape(changed);
+      const expected = { ...canonicalFacts, parserStage: 'wrapper' };
+      assert.deepEqual(facts, expected,
+        'identical syntax/decision facts apart from the parserStage diagnosis (WRAPPER_PATTERN pins the r spelling)');
+      assert.equal(facts.bindingEquality, 'equal', 'the binding relation holds without the spelling');
+      assert.equal(JSON.stringify(facts).includes('responseText'), false, 'no binding spelling may survive');
+      assert.equal(parseCallStatements(event(changed)), null);
+    });
+
+    test('record 3 S-tail-missing: the emission tail is absent and the output stage diagnosis fires', () => {
+      const missing = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"});`;
+      const facts = inspectCallShape(missing);
+      assert.deepEqual(facts, {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'none' }],
+        tail: 'none',
+        bindingEquality: 'unrelated',
+        parserStage: 'output',
+      });
+    });
+
+    test('record 4 S-tail-changed: the stringify tail is pinned and accepted; a property projection stays text-other with the empty v1 public-field allowlist', () => {
+      const stringify = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(JSON.stringify(r));`;
+      assert.deepEqual(inspectCallShape(stringify), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-stringify-binding' }],
+        tail: 'text-stringify-binding',
+      });
+      const property = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r.status);`;
+      assert.deepEqual(inspectCallShape(property), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-other' }],
+        tail: 'text-other',
+        parserStage: 'output',
+      });
+    });
+
+    test('record 5 S-arg-unsupported: a call-expression argument degrades to the closed unsupported class at the arguments stage', () => {
+      const unsupported = 'const r = await tools.exec_command({cmd: buildCmd()}); text(r);';
+      assert.deepEqual(inspectCallShape(unsupported), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'unsupported', lexical: 'complete', tail: 'text-binding' }],
+        parserStage: 'arguments',
+      });
+      const spread = 'const r = await tools.exec_command(...args); text(r);';
+      const facts = inspectCallShape(spread);
+      assert.equal(facts.statements[0].argument, 'unsupported');
+      assert.equal(facts.parserStage, 'arguments');
+    });
+
+    test('record 6 S-string-contained: tool-like text inside a private literal produces no syntax fact, so every retained fact matches the plain control', () => {
+      const contained = 'const r = await tools.exec_command({cmd:"prep text(r) tools.exec_command (prompt) alias"}); text(r);';
+      const control = `const r = await tools.exec_command({cmd:"plain ${CANARY_CMD} value"}); text(r);`;
+      const containedFacts = inspectCallShape(contained);
+      const controlFacts = inspectCallShape(control);
+      assert.deepEqual(containedFacts, controlFacts,
+        'string-boundary rule: content-only differences must be invisible in the retained facts');
+      assert.deepEqual(containedFacts, canonicalFacts);
+      assert.notEqual(parseCallStatements(event(contained)), null,
+        'the pinned wrapper grammar tolerates arbitrary string content, so the control family still accepts it');
+    });
+
+    test('record 7 S-extra: a hidden third statement is classified other and diagnosed at the residual stage', () => {
+      const extra = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\nconsole.log("synthetic-third");`;
+      const facts = inspectCallShape(extra);
+      assert.deepEqual(facts, {
+        ...canonicalFacts,
+        statements: [
+          { head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' },
+          { head: 'other', tool: 'no-call', argument: 'none', lexical: 'complete', tail: 'none' },
+        ],
+        statementCount: 2,
+        tail: 'none',
+        parserStage: 'residual',
+      });
+      assert.equal(facts.bindingEquality, 'equal', 'the bound result still pairs with the real emission');
+    });
+
+    test('record 8 S-trailing-blank: trailing blank formatting keeps every statement fact and diverges only at the residual stage', () => {
+      const trailing = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\n\n`;
+      assert.deepEqual(inspectCallShape(trailing), { ...canonicalFacts, parserStage: 'residual' });
+    });
+
+    test('the two-line observed live wrapper pair (launch plus poll) stays parse-accepted with equal binding', () => {
+      const pair = 'const r = await tools.exec_command({cmd:"x"}); text(r)\n'
+        + 'const r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n';
+      const facts = inspectCallShape(pair);
+      assert.equal(facts.parserStage, 'parse-accepted');
+      assert.equal(facts.statementCount, 2);
+      assert.equal(facts.head, 'bound-await');
+      assert.equal(facts.tool, 'other', 'the last call-carrying statement mirrors its tool class (write_stdin stays off the v1 exec_command-only allowlist)');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.notEqual(parseCallStatements(event(pair)), null);
+    });
+
+    // --- privacy boundary: adversarial inputs must never leak content ---
+
+    test('secrets in strings, nested objects, comments, identifiers and property names never reach the facts', () => {
+      const canaries = ['SECR-TASK-9QK4', 'SECR-NESTED-3XJ7', 'SECR-COMMENT-7PL2', 'SECR-IDENT-5MW8', 'SECR-PROP-2ND6'];
+      const hostileInputs = [
+        `const r = await tools.exec_command({cmd:"outer ${canaries[0]}"}); text(r);`,
+        `const r = await tools.exec_command({cmd:"a",nested:{deep:{inner:"${canaries[1]}"}}}); text(r);`,
+        `const r = await tools.exec_command({cmd:"x"}); /* ${canaries[2]} */ text(r);`,
+        `const ${canaries[3]} = await tools.exec_command({cmd:"x"}); text(${canaries[3]});`,
+        `const r = await tools.exec_command({${canaries[4]}:"v"}); text(r);`,
+      ];
+      for (const [index, hostile] of hostileInputs.entries()) {
+        let facts;
+        assert.doesNotThrow(() => { facts = inspectCallShape(hostile); }, `hostile input ${index} must never throw`);
+        const serialized = JSON.stringify(facts);
+        for (const canary of canaries) {
+          assert.equal(serialized.includes(canary), false,
+            `canary ${canary} must never survive hostile input ${index}`);
+        }
+      }
+    });
+
+    test('template literal content, malformed directives and tool-like text inside literals stay suppressed', () => {
+      const template = 'const r = await tools.exec_command({cmd:`TEMPL-8VK3-${x} text(r) tools.exec_command`}); text(r);';
+      let facts;
+      assert.doesNotThrow(() => { facts = inspectCallShape(template); });
+      assert.equal(JSON.stringify(facts).includes('TEMPL-8VK3'), false, 'template content must never survive');
+      assert.equal(JSON.stringify(facts).includes('${x}'), false, 'no interpolation may be resolved or retained');
+      assert.equal(facts.statements[0].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial', 'the unknown-classified node makes the whole-input coverage partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      const malformed = '// @exec: {"yield_time_ms": bad}\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      const malformedFacts = inspectCallShape(malformed);
+      assert.equal(malformedFacts.directive, 'invalid');
+      assert.equal(malformedFacts.parserStage, 'directive');
+      assert.equal(JSON.stringify(malformedFacts).includes('yield_time_ms'), false, 'directive keys are never retained');
+    });
+
+    test('regex-or-division code degrades to the closed unsupported-syntax class', () => {
+      // Statement slots are NEWLINE slots (mirroring the existing per-line
+      // cell splitter), so the division operator sits in its own slot.
+      const facts = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst s = a / b;');
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[1].head, 'unknown');
+      assert.equal(facts.statements[1].tool, 'unknown');
+      assert.equal(facts.statementCount, 2);
+    });
+
+    test('a cell with any unknown-classified statement node reports partial coverage and an unconsumed input', () => {
+      // §15.1's whole-input-consumed dimension: a cell whose statement node
+      // classified unknown (unsupported lexical feature) is NOT a complete
+      // classification — coverage 'partial', wholeInputConsumed false.
+      const withTemplate = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst s = `template ${x}`;';
+      const facts = inspectCallShape(withTemplate);
+      assert.equal(facts.statements[0].lexical, 'complete', 'the sayable statements keep their own verdicts');
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax');
+      assert.equal(facts.coverage, 'partial', 'an unknown-classified node makes the whole-input coverage partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      // An unsupported-syntax-ONLY cell is partial for the same reason.
+      const only = inspectCallShape('const s = `template ${x}`;');
+      assert.equal(only.coverage, 'partial');
+      assert.equal(only.wholeInputConsumed, false);
+      // Fully sayable cells stay complete (canonical invariance untouched).
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('lexical state carries across newline slots: comment-wrapped code produces no statement facts', () => {
+      // The finding's adversarial input verbatim: the wrapper lives INSIDE a
+      // multiline block comment, so per-line lexing would leak exec_command
+      // facts from comment content. String/comment boundaries come BEFORE
+      // structural classification — the comment-continuation slots must be
+      // unknown-classified and the cell must not claim a complete result.
+      const wrapped = '/*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(wrapped);
+      assert.equal(facts.statementCount, 3, 'the three content lines stay counted slots');
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'comment content classifies no head');
+        assert.equal(statement.tool, 'unknown', 'comment content classifies no tool');
+        assert.notEqual(statement.lexical, 'complete', 'comment-spanned slots are not complete statements');
+      }
+      assert.equal(facts.tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from comment content');
+      // A template literal spanning lines behaves the same (declared
+      // unsupported): continuation lines cannot produce facts.
+      const template = 'const prefixText = `open\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n`;';
+      const templateFacts = inspectCallShape(template);
+      assert.equal(templateFacts.coverage, 'partial');
+      assert.equal(templateFacts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(templateFacts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from template content');
+    });
+
+    test('unmatched and mismatched delimiters never classify as complete', () => {
+      // Truncated input: the unclosed `(` and `{` leave the delimiter stack
+      // nonempty at end-of-input → 'unterminated' (truncation), never a
+      // complete classification.
+      const truncated = 'const r = await tools.exec_command({cmd:"x"}';
+      const truncatedFacts = inspectCallShape(truncated);
+      assert.equal(truncatedFacts.statements[0].lexical, 'unterminated');
+      assert.equal(truncatedFacts.statements[0].head, 'unknown');
+      assert.equal(truncatedFacts.statements[0].tool, 'unknown');
+      assert.equal(truncatedFacts.coverage, 'partial');
+      assert.equal(truncatedFacts.wholeInputConsumed, false);
+      assert.equal(truncatedFacts.parserStage, 'wrapper');
+      // A mismatched closer (`]` where `)` belongs) is 'invalid', never a
+      // complete classification.
+      const mismatched = 'const r = await tools.exec_command({cmd:"x"}]';
+      const mismatchedFacts = inspectCallShape(mismatched);
+      assert.equal(mismatchedFacts.statements[0].lexical, 'invalid');
+      assert.equal(mismatchedFacts.statements[0].head, 'unknown');
+      assert.equal(mismatchedFacts.statements[0].tool, 'unknown');
+      assert.equal(mismatchedFacts.coverage, 'partial');
+      assert.equal(mismatchedFacts.wholeInputConsumed, false);
+      // A delimiter opened on one line and closed on a later line (the
+      // observed pretty-printed wrapper) stays lexically sound.
+      const pretty = 'const r = await tools.exec_command({\n  cmd: "x"\n}); text(r);';
+      const prettyFacts = inspectCallShape(pretty);
+      assert.equal(prettyFacts.statements[0].lexical, 'complete');
+      assert.equal(prettyFacts.statements[1].lexical, 'complete');
+      // Truncation ACROSS lines (the closer never arrives) poisons the
+      // participating lines, not just the first.
+      const truncatedPretty = 'const r = await tools.exec_command({\n  cmd: "x"\n}';
+      const truncatedPrettyFacts = inspectCallShape(truncatedPretty);
+      for (const statement of truncatedPrettyFacts.statements) {
+        assert.equal(statement.lexical, 'unterminated');
+        assert.equal(statement.head, 'unknown');
+      }
+      assert.equal(truncatedPrettyFacts.coverage, 'partial');
+      assert.equal(truncatedPrettyFacts.wholeInputConsumed, false);
+    });
+
+    test('Unicode inside literals changes no retained fact; raw control characters only move the mechanical parser-stage diagnosis', () => {
+      const unicode = 'const r = await tools.exec_command({cmd:"日本語 ✓ handle"}); text(r);';
+      const control = `const r = await tools.exec_command({cmd:"plain ${CANARY_CMD}"}); text(r);`;
+      assert.deepEqual(inspectCallShape(unicode), inspectCallShape(control));
+      // Raw control characters are invalid INSIDE a JSON string literal, so
+      // the existing grammar mechanically rejects the argument decode; the
+      // classifier stays bounded, content-free and closed.
+      const controlChars = 'const r = await tools.exec_command({cmd:"bad \u0000 \u001f here"}); text(r);';
+      const facts = inspectCallShape(controlChars);
+      assert.equal(facts.parserStage, 'arguments', 'the raw-mirror decode rejection is the mechanical arguments stage');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.statements[0].head, 'bound-await');
+      assert.equal(JSON.stringify(facts).includes('bad'), false);
+      assert.equal(parseCallStatements(event(controlChars)), null);
+    });
+
+    // --- robustness: bounded fixed results, never thrown private text ---
+
+    test('non-string input returns the fixed out-of-scope result and never throws', () => {
+      const fixed = {
+        version: 1,
+        coverage: 'over-scope',
+        statements: [],
+        statementCount: 0,
+        tool: 'no-call',
+        head: 'unknown',
+        tail: 'none',
+        bindingEquality: 'unknown',
+        parserStage: 'unknown',
+        directive: 'unknown',
+        wholeInputConsumed: false,
+      };
+      for (const bad of [undefined, null, 123, true, { cmd: 'x' }, ['x']]) {
+        assert.deepEqual(inspectCallShape(bad), fixed);
+      }
+    });
+
+    test('input over the 8192-byte bound drops the whole statement facts behind the over-budget marker', () => {
+      const oversized = `const r = await tools.exec_command({cmd:"${'x'.repeat(8300)}"}); text(r);`;
+      assert.equal(Buffer.byteLength(oversized, 'utf8') > 8192, true, 'test premise');
+      const facts = inspectCallShape(oversized);
+      assert.equal(facts.version, 1);
+      assert.equal(facts.coverage, 'over-budget');
+      assert.equal(Object.hasOwn(facts, 'statements'), false, 'statement nodes are dropped whole');
+      assert.equal(facts.statementCount, 1, 'the slot count is still retained');
+      assert.equal(facts.head, 'unknown');
+      assert.equal(facts.tool, 'unknown');
+      assert.equal(facts.tail, 'unknown');
+      assert.equal(facts.bindingEquality, 'unknown');
+      assert.equal(facts.parserStage, 'unknown');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('x'.repeat(64)), false, 'no filler or content survives');
+    });
+
+    test('more than 16 statement slots drops the whole statement facts behind the over-scope marker', () => {
+      const statement = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const overflow = Array.from({ length: 17 }, () => statement).join('\n');
+      const facts = inspectCallShape(overflow);
+      assert.equal(facts.coverage, 'over-scope');
+      assert.equal(facts.statementCount, 'over-limit');
+      assert.equal(Object.hasOwn(facts, 'statements'), false);
+      assert.equal(facts.parserStage, 'unknown');
+      assert.equal(facts.wholeInputConsumed, false);
+    });
+
+    test('an argument literal over the 4096-character bound reports over-limit at the arguments stage without dropping the statement', () => {
+      const over = `const r = await tools.exec_command({cmd:"${'y'.repeat(4100)}"}); text(r);`;
+      const facts = inspectCallShape(over);
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(facts.statements[0].argument, 'over-limit');
+      assert.equal(facts.parserStage, 'arguments');
+      assert.equal(JSON.stringify(facts).includes('y'.repeat(64)), false);
+    });
+
+    test('unterminated strings and comments yield the bounded partial result, never thrown text or partial acceptance', () => {
+      const unterminated = 'const r = await tools.exec_command({cmd:"never closed';
+      const facts = inspectCallShape(unterminated);
+      assert.equal(facts.statements[0].lexical, 'unterminated');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.parserStage, 'wrapper', 'the existing grammar mechanically rejects the line at its first stage');
+      const unterminatedComment = 'const r = /* never closed';
+      const commentFacts = inspectCallShape(unterminatedComment);
+      assert.equal(commentFacts.statements[0].lexical, 'unterminated');
+      assert.equal(commentFacts.coverage, 'partial');
+    });
+
+    test('the binding relation distinguishes equal, not-equal and unrelated without retaining spellings', () => {
+      const notEqual = 'const r = await tools.exec_command({cmd:"x"}); text(otherName);';
+      const notEqualFacts = inspectCallShape(notEqual);
+      assert.equal(notEqualFacts.bindingEquality, 'not-equal');
+      assert.equal(notEqualFacts.tail, 'text-binding');
+      assert.equal(JSON.stringify(notEqualFacts).includes('otherName'), false);
+      const bareAwait = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(bareAwait.statements[0].head, 'bare-await');
+      assert.equal(bareAwait.statements[0].tool, 'exec_command');
+      assert.equal(bareAwait.bindingEquality, 'unrelated');
+      assert.equal(bareAwait.head, 'bare-await');
+    });
+
+    test('optional chaining is the declared unsupported syntax, never an established output form', () => {
+      // §15.1: unsupported lexical features map the affected statement to
+      // lexical 'unsupported-syntax' with head/tool unknown — the classifier
+      // must not establish semantics (`text-public-field`/`text-other` output
+      // diagnosis) for a form it declares unsupported.
+      const optional = 'const r = await tools.exec_command({cmd:"x"}); text(r?.status);';
+      const facts = inspectCallShape(optional);
+      assert.equal(facts.statements[0].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.tail, 'unknown', 'no output form is established for the unsupported statement');
+      assert.equal(facts.parserStage, 'wrapper', 'the existing grammar mechanically rejects the line at its first stage');
+      // Optional ELEMENT access (`?.[`) and nullish coalescing (`??`) are the
+      // same declared-unsupported family.
+      for (const hostile of [
+        'const r = await tools.exec_command({cmd:"x"}); text(r?.[0]);',
+        'const r = await tools.exec_command({cmd:"x"}); text(r ?? {});',
+      ]) {
+        const variantFacts = inspectCallShape(hostile);
+        assert.equal(variantFacts.statements[0].lexical, 'unsupported-syntax');
+        assert.equal(variantFacts.coverage, 'partial');
+      }
+      // Plain ternaries remain ordinary code (their facts come only from the
+      // sayable structure).
+      const ternary = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r ? r : r);');
+      assert.equal(ternary.statements[0].lexical, 'complete');
+    });
+
+    test('public syntax facts require COMPLETE tool and emission references', () => {
+      // `$tools` is a private identifier (in JS `$` is an identifier
+      // character): its member reference is NOT the public `tools.` family.
+      const dollarPrefixed = 'const r = await $tools.exec_command({cmd:"x"}); text(r);';
+      const dollarFacts = inspectCallShape(dollarPrefixed);
+      assert.equal(dollarFacts.statements[0].tool, 'no-call', 'a `$tools` suffix must not establish the public tool fact');
+      assert.equal(dollarFacts.statements[0].head, 'bound-await', 'the sayable statement structure is unchanged');
+      assert.equal(dollarFacts.tool, 'no-call');
+      // `obj.text(r)` is a member expression, not the public `text(` emission:
+      // the canonical-exact grammar never establishes it (round-10 redesign:
+      // a non-canonical reference position withholds the WHOLE slot unknown —
+      // the old precise 'no emission here' claim is coarsened to honest
+      // unknown; the member access still establishes nothing public).
+      const memberEmission = 'const r = await tools.exec_command({cmd:"x"}); obj.text(r);';
+      const memberFacts = inspectCallShape(memberEmission);
+      assert.equal(memberFacts.statements[0].tail, 'unknown', 'a member `.text(` access is not a public emission — the slot withholds');
+      assert.equal(memberFacts.tail, 'unknown');
+      assert.equal(memberFacts.bindingEquality, 'unknown', 'no relation without a positively recognized emission');
+      assert.equal(memberFacts.coverage, 'partial');
+      assert.equal(memberFacts.wholeInputConsumed, false);
+      // The genuine references keep their facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('quoted-string state carries across backslash-newline continuations', () => {
+      // A single-quoted string continued with a backslash-newline: the whole
+      // second line is PRIVATE STRING CONTENT and must produce no facts.
+      const continued = "const s = 'private value \\\nconst r = await tools.exec_command({cmd:\"x\"}); text(r);\n';";
+      const facts = inspectCallShape(continued);
+      for (const statement of facts.statements) {
+        assert.notEqual(statement.tool, 'exec_command', 'string continuation content classifies no tool');
+        assert.equal(statement.head, 'unknown', 'string continuation content classifies no head');
+      }
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not survive inside string content');
+    });
+
+    test('lexical boundaries stay tracked after an unsupported token: a later multiline comment leaks nothing', () => {
+      // `?.` precedes a multiline comment: the comment must not be
+      // rediscovered as code on the next line.
+      const before = 'const a = x?.y; /*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(before);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'content after unsupported syntax classifies nothing');
+        assert.equal(statement.tool, 'unknown');
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the withheld remainder');
+    });
+
+    test('escaped backticks do not close a template: the cell remainder stays withheld', () => {
+      // The escaped backtick is not a closing delimiter, so the wrapper lines
+      // are template CONTENT; a later closed template must not restore code
+      // state either — once template syntax is seen, the rest of the cell is
+      // withheld.
+      const escaped = 'const t = `escaped \\` tick\n'
+        + 'const r = await tools.exec_command({cmd:"x"}); text(r);\n'
+        + '`;\n'
+        + 'text(await tools.exec_command({cmd:"y"}));';
+      const facts = inspectCallShape(escaped);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'template content and everything after it classify no head');
+        assert.equal(statement.tool, 'unknown', 'template content and everything after it classify no tool');
+        assert.notEqual(statement.lexical, 'complete', 'withheld slots are not complete statements');
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from template content');
+    });
+
+    test('complete-reference checks skip trivia and honor Unicode identifier continuations', () => {
+      // Trivia between the member dot and the reference is a NON-canonical
+      // reference position: the whole slot withholds unknown/partial instead
+      // of asserting either way (round-10 redesign coarsening of the old
+      // precise 'no-call'; the reference still never establishes the public
+      // tool fact).
+      const triviaTool = 'const r = await obj. tools.exec_command({cmd:"x"}); text(r);';
+      const triviaToolFacts = inspectCallShape(triviaTool);
+      assert.equal(triviaToolFacts.statements[0].tool, 'unknown',
+        'whitespace after the member dot is trivia, not a public reference boundary — withheld');
+      assert.equal(triviaToolFacts.coverage, 'partial');
+      // A Unicode identifier continuation (`πtools` is ONE identifier) is
+      // reliably token-free: the sayable structure keeps its precise facts.
+      const unicodeTool = 'const r = await πtools.exec_command({cmd:"x"}); text(r);';
+      const unicodeToolFacts = inspectCallShape(unicodeTool);
+      assert.equal(unicodeToolFacts.statements[0].tool, 'no-call',
+        'a Unicode identifier continuation keeps the reference private');
+      assert.equal(unicodeToolFacts.coverage, 'complete');
+      const triviaEmission = 'const r = await tools.exec_command({cmd:"x"}); obj. text(r);';
+      const triviaEmissionFacts = inspectCallShape(triviaEmission);
+      assert.equal(triviaEmissionFacts.statements[0].tail, 'unknown',
+        'whitespace after the member dot is trivia, not a public emission — withheld');
+      assert.equal(triviaEmissionFacts.bindingEquality, 'unknown');
+      assert.equal(triviaEmissionFacts.coverage, 'partial');
+      // The genuine references stay public across ordinary spacing.
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('an unknown-classified suffix keeps the binding relation unknown', () => {
+      // The actual final emission `text(`done`)` sits in an unsupported slot:
+      // the relation must not be recovered from the EARLIER emission.
+      const unknownSuffix = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext(`done`);';
+      const facts = inspectCallShape(unknownSuffix);
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax', 'the template argument is unsupported');
+      assert.equal(facts.bindingEquality, 'unknown', 'no relation is established past unclassified slots');
+      assert.equal(facts.coverage, 'partial');
+      // A sayable suffix keeps the precise relation.
+      const sayableSuffix = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext("done");';
+      assert.equal(inspectCallShape(sayableSuffix).bindingEquality, 'unrelated');
+    });
+
+    test('a mismatched delimiter withholds the cell remainder', () => {
+      // The invalid closer returns before the comment opener is scanned: the
+      // next line must NOT resume in code state, or the comment content
+      // produces public facts.
+      const invalid = ']; /*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(invalid);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.statements[0].lexical, 'invalid', 'the failing line keeps its own invalid verdict');
+      for (const [index, statement] of facts.statements.entries()) {
+        assert.equal(statement.head, 'unknown', 'content after an invalid delimiter classifies nothing');
+        assert.equal(statement.tool, 'unknown');
+        if (index > 0) {
+          assert.equal(statement.lexical, 'unsupported-syntax', 'the withheld remainder is unknown-classified');
+        }
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the withheld remainder');
+    });
+
+    test('reference boundaries carry across newline slots', () => {
+      // A member access continued on the next line (trailing dot) is a
+      // non-canonical reference position: the continuation slot withholds
+      // unknown instead of asserting (round-10 redesign coarsening of the
+      // old precise 'no-call'; the cross-line reference still never
+      // establishes a public fact).
+      const memberTool = 'obj.\ntools.exec_command({cmd:"x"}); text(r);';
+      const memberToolFacts = inspectCallShape(memberTool);
+      assert.equal(memberToolFacts.statements[1].tool, 'unknown',
+        'a member chain continued across the newline is not classified as the public tool');
+      assert.equal(memberToolFacts.coverage, 'partial', 'the non-canonical continuation makes the whole-input coverage partial');
+      const memberEmission = 'obj.\ntext(r);';
+      const memberEmissionFacts = inspectCallShape(memberEmission);
+      assert.equal(memberEmissionFacts.statements[1].tail, 'unknown',
+        'a member chain continued across the newline is not classified as the public emission');
+      assert.equal(memberEmissionFacts.bindingEquality, 'unknown');
+      // The genuine references stay public across ordinary line structure.
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+    });
+
+    test('astral identifier continuations keep references private', () => {
+      // 𐐀 is an astral ID_Start character: the boundary check must read the
+      // COMPLETE code point, not its trailing UTF-16 surrogate.
+      const astralTool = '𐐀tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(astralTool).statements[0].tool, 'no-call',
+        'an astral identifier continuation keeps the reference private');
+      const astralEmission = 'const r = await tools.exec_command({cmd:"x"}); 𐐀text(r);';
+      const astralEmissionFacts = inspectCallShape(astralEmission);
+      assert.equal(astralEmissionFacts.statements[0].tail, 'none',
+        'an astral identifier continuation is not the public emission');
+      assert.equal(astralEmissionFacts.bindingEquality, 'unrelated');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('emission tokens separated from their parenthesis by trivia still bind', () => {
+      // `text (r)` is an ordinary binding emission: the tail fact describes
+      // the syntax relation, while parserStage stays the mechanical mirror of
+      // the existing parser, which rejects the noncanonical spacing.
+      const spaced = 'const r = await tools.exec_command({cmd:"x"}); text (r);';
+      const facts = inspectCallShape(spaced);
+      assert.equal(facts.statements[0].tail, 'text-binding');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.parserStage, 'output', 'the existing grammar mechanically rejects the noncanonical spacing');
+      const commented = 'const r = await tools.exec_command({cmd:"x"}); text /* c */ (r);';
+      const commentedFacts = inspectCallShape(commented);
+      assert.equal(commentedFacts.statements[0].tail, 'text-binding', 'masked comments are trivia');
+      assert.equal(commentedFacts.bindingEquality, 'equal');
+      // An emission-first statement with the same spacing keeps its head class.
+      const emissionFirst = inspectCallShape('text (r);');
+      assert.equal(emissionFirst.statements[0].head, 'emission');
+      assert.equal(emissionFirst.statements[0].tail, 'text-binding');
+      // A longer identifier is still not the emission token.
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); textx (r);').statements[0].tail, 'none');
+    });
+
+    test('quoted-string state carries across backslash-CRLF continuations', () => {
+      // A single-quoted string continued with backslash-CRLF: the \r must not
+      // be consumed as an ordinary escape, or the next line resumes in code
+      // state and private string content produces public facts.
+      const crlf = 'const s = \'private value \\\r\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n\';';
+      const facts = inspectCallShape(crlf);
+      for (const statement of facts.statements) {
+        assert.notEqual(statement.tool, 'exec_command', 'string continuation content classifies no tool');
+        assert.equal(statement.head, 'unknown', 'string continuation content classifies no head');
+      }
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not survive inside string content');
+    });
+
+    test('member-reference context survives leading trivia and trivia-only lines', () => {
+      // Round-10 redesign: a member chain continued over trivia or a
+      // trivia-only line is a non-canonical reference position — the
+      // continuation slot withholds unknown instead of asserting 'no-call'
+      // (the reference still never establishes a public fact).
+      const indented = 'obj.\n  tools.exec_command({cmd:"x"}); text(r);';
+      const indentedFacts = inspectCallShape(indented);
+      assert.equal(indentedFacts.statements[1].tool, 'unknown',
+        'leading indentation does not make the continued member chain public — withheld');
+      const indentedEmission = 'obj.\n  text(r);';
+      const indentedEmissionFacts = inspectCallShape(indentedEmission);
+      assert.equal(indentedEmissionFacts.statements[1].tail, 'unknown',
+        'leading indentation does not make the continued member emission public — withheld');
+      const commentOnly = 'obj.\n// c\ntools.exec_command({cmd:"x"}); text(r);';
+      const commentOnlyFacts = inspectCallShape(commentOnly);
+      // The comment-only line carries NO statement node (self-review round 3,
+      // finding 1), so the tools slot is index 1 — still withheld unknown.
+      assert.equal(commentOnlyFacts.statementCount, 2);
+      assert.equal(commentOnlyFacts.statements[1].tool, 'unknown',
+        'a trivia-only intervening line does not clear the member context — the continuation withholds');
+      assert.equal(commentOnlyFacts.coverage, 'partial');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('declarations and method definitions are not emission calls', () => {
+      // `function text(r) {}` declares a function — it is not a call of the
+      // public emitter. Round-10 redesign: a declaration containing the
+      // emission token is not a positively recognized statement form, so the
+      // slot withholds unknown instead of asserting 'no emission here' — the
+      // declaration still never establishes the tail BY CONSTRUCTION.
+      const declaration = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nfunction text(r) {}';
+      const declarationFacts = inspectCallShape(declaration);
+      assert.equal(declarationFacts.statements[1].tail, 'unknown',
+        'a function declaration establishes no emission — the slot withholds');
+      assert.equal(declarationFacts.tail, 'unknown');
+      // A method definition inside an object literal is not a top-level call.
+      const method = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst privateObject = {text(r) {}};';
+      const methodFacts = inspectCallShape(method);
+      assert.equal(methodFacts.statements[1].tail, 'unknown',
+        'a method definition establishes no emission — the slot withholds');
+      assert.equal(methodFacts.tail, 'unknown');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('a trivia-split tool reference is unknown-classified, never a no-call claim', () => {
+      // `tools . exec_command(` is not a reliably-trackable canonical shape:
+      // conservatively unknown with coverage 'partial', never a confident
+      // "no call exists" under complete coverage. (Round-10 redesign: the
+      // slot is lexically SOUND — the withhold is a classification verdict,
+      // expressed by head/tool 'unknown' + coverage 'partial', so the
+      // lexical verdict stays the lexer's 'complete'.)
+      const spaced = 'const r = await tools . exec_command({cmd:"x"}); text(r);';
+      const spacedFacts = inspectCallShape(spaced);
+      assert.equal(spacedFacts.statements[0].lexical, 'complete');
+      assert.equal(spacedFacts.statements[0].head, 'unknown');
+      assert.equal(spacedFacts.statements[0].tool, 'unknown');
+      assert.equal(spacedFacts.coverage, 'partial');
+      assert.equal(spacedFacts.wholeInputConsumed, false);
+      const commented = 'const r = await tools /* c */ . exec_command({cmd:"x"}); text(r);';
+      const commentedFacts = inspectCallShape(commented);
+      assert.equal(commentedFacts.statements[0].lexical, 'complete');
+      assert.equal(commentedFacts.coverage, 'partial');
+      // The canonical exact reference stays fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.coverage, 'complete');
+    });
+
+    test('a tool reference split across newline slots is unknown-classified, never a confident no-call', () => {
+      // The same round-4 conservative treatment as the same-line trivia split:
+      // a reference continued on the next line (trailing `tools.` or bare
+      // trailing `tools`) is not reliably trackable, so the continuation slot
+      // is unknown-classified with coverage 'partial' — never a confident
+      // 'no-call' under complete coverage.
+      const splitAfterDot = 'const r = await tools.\nexec_command({cmd:"x"});\ntext(r);';
+      const splitAfterDotFacts = inspectCallShape(splitAfterDot);
+      assert.equal(splitAfterDotFacts.statements[1].lexical, 'complete',
+        'the reference continuation slot is withheld though lexically sound');
+      assert.equal(splitAfterDotFacts.statements[1].head, 'unknown');
+      assert.equal(splitAfterDotFacts.statements[1].tool, 'unknown');
+      assert.equal(splitAfterDotFacts.tool, 'unknown', 'no confident no-call in the tool mirror');
+      assert.equal(splitAfterDotFacts.coverage, 'partial');
+      assert.equal(splitAfterDotFacts.wholeInputConsumed, false);
+      assert.equal(splitAfterDotFacts.bindingEquality, 'unknown',
+        'the unknown continuation sits between the binding and the final emission');
+      const splitBare = 'const r = await tools\n.exec_command({cmd:"x"});\ntext(r);';
+      const splitBareFacts = inspectCallShape(splitBare);
+      assert.equal(splitBareFacts.statements[1].lexical, 'complete');
+      assert.equal(splitBareFacts.statements[1].tool, 'unknown');
+      assert.equal(splitBareFacts.coverage, 'partial');
+      assert.equal(JSON.stringify(splitBareFacts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the split reference');
+      // The genuine references stay fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('per-line emission depth is cell-relative across spanning objects', () => {
+      // `text(r) {}` inside a multi-line object literal is a method
+      // declaration at CELL depth 1. Round-10 redesign: a slot inside a
+      // spanning bracket construct is not a top-level statement, so it
+      // withholds unknown — the method line still establishes no emission
+      // BY CONSTRUCTION (the old precise 'no emission here' claim and the
+      // relation it enabled are coarsened to honest unknown).
+      const spanning = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst obj = {\ntext(r) {}\n};';
+      const facts = inspectCallShape(spanning);
+      assert.equal(facts.statements[2].tail, 'unknown',
+        'a method declaration inside a spanning object establishes no emission — the slot withholds');
+      assert.equal(facts.tail, 'unknown');
+      assert.equal(facts.bindingEquality, 'unknown',
+        'unclassified slots after the final emission withhold the relation');
+      assert.equal(facts.coverage, 'partial');
+      // The genuine emission keeps its facts (invariance).
+      assert.equal(facts.statements[0].tail, 'text-binding');
+    });
+
+    test('identifier escapes keep references private', () => {
+      // `privat\u{65}` spells `private` through a Unicode escape: the raw
+      // character before the candidate is `}`. Round-10 redesign (class iv):
+      // an identifier escape ANYWHERE in the slot makes every reference
+      // spelling undecidable, so the slot withholds unknown/partial — never
+      // a confident presence OR absence claim.
+      const escapedTool = 'privat\\u{65}tools.exec_command({cmd:"x"}); text(r);';
+      const escapedToolFacts = inspectCallShape(escapedTool);
+      assert.equal(escapedToolFacts.statements[0].tool, 'unknown',
+        'an identifier escape withholds the reference — never a confident absence');
+      assert.equal(escapedToolFacts.coverage, 'partial');
+      assert.equal(escapedToolFacts.wholeInputConsumed, false);
+      const escapedEmission = 'const r = await tools.exec_command({cmd:"x"}); privat\\u{65}text(r);';
+      const escapedEmissionFacts = inspectCallShape(escapedEmission);
+      assert.equal(escapedEmissionFacts.statements[0].tail, 'unknown',
+        'an identifier escape in the emission position withholds — never a confident absence');
+      assert.equal(escapedEmissionFacts.bindingEquality, 'unknown');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('generators, constructors and unproven contexts are not emission calls', () => {
+      // `function* text(r) {}` is a generator declaration. Round-10 redesign:
+      // not a positively recognized statement form — the slot withholds
+      // unknown, so the declaration still establishes no emission BY
+      // CONSTRUCTION (the old precise 'no emission here' claim is coarsened).
+      const generator = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nfunction* text(r) {}';
+      const generatorFacts = inspectCallShape(generator);
+      assert.equal(generatorFacts.statements[1].tail, 'unknown',
+        'a generator declaration establishes no emission — the slot withholds');
+      assert.equal(generatorFacts.tail, 'unknown');
+      // `new text(r)` is a constructor invocation, not the public emitter.
+      const constructed = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nnew text(r);';
+      const constructedFacts = inspectCallShape(constructed);
+      assert.equal(constructedFacts.statements[1].tail, 'unknown',
+        'a constructor invocation establishes no emission — the slot withholds');
+      assert.equal(constructedFacts.tail, 'unknown');
+      // An unproven call context (an assignment) withholds the tail and the
+      // relation instead of asserting either way.
+      const assigned = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst assigned = text(r);';
+      const assignedFacts = inspectCallShape(assigned);
+      assert.equal(assignedFacts.statements[1].tail, 'unknown',
+        'an unproven call context withholds the tail');
+      assert.equal(assignedFacts.bindingEquality, 'unknown',
+        'no relation is asserted when the final emission context is unproven');
+      // An undecidable occurrence as the LAST top-level emission occurrence
+      // withholds the top-level tail itself, not only the relation — an
+      // earlier proven emission is never asserted over it.
+      const undecidableLast = 'const r = await tools.exec_command({cmd:"x"}); text(r); if (x) text(s);';
+      const undecidableLastFacts = inspectCallShape(undecidableLast);
+      assert.equal(undecidableLastFacts.tail, 'unknown',
+        'the final top-level emission occurrence is undecidable, so the tail is unknown');
+      assert.equal(undecidableLastFacts.bindingEquality, 'unknown');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('uncertainty precedes identifier equality regardless of slot layout', () => {
+      // The undecidable assignment SHARES the wrapper's slot: the relation is
+      // still unknown — uncertainty takes precedence over identifier equality.
+      const sameSlot = 'const r = await tools.exec_command({cmd:"x"}); text(r); const assigned = text(other);';
+      const sameSlotFacts = inspectCallShape(sameSlot);
+      assert.equal(sameSlotFacts.bindingEquality, 'unknown',
+        'an undecidable emission in the same slot forces the relation unknown');
+      assert.equal(sameSlotFacts.coverage, 'partial',
+        'the withheld assignment makes the whole-input coverage partial');
+      // An unknown-classified slot BETWEEN the binding and the final emission
+      // forces the relation unknown as well.
+      const betweenUnknown = 'const r = await tools.exec_command({cmd:"x"}); const s = `tpl`;\ntext(r);';
+      const betweenFacts = inspectCallShape(betweenUnknown);
+      assert.equal(betweenFacts.bindingEquality, 'unknown',
+        'an unknown slot between the binding and the final emission forces unknown');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('call-position context carries across newline slots', () => {
+      // An arrow-function body continued on the next line is an unproven call
+      // position: the continuation withholds instead of asserting.
+      const arrowBody = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst f = () =>\ntext(other);';
+      const arrowFacts = inspectCallShape(arrowBody);
+      assert.equal(arrowFacts.statements[2].tail, 'unknown',
+        'a start-of-line continuation after a non-boundary is unproven');
+      assert.equal(arrowFacts.bindingEquality, 'unknown');
+      // The constructor keyword survives the line break: the carried slot is
+      // an unproven continuation, so it withholds instead of asserting
+      // (round-10 redesign coarsening of the old precise 'constructor here'
+      // claim — the constructor invocation still establishes no emission).
+      const splitNew = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nnew\ntext(r);';
+      const splitNewFacts = inspectCallShape(splitNew);
+      assert.equal(splitNewFacts.statements[2].tail, 'unknown',
+        'a `new` continued across the newline is still not a classified emission — withheld');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('the await keyword requires a complete token boundary', () => {
+      // `await$secret` is the private identifier `await$secret` — no await
+      // expression, so neither the bound-await head nor a relation follows.
+      const dollarAwait = 'const r = await$secret; text(r);';
+      const dollarFacts = inspectCallShape(dollarAwait);
+      assert.equal(dollarFacts.statements[0].head, 'other',
+        'await$secret is not the await keyword');
+      assert.equal(dollarFacts.bindingEquality, 'unrelated');
+      // `awaitπ` is likewise a private identifier.
+      const piAwait = inspectCallShape('awaitπ;');
+      assert.equal(piAwait.statements[0].head, 'other', 'awaitπ is a private identifier, not the await keyword');
+      // The genuine keyword forms keep their heads (invariance).
+      const genuine = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(genuine.statements[0].head, 'bound-await');
+      const bare = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(bare.statements[0].head, 'bare-await');
+    });
+
+    test('an emission reference split across a newline slot withholds the relation', () => {
+      // The `text` token ends one slot and its argument lands on the next:
+      // the split emission is not reliably trackable, so the continuation
+      // slot is unknown-classified and an EARLIER emission never asserts the
+      // relation.
+      const split = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext\n(other);';
+      const facts = inspectCallShape(split);
+      assert.equal(facts.statements[1].lexical, 'complete',
+        'the emission continuation slot is withheld though lexically sound');
+      assert.equal(facts.statements[1].head, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.bindingEquality, 'unknown',
+        'the earlier emission never asserts the relation over the split');
+      // The genuine emissions stay fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('subsequent bindings in one slot agree with the split layout', () => {
+      // The binding preceding the final emission is `s` in BOTH layouts —
+      // the retained relation must depend on the binding relationship, not
+      // on the slot layout.
+      const oneSlot = 'const r = await tools.exec_command({cmd:"x"}); const s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(oneSlot).bindingEquality, 'equal',
+        'the one-slot layout tracks the subsequent binding preceding the final emission');
+      const twoSlots = 'const r = await tools.exec_command({cmd:"x"});\nconst s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(twoSlots).bindingEquality, 'equal',
+        'the split layout agrees with the one-slot layout');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('private-name suffixes never establish the public tool reference', () => {
+      // `this.#tools` is a private member. Round-10 redesign: the class body
+      // is not a positively recognized statement form, so the slot withholds
+      // unknown — the private name still never attributes the public tool
+      // fact BY CONSTRUCTION (the old precise 'no-call' claim is coarsened).
+      const privateName = 'class C { #tools() {} method() { this.#tools.exec_command({cmd:"x"}); } }';
+      const facts = inspectCallShape(privateName);
+      assert.equal(facts.statements[0].tool, 'unknown',
+        'the private member reference never establishes the public tool — withheld');
+      assert.equal(facts.coverage, 'partial');
+    });
+
+    test('escaped identifier continuations after await are not the keyword', () => {
+      // `await\u0061` spells `awaita` — an identifier, not the keyword.
+      // Round-10 redesign (class iv): the escape makes the slot's reference
+      // spellings undecidable, so the slot withholds unknown instead of
+      // asserting either the keyword or a private identifier.
+      const escaped = 'const r = await\\u0061; text(r);';
+      const escapedFacts = inspectCallShape(escaped);
+      assert.equal(escapedFacts.statements[0].head, 'unknown',
+        'an escape after the await token withholds the head');
+      assert.equal(escapedFacts.bindingEquality, 'unknown');
+      assert.equal(escapedFacts.coverage, 'partial');
+      const escapedBare = inspectCallShape('await\\u0061;');
+      assert.equal(escapedBare.statements[0].head, 'unknown',
+        'the bare-await form requires the same complete boundary — withheld');
+      // The genuine keyword forms keep their heads (invariance).
+      const genuine = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(genuine.statements[0].head, 'bound-await');
+    });
+
+    test('nested-declaration bindings are not top-level bindings', () => {
+      // The function-local `const s` cannot supply the top-level emission's
+      // binding: binding candidates are TOP-LEVEL declarations only.
+      const nested = 'const r = await tools.exec_command({cmd:"x"}); async function f() { const s = await other(); } text(r);';
+      const nestedFacts = inspectCallShape(nested);
+      assert.equal(nestedFacts.bindingEquality, 'equal',
+        'the top-level binding r pairs with the top-level emission r');
+      assert.equal(nestedFacts.coverage, 'complete');
+      // The split layout agrees.
+      const nestedSplit = 'const r = await tools.exec_command({cmd:"x"});\nasync function f() { const s = await other(); }\ntext(r);';
+      assert.equal(inspectCallShape(nestedSplit).bindingEquality, 'equal');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('Unicode identifier tokens participate like ASCII ones', () => {
+      // A recognized call with a non-allowlisted name is the fixed `other`
+      // class — never a confident no-call.
+      const unicodeTool = 'await tools.工具({});';
+      const unicodeToolFacts = inspectCallShape(unicodeTool);
+      assert.equal(unicodeToolFacts.statements[0].tool, 'other',
+        'a recognized call with a non-allowlisted name is other');
+      assert.equal(unicodeToolFacts.coverage, 'complete');
+      // A Unicode binding identifier participates in bindingEquality.
+      const unicodeBinding = 'const π = await tools.exec_command({cmd:"x"}); text(π);';
+      const unicodeBindingFacts = inspectCallShape(unicodeBinding);
+      assert.equal(unicodeBindingFacts.statements[0].head, 'bound-await');
+      assert.equal(unicodeBindingFacts.statements[0].tail, 'text-binding');
+      assert.equal(unicodeBindingFacts.bindingEquality, 'equal',
+        'the Unicode binding participates like an ASCII one');
+      assert.equal(unicodeBindingFacts.coverage, 'complete');
+    });
+
+    test('declarations split across slots carry their binding forward', () => {
+      // `const s =` ends one slot and the awaited call lands on the next:
+      // the pending declaration binds the next slot's call, so the layouts
+      // must not disagree.
+      const split = 'const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'equal',
+        'the pending declaration binds the next slot\'s call');
+      assert.equal(splitFacts.coverage, 'complete');
+      const joined = 'const s = await tools.exec_command({cmd:"x"}); text(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'equal',
+        'the joined layout agrees with the split layout');
+    });
+
+    test('later tool-calling statements within a slot mirror the top-level tool', () => {
+      // The documented mirror rule is the LAST call-carrying statement: the
+      // slot layout must not change the retained tool fact.
+      const joined = 'await tools.other({}); await tools.exec_command({cmd:"x"});';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.statements[0].tool, 'exec_command',
+        'the last top-level call in the slot is mirrored');
+      assert.equal(joinedFacts.tool, 'exec_command');
+      const split = 'await tools.other({});\nawait tools.exec_command({cmd:"x"});';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.tool, 'exec_command',
+        'the split layout agrees with the joined layout');
+    });
+
+    test('unsupported references relabel a slot even when a canonical call shares it', () => {
+      // The trivia-split reference in the SECOND statement must relabel the
+      // whole slot unknown/partial — a canonical call earlier in the same
+      // slot never suppresses the uncertainty checks.
+      const mixed = 'await tools.exec_command({cmd:"x"}); await tools .other({});';
+      const mixedFacts = inspectCallShape(mixed);
+      assert.equal(mixedFacts.statements[0].lexical, 'complete',
+        'the unsupported reference relabels the slot (lexically sound, classification withheld)');
+      assert.equal(mixedFacts.statements[0].head, 'unknown');
+      assert.equal(mixedFacts.statements[0].tool, 'unknown');
+      assert.equal(mixedFacts.coverage, 'partial');
+      assert.equal(mixedFacts.wholeInputConsumed, false);
+      // The canonical-only slot stays fully recognized (invariance).
+      const canonical = 'await tools.exec_command({cmd:"x"});';
+      const canonicalFacts = inspectCallShape(canonical);
+      assert.equal(canonicalFacts.statements[0].tool, 'exec_command');
+      assert.equal(canonicalFacts.coverage, 'complete');
+    });
+
+    test('bindings declared after a slot-local emission still bind later emissions', () => {
+      // `const s` is declared AFTER the first slot's emission but BEFORE the
+      // final emission: both layouts must agree that `s` pairs with `s`.
+      const joined = 'const r = await f(); text(r); const s = await g();\ntext(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'equal',
+        'the end-of-slot binding state survives into the later final emission');
+      const split = 'const r = await f(); text(r);\nconst s = await g();\ntext(s);';
+      assert.equal(inspectCallShape(split).bindingEquality, 'equal',
+        'the split layout agrees with the joined layout');
+    });
+
+    test('a pending binding without an awaited initializer is never adopted', () => {
+      // `const s =` continued by `0;` establishes no awaited result: the
+      // pending identifier is discarded and both layouts agree on 'unrelated'.
+      const split = 'const s =\n0;\ntext(s);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'unrelated',
+        'a non-await continuation never becomes an awaited-result binding');
+      const joined = 'const s = 0;\ntext(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'unrelated',
+        'the joined layout agrees with the split layout');
+      // The awaited continuation keeps the pending binding (invariance).
+      const awaited = 'const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);';
+      assert.equal(inspectCallShape(awaited).bindingEquality, 'equal');
+    });
+
+    test('escaped references in reference position are unknown-classified', () => {
+      // `\u0074ools` spells `tools` through an escape: the reference position
+      // is not reliably decidable, so the slot is withheld — never a
+      // confident absence claim under complete coverage.
+      const escaped = 'await \\u0074ools.exec_command({cmd:"x"});';
+      const escapedFacts = inspectCallShape(escaped);
+      assert.equal(escapedFacts.statements[0].lexical, 'complete',
+        'the escaped reference slot is withheld though lexically sound');
+      assert.equal(escapedFacts.statements[0].head, 'unknown');
+      assert.equal(escapedFacts.statements[0].tool, 'unknown');
+      assert.equal(escapedFacts.coverage, 'partial');
+      assert.equal(escapedFacts.wholeInputConsumed, false);
+      // The genuine reference stays fully recognized (invariance).
+      const genuine = 'await tools.exec_command({cmd:"x"});';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.coverage, 'complete');
+    });
+
+    test('an underscore-initial binding is an ordinary JavaScript identifier (round 10, class i)', () => {
+      // `$` AND `_` are ECMAScript identifier-start characters on TOP of the
+      // Unicode \p{ID_Start} property (the low line U+005F is NOT inside
+      // \p{ID_Start}), so the positive grammar's identifier classes spell
+      // both out: the underscore binding participates like any other.
+      const facts = inspectCallShape('const _r = await tools.exec_command({cmd:"x"}); text(_r);');
+      assert.equal(facts.statements[0].head, 'bound-await');
+      assert.equal(facts.statements[0].tool, 'exec_command');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(JSON.stringify(facts).includes('_r'), false, 'no binding spelling may survive');
+      // A `$`-initial binding behaves identically.
+      const dollar = inspectCallShape('const $r = await tools.exec_command({cmd:"x"}); text($r);');
+      assert.equal(dollar.head, 'bound-await');
+      assert.equal(dollar.bindingEquality, 'equal');
+      assert.equal(dollar.coverage, 'complete');
+    });
+
+    test('a pending declaration is adopted only when the continuation starts the awaited initializer (round 10, class ii)', () => {
+      // `const r =` continued by `0; await tools.…; text(r);` — the
+      // continuation does NOT itself start the awaited initializer, so the
+      // pending identifier is never adopted and the split layout agrees with
+      // the joined `const r = 0; …` layout ('unrelated').
+      const split = 'const r =\n0; await tools.exec_command({cmd:"x"}); text(r);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'unrelated',
+        'a non-await continuation never adopts the pending binding');
+      const joined = 'const r = 0; await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'unrelated',
+        'the joined layout agrees with the split layout');
+      // Invariance: the awaited continuation keeps the pending binding.
+      assert.equal(inspectCallShape('const r =\nawait tools.exec_command({cmd:"x"}); text(r);').bindingEquality, 'equal');
+    });
+
+    test('comma-separated declarators bind positionally like the split layout (round 10, class iii)', () => {
+      // The LAST awaited binding before the final emission binds it in BOTH
+      // layouts — the retained relation must not depend on the declarator
+      // layout.
+      const joined = 'const r = await tools.exec_command({cmd:"x"}), s = await tools.exec_command({cmd:"y"}); text(s);';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.bindingEquality, 'equal',
+        'the comma layout tracks the binding preceding the final emission');
+      assert.equal(joinedFacts.coverage, 'complete');
+      const split = 'const r = await tools.exec_command({cmd:"x"});\nconst s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(split).bindingEquality, 'equal',
+        'the split layout agrees with the comma layout');
+    });
+
+    test('an identifier escape anywhere in a reference token withholds the slot (round 10, class iv)', () => {
+      // An escape makes every reference spelling undecidable from raw
+      // characters: the slot is unknown-classified with coverage 'partial' —
+      // never a confident presence OR absence claim.
+      for (const hostile of [
+        'await \\u0074ools.exec_command({cmd:"x"});',
+        'await tools.exec_comman\\u0064({cmd:"x"});',
+        'privat\\u{65}tools.exec_command({cmd:"x"}); text(r);',
+        'const r = await tools.exec_command({cmd:"x"}); privat\\u{65}text(r);',
+      ]) {
+        const facts = inspectCallShape(hostile);
+        assert.equal(facts.coverage, 'partial', hostile);
+        assert.equal(facts.wholeInputConsumed, false, hostile);
+        for (const statement of facts.statements) {
+          assert.equal(statement.head, 'unknown', `no confident head for: ${hostile}`);
+          assert.equal(statement.tool, 'unknown', `never a confident presence or absence for: ${hostile}`);
+        }
+      }
+      // The genuine references stay fully recognized (invariance).
+      const genuine = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(genuine.statements[0].tool, 'exec_command');
+      assert.equal(genuine.coverage, 'complete');
+    });
+
+    test('a trivia-only slot carries no statement node (self-review round 3, finding 1)', () => {
+      // A comment-only line is FORMATTING, not a statement: it must not
+      // become a phantom statement node — no mirror distortion (head is the
+      // first STATEMENT's head, tail the last STATEMENT's tail), no slot
+      // count, no coverage cost.
+      const alone = inspectCallShape('// nothing here');
+      assert.equal(alone.statementCount, 0);
+      assert.deepEqual(alone.statements, []);
+      assert.equal(alone.coverage, 'complete');
+      assert.equal(alone.wholeInputConsumed, true);
+      const trailing = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\n// done');
+      assert.equal(trailing.statementCount, 1);
+      assert.equal(trailing.tail, 'text-binding', 'a trailing comment cannot blank the last statement tail');
+      assert.equal(trailing.bindingEquality, 'equal');
+      assert.equal(trailing.coverage, 'complete');
+      assert.equal(trailing.parserStage, 'residual', 'the existing grammar rejects the trailing comment line at its residual stage');
+      const leading = inspectCallShape('/* lead */\nconst r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(leading.head, 'bound-await', 'a leading comment cannot blank the first statement head');
+      assert.equal(leading.statementCount, 1);
+      assert.equal(leading.coverage, 'complete');
+    });
+
+    test('const-anchored heads require a proven statement position (self-review round 3, finding 2)', () => {
+      // A `const` declaration continued from an UNPROVEN statement position
+      // (a dangling member dot, an `if` head — the latter not even valid JS)
+      // withholds exactly like every other head: the const anchor alone
+      // proves nothing about the position.
+      for (const hostile of [
+        'foo.\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+        'if (x)\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+      ]) {
+        const facts = inspectCallShape(hostile);
+        assert.equal(facts.coverage, 'partial', hostile);
+        assert.equal(facts.wholeInputConsumed, false, hostile);
+        assert.equal(facts.statements[1].head, 'unknown', `no confident wrapper facts at an unproven position: ${hostile}`);
+        assert.equal(facts.statements[1].tool, 'unknown', hostile);
+        assert.equal(facts.bindingEquality, 'unknown', hostile);
+      }
+      // The genuine positions keep their facts (invariance): the cell start,
+      // a position after a terminated statement, and the observed two-line
+      // pair whose first line is a positively completed statement.
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+      assert.equal(inspectCallShape('text(r);\nconst r = await tools.exec_command({cmd:"x"}); text(r);').statements[1].head, 'bound-await');
+      const pair = 'const r = await tools.exec_command({cmd:"x"}); text(r)\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n';
+      const pairFacts = inspectCallShape(pair);
+      assert.equal(pairFacts.statementCount, 2);
+      assert.equal(pairFacts.coverage, 'complete');
+      assert.equal(pairFacts.tool, 'other');
+    });
+
+    test('a pending declaration withholds emission continuations (self-review round 3, finding 3)', () => {
+      // `const s =` continued by `text(x); …` — the emission is the
+      // INITIALIZER expression, never a top-level emission of the slot: the
+      // split layout must withhold exactly like the joined layout.
+      const split = 'const s =\ntext(x); await tools.exec_command({cmd:"y"});';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.coverage, 'partial');
+      assert.equal(splitFacts.wholeInputConsumed, false);
+      assert.equal(splitFacts.bindingEquality, 'unknown');
+      assert.equal(splitFacts.tail, 'unknown', 'the initializer emission is never a top-level tail');
+      const joined = 'const s = text(x); await tools.exec_command({cmd:"y"});';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.coverage, 'partial');
+      assert.equal(joinedFacts.bindingEquality, 'unknown');
+      assert.equal(joinedFacts.tail, 'unknown');
+    });
+
+    test('mixed declarator lists keep the awaited bindings positionally (self-review round 3, finding 4)', () => {
+      // `const r = await f(), s = 2; text(r);` — the awaited binding r pairs
+      // with the emission in BOTH layouts; the non-awaited declarator is
+      // skipped (it carries no result binding).
+      const joined = inspectCallShape('const r = await f(), s = 2; text(r);');
+      assert.equal(joined.bindingEquality, 'equal');
+      assert.equal(joined.head, 'bound-await');
+      assert.equal(joined.coverage, 'complete');
+      const split = inspectCallShape('const r = await f();\nconst s = 2; text(r);');
+      assert.equal(split.bindingEquality, 'equal');
+      assert.equal(split.head, 'bound-await');
+      // A non-awaited declarator carrying a public-reference token still
+      // withholds (never silently ignored).
+      const hostile = inspectCallShape('const r = await f(), s = text(x); text(r);');
+      assert.equal(hostile.coverage, 'partial');
+    });
+
+    test('a line comment ends at every ECMAScript line terminator (codex round 11)', () => {
+      // JavaScript ends a line comment at LF, CR, U+2028 and U+2029 — not
+      // only at the LF the slot split consumed: code carried after a
+      // separator inside one newline slot is real CODE and must classify.
+      // The old mask swallowed the whole remaining slot into the comment —
+      // a confident wrong absence (zero statements, 'no-call') under
+      // complete coverage.
+      for (const separator of ['\u2028', '\u2029', '\r']) {
+        const input = `// lead${separator}const alias = await tools.exec_command({cmd:"x"}); text(alias);`;
+        const facts = inspectCallShape(input);
+        assert.equal(facts.tool, 'exec_command', `separator ${JSON.stringify(separator)}: the carried statement must classify`);
+        assert.equal(facts.statements[0].head, 'bound-await', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.tail, 'text-binding', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.bindingEquality, 'equal', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.coverage, 'complete', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.wholeInputConsumed, true, `separator ${JSON.stringify(separator)}`);
+        assert.equal(JSON.stringify(facts).includes('alias'), false, 'no binding spelling may survive');
+      }
+      // The genuine LF form is unchanged (invariance).
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').tool, 'exec_command');
+    });
+
+    test('a dangling pending declaration at end of input is unresolved truncation (codex round 12)', () => {
+      // §15.1's truncation rule: EOF with an unresolved `const <id> =` is
+      // TRUNCATED input — the initializer's statement never arrived, so the
+      // cell never claims complete coverage, and the uncertainty propagates
+      // to the binding relation (never asserted over the dangling pending).
+      const alone = inspectCallShape('const unfinished =');
+      assert.equal(alone.coverage, 'partial');
+      assert.equal(alone.wholeInputConsumed, false);
+      assert.equal(alone.bindingEquality, 'unknown');
+      const appended = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished =');
+      assert.equal(appended.bindingEquality, 'unknown', 'the wrapper relation is never asserted over the unresolved initializer');
+      assert.equal(appended.coverage, 'partial');
+      assert.equal(appended.wholeInputConsumed, false);
+      // Trailing blank and comment-only formatting lines do not resolve the
+      // dangling pending.
+      const trailed = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished =\n\n// done');
+      assert.equal(trailed.bindingEquality, 'unknown');
+      assert.equal(trailed.coverage, 'partial');
+      assert.equal(trailed.wholeInputConsumed, false);
+      // Invariance: the valid split initializer stays resolved.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+    });
+
+    test('an unfinished awaited expression withholds its continuation (codex round 13)', () => {
+      // `const alias = await receiver.\ntext(value);` is ONE member call —
+      // the continuation line completes the awaited expression, so it is
+      // never a standalone emission: no fabricated tail, no invented
+      // relation, and the split layout withholds exactly like the joined
+      // one. The trailing-`new` constructor continuation behaves the same.
+      for (const hostile of [
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const split = inspectCallShape(hostile);
+        assert.equal(split.tail, 'unknown', `no fabricated emission tail for: ${hostile}`);
+        assert.equal(split.bindingEquality, 'unknown', `no invented relation for: ${hostile}`);
+        assert.equal(split.coverage, 'partial', hostile);
+        assert.equal(split.wholeInputConsumed, false, hostile);
+        for (const statement of split.statements.slice(1)) {
+          assert.equal(statement.head, 'unknown', `the continuation is not a standalone statement: ${hostile}`);
+          assert.equal(statement.tail, 'unknown', hostile);
+        }
+        const joined = inspectCallShape(hostile.replace('\n', ' '));
+        assert.equal(joined.coverage, 'partial', hostile);
+        assert.equal(joined.bindingEquality, 'unknown', hostile);
+        assert.equal(joined.wholeInputConsumed, false, hostile);
+      }
+      // At end of input an unfinished expression is truncation too — never
+      // complete success.
+      const eof = inspectCallShape('const alias = await receiver.');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: the canonical split initializer stays recognized.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('completion is proven only by the pinned grammar, never by tail denial (codex round 14)', () => {
+      // An expression continues after a LARGE open token set — enumerating
+      // unfinished tails (dot, `new`, `+`, …) can never terminate. COMPLETION
+      // IS ONLY EVER ASSERTED FROM THE PINNED POSITIVE GRAMMAR: a
+      // declaration/awaited segment proves the next slot's statement position
+      // ONLY through a properly closed pinned `tools.<name>(…)` call (or the
+      // slot-level `;` boundary). Any other tail — an operator, a dot, `new`,
+      // an open paren, anything — leaves completion unproven: a following
+      // line withholds (it continues that expression) and end of input is
+      // truncation.
+      for (const hostile of [
+        'const alias = await receiver +\ntext(value);',
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const split = inspectCallShape(hostile);
+        assert.equal(split.tail, 'unknown', `no fabricated emission tail for: ${hostile}`);
+        assert.equal(split.bindingEquality, 'unknown', `no invented relation for: ${hostile}`);
+        assert.equal(split.coverage, 'partial', hostile);
+        assert.equal(split.wholeInputConsumed, false, hostile);
+        for (const statement of split.statements.slice(1)) {
+          assert.equal(statement.head, 'unknown', `the continuation is not a standalone statement: ${hostile}`);
+          assert.equal(statement.tail, 'unknown', hostile);
+        }
+        const joined = inspectCallShape(hostile.replace('\n', ' '));
+        assert.equal(joined.coverage, 'partial', hostile);
+        assert.equal(joined.bindingEquality, 'unknown', hostile);
+      }
+      // End of input after an unproven tail is truncation — never success.
+      const eof = inspectCallShape('const alias = await receiver +');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: the pinned awaited-call form stays the completion proof,
+      // and the `;`-terminated declarations prove completion via the boundary.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+      const terminated = inspectCallShape('const s = await other();\ntext(s);');
+      assert.equal(terminated.bindingEquality, 'equal');
+      assert.equal(terminated.coverage, 'complete');
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('declaration completion comes from the FINAL declarator (codex round 15)', () => {
+      // `const alias = await tools…(…), other = receiver +\ntext(alias);` —
+      // the second line continues `other`'s initializer: it is never a
+      // standalone emission, and the split layout withholds exactly like the
+      // joined one. The allowlist rule applies to the declaration's ACTUAL
+      // tail — the final declarator's production.
+      const split = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver +\ntext(alias);');
+      assert.equal(split.tail, 'unknown', 'the initializer continuation is never a standalone emission');
+      assert.equal(split.bindingEquality, 'unknown', 'no relation is invented over the continuation');
+      assert.equal(split.coverage, 'partial');
+      assert.equal(split.wholeInputConsumed, false);
+      for (const statement of split.statements.slice(1)) {
+        assert.equal(statement.head, 'unknown', 'the continuation is not a standalone statement');
+        assert.equal(statement.tail, 'unknown');
+      }
+      const joined = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver + text(alias);');
+      assert.equal(joined.coverage, 'partial');
+      assert.equal(joined.bindingEquality, 'unknown');
+      // End of input after the unprovable trailing initializer is truncation.
+      const eof = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver +');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: an all-awaited list completes through its final
+      // declarator's pinned production (pinned-closed without `;`), a
+      // `;`-closed list completes through the boundary, and the round-14 /
+      // class-iii positional binding pins keep passing.
+      const pinnedClosed = inspectCallShape('const a = await tools.exec_command({cmd:"x"}), b = await tools.exec_command({cmd:"y"})');
+      assert.equal(pinnedClosed.coverage, 'complete');
+      assert.equal(pinnedClosed.wholeInputConsumed, true);
+      const semicolonClosed = inspectCallShape('const a = await tools.exec_command({cmd:"x"}), b = await tools.exec_command({cmd:"y"});\ntext(b);');
+      assert.equal(semicolonClosed.bindingEquality, 'equal');
+      assert.equal(semicolonClosed.coverage, 'complete');
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}), s = await tools.exec_command({cmd:"y"}); text(s);').bindingEquality, 'equal');
+      assert.equal(inspectCallShape('const r = await f(), s = 2; text(r);').bindingEquality, 'equal');
+    });
+
+    test('a closed call does not prove a statement boundary (codex round 16)', () => {
+      // `const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);` — JS
+      // continues the initializer through `[0]` (q receives the indexed
+      // value, not the native result): the split layout must withhold
+      // exactly like the joined one — completion proven WITHOUT an explicit
+      // terminator additionally requires the next content slot to START A
+      // NEW STATEMENT (an identifier head: a declaration keyword, `await`,
+      // or an ASI identifier expression). Any punctuation head (`[`, `(`,
+      // `.`, an operator, a template literal, …) CONTINUES the expression.
+      const split = inspectCallShape('const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);');
+      assert.equal(split.tail, 'unknown', 'the index continuation is never a standalone emission');
+      assert.equal(split.bindingEquality, 'unknown', 'no relation is invented over the continuation');
+      assert.equal(split.coverage, 'partial');
+      assert.equal(split.wholeInputConsumed, false);
+      for (const statement of split.statements.slice(1)) {
+        assert.equal(statement.head, 'unknown', 'the continuation is not a standalone statement');
+        assert.equal(statement.tail, 'unknown');
+      }
+      const joined = inspectCallShape('const q = await tools.exec_command({cmd:"x"})[0]; text(q);');
+      assert.equal(joined.coverage, 'partial');
+      assert.equal(joined.bindingEquality, 'unknown');
+      // Invariances: ASI at end of input keeps its completion (the wrapper
+      // skeleton's optional `;`), the identifier-headed ASI continuation
+      // (the canonical two-line pair shape) stays recognized, and slots
+      // after `;`-terminated statements are unaffected.
+      const eof = inspectCallShape('const r = await tools.exec_command({cmd:"x"})');
+      assert.equal(eof.coverage, 'complete');
+      assert.equal(eof.wholeInputConsumed, true);
+      const asi = inspectCallShape('const q = await tools.exec_command({cmd:"x"})\ntext(q);');
+      assert.equal(asi.bindingEquality, 'equal');
+      assert.equal(asi.coverage, 'complete');
+      assert.equal(asi.wholeInputConsumed, true);
+      const terminated = inspectCallShape('const r = await tools.exec_command({cmd:"x"});\ntext(r);\n[0];');
+      assert.equal(terminated.coverage, 'complete');
+      assert.equal(terminated.wholeInputConsumed, true);
+      assert.equal(terminated.bindingEquality, 'equal');
+    });
+
+    test('bindingEquality is judged against the FINAL emission, never an earlier one', () => {
+      // The final emission `text("done")` carries no result-binding reference,
+      // so the relation is 'unrelated' even though an EARLIER emission `text(r)`
+      // would have matched the bound binding.
+      const finalString = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext("done");';
+      const facts = inspectCallShape(finalString);
+      assert.equal(facts.statements[1].tail, 'text-other', 'the string-literal argument keeps its frozen tail class');
+      assert.equal(facts.tail, 'text-other');
+      assert.equal(facts.bindingEquality, 'unrelated', 'the final emission is the only one the relation is judged against');
+      // The relation still holds when the final emission IS a binding.
+      const finalBinding = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(finalBinding).bindingEquality, 'equal');
+      // Bindings only PRECEDING the final emission are compared.
+      const laterBinding = 'text(start);\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(laterBinding).bindingEquality, 'equal');
+      // A final emission with no preceding binding stays unrelated.
+      assert.equal(inspectCallShape('text(onlyEmission);').bindingEquality, 'unrelated');
+    });
+
+    test('a nested emission inside the outermost text( argument is text-other, not a binding tail', () => {
+      // §15.1 tail semantics: "anything else inside text(…) → text-other".
+      // `text(f(text(r)))` is ONE emission whose argument is a call
+      // expression; the inner text( occurrence must not classify the tail.
+      const nested = 'const r = await tools.exec_command({cmd:"x"}); text(f(text(r)));';
+      const facts = inspectCallShape(nested);
+      assert.equal(facts.statements[0].tail, 'text-other', 'the OUTERMOST emission argument is a call expression');
+      assert.equal(facts.tail, 'text-other');
+      assert.equal(facts.bindingEquality, 'unrelated', 'no identifier tail survives the nested call');
+      // Sibling emissions keep the last-top-level-emission semantics.
+      const siblings = 'const r = await tools.exec_command({cmd:"x"}); text(s); text(r);';
+      assert.equal(inspectCallShape(siblings).tail, 'text-binding');
+      assert.equal(inspectCallShape(siblings).bindingEquality, 'equal');
+    });
+
+    test('a valid directive is diagnosed without retaining keys and keeps the cell parse-accepted', () => {
+      const directed = '// @exec: {"yield_time_ms": 3600000}\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      const facts = inspectCallShape(directed);
+      assert.equal(facts.directive, 'valid');
+      assert.equal(facts.parserStage, 'parse-accepted');
+      assert.equal(JSON.stringify(facts).includes('yield_time_ms'), false);
+      assert.notEqual(parseCallStatements(event(directed)), null);
+    });
+
+    test('parserStage parse-accepted agrees with the real existing parser on every synthetic record', () => {
+      const inputs = [
+        canonical,
+        'const responseText = await tools.exec_command({cmd:"synthetic-command-text"}); text(responseText);',
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"});`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(JSON.stringify(r));`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r.status);`,
+        'const r = await tools.exec_command({cmd: buildCmd()}); text(r);',
+        'const r = await tools.exec_command({cmd:"prep text(r) tools.exec_command (prompt) alias"}); text(r);',
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\nconsole.log("synthetic-third");`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\n\n`,
+        'const r = await tools.exec_command({cmd:"x"}); text(r)\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n',
+        '// @exec: {"yield_time_ms": 3600000}\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+        'text(await tools.exec_command({cmd:"x"}));',
+      ];
+      for (const input of inputs) {
+        const facts = inspectCallShape(input);
+        const accepted = parseCallStatements(event(input)) !== null;
+        assert.equal(facts.parserStage === 'parse-accepted', accepted,
+          `parserStage diagnosis must agree with parseCallStatements for: ${input.slice(0, 60)}`);
+      }
+    });
+  });
+
+  describe('controlled shape diagnosis: driver opt-in flag pair', async () => {
+    const { parseShellWaitArguments, runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-noise', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+
+    test('--unclassified-shape-diagnostic accepts only the literal 1, requires the structural gate, and defaults off', () => {
+      const structuralBase = [...baseArguments, '--unclassified-structural-diagnostic', '1'];
+      assert.equal(parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', '1']).unclassifiedShapeDiagnostic, true);
+      assert.equal(parseShellWaitArguments(baseArguments).unclassifiedShapeDiagnostic, false);
+      for (const bad of ['0', 'true', '', 'on']) {
+        assert.throws(() => parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', bad]),
+          `the value ${JSON.stringify(bad)} must be refused`);
+      }
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--unclassified-shape-diagnostic', '1']),
+        /requires/i, 'the shape gate alone must be refused');
+      assert.throws(() => parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', '1', '--unclassified-shape-diagnostic', '1']),
+        'a duplicate shape gate must be refused');
+      // The structural gate alone keeps working exactly as before.
+      assert.equal(parseShellWaitArguments([...baseArguments, '--unclassified-structural-diagnostic', '1']).unclassifiedShapeDiagnostic, false);
+    });
+
+    test('an invalid programmatic combination fails before any side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-shape-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureCreated = false;
+      const refusingCreateFixture = async () => { fixtureCreated = true; throw new Error('fixture must not be created'); };
+      await assert.rejects(
+        runShellWaitCase({
+          case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output: root,
+          workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+          unclassifiedShapeDiagnostic: true,
+        }, { createFixture: refusingCreateFixture }),
+        /unclassifiedShapeDiagnostic requires unclassifiedStructuralDiagnostic/i,
+      );
+      await assert.rejects(
+        runShellWaitCase({
+          case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output: root,
+          workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+          unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: 'yes',
+        }, { createFixture: refusingCreateFixture }),
+        /must be a boolean/i, 'a non-boolean shape gate is refused');
+      assert.equal(fixtureCreated, false, 'validation must fail before fixture creation');
+    });
+
+    test('the record and the live executor carry the shape gate only when explicitly enabled', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-shape-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const base = {
+        case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+      };
+      const fixture = {
+        workspace: '/private/tmp/shape-ws', codexHome: '/private/tmp/shape-home',
+        installedRoot: '/private/tmp/shape-installed', env: { HOME: '/private/tmp/shape-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      let seenInput;
+      const executor = async (request) => {
+        seenInput = request.input;
+        return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+      };
+      const enabled = await runShellWaitCase({ ...base, output: root, unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenInput.unclassifiedShapeDiagnostic, true, 'the live executor must receive the shape gate');
+      assert.equal(enabled.unclassifiedShapeDiagnostic, true, 'the persisted record must name the enabled shape gate');
+      const structuralOnlyRoot = await mkdtemp(join(tmpdir(), 'shell-wait-shape-struct-'));
+      t.after(() => rm(structuralOnlyRoot, { recursive: true, force: true }));
+      const structuralOnly = await runShellWaitCase({ ...base, output: structuralOnlyRoot, unclassifiedStructuralDiagnostic: true }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenInput.unclassifiedShapeDiagnostic, false, 'the structural-only run keeps the shape gate off');
+      assert.equal(Object.hasOwn(structuralOnly, 'unclassifiedShapeDiagnostic'), false,
+        'the structural-only record stays byte-compatible with the pinned schema');
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-shape-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plain = await runShellWaitCase({ ...base, output: plainRoot }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(Object.hasOwn(plain, 'unclassifiedShapeDiagnostic'), false);
+    });
+
+    test('the driver CLI refuses the shape gate without the structural gate before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(result.status, 1, 'the pair violation must exit 1');
+      assert.match(result.stderr, /requires/i);
+      const badValue = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-structural-diagnostic', '1', '--unclassified-shape-diagnostic', 'true'],
+      { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(badValue.status, 1, 'a non-literal value must exit 1');
+    });
+  });
+
+  describe('controlled shape diagnosis: evidence seam projection', async () => {
+    // Plan Task 2 bullet 5: the classifier is invoked ONLY for unknown raw
+    // calls at the existing in-memory seam, gated by BOTH diagnostics, and
+    // its closed facts are projected through the existing excerpt budget
+    // before record serialization. The fail-closed verdict, the cleanup and
+    // every default-retention byte stay unchanged.
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+
+    const PARENT = 'shape-parent';
+    const CHILD = 'shape-child';
+    const AGENT_PATH = '/root/shape_task_1';
+    const LAUNCHER = 'node "/installed/shape/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    // Synthetic canaries: any occurrence in the returned evidence is a leak.
+    const CANARY_CMD = 'SECR-SHAPE-CMD-6TQ9';
+    const CANARY_BINDING = 'secretResultName';
+
+    const meta = (id, extra = {}) => ({ type: 'session_meta', payload: { id, ...extra } });
+    const childMeta = () => meta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+    const scriptCell = (callId, input) => ({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } });
+    const evidenceInput = (rollouts, overrides = {}) => ({
+      rollouts,
+      zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+      command: LAUNCHER,
+      publicResult: SENTINEL,
+      workerStillAliveAfterObservation: false,
+      redactions: [],
+      ...overrides,
+    });
+    const unknownCellRollouts = (body) => [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
+    const unknownBody = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`;
+
+    test('with both gates the unsupported-call-shape excerpt gains the closed shape block and the verdict stays fail-closed', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      assert.equal(result.inconclusive.manualAdjudicationRequired, true, 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      // The pinned base facts are untouched; the gated blocks are additive.
+      for (const key of ['suppressed', 'classification', 'tool', 'bodyType', 'inputLines', 'directivePresent', 'directiveKeys', 'withheldDirectiveKeys', 'inputBytes']) {
+        assert.equal(Object.hasOwn(excerpt, key), true, `base fact ${key} must stay present`);
+      }
+      assert.equal(Object.hasOwn(excerpt, 'diagnostic'), true, 'the structural diagnostic stays present with its own gate');
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true, 'the gated excerpt carries the closed shape facts');
+      assert.equal(excerpt.shape.version, 1, 'the closed schema version marker rides the shape block');
+      assert.equal(excerpt.shape.head, 'bound-await');
+      assert.equal(excerpt.shape.tool, 'exec_command');
+      assert.equal(excerpt.shape.tail, 'text-binding');
+      assert.equal(excerpt.shape.wholeInputConsumed, true);
+      assert.equal(excerpt.shape.parserStage, 'wrapper');
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_CMD), false, 'the private string content must never survive');
+      assert.equal(serialized.includes(CANARY_BINDING), false, 'the binding spelling must never survive');
+      assert.equal(result.inconclusive.excerpt.truncated, false);
+      assert.equal(result.inconclusive.excerpt.text.length <= 2048, true, 'the existing excerpt budget holds');
+    });
+
+    test('with the structural gate only, the excerpt keeps the byte-identical legacy projection and no shape key', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.deepEqual(Object.keys(excerpt).sort(), ['classification', 'diagnostic', 'bodyType', 'directiveKeys',
+        'directivePresent', 'inputBytes', 'inputLines', 'suppressed', 'tool', 'withheldDirectiveKeys'].sort());
+      assert.equal(Object.hasOwn(excerpt, 'shape'), false, 'no shape block without the shape gate');
+    });
+
+    test('the shape gate requires the structural gate at the evidence boundary: shape-only projects no shape block', () => {
+      // The pair is already enforced at the CLI and validateCaseInput layers;
+      // the evidence API makes the invariant total: the shape block rides the
+      // gated excerpt and is never projected on its own.
+      const shapeOnly = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(shapeOnly.status, 'inconclusive');
+      assert.equal(shapeOnly.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const shapeOnlyExcerpt = JSON.parse(shapeOnly.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(shapeOnlyExcerpt, 'shape'), false, 'shape-only must not project the shape block');
+      assert.equal(Object.hasOwn(shapeOnlyExcerpt, 'diagnostic'), false, 'shape-only runs no gated block at all');
+      assert.deepEqual(Object.keys(shapeOnlyExcerpt).sort(), ['bodyType', 'classification', 'directiveKeys',
+        'directivePresent', 'inputBytes', 'inputLines', 'suppressed', 'tool', 'withheldDirectiveKeys'].sort(),
+        'the shape-only excerpt is byte-identical to the ungated default');
+      const both = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      const bothExcerpt = JSON.parse(both.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(bothExcerpt, 'shape'), true, 'both flags project the shape block');
+      assert.equal(Object.hasOwn(bothExcerpt, 'diagnostic'), true);
+    });
+
+    test('with both gates a function_call analog (unparsable string arguments) also projects the shape block; a non-string body does not', () => {
+      const fnCall = (args) => ({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'fc-1', arguments: args } });
+      const unparsable = `{"cmd": "${CANARY_CMD}", truncated`;
+      const result = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(unparsable)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true, 'the string-body analog seam carries the shape block');
+      assert.equal(JSON.stringify(result).includes(CANARY_CMD), false);
+      const nonString = { cmd: CANARY_CMD };
+      const nonStringResult = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(nonString)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(nonStringResult.status, 'inconclusive');
+      const nonStringExcerpt = JSON.parse(nonStringResult.inconclusive.excerpt.text);
+      assert.equal(nonStringExcerpt.bodyType, 'object');
+      assert.equal(Object.hasOwn(nonStringExcerpt, 'shape'), false, 'non-string bodies keep the bodyType marker, no shape block');
+      assert.equal(JSON.stringify(nonStringResult).includes(CANARY_CMD), false, 'the non-string body is never serialized');
+    });
+
+    test('the shape projection respects the shared excerpt budget: whole facts drop in order, the JSON never truncates mid-object', () => {
+      // Three budget tiers of the SAME long-statement cell shape: the full
+      // facts fit at six slots; at eight slots the statements array drops
+      // WHOLE (the closed statementCount survives); at sixteen the fixed
+      // minimal marker is all that fits. Every tier stays parseable within
+      // the 2048-char excerpt budget and never truncates mid-JSON.
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const shapeAt = (count) => {
+        const body = Array.from({ length: count }, () => statement).join('\n');
+        const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
+          unclassifiedStructuralDiagnostic: true,
+          unclassifiedShapeDiagnostic: true,
+        }));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+        const excerpt = result.inconclusive.excerpt;
+        assert.equal(excerpt.truncated, false, 'the excerpt must never truncate mid-JSON');
+        assert.equal(excerpt.text.length <= 2048, true);
+        assert.equal(JSON.stringify(result).includes('z'.repeat(64)), false, 'no literal content survives');
+        return JSON.parse(excerpt.text).shape;
+      };
+      const full = shapeAt(6);
+      assert.equal(full.statements.length, 6, 'the full facts fit the budget at six slots');
+      const dropped = shapeAt(8);
+      assert.equal(Object.hasOwn(dropped, 'statements'), false, 'statement nodes drop whole before mid-JSON truncation');
+      assert.equal(dropped.statementCount, 8, 'the slot count survives the drop');
+      assert.equal(dropped.coverage, 'complete', 'the classification itself completed; only the record budget dropped nodes');
+      const minimal = shapeAt(16);
+      assert.deepEqual(minimal, { version: 1, coverage: 'over-budget', wholeInputConsumed: false },
+        'below the marker size only the fixed minimal closed marker survives');
+    });
+
+    test('the classifier never throws for hostile inputs (the seam stays fail-closed by construction)', () => {
+      const hostile = [undefined, null, 0, -0, NaN, Infinity, Symbol.iterator, () => {}, new Date(0), Buffer.alloc(0), '', '   ', '\n', ';', '}{', '"', "'", '`'];
+      for (const input of hostile) {
+        let facts;
+        assert.doesNotThrow(() => { facts = inspectCallShape(input); });
+        assert.equal(facts.version, 1);
+      }
+    });
+
+    test('a line comment ended by a non-LF separator cannot hide the carried call (codex round 11)', () => {
+      // The evidence projection inherits the classifier's comment masking:
+      // for each ECMAScript line terminator the carried wrapper statement
+      // must reach the persisted shape facts — never a confident 'no-call'
+      // under complete coverage — and no private content may survive.
+      for (const separator of ['\u2028', '\u2029', '\r']) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(`// lead${separator}const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true, `separator ${JSON.stringify(separator)}: the shape block must project`);
+        assert.equal(excerpt.shape.tool, 'exec_command', `separator ${JSON.stringify(separator)}: the carried call must not hide behind the comment mask`);
+        assert.equal(excerpt.shape.coverage, 'complete', `separator ${JSON.stringify(separator)}`);
+        assert.equal(excerpt.shape.head, 'bound-await', `separator ${JSON.stringify(separator)}`);
+        assert.equal(excerpt.shape.tail, 'text-binding', `separator ${JSON.stringify(separator)}`);
+        const serialized = JSON.stringify(result);
+        assert.equal(serialized.includes(CANARY_CMD), false);
+        assert.equal(serialized.includes(CANARY_BINDING), false);
+      }
+    });
+
+    test('a dangling pending declaration at end of input never persists equal/complete (codex round 12)', () => {
+      // The persisted shape block inherits the classifier's truncation
+      // verdict: the appended unresolved initializer withholds the relation
+      // and coverage — never equal/complete.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished ='),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.bindingEquality, 'unknown', 'the unresolved initializer withholds the persisted relation');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('an unfinished awaited expression never persists a fabricated emission (codex round 13)', () => {
+      // The gated evidence projection inherits the classifier's expression-
+      // completion proof: the member and constructor continuations withhold
+      // — never a fabricated persisted emission tail or relation.
+      for (const hostile of [
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(hostile),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+        assert.equal(excerpt.shape.tail, 'unknown', `no fabricated persisted tail for: ${hostile}`);
+        assert.equal(excerpt.shape.bindingEquality, 'unknown', hostile);
+        assert.equal(excerpt.shape.coverage, 'partial', hostile);
+        assert.equal(excerpt.shape.wholeInputConsumed, false, hostile);
+      }
+    });
+
+    test('an operator-continued expression never persists a fabricated emission (codex round 14)', () => {
+      // The gated evidence projection inherits the completion proof: the
+      // `receiver +` continuation withholds — never a fabricated persisted
+      // emission tail or relation, and never claimed-complete coverage.
+      for (const hostile of [
+        'const alias = await receiver +\ntext(value);',
+        'const alias = await receiver +',
+      ]) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(hostile),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+        assert.equal(excerpt.shape.coverage, 'partial', `never claimed-complete coverage for: ${hostile}`);
+        assert.equal(excerpt.shape.wholeInputConsumed, false, hostile);
+        assert.equal(excerpt.shape.bindingEquality, 'unknown', `the truncation withholds the persisted relation: ${hostile}`);
+      }
+    });
+
+    test('a non-awaited trailing declarator never persists a fabricated emission (codex round 15)', () => {
+      // The gated evidence projection inherits the final-declarator
+      // completion proof: the initializer continuation withholds — never a
+      // fabricated persisted emission, and never claimed-complete coverage.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const alias = await tools.exec_command({cmd:"x"}), other = receiver +\ntext(alias);'),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.tail, 'unknown');
+      assert.equal(excerpt.shape.bindingEquality, 'unknown');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('an index-continued initializer never persists a fabricated emission (codex round 16)', () => {
+      // The gated evidence projection inherits the new-statement-head rule:
+      // the index continuation withholds — never a fabricated persisted
+      // emission, and never claimed-complete coverage.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);'),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.tail, 'unknown');
+      assert.equal(excerpt.shape.bindingEquality, 'unknown');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('a wrapper-shaped direct function_call never reports parse-accepted for its arguments', () => {
+      // The finding's verbatim input: a direct function_call whose arguments
+      // string is shaped like a wrapper cell. parseCallStatements REJECTS the
+      // call (JSON-argument grammar), so the persisted parserStage must never
+      // claim 'parse-accepted' for that call type — the direct-call context
+      // withholds the verdict.
+      const fnCall = (args) => ({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'fc-shape-1', arguments: args } });
+      const wrapperShaped = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`;
+      const result = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(wrapperShaped)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.parserStage, 'unknown',
+        'the direct-call context withholds the wrapper-stage diagnosis');
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_CMD), false);
+      assert.equal(serialized.includes(CANARY_BINDING), false);
+      // The custom-tool-cell context keeps its diagnosis (invariance).
+      const cellResult = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      const cellExcerpt = JSON.parse(cellResult.inconclusive.excerpt.text);
+      assert.equal(cellExcerpt.shape.parserStage, 'wrapper');
+    });
+  });
+
+  describe('controlled shape diagnosis: observer provenance binding', async () => {
+    // Plan Task 2 bullet 6: the helper's EXECUTING module-init bytes join the
+    // observer provenance digest under an explicitly versioned construction —
+    // copying the old v1 two-file hash would misattribute the new classifier.
+    const { readFileSync } = await import('node:fs');
+    const { EXECUTING_OBSERVER_PROVENANCE, observerProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { EXECUTING_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+    const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+    const shapePath = fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url));
+
+    const digestV2 = (evidenceBytes, shapeBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v2\0')
+      .update(evidenceBytes)
+      .update('\0')
+      .update(shapeBytes)
+      .update('\0')
+      .update(driverBytes)
+      .digest('hex');
+
+    test('the executing digest binds the shape-diagnostic helper bytes under the versioned v2 construction', () => {
+      const driverBytes = readFileSync(driverPath);
+      const expected = digestV2(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, driverBytes);
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
+        'the digest must hash the executing evidence + shape-diagnostic + driver module-init bytes');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
+        'the digest input description must name the helper');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v2|version/u,
+        'the construction version must be recorded explicitly');
+    });
+
+    test('the helper binding is load-bearing: omitting or changing the helper bytes changes the digest', () => {
+      const driverBytes = readFileSync(driverPath);
+      const twoFileConstruction = createHash('sha256')
+        .update('zcode-shell-wait-observer-v2\0')
+        .update(EXECUTING_EVIDENCE_SOURCE)
+        .update('\0')
+        .update(driverBytes)
+        .digest('hex');
+      assert.notEqual(EXECUTING_OBSERVER_PROVENANCE.digest, twoFileConstruction,
+        'a construction without the helper bytes must not reproduce the executing digest');
+      const mutatedShape = Buffer.concat([EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, Buffer.from('\n')]);
+      assert.notEqual(
+        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a helper-only byte change must change the digest',
+      );
+      assert.notEqual(
+        digestV2(EXECUTING_EVIDENCE_SOURCE, readFileSync(shapePath), driverBytes),
+        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+      );
+    });
+
+    test('the record-time working-tree reader uses the same construction, so mid-run helper edits are detected without relabelling loaded code', async () => {
+      const recordTime = await observerProvenance();
+      assert.equal(recordTime.digest, EXECUTING_OBSERVER_PROVENANCE.digest,
+        'at rest the working-tree bytes equal the module-init snapshot, so the digests agree');
+      assert.match(String(recordTime.digestInput), /shape-diagnostic\.mjs/u);
+      assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
+    });
+  });
+
+  describe('controlled shape diagnosis: model selection seam', async () => {
+    // Plan Task 2 bullet 7: an optional `--model <id>` validated as a bounded
+    // safe identifier and forwarded as SEPARATE `-m <id>` argv items to the
+    // codex child; the REQUESTED model is recorded separately from effective
+    // host/Child metadata (which stays null); absent flag → legacy behavior
+    // byte-for-byte (no `-m`, no requestedModel key).
+    const { parseShellWaitArguments, runShellWaitCase, composeHostLaunchArguments, CODEX_EXEC_COMMON_ARGUMENTS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-noise', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+    const SYNTHETIC_MODEL = 'test-model-placeholder';
+
+    test('--model parses a bounded safe identifier and stays null when absent', () => {
+      assert.equal(parseShellWaitArguments([...baseArguments, '--model', SYNTHETIC_MODEL]).model, SYNTHETIC_MODEL);
+      assert.equal(parseShellWaitArguments(baseArguments).model, null, 'absent flag keeps the legacy null model');
+    });
+
+    test('--model rejects missing values, whitespace, shell metacharacters, bad shapes and overlength identifiers', () => {
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--model']), /unknown option or missing value/i);
+      for (const bad of ['', 'has space', 'semi;colon', 'dollar$x', 'back`tick', 'pipe|x', 'paren(s)', 'quote"x', '.leading', '/leading', '-leading', '_leading', 'a'.repeat(65)]) {
+        assert.throws(() => parseShellWaitArguments([...baseArguments, '--model', bad]),
+          `the model identifier ${JSON.stringify(bad.length > 20 ? `${bad.slice(0, 12)}…(${bad.length})` : bad)} must be refused`);
+      }
+      assert.equal(parseShellWaitArguments([...baseArguments, '--model', 'gpt-5.6-luna/preview']).model, 'gpt-5.6-luna/preview',
+        'dots, dashes and slashes inside the identifier stay allowed');
+    });
+
+    test('composeHostLaunchArguments forwards the requested model as separate -m argv items and stays byte-identical without one', () => {
+      const withModel = composeHostLaunchArguments(['PROMPT'], '/live/workspace', SYNTHETIC_MODEL);
+      assert.deepEqual(withModel, [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', SYNTHETIC_MODEL, '-C', '/live/workspace', 'PROMPT'],
+        'the model rides its own -m and value argv items before the workspace');
+      const legacy = composeHostLaunchArguments(['PROMPT'], '/live/workspace');
+      assert.deepEqual(legacy, [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', '/live/workspace', 'PROMPT'],
+        'no -m without a requested model (legacy argv byte-for-byte)');
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', null), legacy);
+      assert.throws(() => composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'bad id'), /bounded safe identifier/i);
+    });
+
+    test('the programmatic boundary validates the model before side effects and records the REQUESTED model separately', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-model-seam-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const base = {
+        case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+      };
+      const fixture = {
+        workspace: '/private/tmp/model-ws', codexHome: '/private/tmp/model-home',
+        installedRoot: '/private/tmp/model-installed', env: { HOME: '/private/tmp/model-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      let fixtureCreated = 0;
+      let seenModel;
+      const executor = async (request) => {
+        seenModel = request.input.model;
+        return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+      };
+      for (const bad of [123, 'bad id', ';rm -rf', `${'x'.repeat(65)}`]) {
+        await assert.rejects(
+          runShellWaitCase({ ...base, output: root, model: bad }, {
+            createFixture: async () => { fixtureCreated += 1; throw new Error('fixture must not be created'); },
+          }),
+          /bounded safe identifier/i, `model ${JSON.stringify(typeof bad === 'string' && bad.length > 16 ? `${bad.slice(0, 10)}…` : bad)} must be refused`);
+      }
+      assert.equal(fixtureCreated, 0, 'model validation must fail before fixture creation');
+      const withModel = await runShellWaitCase({ ...base, output: root, model: SYNTHETIC_MODEL }, {
+        createFixture: async () => { fixtureCreated += 1; return fixture; }, executeLiveCase: executor,
+      });
+      assert.equal(seenModel, SYNTHETIC_MODEL, 'the live executor receives the requested model');
+      assert.equal(withModel.provenance.requestedModel, SYNTHETIC_MODEL,
+        'the record carries the REQUESTED model, separate from the effective host/Child metadata (which stays null)');
+      assert.equal(withModel.provenance.observer.model, null, 'the observer effective model stays unknown');
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-model-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plain = await runShellWaitCase({ ...base, output: plainRoot }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenModel, null, 'without the flag the executor sees the legacy null model');
+      assert.equal(Object.hasOwn(plain, 'provenance') && Object.hasOwn(plain.provenance, 'requestedModel'), false,
+        'legacy records gain no requestedModel key');
+    });
+
+    test('the driver CLI refuses an unsafe model identifier with exit one before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      for (const bad of ['bad id', 'semi;colon']) {
+        const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', timeout: 30_000 });
+        assert.equal(result.status, 1, `model ${JSON.stringify(bad)} must exit 1`);
+        assert.match(result.stderr, /bounded safe identifier/i);
+      }
+      const missing = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(missing.status, 1, 'a missing --model value must exit 1');
     });
   });
 

@@ -29,13 +29,16 @@ import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, extractInterruptInteraction, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt } from './evidence.mjs';
+import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const MAX_CASE_EXCERPTS = 64;
 // Version tag of the observer-digest construction: bump when the hashed input
-// combination changes so old records stay interpretable.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v1';
+// combination changes so old records stay interpretable. v2 adds the
+// controlled shape-diagnosis helper's module-init bytes (plan Task 2) —
+// copying the v1 two-file hash would misattribute the new classifier.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v2';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -52,9 +55,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update(`${OBSERVER_DIGEST_TAG}\0`)
     .update(EXECUTING_EVIDENCE_SOURCE)
     .update('\0')
+    .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -76,20 +81,23 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, driverSource] = await Promise.all([
+  const [evidenceSource, shapeSource, driverSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
     .update(`${OBSERVER_DIGEST_TAG}\0`)
     .update(evidenceSource)
     .update('\0')
+    .update(shapeSource)
+    .update('\0')
     .update(driverSource)
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -254,6 +262,20 @@ function assertSourceSha(sourceSha) {
   }
 }
 
+// The explicit model-selection seam (plan Task 2): a bounded safe identifier —
+// alphanumeric first character, then name characters, dots, dashes and
+// slashes, at most 64 characters. Shell metacharacters, whitespace, empty and
+// overlength values are refused; the requested id is never interpolated into
+// a shell and is forwarded only as its own `-m <id>` argv items.
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/u;
+
+/** @param {unknown} model */
+function assertModelIdentifier(model) {
+  if (typeof model !== 'string' || !MODEL_ID_PATTERN.test(model)) {
+    throw invalidCaseInput('the requested model must be a bounded safe identifier (alphanumeric first character; then letters, digits, dots, dashes, slashes; at most 64 characters).');
+  }
+}
+
 /** @param {readonly string[]} argv @returns {ShellWaitCaseInput | { help: true }} */
 export function parseShellWaitArguments(argv) {
   if (!Array.isArray(argv) || argv.some((argument) => typeof argument !== 'string')) {
@@ -262,7 +284,7 @@ export function parseShellWaitArguments(argv) {
   if (argv.includes('--help')) return { help: true };
   /** @type {Record<string, string>} */
   const values = {};
-  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic'];
+  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model'];
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -295,6 +317,21 @@ export function parseShellWaitArguments(argv) {
     && values['--unclassified-structural-diagnostic'] !== '1') {
     throw invalidCaseInput('--unclassified-structural-diagnostic only accepts the literal value 1.');
   }
+  // The controlled shape-diagnosis gate (plan Task 2): the same literal-`1`
+  // marker discipline, and it strictly REQUIRES the structural diagnostic —
+  // the shape facts ride the same gated excerpt, never a separate channel.
+  if (values['--unclassified-shape-diagnostic'] !== undefined
+    && values['--unclassified-shape-diagnostic'] !== '1') {
+    throw invalidCaseInput('--unclassified-shape-diagnostic only accepts the literal value 1.');
+  }
+  if (values['--unclassified-shape-diagnostic'] === '1' && values['--unclassified-structural-diagnostic'] !== '1') {
+    throw invalidCaseInput('--unclassified-shape-diagnostic requires --unclassified-structural-diagnostic 1.');
+  }
+  // The explicit model-selection seam (plan Task 2 / report §15.1): a bounded
+  // safe identifier, forwarded as a separate `-m <id>` argv item — never
+  // arbitrary argv, never a silent default change. Absent → legacy behavior
+  // (no `-m`, `model: null`) stays byte-for-byte unchanged.
+  if (values['--model'] !== undefined) assertModelIdentifier(values['--model']);
   const defaults = shellWaitCaseDefaults(/** @type {string} */ (values['--case']));
   const capMs = values['--cap-ms'] !== undefined ? Number(values['--cap-ms']) : defaults.capMs;
   const pollMs = values['--poll-ms'] !== undefined ? Number(values['--poll-ms']) : defaults.pollMs;
@@ -316,6 +353,8 @@ export function parseShellWaitArguments(argv) {
       : defaults.statusQueryTimeoutMs,
     budgetMs: values['--budget-ms'] !== undefined ? Number(values['--budget-ms']) : defaults.budgetMs,
     unclassifiedStructuralDiagnostic: values['--unclassified-structural-diagnostic'] === '1',
+    unclassifiedShapeDiagnostic: values['--unclassified-shape-diagnostic'] === '1',
+    model: values['--model'] ?? null,
   };
 }
 
@@ -476,6 +515,14 @@ function validateCaseInput(input) {
     && typeof input.unclassifiedStructuralDiagnostic !== 'boolean') {
     throw invalidCaseInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
   }
+  if (input.unclassifiedShapeDiagnostic !== undefined
+    && typeof input.unclassifiedShapeDiagnostic !== 'boolean') {
+    throw invalidCaseInput('unclassifiedShapeDiagnostic must be a boolean when present.');
+  }
+  if (input.unclassifiedShapeDiagnostic === true && input.unclassifiedStructuralDiagnostic !== true) {
+    throw invalidCaseInput('unclassifiedShapeDiagnostic requires unclassifiedStructuralDiagnostic.');
+  }
+  if (input.model !== undefined && input.model !== null) assertModelIdentifier(input.model);
   return {
     case: /** @type {ShellWaitCaseLabel} */ (input.case),
     codexBinary: /** @type {string} */ (input.codexBinary),
@@ -487,6 +534,8 @@ function validateCaseInput(input) {
     statusQueryTimeoutMs: input.statusQueryTimeoutMs,
     budgetMs: /** @type {number} */ (input.budgetMs),
     unclassifiedStructuralDiagnostic: input.unclassifiedStructuralDiagnostic === true,
+    unclassifiedShapeDiagnostic: input.unclassifiedShapeDiagnostic === true,
+    model: input.model ?? null,
   };
 }
 
@@ -552,7 +601,11 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     // The bounded-diagnostic research gate (follow-up plan Task 4): recorded
     // ONLY when enabled, so the single changed variable of a diagnostic run is
     // visible in the persisted record and default records keep the pinned schema.
+    // The controlled shape-diagnosis gate (plan Task 2) rides the same record;
+    // the shape facts' own schema version (SHAPE_DIAGNOSTIC_SCHEMA_VERSION = 1)
+    // is the closed version marker inside the projected `shape` fact block.
     ...(caseInput.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
+    ...(caseInput.unclassifiedShapeDiagnostic === true ? { unclassifiedShapeDiagnostic: true } : {}),
     provenance: {
       sourceSha: caseInput.sourceSha,
       sourceWorktreeOwnedByFixture: true,
@@ -568,6 +621,11 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       requestedPollMs: caseInput.pollMs ?? null,
       requestedWorkerDurationMs: caseInput.workerDurationMs ?? null,
       requestedBudgetMs: caseInput.budgetMs ?? null,
+      // The REQUESTED model selection (plan Task 2): recorded separately from
+      // every effective host/Child model metadata, which stays unknown/null
+      // (never inferred). Omitted entirely when the flag is absent so legacy
+      // records stay byte-for-byte unchanged.
+      ...(caseInput.model ? { requestedModel: caseInput.model } : {}),
       // R3 status-wait setup: the RESERVED owned job (returned by the
       // production command path) and the explicit Status query deadline the
       // rendered invocation carries. A non-status case records nulls.
@@ -1691,6 +1749,8 @@ export function renderExecResumeLaunch(launchSessionId, queryPrompt) {
 
 /**
  * The full host launch argv for one held turn: the common exec arguments, the
+ * OPTIONAL requested model as its own `-m <id>` argv items (only when an
+ * explicit selection was made; absent → byte-for-byte legacy argv), the
  * workspace, then the turn's own prompt arguments — a plain prompt for every
  * case except status-wait turn 2, whose prompt arguments are the `resume
  * <SESSION_ID> <PROMPT>` subcommand tokens from
@@ -1698,16 +1758,18 @@ export function renderExecResumeLaunch(launchSessionId, queryPrompt) {
  * of its own, so the subcommand parses exactly once).
  * @param {unknown} promptArguments
  * @param {unknown} workspace
+ * @param {string | null} [model] the validated requested model identifier (null → no `-m`)
  * @returns {string[]}
  */
-export function composeHostLaunchArguments(promptArguments, workspace) {
+export function composeHostLaunchArguments(promptArguments, workspace, model = null) {
   if (!Array.isArray(promptArguments) || promptArguments.length === 0 || promptArguments.some((value) => typeof value !== 'string')) {
     throw invalidCaseInput('the turn prompt arguments must be a non-empty array of strings.');
   }
   if (typeof workspace !== 'string' || workspace.length === 0) {
     throw invalidCaseInput('the workspace must be a non-empty string.');
   }
-  return [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', workspace, ...promptArguments];
+  if (model !== null) assertModelIdentifier(model);
+  return [...CODEX_EXEC_COMMON_ARGUMENTS, ...(model !== null ? ['-m', model] : []), '-C', workspace, ...promptArguments];
 }
 
 /**
@@ -2213,7 +2275,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         // so the subcommand parses instead of a second literal `exec`
         // consuming the PROMPT positional.
         return /** @type {Promise<{ code: number | null, stdout: string, stderr: string }>} */ (runProcess(
-          closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace), { env: runEnv })),
+          closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace, input.model ?? null), { env: runEnv })),
           { cwd: fixture.workspace, env: runEnv, timeoutMs: remaining > 0 ? remaining : 1, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal },
         ));
       };
@@ -2307,8 +2369,10 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     }),
     // The bounded-diagnostic research gate (follow-up plan Task 4): threaded
     // ONLY when the validated case input enables it, so the default evidence
-    // input — and default retention — stay unchanged.
+    // input — and default retention — stay unchanged. The controlled
+    // shape-diagnosis gate (plan Task 2) threads identically.
     ...(input.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
+    ...(input.unclassifiedShapeDiagnostic === true ? { unclassifiedShapeDiagnostic: true } : {}),
     redactions,
   });
   const rolloutsFailureReason = rolloutsError === null ? null : redactPrivatePaths(rolloutsError, fixture);
@@ -2994,6 +3058,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   statusQueryTimeoutMs?: number,
  *   budgetMs: number,
  *   unclassifiedStructuralDiagnostic: boolean,
+ *   unclassifiedShapeDiagnostic: boolean,
+ *   model: string | null,
  * }} ValidatedShellWaitCase
  * @typedef {'rescue-baseline'|'rescue-long'|'rescue-repeat'|'rescue-noise'|'rescue-interrupt'|'review-wait'|'adversarial-review-wait'|'status-wait'|'background'} ShellWaitCaseLabel
  * @typedef {{
@@ -3008,6 +3074,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   statusQueryTimeoutMs?: number,
  *   budgetMs?: number,
  *   unclassifiedStructuralDiagnostic?: boolean,
+ *   unclassifiedShapeDiagnostic?: boolean,
+ *   model?: string | null,
  * }} ShellWaitCaseInput
  * @typedef {import('./fixture.mjs').ShellWaitFixtureHandle} ShellWaitFixtureHandle
  * @typedef {{
@@ -3059,7 +3127,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === pathToFileURL(mod
   const usage = 'usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> '
     + `--source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] `
     + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] `
-    + `[--unclassified-structural-diagnostic 1]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
+    + `[--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
   try {
     const parsed = parseShellWaitArguments(process.argv.slice(2));
     if ('help' in parsed) {

@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { RESCUE_ENVELOPE_MAX_BYTES, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { inspectCallShape } from './shape-diagnostic.mjs';
 
 // P2 round-29: module-INIT snapshot of THIS module's executing source — read
 // synchronously at initialization (the closest instant to the bytes Node
@@ -342,6 +343,35 @@ function diagnosticBudgetChars(baseFacts) {
 }
 
 /**
+ * Project the controlled shape-diagnosis facts (schema v1) for one unknown
+ * string body into a bounded character budget, dropping WHOLE optional facts
+ * when they do not fit — never truncating mid-JSON, never falling back to raw
+ * content, never claiming a complete classification that was not serialized.
+ * Drop order: the full facts; then the `statements` array (the closed
+ * `statementCount` survives — the schema's own drop-whole rule); then a fixed
+ * minimal closed marker; and when even the marker does not fit, nothing (the
+ * caller omits the block). The classifier never throws by construction; the
+ * guard keeps an unexpected internal failure from reaching the excerpt.
+ * @param {string} raw the unknown call body (memory-only)
+ * @param {number} budgetChars the serialized character budget for the shape block
+ * @param {'custom-tool-cell' | 'direct-arguments'} shapeCallContext the call-type context
+ * @returns {Record<string, unknown> | null}
+ */
+function projectShapeFactsWithinBudget(raw, budgetChars, shapeCallContext) {
+  let facts = null;
+  try {
+    facts = inspectCallShape(raw, shapeCallContext);
+  } catch { facts = null; }
+  const minimalMarker = { version: 1, coverage: 'over-budget', wholeInputConsumed: false };
+  if (facts === null || budgetChars < JSON.stringify(minimalMarker).length) return null;
+  if (JSON.stringify(facts).length <= budgetChars) return facts;
+  const withoutStatements = { ...facts };
+  delete withoutStatements.statements;
+  if (JSON.stringify(withoutStatements).length <= budgetChars) return withoutStatements;
+  return minimalMarker;
+}
+
+/**
  * Build the STRUCTURAL excerpt for a call whose raw body cannot safely be
  * classified as a supported shape. Path-only scrubbing cannot certify that a
  * failed classification removed private preparation/task content, so the raw
@@ -364,8 +394,18 @@ function diagnosticBudgetChars(baseFacts) {
  *   is a string, the excerpt additionally carries the bounded structural
  *   diagnostic facts (`unclassifiedStructuralDiagnosticFacts`), budgeted against
  *   the excerpt limit so the serialized JSON always stays parseable; default retention is unchanged
+ * @param {boolean} [shapeDiagnosticEnabled] the controlled shape-diagnosis gate
+ *   (plan Task 2), already AND-combined with `diagnosticEnabled` by the caller —
+ *   the pair invariant is enforced at the evidence input boundary: when true AND
+ *   the body is a string, the excerpt additionally carries the closed schema-v1
+ *   `shape` fact block (`projectShapeFactsWithinBudget`), budgeted against the
+ *   SAME excerpt limit after the structural diagnostic's room is reserved;
+ *   default retention is unchanged
+ * @param {'custom-tool-cell' | 'direct-arguments'} [shapeCallContext] which
+ *   existing grammar the body was presented to (drives the shape facts'
+ *   parserStage verdict: withheld for direct function_call arguments)
  */
-function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null, diagnosticEnabled = false) {
+function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null, diagnosticEnabled = false, shapeDiagnosticEnabled = false, shapeCallContext = 'custom-tool-cell') {
   const isString = typeof rawInput === 'string';
   const raw = isString ? rawInput : '';
   const bodyType = isString ? 'string'
@@ -414,17 +454,31 @@ function structuralExcerptForUnclassifiedInput(rawInput, classification, redacti
       withheldDirectiveKeys,
       inputBytes: isString ? Buffer.byteLength(raw, 'utf8') : null,
     };
-    excerptFactsJson = JSON.stringify(
-      // The research gate (follow-up plan Task 4): only an explicitly enabled
-      // string-body diagnostic extends the fact set; default retention above
-      // is unchanged and pinned by test. The diagnostic's serialized size is
-      // budgeted against the excerpt limit (see the retention-bound note on
-      // unclassifiedStructuralDiagnosticFacts) so the scrubber can never
-      // truncate the gated JSON mid-object.
-      diagnosticEnabled === true && isString
-        ? { ...baseFacts, diagnostic: unclassifiedStructuralDiagnosticFacts(raw, diagnosticBudgetChars(baseFacts)) }
-        : baseFacts,
-    );
+    // The research gate (follow-up plan Task 4): only an explicitly enabled
+    // string-body diagnostic extends the fact set; default retention above
+    // is unchanged and pinned by test. The diagnostic's serialized size is
+    // budgeted against the excerpt limit (see the retention-bound note on
+    // unclassifiedStructuralDiagnosticFacts) so the scrubber can never
+    // truncate the gated JSON mid-object.
+    const diagnostic = diagnosticEnabled === true && isString
+      ? unclassifiedStructuralDiagnosticFacts(raw, diagnosticBudgetChars(baseFacts))
+      : null;
+    // The controlled shape-diagnosis gate (plan Task 2): the closed schema-v1
+    // facts for the unknown string body, projected into whatever room remains
+    // of the SAME excerpt budget after the base facts and the structural
+    // diagnostic; whole facts drop when they do not fit, never mid-JSON.
+    const baseJsonLength = JSON.stringify(baseFacts).length;
+    const shapeBudget = MAX_EXCERPT_CHARS - (baseJsonLength - 1)
+      - (diagnostic !== null ? JSON.stringify(diagnostic).length + ',"diagnostic":'.length : 0)
+      - ',"shape":'.length - 1;
+    const shape = shapeDiagnosticEnabled === true && isString
+      ? projectShapeFactsWithinBudget(raw, shapeBudget, shapeCallContext)
+      : null;
+    excerptFactsJson = JSON.stringify({
+      ...baseFacts,
+      ...(diagnostic !== null ? { diagnostic } : {}),
+      ...(shape !== null ? { shape } : {}),
+    });
   } catch {
     excerptFactsJson = '{"suppressed":"the call body could not be classified as a supported shape; its structural facts are withheld"}';
   }
@@ -2028,6 +2082,18 @@ export function inspectShellWaitEvidence(input) {
     throw invalidEvidenceInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
   }
   const diagnosticEnabled = unclassifiedDiagnostic === true;
+  // The controlled shape-diagnosis gate (plan Task 2): the same optional-input
+  // convention; only an explicitly enabled boolean extends the unknown-call
+  // excerpt with the closed schema-v1 shape facts, and default retention stays
+  // byte-identical. The pair invariant is TOTAL at this boundary too: the
+  // shape facts ride the gated excerpt, so a shape flag without the
+  // structural diagnostic projects nothing (the driver's CLI and
+  // validateCaseInput layers already refuse the combination outright).
+  const unclassifiedShapeDiagnostic = input.unclassifiedShapeDiagnostic;
+  if (unclassifiedShapeDiagnostic !== undefined && unclassifiedShapeDiagnostic !== null && typeof unclassifiedShapeDiagnostic !== 'boolean') {
+    throw invalidEvidenceInput('unclassifiedShapeDiagnostic must be a boolean when present.');
+  }
+  const shapeDiagnosticEnabled = diagnosticEnabled && unclassifiedShapeDiagnostic === true;
   if (rollouts.length === 0) return inconclusive('rollouts-unavailable', 'No rollout evidence was collected.');
   for (const events of rollouts) {
     if (events.length > MAX_EVENTS_PER_ROLLOUT) return inconclusive('rollouts-overflow', 'A rollout exceeds the observer event bound.');
@@ -2051,6 +2117,7 @@ export function inspectShellWaitEvidence(input) {
           redactions,
           null,
           diagnosticEnabled,
+          shapeDiagnosticEnabled,
         );
         return inconclusive('unsupported-call-shape',
           'A collected tool call does not match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual adjudication.',
@@ -2070,6 +2137,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has non-string arguments; the body type is recorded and its content withheld.',
@@ -2083,6 +2152,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has truncated or unparsable arguments; the case needs manual adjudication.',
@@ -2095,6 +2166,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has arguments of an unsupported shape; the case needs manual adjudication.',
@@ -3097,6 +3170,7 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
  *   workerDurationMs?: number | null,
  *   workerStillAliveAfterObservation?: boolean | null,
  *   unclassifiedStructuralDiagnostic?: boolean | null,
+ *   unclassifiedShapeDiagnostic?: boolean | null,
  *   redactions?: string[],
  * }} ShellWaitEvidenceInput
  */
