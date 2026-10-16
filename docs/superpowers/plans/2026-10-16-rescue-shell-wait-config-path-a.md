@@ -108,7 +108,7 @@ node tools/shell-wait-probe/driver.mjs --help
 
 **Files:** existing driver/fixture/evidence only, report result and this ledger. No code change before A0.
 
-- [ ] Use a private fresh output directory and the existing diagnostic flag. The shorter harmless hold serves recognition, not the five-minute cap discriminator. Omit `--cap-ms` entirely.
+- [x] Use a private fresh output directory and the existing diagnostic flag. The shorter harmless hold serves recognition, not the five-minute cap discriminator. Omit `--cap-ms` entirely.
 
 ```bash
 shell_case_output=$(mktemp -d)
@@ -120,8 +120,8 @@ ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
   --unclassified-structural-diagnostic 1
 ```
 
-- [ ] Retain only sanctioned structural facts and original record provenance: actual binary/model/artifacts, executing observer digest, tool family, fresh flag/cell fingerprint, line/byte envelope, route/ownership, cleanup and per-dimension unknown causes. Do not relabel the five old flags or infer their content.
-- [ ] Apply §3's branches. TRUE permits the conditional repair, not production qualification; FALSE does not prove long waits impossible. Record whether exact managed-Child linkage and the current shape are measurable. If A0 is classified naturally, skip Task 3's code and A1 and continue independent preparation for Task 4.
+- [x] Retain only sanctioned structural facts and original record provenance: actual binary/model/artifacts, executing observer digest, tool family, fresh flag/cell fingerprint, line/byte envelope, route/ownership, cleanup and per-dimension unknown causes. Do not relabel the five old flags or infer their content.
+- [x] Apply §3's branches. TRUE permits the conditional repair, not production qualification; FALSE does not prove long waits impossible. Record whether exact managed-Child linkage and the current shape are measurable. If A0 is classified naturally, skip Task 3's code and A1 and continue independent preparation for Task 4. *(Applied: the FALSE-with-confirmed-`exec_command` branch fired — decisive exclusion for the one fresh cell; A0 was NOT classified naturally, so Task 3's code and A1 are not applicable with cause, and C0/C1 stay blocked.)*
 
 **Exit:** A0's one allowance is consumed and its fresh-cell adjudication recorded. No re-entry/M/interrupt claim follows from recognition alone.
 
@@ -260,3 +260,5 @@ No newer checkout bytes were read; no separate newer pin is recorded.
 | `node scripts/check-line-endings.mjs` | exit 0 — LF verified in 534 tracked files |
 
 **Exit check:** execution pins and a supported candidate transport are recorded, with no installed wait/cancellation claim. Source and installed binary are both 0.163.0-generation but source/binary correspondence remains UNESTABLISHED (§1's drafting caveat stands). A0/A1/C0/C1 all unspent; Task 2 remains gated on its own delegation.
+
+**A0 SPENT (Task 2, 2026-10-16).** Supersedes the Task-1 "all unspent" exit line above as of this entry; Task 1's statements stand as history. Executed 2026-10-16 in this worktree: the plan's Task 2 command run EXACTLY ONCE, verbatim (no flag changed, `--cap-ms` omitted entirely), with `--source-sha` = worktree HEAD `1f8f684cb0a264e9b2c470937c8394ff2eb312fa` (the exact committed state the executing observer ran). Private output dir: `/var/folders/vw/4_44w0fs2sbgkzyzzvdn6jx40000gn/T/tmp.Bdv8eaYDJ7` (outside the repo; sole record `rescue-long.record.json`). At-run binary: unchanged from Task 1's pin — realpath `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`, `codex-cli 0.163.0`, sha256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` (no auto-update, no re-pin). Driver exit **0**; wall ≈212 s (02:43:21Z→02:46:53Z), inside the 360000 ms budget. **Adjudication branch: §3's FALSE-with-confirmed-`exec_command`** — one unclassified fresh cell (evidence.count 1, not truncated), tool `exec_command`, 2 lines / 243 bytes, directive absent, `wholeBodyStatementMatch: false`, cell sha256 `fa76ae3ce693cbcbd090d47056d7ccb27639dafc0565f763365a7ce2b3a0ad40` — decisive exclusion for that fresh exec family: outside the executing observer's whole-body grammar, and the Task-3 `parseCallEvent` fallback could not accept it (no `exec_command` path outside the wrapper/inline patterns, §13.10 semantics, re-verified at this HEAD). No parser defect demonstrated → **A1 unspent, NOT justified** (Task 3 not applicable with this cause). Admission remained blocked (route.actual null; linkage fields null) → **C0/C1 unspent, BLOCKED** per §3 ("stop dependent managed-Child trials"); Task 4 model turns gated off. Run ledger after Task 2: **A0 spent; A1/C0/C1 unspent — none reachable under §3's dependency rules; no new run authority created.** Cleanup: driver-reported `fixtureDisposed: true`, `cleanupComplete: true`, 0 cleanup errors. Detailed adjudication: report §14 (Task 2 entry).

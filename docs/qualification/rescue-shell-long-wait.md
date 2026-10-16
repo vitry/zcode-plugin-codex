@@ -4681,3 +4681,97 @@ installed wait/cancellation claim. Source/binary correspondence remains UNESTABL
 0.163.0-generation and the source key validates on the installed binary, but no effective runtime
 effect has been demonstrated. Tasks 2–5 of the plan remain open; no live allowance was spent and no
 historical record, claim, flag or pointer above was altered.
+
+**Task 2 (2026-10-16): A0 SPENT — the fresh-cell adjudication is the plan §3 FALSE-with-confirmed-`exec_command` branch: decisive exclusion for that ONE fresh cell; no parser defect demonstrated; A1 not justified; C0/C1 remain unspent with admission blocked.** Task 2 of the plan was executed in the
+same worktree (branch `docs/rescue-shell-wait-config-path-a`) at committed HEAD
+`1f8f684cb0a264e9b2c470937c8394ff2eb312fa` — the exact state passed as `--source-sha` and the exact
+state the executing observer ran. The plan's Task 2 command was run EXACTLY ONCE, verbatim: no flag
+changed, `--cap-ms` omitted entirely (recognition hold, not the cap discriminator — `requestedCapMs`
+and `capVerified` are null by design), `--unclassified-structural-diagnostic 1` active (record
+`unclassifiedStructuralDiagnostic: true`), private fresh output dir
+`/var/folders/vw/4_44w0fs2sbgkzyzzvdn6jx40000gn/T/tmp.Bdv8eaYDJ7` (outside the repo; sole record
+`rescue-long.record.json`), combined stdout+stderr captured to a scratch log under `/tmp`. Driver
+exit **0** — which per §3 is not a qualified case — wall ≈212 s (02:43:21Z→02:46:53Z), inside the
+360000 ms budget. No code or test file was modified before or during the run (tracked
+`tools/`/`tests/` diff against the merged baseline `61853ab…` is EMPTY); no raw cell body, auth
+material, full config or private preparation content was persisted anywhere in the repo.
+
+**At-run pins.** Binary unchanged from Task 1's re-pin: realpath
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+`codex-cli 0.163.0`, sha256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` —
+no auto-update, no re-pin needed. Record provenance: `codexVersion: "0.163.0"`, plugin
+`zcode@vitry` 0.1.0, `sourceSha: 1f8f684c…`, `sourceWorktreeOwnedByFixture: true`,
+`sourcesChangedDuringRun: false`; executing observer `working-tree-uncommitted`, digest
+`9e764bfde1c8fbabfa4711a1d21efb1aa3778f686a18676d323b7a495c1a0c33` (digestInput
+`zcode-shell-wait-observer-v1 || evidence.mjs || driver.mjs`, executing module-init snapshot,
+NUL-separated). **`model: null` and `reachableToolFamily: null` persist by design**
+(`EXECUTING_OBSERVER_PROVENANCE`): the instrument cannot observe the CLI's own default-model
+resolution, so no model claim exists. Fixture controls recorded as fixture controls:
+`fixtureVariant: "candidate"`, sandbox/hooksTrust bypasses "not persisted production trust".
+
+**Fresh-cell fingerprint (sanctioned structural facts only; raw content withheld by the gate).**
+Exactly ONE unclassified cell was collected (`evidence.count: 1`, `truncated: false`; classification
+`unclassified-script-cell`; the gate's own suppression text records that the raw body is withheld).
+Confirmed tool family **`exec_command`** — both the top-level `tool` field and the diagnostic's
+per-line `tools: ["exec_command"]`. Envelope: `bodyType: "string"`, **2 input lines / 243 bytes**,
+directive absent (`directivePresent: false`, `directiveKeys: null`, `withheldDirectiveKeys: 0`).
+Gate line diagnostic: a single listed line (line 1) with prefix class `const-r-await`,
+`braceDepthEnd: 0`, `endsWithSemicolon: true`. **`wholeBodyStatementMatch: false`.** Fresh cell
+sha256 `fa76ae3ce693cbcbd090d47056d7ccb27639dafc0565f763365a7ce2b3a0ad40` (fresh flag + cell
+fingerprint pair for this run). The case outcome is `unsupported-call-shape` (needs manual
+adjudication) — a NOT-QUALIFIED case; no wait/capability claim follows from it in either direction.
+
+**Decision-branch application (§3, per fresh cell, never historical).** The FALSE branch fired with a
+CONFIRMED `exec_command` family, so §3's second branch applies: **the wrapper/inline exclusion is
+decisive for this fresh exec family, and no fallback is justified by this cell.** Instrument-side
+verification at this HEAD (read-only; code identical to the merged baseline): `wholeBodyStatementMatch`
+is computed by `parseWrappedToolInput` (`tools/shell-wait-probe/evidence.mjs:284`, implementation
+:853-873), which tries ONLY `WRAPPER_PATTERN` (:49) and `INLINE_WRAPPER_PATTERN` (:53);
+`parseCallEvent`'s other whole-body paths are `PREPARATION_PATTERN` (:67, `write_stdin` head) and
+`ROOT_CONTROL_WRAPPER_PATTERN` (:1052, `interrupt_agent`/`send_input` heads) — there is NO
+`exec_command` path outside the wrapper/inline patterns, so both FALSE readings coincide (§13.10's
+recorded semantics) and the proposed Task-3 fallback (which reuses `parseCallEvent` on the raw event)
+could not accept this cell. Consequences, exactly per §3: **A1 remains unspent and NOT justified**
+(no demonstrated parser defect; Task 3 is not applicable with this recorded cause), and because
+admission remained blocked (below), **dependent managed-Child trials stop — C0 and C1 remain
+unspent/BLOCKED**, and Task 4's model turns are gated off. Boundaries kept: this adjudicates ONLY
+the fresh cell sha `fa76ae3c…` at observer digest `9e764bfd…`; the five historical 0.162.1
+pre-gate rescue-family flags (§13.4/§13.5) are NOT relabeled and their content remains unknowable;
+FALSE does not prove long waits impossible — it classifies one cell against one observer grammar;
+no new grammar is authorized and none was added.
+
+**Measurability of the managed route: exact managed-Child linkage NO; the fresh cell's shape YES
+(measured by the gate).** `route.requested: "rescue-foreground"` but `route.actual: null`;
+`childLinkageChecked`, `originalHandleChecked`, `companionLaunchCount`, `companionSendCount`,
+`rootThreadId`, `childThreadId`, `parentThreadId`: all null — the case terminated at the
+unsupported-call-shape gate before route/ownership verification, so the route was NOT measurable in
+this run. Per-dimension unknowns, each with cause: `outerReturns`, `modelCalls`, `rootJoins`,
+`decisiveWallMs`, `pollWallTimesMs`, `pendingInnerAtEnd` — all null, and
+`remainingLifetimeBasis: "unavailable"` — cause: admission blocked at shape classification before
+any measurable outer-return/poll state existed. Exact terminal stdout/error/choice linkage NOT
+established: `publicResultMatchedSentinel`, `terminalStdoutChecked`, `resultCheck`,
+`resultCheckLabel` null (`hostExit: 0` recorded; `processExit` null). Child settlement NOT observed
+(`settlement.observed: false`, `settlementDetectedAtElapsedMs` null). Held-turn timeline (monotonic
+elapsed-ms, sanctioned): launched 1, observationDetected 34750, pollStarted 68787, holdDeadline
+164750, rootAcknowledgement 185197, ended 185201, `gateReleased: true`, `endedBeforeGate: false`,
+cleanup label `observation`. `interrupt.callCount: 0` / `requested: false` (no interrupt, by plan).
+Instruction provenance: `isolatedSetup` `sessionEstablished: true`,
+`launcherDescriptorPublished: true`, `setupAttempts: 2`, `roleStatus: "ready"`, owningSessionId
+`b7cb574e-0d07-413d-83c3-0d33b758de2e`; named/generic variants applied (before/after hashes in the
+record; `namedRoleSha256: d2d2aa35…`, `genericMessageSha256: 1b7762…`), the three Root-owned command
+Skills at `baseline` with zero differences.
+
+**Cleanup: owned fixture cleanup happened (driver-reported).** `fixtureDisposed: true`,
+`disposalError: null`, `cleanupComplete: true`, `cleanupErrorCount: 0` (and
+`cleanupErrors.count: 0`). Recorded honestly alongside: `processTermination.verifiedTerminated:
+false` / `codexTerminated: false` — the "observation"-label cleanup is budget cleanup, NOT native
+cancellation or verified process termination (§3), and it supports no settlement/interruption claim.
+
+**Ledger and claim discipline.** Run ledger after Task 2: **A0 SPENT (the one-shot allowance is
+consumed); A1 unspent and not justified; C0/C1 unspent and blocked — no live run remains reachable
+under §3's dependency rules, and no new run authority is created by this outcome.** This entry adds
+recognition facts ONLY, consistent with S1–S7/Q1–Q6 discipline: no long-wait measurement exists, no
+M/raised-cap propagation claim, no interrupt or settlement claim, no config-effect claim, and no
+production or user configuration change followed (zero production/config edits; the only repo writes
+are this log's block and the plan's ledger/checkbox updates). Current-state pointers remain for the
+close-out task; §§1–13 and all historical records above stand byte-unchanged.
