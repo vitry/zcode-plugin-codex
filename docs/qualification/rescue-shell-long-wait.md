@@ -6214,3 +6214,116 @@ unspent-model-prerequisite). The plan's remaining §8 production gates (quantita
 and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
 owned/no-collateral settlement) are untouched by this result and still required before any production
 recommendation; production scope remains ZERO.
+
+### 15.4 Task 5: verification, gates, S/Q mapping, honest limits and the next decision (2026-10-17, no host launch beyond D0)
+
+**Task 2 closure restated for this section's baseline.** Task 2 closed at `7e5fbc7…` (17 codex gate
+rounds, final round APPROVE with zero material findings — §15.3 opening note); Task 3 recorded D0 at
+`f2eb938…`. This section's gates ran on the branch at its Task 5 state (HEAD `f2eb938…` plus the
+scratch-relocation procedure below; the Task 5 doc commit follows this entry and carries only report/
+plan records).
+
+**Full gate battery (exact plan commands, this date, this worktree):** `npm run test:shell-research` =
+**551/551 pass** (51 suites, 0 fail, 0 skipped); `node --test tests/test-selection.test.mjs` = **6/6**;
+`node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs
+tests/rescue-route-planner.test.mjs` = **417/417**; `node --test tests/rescue-lifecycle.test.mjs
+tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` = **126/126**;
+`node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` = **213/213**; `npm run lint` exit 0;
+`npm run typecheck` exit 0; `node scripts/check-line-endings.mjs` = 537 tracked files, exit 0;
+`git diff --check` clean; final prohibited-path diff
+(`git diff 7fe8cbb… --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/
+docs/superpowers/specs/`) = **EMPTY** — production scope ZERO holds on the branch.
+
+**Full routine `npm test` (once, against the clean exact source including the new helper):**
+executed with the plan's scratch procedure — the session's three owned untracked scratch files
+(`findings.md`, `progress.md`, `task_plan.md`) were moved to a private OS-temp directory
+(`/tmp/shape-dg-scratch.qCpV`, sha256 `10e5e039…`, `942f6b98…`, `6e61391e…`), the suite ran, and the
+files were restored by the same script's finalizer (restore exit 0; the three files verified present
+afterwards; nothing else was stashed and no expectation changed). Result: **3397 tests, 3392 pass,
+2 fail, 3 skipped, duration ≈ 894 s.** Both failures are the same environmental class —
+`ZCODE_PROCESS_TIMEOUT` (~120 s) spawning the real external ZCode binary:
+`tests/integration/package-install.test.mjs` ("packed production install loads and locks on Node
+22.13") and `tests/release-contracts.test.mjs` ("future writable-concurrency ADR remains absent…" via
+`buildMarketplaceSnapshot`). Neither test imports anything this branch changed (the prohibited-path
+diff above is empty, so the test infrastructure is byte-identical to the merged base). **Attribution
+experiment (recorded, decisive):** the complete `npm test` was then run on the plugin-identical,
+instrument-free worktree `.worktrees/rescue-shell-wait-config-path-a` (`b5cd056…`): it ALSO failed —
+**3393 pass / 1 fail**, and the failing test is a DIFFERENT member of the same class
+(`tests/integration/marketplace-install.test.mjs` "isolated Codex marketplace lists and installs…",
+external-process spawn timeout). Conclusion: full-suite external-process spawn timeouts on this
+machine are load-dependent run lottery, present on the merged base and NOT attributable to this
+branch. The failed local runs stay failed with this cause recorded — neither run is relabeled as
+passed, consistent with the standing rule; the same precedent (local full-suite spawn-timeout
+failure, CI green on the identical plugin source) is on record from the config-path-a campaign
+(report §14.1/§15.1 predecessor notes).
+
+**S1–S7 mapping (this campaign's deltas; all prior campaign mappings in §9–§14 carry forward
+unchanged):**
+- **S1 (entry points, binding, preparation):** unchanged and exercised — D0's route reached
+  `rescue-foreground`→`named` through the existing launcher/preparation/binding path with
+  child-linkage and original-handle checks all true (§15.3); no new `_meta`/workspace/binding
+  mechanism introduced (production diff empty). Fixture regressions: the prep/binding/route-planner
+  battery (417/417).
+- **S2 (one Companion, one handle, empty input, no second inner poll):** observed on the live route —
+  companionLaunchCount 1, companionSendCount 1, originalHandleChecked true, empty-poll excerpt
+  (`write_stdin` chars ""), outerReturns 0, `pendingInnerAtEnd` false (§15.3). The outer-cell
+  continuation semantics were not separately stressed by D0 (the single poll occupied the hold
+  window) — carried, not newly proved.
+- **S3 (terminal/exit semantics):** processExit 0, hostExit 0, publicResultMatchedSentinel true,
+  terminalStdoutChecked true on the live run (§15.3); job-control/mcp-result battery 213/213.
+  Child-side settlement remained unobserved (honest null) — the terminal evidence is Root-side
+  measured, and exact Child-terminal linkage stays with §8's outstanding production gates.
+- **S4 (placement matrix):** untouched by this campaign (production diff empty; the fixture pins the
+  rescue-foreground→named path only). Review/Adversarial/Status scopes remain their own (§13.7).
+- **S5 (interruption/timeouts/ceiling):** no interruption requested or claimed (D0 by design);
+  `nativeInterruptionClaimed: false` recorded. The source/default capability is STILL NOT installed
+  native interruption with durable no-collateral settlement — §13.11's distinction and §8's
+  requirement stand unchanged. No new timeout or ceiling introduced (production diff empty).
+- **S6 (named/generic alignment):** the D0 route exercised the named Role only; the generic message's
+  wait instructions and matching contracts are unchanged (production diff empty). No generic-route
+  claim follows from D0.
+- **S7 (production surface unchanged):** verified by the empty prohibited-path diff at the Task 5
+  state; the fixture's candidate/instruction variants were isolated to the disposable fixture home
+  and disposed with 0 cleanup errors (§15.3).
+
+**Q1–Q6 mapping (deltas only):**
+- **Q1 (actual Child route/config layers):** already qualified in prior campaigns; D0 re-confirmed the
+  installed-route reachability on 0.163.0 (route actual=named; plugin identity `zcode@vitry` 0.1.0;
+  codex 0.163.0). No new configuration-layer claim.
+- **Q2 (longer observation on named + generic):** the named route carried the empty poll holding
+  97.5 s within the authorized 130 s worker window (§15.3) — a live re-confirmation on the current
+  pin, NOT a new raised-cap result. Generic route: no new evidence; prior scopes stand.
+- **Q3 (re-entry reduction vs 30000/60000):** NOT measured — this is exactly C0/C1's comparison, and
+  the arms remain unspent on the model-control prerequisite (§15.3). D0's single poll with
+  `outerReturns: 0` is one managed-route data point, not the discriminating A/B pair; no
+  re-entry/token-savings claim is made.
+- **Q4 (noise/interruption during pending observation):** not exercised this campaign (no interruption
+  requested; no noise case run). §13.6's not-proven status and §8's requirement stand.
+- **Q5 (Root Review/Adversarial/Status eligibility):** untouched; §13.7's separate qualifications
+  stand (review-wait not-proven on early host exit; adversarial-review-wait/status-wait qualified on
+  their own pins).
+- **Q6 (smallest deployment change):** unchanged from §14.1 — the config-path-a close-out's candidate
+  (supported numeric `-c` transport, re-verified §15.1) remains the evidence-bounded candidate;
+  D0 adds no deployment recommendation, and no config efficacy was measured (C0/C1 unspent).
+
+**Honest limits of this campaign.** (1) The shape diagnostic shipped and survived its gate, but on
+the only live cell observed (D0) it had nothing to classify — its value on a REAL unknown cell is
+fixture-proven (90 focused tests incl. adversarial/privacy batteries) and gate-approved, never
+live-proven. (2) A0's historical form remains unexplained: this campaign proves only that a fresh
+cell admitted naturally; per-run form variance is real (plan §3 anticipated it) and a future run may
+produce another unknown cell — the instrument for that case now exists. (3) The configured
+outer-wait default's runtime effect remains unproven (C0/C1 unspent on the model id) — the config
+efficacy question is exactly where this campaign hands off. (4) Local full-suite spawn-timeout
+failures are recorded as environmental with the base-attribution experiment; CI remains the
+authoritative green for the identical plugin source until a PR exists.
+
+**Next decision (smallest evidence-backed step; user-owned).** Provide one authorized model id for
+this campaign (`shell_trial_model`) — Task 4's transport implementation (TDD) and the two remaining
+ledger runs (C0 at 30000 ms default, C1 at 240000 ms) then execute unblocked on an already-measured
+route, answering the campaign's remaining question: whether the configured outer default actually
+holds the managed Rescue Child past the short outer window. No other input is missing; no new plan or
+authority is needed for those two runs (2/4 ledger remains). Alternatively, close the campaign here:
+the §15 records are complete, the research instrument is qualified, production scope is ZERO, and all
+§8 production gates (quantitative long discriminator + repeat, reduced re-entry, exact terminal
+linkage, native pending-observation interruption with owned settlement) remain outstanding before any
+production recommendation — research completion is not release completion.
