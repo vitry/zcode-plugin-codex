@@ -5053,3 +5053,278 @@ relaxation and waiting for a host update. Production scope remains **ZERO**: spe
 the current-route quantitative long discriminator and repeat, reduced re-entry, exact output linkage,
 and native pending-observation interruption with owned/no-collateral settlement — all outstanding;
 §13.10/§13.11's boundaries (five unknowable pre-gate flags; per-pin scoping) stand.
+
+## 15. 2026-10-16 shape-diagnostic campaign execution log
+
+> Continuation under the same spec (S1–S7, Q1–Q6, §8) authorized by plan
+> `docs/superpowers/plans/2026-10-16-rescue-shell-wait-shape-diagnostic.md`. Budget ledger resets to
+> zero here: D0/D1/C0/C1 all unspent until a §15 entry states otherwise. Process-channel facts first
+> recorded in §15.1 apply to later entries until corrected.
+
+### 15.1 Task 1: pins, seam survey, frozen diagnostic schema, model/config transport recheck (2026-10-16; no code change, no live run, no model turn)
+
+**Process-channel record (dated; not a code fact).** Three environmental degradations were recorded as
+OPEN at execution start (2026-10-16 ~09:35Z): (1) the local proxy `http://127.0.0.1:7890`'s FOREIGN
+upstream was down (github/google/chatgpt unreachable through it and directly, domestic 200), making
+network-dependent codex review submission impossible and recorded pending-backfill, never passed;
+(2) the general-purpose subagent channel was provider-rejected on five dispatch attempts spanning
+~15 minutes (including a trivial probe) while the harness's Explore (read-only) agent type worked, so
+this task's read-only survey evidence was produced by Explore agents and the root performed only the
+mechanical doc edits, schema synthesis from that evidence, and the commits — a recorded degradation for
+THIS docs-only task, with code tasks (Task 2+) still held to the standard
+implementer→self-review→codex-gate chain; (3) no live model-turn run was attempted (plan §3 makes
+failed startup launches count against the run ledger). **Recovery record (~11:15Z, 2026-10-16):** the
+foreign upstream was restored (google 200 through the proxy; chatgpt 403 on bare curl = normal bot
+protection per the standing service-recovery rule), the general-purpose channel probe succeeded, and
+the pending Task 1 review was submitted the same day through the plain non-adversarial `review`
+channel (user-directed; no focus text required because the plan/report/spec ride in the reviewed
+diff): background job `review-mvavfwqo-dqcqv4`, full branch diff against `7fe8cbb…`, verdict **zero
+actionable findings** ("The diff changes only research documentation and does not modify executable
+code or existing contracts. No actionable regressions were identified; the six test-selection tests
+and diff whitespace checks passed."). No backfill remains owed for Task 1. Self-reference note: the
+review ran against the task commit as it stood before this verdict-recorded amendment (HEAD
+`492604d…`); the amend that records the verdict sets the final task SHA in the branch log, and the
+amend adds only this process-channel paragraph plus the plan's matching one-line recovery note — no
+reviewed claim is altered.
+
+**Pins (all re-verified today at execution start).** `shell_plugin_sha` =
+`7fe8cbb80489664eb6ea56917c795cb9a17233cb` (worktree
+`.worktrees/rescue-shell-wait-shape-diagnostic`, branch `docs/rescue-shell-wait-shape-diagnostic`,
+fresh worktree exactly on merged PR #68; dirty state = only the plan file itself plus root scratch
+`findings.md` / `progress.md` / `task_plan.md`, all untracked and never committed).
+`shell_codex_binary` = `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+(realpath of `command -v codex` via `~/.local/bin/codex`; the npm devDependency is NOT used —
+driver `--help` documents an explicit `--codex <absolute executable>` argument with no
+devDependency fallback), `codex --version` = `codex-cli 0.163.0`,
+SHA-256 = `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`. Codex source checkout
+`/Users/zhangzikai/Workspace/Codes/github/codex` HEAD = `dffa0deb69268ed4ac31578794c9ea897b336ae3`,
+`git status --short` empty (clean); inspected read-only via `git show <pin>:<path>` only. Source/binary
+correspondence remains UNPROVEN (unchanged from §13.11); the pin pair is recorded for attribution, not
+as an equivalence claim. Driver `--help` on this pin lists only the pre-Task-2 option set (no `--model`,
+no `--unclassified-shape-diagnostic`, no `--wait-policy`).
+
+**Seam survey (read-only, Explore-produced; file:line on the worktree at `7fe8cbb…`).** All named
+helpers exist under their exact names in `tools/shell-wait-probe/evidence.mjs`:
+`structuralExcerptForUnclassifiedInput` (evidence.mjs:368, private; builds the JSON fact excerpt —
+`suppressed`, `classification`, `tool`, `bodyType`, `inputLines`, `directivePresent/Keys`,
+`withheldDirectiveKeys`, `inputBytes` — ends in `scrubExcerpt`:431); `parseCallStatements` (:605,
+exported; per-line single-statement parse via `parseCallEvent`, any bad/trailing content line rejects
+the whole cell); `parseCallEvent` (:668, exported; dispatches `function_call` string-JSON args,
+`custom_tool_call` preparation :685 / root-control :713 / `parseWrappedToolInput` :719; returns
+`{kind, value, directive, wrapped}` or null); `parseWrapperArguments` (:809, private; bounded by
+`MAX_WRAPPER_ARGUMENT_CHARS` 4096 at :40, JSON-first with a string-aware JS-literal fallback);
+`inspectShellWaitEvidence` (:1970, exported; whole-evidence adjudicator returning
+`{status:'supported', facts}` at :2167-2190 or `{status:'inconclusive', inconclusive:{reason, detail,
+manualAdjudicationRequired?, excerpt?}, facts:null}` via the private `inconclusive()` helper at
+:2193-2196). Privacy scrubber `scrubExcerpt`
+(:130, private; redaction-string replacement, control-char drop, 2048-char `MAX_EXCERPT_CHARS` :41
+truncation at :139-140); driver-side `redactPrivatePaths` (driver.mjs:443, path-only error redaction).
+Fixture disposal `dispose` (fixture.mjs:457-478; worktree-registration removal then `rm -rf` of the
+temporary root; error-path cleanup :479-489).
+
+**Raw-call lifecycle seam (the location Task 2 must use).** Raw text lives only in memory on
+`payload.input` of events in the in-memory `rollouts` array (`loadShellWaitRollouts` driver.mjs:1791,
+loaded at :2288). During the held turn the watches (`waitForLauncherObservation` driver.mjs:1905,
+`waitForPollObservation` :1963/:1990, settlement watch :2054) call `parseCallStatements` per event and
+retain nothing for unknown shapes. Post-run, `inspectShellWaitEvidence` re-scans every event
+(evidence.mjs:2032-2105): for `custom_tool_call`, when `parseCallStatements(event) !== null` the call is
+admitted (:2043), and otherwise the raw `payload.input` flows to
+`structuralExcerptForUnclassifiedInput` (:2048) producing
+`inconclusive('unsupported-call-shape', …, {manualAdjudicationRequired: true, excerpt})` (:2055-2057);
+function_call non-string/unparsable/non-object args take the same path at :2066-2102. **The in-memory
+seam for a future `inspectCallShape(raw)` is evidence.mjs:2043-2048 (and the analog :2065-2102)** —
+after the existing-parser rejection and BEFORE the suppression/fact-projection — where the raw string
+is still in scope and the `diagnosticEnabled` gate (:2026-2030, threaded from driver.mjs:2311) already
+exists. Raw bytes persist only in the in-memory rollouts originating from fixture-owned session
+rollouts deleted by fixture disposal; the record already carries only a one-way `sha256` digest.
+Opting in keeps that boundary: classification consumes the raw in memory, projects closed enums through
+the existing serialization (`buildCaseRecord` driver.mjs:545-688 → `record.evidence.excerpts[]`
+(≤`MAX_CASE_EXCERPTS` :693) → `writeCaseRecord` :704-714, `JSON.stringify` at 0600), and never attaches
+the raw string to the object graph or an exception message.
+
+**Existing redacted-record flow (downstream of the seam).** `mapShellWaitLiveFacts`
+(driver.mjs:2713-2715) turns the inconclusive into `inconclusive = {reason: reason + ': ' + detail}` +
+`excerpts.push({kind: 'unsupported-call-shape', ...excerpt})`; `record.inconclusive = {reason}` only
+(:686) and the optional `unclassifiedStructuralDiagnostic: true` marker at :555; CLI echo at
+:3069-3070. Today's structural-diagnostic retention (evidence.mjs:280-330) is:
+`wholeBodyStatementMatch`, per-line `{line, prefix, braceDepthEnd, endsWithSemicolon, tools,
+withheldToolNames}`, `withheldLines` (emitted only when >0, :322), `sha256` digest, and a
+`diagnosticBudgetChars` (:340-342) with end-dropping at :325-328. Cleanup-error text is path-redacted
+(driver.mjs:2391-2393). The Task 2 shape diagnostic must join THIS record as additional closed facts
+projected by the same budget rules — missing budget room means dropping whole optional facts with an
+incomplete marker, never mid-JSON truncation, raw fallback, or a claimed-complete classification.
+
+**Naive brace hint verdict.** The existing counter is `unclassifiedStructuralDiagnosticFacts`
+(evidence.mjs:288-295), reporting per-line `braceDepthEnd` (:310) as a cumulative +1/−1 over
+`([{/)]}` on retained content lines with no lexer. It cannot distinguish string-vs-code braces (its own
+contract states this at :253-259), gives no one-vs-multiple statement count (only per-line prefix classes
+from `DIAGNOSTIC_LINE_PREFIX_TESTS` :232-236 — `const-r-await`, `text-await-tools`, `text(`, `other` —
+plus `wholeBodyStatementMatch` :284), and exposes trailing post-closing content only as an
+`other`-prefix line or nonzero residual depth (`parseCallStatements` rejects trailing content at
+:622-628). Verdict: NOT information-sufficient for the seven synthetic hypotheses below; a bounded
+string-aware static scan (string/comment-aware linear lexical scan; no AST, no evaluation) is required
+and is specified as the Task 2 implementation basis.
+
+**Synthetic information-sufficiency alternative set (design; Task 2 tests these as RED candidates).
+Seven hypothesis classes share A0's known envelope class (2 physical input lines ≈243 bytes, exactly one
+listed nonempty diagnostic line, `withheldLines` 0, prefix class `const-r-await`, `wholeBodyStatementMatch`
+false — §14.1); they appear as EIGHT concrete records below because the missing/changed-emission-tail
+class is split into two records, and they are DIFFERENT hypotheses sharing only that envelope, never
+reconstructions of A0:**
+
+1. `S-canonical` — accepted canonical wrapper control: `const r = await tools.exec_command({cmd:"…"});`
+   + `text(r);`. Expected: `parserStage: parse-accepted`, `wholeInputConsumed: true` (this is the
+   already-admitted family, listed as the falsifiability control: records 3–5 and 7–8 are each
+   expected to diverge from it on a specific closed fact; records 2 and 6 are expected to be
+   indistinguishable from it on the syntax/decision facts — record 6 on EVERY retained fact
+   (string-boundary rule: tool-like text inside a private literal produces no syntax fact), record 2
+   solely excepting the `parserStage` diagnosis, which necessarily reports the existing wrapper stage
+   because the existing grammar pins the canonical `r` spelling (WRAPPER_PATTERN, evidence.mjs:49;
+   `parseWrappedToolInput` :853-873 has no other accepting path for a `const <binding>` wrapper form —
+   its inline `text(await tools.…)` alternative, evidence.mjs:53, cannot match that shape) — no
+   binding-spelling-dependent syntax/decision fact exists).
+2. `S-binding` — changed result binding: `const q = …; text(q);` (binding spelling varies; identical
+   syntax relations; retained facts must be identical apart from the existing sanctioned
+   digest/envelope AND apart from the `parserStage` diagnosis — the existing grammar pins the `r`
+   spelling (WRAPPER_PATTERN, evidence.mjs:49), so a changed binding necessarily reports the wrapper
+   stage, exactly as the plan's Task 2 example asserts via `parseCallStatements(…) === null` for a
+   noncanonical binding; no binding-spelling-dependent syntax/decision fact exists).
+3. `S-tail-missing` — missing emission tail: first statement only.
+4. `S-tail-changed` — changed emission tail: `text(JSON.stringify(r));` or `text(r.status);`.
+5. `S-arg-unsupported` — unsupported argument expression: `{cmd: buildCmd()}` or spread.
+6. `S-string-contained` — tool-like text inside a private literal: `cmd:"prep text(r) tools.exec_command
+   (prompt) alias"`; lexer boundaries first, so NO syntax fact may be derived from that content.
+7. `S-extra` — extra hidden statement: a third plausible statement after the accepted pair.
+8. `S-trailing-blank` — trailing blank formatting after the final statement (`;\n\n`, trailing blanks).
+
+**Closed decision dimensions (each alternative is expected to differ on a specific subset; one
+dimension per existing failure family):** whole-wrapper mismatch (head class + whole-body coverage);
+argument decoding rejection (literal-object vs unsupported vs over-limit); output projection (tail
+class); extra/unresolved content (residual statements / trailing formatting / slot-limit); lexical
+state (complete vs unterminated vs unsupported syntax); parser stage (which existing stage rejects);
+directive state (absent/valid/invalid/unknown); tool family (`exec_command` vs other). These dimensions
+are the Task 1-frozen discriminator set; the classifier reports closed enums ONLY.
+
+**FROZEN diagnostic schema v1 (`inspectCallShape` — Task 2 implements exactly this; local
+investigation decision under plan §2 privacy contract).** A pure, non-evaluating static classifier over
+the raw call string; fixed input bounds: byte length ≤ 8192 (UTF-8), ≤ 16 statement slots, argument
+literal ≤ 4096 chars (matches `MAX_WRAPPER_ARGUMENT_CHARS`); excerpt/diagnostic record still bounded by
+the existing 2048-char budget. Truncated input NEVER becomes success; a fact that cannot be established
+inside these bounds is dropped whole with an incomplete marker.
+
+```jsonc
+{
+  "version": 1,
+  "coverage": "complete | partial | over-budget | over-scope",   // classification coverage ONLY, never admission
+  "statements": [ {                                              // ≤16 nodes; dropped whole (with statementCount retained) when unsayable
+      "head":       "bound-await | bare-await | emission | other | unknown",
+      "tool":       "exec_command | other | no-call | unknown",    // allowlist = {"exec_command"}; any other established name, incl. spelling, is "other"; unknown only when lexical state blocks classification
+      "argument":   "literal-object | unsupported | none | over-limit",
+      "lexical":    "complete | unterminated | invalid | unsupported-syntax",
+      "tail":       "text-binding | text-stringify-binding | text-public-field | text-other | none | unknown"
+  } ],
+  "statementCount":   "<integer 0..16> | over-limit",
+  "tool":             "exec_command | other | no-call | unknown", // top-level mirror: tool class of the LAST call-carrying statement ('no-call' when none)
+  "head":             "bound-await | bare-await | emission | other | unknown",  // top-level mirror: FIRST statement's head
+  "tail":             "text-binding | text-stringify-binding | text-public-field | text-other | none | unknown",  // top-level mirror: LAST statement's tail
+  "bindingEquality":  "equal | not-equal | unrelated | unknown", // head binding identifier == tail emission identifier (equality only; spelling never retained)
+  "parserStage":      "parse-accepted | wrapper | arguments | output | residual | directive | unknown",  // existing-parser stage order (diagnosis only)
+  "directive":        "absent | valid | invalid | unknown",      // directive verdict read from the existing parseCallEvent directive readback; keys never retained
+  "wholeInputConsumed": <boolean>                                // classification coverage only
+}
+```
+
+Retains-a-count note (plan §2 anchoring): beyond booleans/enums, the ONLY new count-like facts are
+`statementCount` and the `statements` array length — both directly represent the schema-projected
+syntax tree's fixed statement-slot count, which plan §2 expressly allows ("fixed public node kinds,
+fixed child slots and binding-equality relations, at most 64 nodes/depth 8/16 statement slots"); no
+other numeric series (string lengths, source offsets, per-token counts) is retained.
+
+Field semantics fixed at freeze: `head` from the first significant token class (declaration-binding of
+an await → `bound-await`; bare await statement → `bare-await`; emission-first (`text(…)` as its own
+head) → `emission`; anything else → `other`/`unknown`). `tail` 'value' classes: `text(<result binding
+identifier>)` → `text-binding`; `text(JSON.stringify(<identifier>))` → `text-stringify-binding`;
+`text(<identifier>.<allowlisted public result field>)` → `text-public-field` (allowlist table is EMPTY
+at v1 — no public field is enumerated, so any property projection stays `text-other`; extending it
+requires a new adjudication); anything else inside `text(…)` → `text-other`; no emission → `none`.
+`tail` at top level mirrors the LAST statement's tail; top-level `tool` and `head` are the remaining
+mirror fields the plan's Task 2 example pins — top-level `tool` is the tool class of the LAST
+call-carrying statement (`no-call` when none), top-level `head` mirrors the FIRST statement's head —
+so the plan's single-call example (`const alias = await …; text(alias);`) projects
+`head: bound-await`, `tool: exec_command`, `tail: text-binding` with no binding spelling retained.
+`bindingEquality` compares only identifier
+equality between an earlier statement's bound result and the final emission's argument identifier — no
+name retained (the plan's example asserts `JSON.stringify(facts)` does not contain `alias`). Public
+syntax strings (`exec_command`, `text(`, `JSON.stringify`) exist ONLY as fixed enum labels. Lexical
+state unsupported features (template literals, regex literals, class fields, optional chaining, etc.)
+map the affected statement to `lexical: unsupported-syntax` and `head/tool: unknown` — never probed
+further. Statement slot order: lexical string/comment boundaries are applied BEFORE structural
+classification, so tool-like text inside task strings never produces `tool` facts. `parserStage`
+mirrors the classification order of existing `parseCallStatements` stages (wrapper → arguments →
+output → residual → directive); `parse-accepted` is a diagnosis report of that parser's response, NOT
+an admission verdict and NEVER a fake validated-call object (`parseCallStatements`' own null/parsed
+outcome stays pinned separately as the plan's example requires). Directive state read from the
+in-memory `parseCallEvent` directive value with the existing private-key withholding; errors →
+`unknown`.
+
+**Model comparison provenance (source-verified read-only at `dffa0deb…`).** The `-m/--model` option:
+`codex-rs/utils/cli/src/shared_options.rs:22-23` — plain `Option<String>` built into the interactive
+CLI (`codex`/`codex resume`/`codex fork` via TuiSharedCliOptions; codex-rs/tui/src/cli.rs:71,110-142)
+and `codex exec` (ExecSharedCliOptions; codex-rs/exec/src/cli.rs:121, flattened at :25) with
+`mark_exec_global_args` promoting it so `codex exec resume/fork/review` accept `-m` (exec/src/cli.rs:164).
+Clap applies NO charset/length validation; an unknown slug downgrades to "Unknown model … will use
+fallback model metadata." (models-manager/src/model_info.rs:94-99), while the plugin-side
+`spawn_agent` Child path separately rejects unknown requested models against its preset list
+(core/src/agent/child_config.rs:327-348). Precedence: CLI `-m` overrides `-c model=…` overrides
+profile overrides config.toml (`core/src/config/mod.rs:3401,4083,4409`; loader docs
+config/src/loader/README.md:26-37). Design resolved (Task 2 implements): optional research
+`--model <id>` on the probe driver, forwarded as a SEPARATE `-m <id>` argv item to the probe's codex
+child, validated at CLI and programmatic boundaries by a bounded safe-identifier check (allowlist of
+name/visible-ASCII-without-shell-metacharacters; no arbitrary argv passthrough), with requested-model
+recorded separately from effective host/Child metadata which may remain unknown
+(`model:(…)`-stays-null contract at driver.mjs:58/:93). `codex features list` runs offline (main.rs:1870-1896;
+errors from the bounded cloud-config refresh are ignored, 20 s cap; no auth/model turn needed).
+**Validated `shell_trial_model`: NOT established.** The scoped repo docs deliberately never name an
+authorized model id (report §92 — the executing observer is contractually blind to model identity;
+historical runs pinned "SAME model" as a provenance requirement without an id string, spec :127; the
+only concrete ids are §306-309's `codex debug models` catalog dump explicitly recorded as
+corroboration, not authorization). Today's offline `codex debug models` (isolated empty CODEX_HOME,
+unauthenticated, bundled catalog data) lists 11 entries, 8 with `list` visibility
+(`gpt-6.1-sol` priority 1, `gpt-6-astra` 2, `gpt-6-sol` 3, `gpt-6-luna` 4, `gpt-5.6-sol` 5,
+`gpt-5.6-terra` 8, `gpt-5.6-luna` 9, `gpt-5.5` 13) plus 3 hidden (`gpt-daybreak-blue-latest`,
+`gpt-daybreak-red-latest`, `codex-auto-review`). Compared against the 0.161.0 dump recorded at
+§306-309 (8 default-capable `multi_agent_version:"v2"` slugs — the six non-daybreak ones, plus the
+plain `gpt-daybreak-blue` / `gpt-daybreak-red` pair counted as two slugs — with `gpt-5.6-luna`
+recorded as v1 and `gpt-5.5` as null): the eight non-daybreak visible slugs match that recorded
+eight-slug non-daybreak set one-for-one, the daybreak pair appears on 0.163.0 only as hidden `*-latest`
+rebindings, and `codex-auto-review` is new-hidden (absent from the §306-309 record); no binding
+relationship beyond the catalog entries is claimed. Consequence recorded:
+authenticating the real account-default model needs foreign network + auth (outage-state, §15.1
+channel record), and no explicit selection can be VALIDATED against the deliberately-unnamed
+historical pin. Until a user-authorized model id exists for this campaign, D0/D1 run with model
+`unknown`-preserved (diagnosis is single-run and cannot make model claims), and C0/C1's shared
+explicit-selection prerequisite is UNMET: per plan Task 4 they remain unspent rather than run as two
+silent-default arms.
+
+**Config transport recheck (isolated `CODEX_HOME=$(mktemp -d)`, no model turn, true exit codes):**
+baseline `features list` exit 0 offline; `-c features.code_mode.default_exec_yield_time_ms=30000`
+exit 0 (key deserializes through the feature-table path); `=0` exit 0; `=abc` exit 1 with "failed to
+load bootstrap configuration … did not match any variant of untagged enum FeatureToml in
+features.code_mode"; `=-5` exit 1; `-c …=abc --version` prints the version and exits 0 (version/help
+path does not deserialize the key — consistent with report §14's positive/malformed rows, plus today's
+zero-accept and negative-reject boundary evidence). No force-enable of interruption was performed and
+installed settlement remains unclaimed; root-join / inner-cap / exec-default / outer-continuation
+defaults stay distinct as recorded in §14.
+
+**Baseline gates on this fresh worktree (2026-10-16):** `npm run test:shell-research` = 451 tests /
+46 suites / pass 451 / fail 0 / skipped 0 (matches the plan's drafting baseline 451/451);
+`node --test tests/test-selection.test.mjs` = 6 tests / pass 6 / fail 0; tracked LF check
+(`node scripts/check-line-endings.mjs`) = 535 tracked files verified, exit 0. The three high-severity
+npm audit advisories disclosed in plan §4 stand disclosed, not adjudicated or fixed.
+
+**Task 1 exit statement.** Concrete safe schema (frozen above), raw-call lifecycle seam
+(evidence.mjs:2043-2048/:2065-2102), model/control limits (`shell_trial_model` unestablished; request
+channel designed and source-verified; C0/C1 comparability prerequisite unmet until user-authorized),
+and parser-stage distinctions (closed dimension set + frozen schema) are recorded. Unknown host syntax
+is still an investigation result, not a frozen API: acceptance of any live form remains gated by
+existing `parseCallStatements`, and the schema's `parse-accepted` value diagnoses rather than admits.
