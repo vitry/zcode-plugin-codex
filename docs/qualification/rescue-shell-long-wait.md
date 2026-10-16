@@ -6130,3 +6130,87 @@ every adversarial input class);
 retention regressions are intact (structural-only and plain excerpts stay byte-identical, pinned).
 D0/D1 remain unspent; the plan's Task 3 command is now runnable against this branch but no live
 turn was launched.
+
+### 15.3 Task 3: D0 executed — the fresh cell was admitted naturally; measurement restored; D1/C0/C1 dispositions (2026-10-17, live run 1/4)
+
+**Task 2 closure record (opening note, kept out of the Task 2 commit to preserve the approved bytes).**
+Task 2 closed at `7e5fbc7…` after 17 codex gate rounds: rounds 1–10 (pre-redesign architecture) produced
+37 fixed findings (trajectory 5→5→4→5→3→3→4→4→4→4, all fixed test-first, every round's disposition in
+§15.2); the root then adjudicated the canonical-exact redesign (§15.2), and rounds 11–16 on the
+redesigned architecture produced 6 further fixed findings (1 each in rounds 12–16), with round 17
+(job `review-mvbh2zud-9fb2fq`, adversarial channel, full branch diff `bf98839..7e5fbc7`) returning
+**approve — zero material findings** ("No defensible material blocker found in bf98839..7e5fbc7 within
+the stated scope"). This §15.3 entry is the first record AFTER that approval; the approved task commit
+`7e5fbc7…` is byte-identical to what the review certified. Channel summary for Task 2: the plain
+`review` channel completed rounds 1–6 and died 4/4 attempts on the post-redesign diff (recorded in
+§15.2's channel record); the adversarial-review channel with an honest scope statement completed every
+round thereafter — the root's channel switch is recorded as an adjudicated deviation, not a silent
+substitution.
+
+**D0 execution (ledger: spent 1 of 4; D1/C0/C1 unspent).** Command exactly per plan Task 3 (fresh
+private output directory `tmp.XyQbWNUQwq`, record `rescue-long.record.json`; no `--cap-ms`; both
+`--unclassified-structural-diagnostic 1` and `--unclassified-shape-diagnostic 1`; `--worker-duration-ms
+130000 --poll-ms 3600000 --budget-ms 360000`; NO `--model` — model stays unknown per §15.1's unmet
+model-control record). Pins: `shell_plugin_sha` = `7fe8cbb…` (the PLUGIN source pin — verified
+identical to the executing HEAD `7e5fbc7…` on every prohibited path: `git diff 7fe8cbb..7e5fbc7 --
+skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/` is EMPTY; the research instrument differs
+and is bound by the observer digest, not the plugin sha); `shell_codex_binary` =
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+(sha256 `8813367…dee31`, codex-cli 0.163.0); executing observer digest v2 =
+`e53f20a0833304b4267b03e671496080dcd03d895305e542d390498a5c5233d6` (binds evidence.mjs ⊥
+shape-diagnostic.mjs ⊥ driver.mjs module-init bytes; `sourcesChangedDuringRun: false`). Driver exit 0.
+One honesty note on the provenance label: the record's `observer.revision` reads
+`working-tree-uncommitted` although the worktree was clean at `7e5fbc7…` — this is the driver's
+commit-resolution label inside a linked worktree; the authoritative binding is the v2 digest plus
+`sourcesChangedDuringRun: false`, and the label is recorded here as observed.
+
+**Fresh-cell adjudication (plan Task 3, fixed facts only).** The A0 blocker did NOT recur: BOTH tool
+cells of this run were admitted naturally by the existing grammar — the record contains two
+`rollout-tool-call` excerpts (`exec_command` launcher invocation with `yield_time_ms: 30000`, and the
+`write_stdin` empty poll with `yield_time_ms: 3600000`), `inconclusive: null`, and NO
+`unsupported-call-shape` cell — the opt-in shape diagnostic was present and armed but had NOTHING to
+classify. Per plan: no recognizer is invented for an admitted cell, and no multi-line-syntax claim is
+inferred from anything. What this adjudicates is exactly and only that THIS fresh cell was admissible;
+A0's historical cell stays unreconstructed and its envelope facts stay historical (§14.1); "a new
+run's form may differ; each diagnosis belongs only to its own fresh cell" (plan §3) — so this result
+does NOT retroactively explain A0.
+
+**Managed-route measurement (the §2 goal's second clause is reachable).** Route: requested
+`rescue-foreground`, actual `named`. Linkage: child linkage checked (mode `rescue`), child thread
+`01a1469d-e23e-…` under parent `01a1469d-797c-…` (distinct namespaces), companionLaunchCount 1,
+companionSendCount 1 (one mapped launch/send), originalHandleChecked true. Held turn (monotonic
+elapsed): launch 1 ms, observation detected 32436 ms, poll started 65010 ms, hold deadline 162436 ms,
+root acknowledgement 171552 ms, ended 171557 ms. Poll: `pollWallTimesMs [97500]` — the empty original-handle
+poll occupied the entire remaining hold window (65010 + 97500 = 162510 ≈ deadline 162436, Δ≈74 ms);
+`remainingLifetimeMs 97426` at poll start (the ≥60000 ms interpretability headroom holds);
+`outerReturns: 0`; `modelCalls: 2`; `rootJoins: 1`; `pendingInnerAtEnd: false`. Terminal:
+`processExit 0`, `hostExit 0`, `publicResultMatchedSentinel true`, `terminalStdoutChecked true`.
+Cleanup: `observation` label, fixture disposed, 0 cleanup errors. Honest null observations: Child
+settlement was NOT observed (`child.settlement.observed: false` — the Root acknowledged and ended
+before any Child settlement was detected), and no interruption was requested (by design for D0).
+`setupAttempts: 2` (setup retried once, then `roleStatus: ready`).
+
+**D1 disposition: unspent — both prongs cause-less.** Prong 1 (diagnostic refinement) requires D0 to
+be insufficient — it was sufficient (the cell admitted; route/handle/poll/terminal evidence all
+measurable, no missing discriminator). Prong 2 (adapted replay) requires a demonstrated finite
+adaptation — none was needed or built (plan: "If code is already admitted naturally, do not invent a
+recognizer"). D1 stays unspent under §3's "not both" ledger.
+
+**C0/C1 disposition: unspent — the model-control prerequisite remains UNMET.** D0 satisfied Task 4's
+measurability precondition ("only after actual managed-route observation can be fully admitted/
+measured" — it now is), so the ONLY blocker is the Task 1 record: no authorized model id exists for
+this campaign (§15.1: `shell_trial_model` NOT established; scoped docs deliberately name none), and
+plan Task 4 forbids running the two arms on two silent defaults ("record both arms unspent rather than
+assume two default models match"). The `--wait-policy config-default` / `--exec-default-ms` transport
+is likewise NOT implemented (plan Task 4 bullet 1): with the arms blocked on a user-owned input,
+building the transport now would be unreachable comparison work. Unblocking requires exactly one
+user input — an authorized model id — after which the transport implementation (TDD) and the two
+runs remain available under this plan's ledger (2 of 4 runs would remain).
+
+**Task 3 exit statement.** Recognition was restored by the host itself on the fresh cell (no adapter),
+attributable actual-route evidence is measured (route/handle/empty-poll/hold-deadline/terminal with
+97.4 s headroom), and D0/D1 use and choice are explicit (D0 spent, D1 unspent-cause-less, C0/C1
+unspent-model-prerequisite). The plan's remaining §8 production gates (quantitative long discriminator
+and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
+owned/no-collateral settlement) are untouched by this result and still required before any production
+recommendation; production scope remains ZERO.
