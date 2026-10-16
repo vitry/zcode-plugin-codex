@@ -16,7 +16,10 @@ follow-up campaign (Task 1: provenance re-pin and measurement-seam verification,
 §1.2.3 records the re-pinned provenance). §13.10–§13.11 record the 2026-10-15 documentation
 close-out amendment (a boundary-assessment scope correction and a read-only Codex source
 re-investigation at a new source pin; no host launch, no code change, production scope still
-ZERO changes).
+ZERO changes). §14 is the LATEST state: the 2026-10-16 config-path-a execution log (Tasks 1–4 of
+`docs/superpowers/plans/2026-10-16-rescue-shell-wait-config-path-a.md`) and its §14.1 close-out —
+final run ledger (A0 spent, the campaign's only live run; A1/C0/C1 unspent with recorded causes),
+full verification battery, S1–S7/Q1–Q6 mapping and the smallest next decision.
 
 Evidence labels are strict: `source-confirmed` (cited commit+path in the Codex source checkout, revision pinned
 below), `installed-observed` (measured on the installed CLI), `fixture-tested`, `not-proven`. No claim mixes
@@ -1009,6 +1012,13 @@ byte-unchanged. The current recommendation, restated: production scope remains Z
 flip — source-only, presence evidence only on the installed 0.162.1, no source/binary mapping) is
 recorded as a next-phase input, and §13.10's Path A gated diagnostic run is a NEXT-PHASE CANDIDATE
 only (not implemented, not run, no allowance reset).
+
+2026-10-16 config-path-a close-out pointer (documentation-only close-out; the campaign's one host
+launch is §14's recorded A0; no code change): the register above is UNCHANGED by the config-path-a
+campaign — §14 records its execution log and §14.1 its close-out (run ledger A0 SPENT / A1 unspent,
+not justified / C0–C1 unspent, blocked — 1 of 4 live runs; recognition NOT restored and config-default
+efficacy NOT demonstrated, kept as separate conclusions; production scope still ZERO changes). No row
+above changed state in the close-out.
 
 ## 11. Coverage mapping, proposed next delta, and execution handoff (Task 7)
 
@@ -4822,3 +4832,224 @@ transport remains acceptance-only; S5's installed-interruption obligation, S6's 
 spec §8's production scope remain open and untouched. Production/config/user-cache changes: ZERO.
 Current-state pointers remain for the close-out task (plan Task 5), which must also carry the
 S1–S7/Q1–Q6 mapping — no mapping is asserted here.
+
+### 14.1 Close-out (2026-10-16, plan Task 5): exact pins, final run ledger, full gate battery, S1–S7/Q1–Q6 mapping and the smallest next decision — documentation-only; no host launched, no model turn, no code change; production scope ZERO
+
+Task 5 is close-out recording plus the full verification battery. No host was launched, no model turn
+occurred, and no code, test, production, configuration or user-cache file changed: the tracked diff
+against the merged baseline `61853ab0faa0ceb55c68504d737daed3e91b9ee8` is exactly this report's §14
+additions plus the plan file — the `tools/`/`tests/` diff is EMPTY, and the prohibited-path diff
+(recorded below) is EMPTY. Nothing here rewrites any historical record: §§1–13 and §14's Task 1–4
+entries above stand byte-unchanged.
+
+**Exact pins.**
+
+| Pin | Value |
+| --- | --- |
+| Plugin baseline / merge base | `61853ab0faa0ceb55c68504d737daed3e91b9ee8` (PR #67 merge) |
+| Task commits, branch `docs/rescue-shell-wait-config-path-a` | Task 1 `1f8f684cb0a264e9b2c470937c8394ff2eb312fa` → Task 2 `b93aaa4c83a3d12ed8b0056a6cee4f718a7289be` → Tasks 3–4 adjudication `7261da8bb135ff6d699af3e364eb950db4d98f95` |
+| Installed native CLI (identical at the Task 1 pin and the A0 run; no auto-update) | `codex-cli 0.163.0`, sha256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` |
+| Codex source pin | `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --short` clean |
+| A0 `--source-sha` / run-tree HEAD | `1f8f684cb0a264e9b2c470937c8394ff2eb312fa` |
+| Executing observer digest at A0 | `9e764bfde1c8fbabfa4711a1d21efb1aa3778f686a18676d323b7a495c1a0c33` (digestInput `zcode-shell-wait-observer-v1 \|\| evidence.mjs \|\| driver.mjs`, NUL-separated module-init snapshot); independently recomputed at close-out from the `7261da8b…` HEAD instrument bytes — identical, confirming the executing observer was working-tree-identical to the committed HEAD bytes (the instrument itself is byte-identical to the merged baseline) |
+| A0 instruction provenance | fresh isolated fixture, `sessionEstablished: true`, `roleStatus: "ready"`; named/generic variant hashes as persisted in the record (`namedRoleSha256: d2d2aa35…`, `genericMessageSha256: 1b7762…`, with the before/after hashes); the three Root-owned command Skills at `baseline`, zero differences; `model: null` by design |
+| A0 fresh cell fingerprint | sha256 `fa76ae3ce693cbcbd090d47056d7ccb27639dafc0565f763365a7ce2b3a0ad40` |
+
+**Final run ledger — 1 of 4 live runs spent; no new run authority created.**
+
+- **A0 — attempted and SPENT** (the campaign's only live run of the four). The plan's Task 2 command run
+  EXACTLY ONCE, verbatim (`--cap-ms` omitted; `--unclassified-structural-diagnostic 1`), private output
+  dir `/var/folders/vw/4_44w0fs2sbgkzyzzvdn6jx40000gn/T/tmp.Bdv8eaYDJ7`. Measured: exactly one
+  unclassified fresh cell, tool family `exec_command`, 2 input lines / 243 bytes, directive absent, gate
+  prefix class `const-r-await` (single listed line, `braceDepthEnd: 0`, `endsWithSemicolon: true`),
+  `wholeBodyStatementMatch: false`, case outcome `unsupported-call-shape`; driver exit 0 (not a
+  qualified case), wall ≈212 s against the 360000 ms probe budget. Adjudication: §3's
+  FALSE-with-confirmed-`exec_command` branch — decisive wrapper/inline exclusion for that ONE fresh
+  cell/family.
+- **A1 — unspent, NOT justified.** No demonstrated parser defect (§3 branch 2), and the governing rule
+  "No speculative parser implementation if A0 did not demonstrate the defect" applies. Instrument-side
+  verification: `parseCallEvent`'s only whole-body acceptors are `WRAPPER_PATTERN`
+  (`tools/shell-wait-probe/evidence.mjs:49`), `INLINE_WRAPPER_PATTERN` (:53), `PREPARATION_PATTERN`
+  (:67, `write_stdin` head) and `ROOT_CONTROL_WRAPPER_PATTERN` (:1052) — this cell's raw input matches
+  none of them, so the planned `parseCallEvent` fallback could not have rescued THIS cell (pattern-based,
+  independent of any statement-form characterization; user correction 2026-10-16: no multi-line claim).
+- **C0 — unspent, BLOCKED.** Task 4's own gate fails: the managed route was not measurable after
+  Tasks 2/3 (`route.actual: null`, admission blocked at `unsupported-call-shape`); §3 orders stopping
+  dependent managed-Child trials.
+- **C1 — unspent, BLOCKED** (dependent on C0, which never ran).
+- **The one-changed-variable comparison was never reached.** No config-default arm exists. The transport
+  (`-c features.code_mode.default_exec_yield_time_ms=<n>` inside `CODEX_EXEC_COMMON_ARGUMENTS`, after
+  `-c shell_environment_policy.inherit=all`, before `-C <workspace>`) remains acceptance-only verified
+  (positive/negative `codex features list` probes under a throwaway `CODEX_HOME`; the recorded
+  `--version`-short-circuits-before-config-load caveat stands), and propagation to the actual Child was
+  NEVER proven — C0/C1 never ran.
+
+**Measured vs null facts (A0 record; every per-dimension null carries its cause).** Measured: the
+fresh-cell structural facts above; the held-turn timeline (launched 1 ms, observationDetected 34750,
+pollStarted 68787, holdDeadline 164750, rootAcknowledgement 185197, ended 185201; `gateReleased: true`);
+the fixture setup facts (`isolatedSetup` `sessionEstablished: true`, `launcherDescriptorPublished: true`,
+`setupAttempts: 2`, `roleStatus: "ready"`); `interrupt.callCount: 0` / `requested: false` (no interrupt,
+by plan). Null with cause: `route.requested: "rescue-foreground"` but `route.actual: null`;
+`childLinkageChecked`, `originalHandleChecked`, `companionLaunchCount`, `companionSendCount`,
+`rootThreadId`, `childThreadId`, `parentThreadId` — all null, the case having terminated at the
+unsupported-call-shape gate before route/ownership verification; `outerReturns`, `modelCalls`,
+`rootJoins`, `decisiveWallMs`, `pollWallTimesMs`, `pendingInnerAtEnd` — all null;
+`remainingLifetimeBasis: "unavailable"`; `publicResultMatchedSentinel`, `terminalStdoutChecked`,
+`resultCheck`, `resultCheckLabel` — null (`hostExit: 0`, `processExit: null`);
+`settlement.observed: false`; `model` and `reachableToolFamily` null by design.
+
+**Cleanup outcomes.** Driver-reported owned fixture cleanup succeeded: `fixtureDisposed: true`,
+`disposalError: null`, `cleanupComplete: true`, `cleanupErrorCount: 0`. Recorded honestly alongside:
+`processTermination.verifiedTerminated: false` / `codexTerminated: false` — the cleanup is BUDGET
+cleanup, not native cancellation or verified settlement, and supports no interruption claim. The
+redacted A0 record (`rescue-long.record.json`) remains preserved at its private OS-temp path; this
+worktree's three drafting scratch files remain untracked and preserved; zero user configuration or
+cache edits.
+
+**Source default vs installed-accepted vs not-proven (kept separate; source facts are mechanism
+statements, not runtime guarantees).** Source at `dffa0deb…`: outer code-mode exec default **30000 ms**
+(`core/config/mod.rs:1200`, resolution `:2778-2792`, absent-yield fill
+`tools/code_mode/mod.rs:130-137`); protocol constants **10000 ms**
+(`code-mode-protocol/src/runtime.rs:15-16`) are NOT the core default; the independent wait handler
+default **10000 ms** (`tools/code_mode/wait_handler.rs:30,38-40,134-141`) never reads the exec default;
+`code_mode_interrupt` Stable/**default-true** (`features/src/lib.rs:1197-1202`; flipped 2026-10-07 by
+`72c95952…`/#51835; the old campaign pin records `UnderDevelopment`/false). Installed-accepted
+(0.163.0 binary only): `features list` prints `code_mode_interrupt  stable  true`; the
+`-c features.code_mode.default_exec_yield_time_ms=<n>` key validates both positively and negatively
+under a throwaway home. NOT PROVEN: every runtime effect — propagation of either the configured default
+or an enabled interrupt to an actual Child, any configured-default long observation, installed native
+interruption, durable/no-collateral settlement (no live interrupt was sent; C0/C1 never ran).
+
+**S1–S7 / Q1–Q6 mapping** (structure exactly as the plan's Task 5 checkbox prescribes):
+
+- **S1–S3 — preserved and observed only where attributable.** A0's case terminated at the
+  unsupported-call-shape gate before route/ownership/terminal-linkage verification, so this campaign
+  adds NO new S1–S3 observation; every historical S1–S3 record keeps its own pin/surface scope.
+- **S4 — placement, Root and Status: unchanged and not newly qualified.** No placement or Status
+  surface was exercised by this campaign.
+- **S5 — source interrupt capability is DISTINCT from still-unproved installed native interruption and
+  durable/no-collateral settlement.** The Stable/default-true flip is a source/default fact;
+  installed-accepted evidence is presence only; no live interrupt, no settlement claim
+  (`interrupt.callCount: 0`; `verifiedTerminated: false` recorded as budget cleanup).
+- **S6 — the generic route remains separately unavailable/unqualified.** Untouched by this campaign;
+  §13.8's structural unavailability stands and the generic-paragraph parity work was never reached
+  (Task 4 not applicable).
+- **S7 — zero production/config edits.** Canonical Skills, Role templates, production
+  scripts/hooks/packaging, marketplace snapshots, installed caches, user configuration and `../codex`
+  unchanged; the prohibited-path diff recorded below is EMPTY.
+- **Q1/Q2 — the outer-Child inheritance question gained evidence ONLY from Task 1's read-only source
+  recheck.** What was gained: every §13.11 citation CONFIRMED at pin `dffa0deb…` — config-real
+  inheritance through `turn.config.clone()` (`agent/child_config.rs:132-133`) with both services
+  constructed from the child config (`session/session.rs:1730-1731`, `:1818-1823`), and the Role
+  whitelist (`agent/role.rs:36-47`) excluding both numeric keys — so the only candidate transport is a
+  host-argv `-c` override, which a Role cannot carry. What was NOT gained: any installed proof that the
+  override (or the host default) actually reaches a real Child's `CodeModeService`/process manager —
+  Task 1's evidence is acceptance-only, and Q1/Q2's installed half remains open.
+- **Q3 — full M / raised-cap / repeat acceptance still outstanding.** The inner cap stayed unraised and
+  identical by design; no M measurement, no raised-cap trial, no repeat — untouched by this campaign.
+- **Q4 — noise/sidecar/interrupt not rerun.** §13.6's shape-adjudicated noise/background records and
+  §8.4's structural sidecar coverage stand unchanged.
+- **Q5 — per-command historical verdicts unchanged.** §9.4/§13.7 stand byte-unmodified.
+- **Q6 — the proposed deployment seam is NOT release authorization.** The
+  `-c features.code_mode.default_exec_yield_time_ms` transport is a proposed research-only seam,
+  acceptance-only; no production recommendation and no release follow from it.
+
+**Two conclusions, kept separate.** (1) **Recognition was NOT restored**: the fresh `exec_command` cell
+remains excluded by the executing observer's whole-body grammar (`wholeBodyStatementMatch: false`); the
+bounded cause — pattern-based, independent of any statement-form characterization — is that no existing
+observer whole-body acceptor path outside the wrapper/inline patterns matches this cell's raw input, so
+even the planned `parseCallEvent` fallback could not have accepted THIS cell; and what FALSE plus that
+analysis establish is exactly and only that the EXISTING parser set and the PLANNED fallback cannot
+accept this cell — whether a NEW finite whitelist recognition form could accept it is unknown and was
+not assessed (user correction 2026-10-16: no broader impossibility conclusion exists); the scope is
+this one fresh cell/family — it does not exclude shapes on other surfaces and does not prove long waits
+impossible. (2) **Config-default efficacy was NOT demonstrated — and equally NOT
+refuted**: the bounded cause is that admission was blocked upstream at `unsupported-call-shape`, so the
+configured default was never exercised and the transport's acceptance evidence never became a
+propagation claim. Neither conclusion is evidence that long waits are infeasible.
+
+**Full verification battery (exact results; nothing fixed, no dependency changes, no `npm audit fix`).**
+
+| Command | Result |
+| --- | --- |
+| `npm test` (routine at the clean exact source) | **3397 tests / 3393 pass / 1 fail / 3 skipped / 0 cancelled** (657 s). The `&&`-chained `tests/integration/marketplace-snapshot-build.mjs` did not execute because the routine suite exited nonzero. The single failure — `isolated Codex marketplace lists and installs the eight-skill snapshot` (`tests/integration/marketplace-install.test.mjs:130`, ≈26 ms) — died in `verifyCleanExactSource` (`Marketplace source tree must be clean, including tracked and untracked files.`): that check requires fully empty `git status --porcelain -untracked-files=all`, and the only status content was the three preserved untracked scratch files this plan forbids staging. Controlled reproduction (the spec §2 / §13.9 maneuver): with ONLY the three scratch files temporarily moved out, the same focused test passed the clean-tree check and proceeded into the snapshot builder, failing there with the §13.9-adjudicated environmental npm-install hang signature (`ZCODE_PROCESS_TIMEOUT` 120000 ms, `capturedOutputBytes: 0`); the scratch files were restored byte-identical immediately after (verified by `git status`). Adjudicated cause: preserved-scratch artifact plus the known environmental npm family — no source, instrument or content regression (the implementation diff is EMPTY). Recorded limitation (review P3): the ambient proxy state was NOT captured during the reproduction, so the builder-stage classification rests on the §13.9 family signature match (`ZCODE_PROCESS_TIMEOUT` 120000 ms, `capturedOutputBytes: 0`) rather than a fresh proxy-removed single-variable isolation; the CURRENT ambient state (recorded at this amendment, explicitly NOT a retroactive observation of the reproduction window) is `all_proxy`/`http_proxy`/`https_proxy` all set. Stated plainly (user correction 2026-10-16): this is ONE recorded failure — **3393 pass / 1 FAIL** — with its cause and environmental clues recorded; it REMAINS a recorded failure, and neither the zero-implementation delta nor any independent-review adjudication converts it into a pass |
+| `npm run test:shell-research` | **451 tests / 451 pass / 0 fail / 0 skipped** (46 suites) |
+| `node --test tests/test-selection.test.mjs` | **6 / 6 pass**, 0 skipped |
+| `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | **417 / 417 pass**, 0 skipped |
+| `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | **126 / 126 pass**, 0 skipped |
+| `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | **213 / 213 pass**, 0 skipped |
+| `npm run lint` | exit 0, clean |
+| `npm run typecheck` | exit 0, clean |
+| `node scripts/check-line-endings.mjs` | exit 0 — LF verified in **535** tracked files (run AFTER the close-out edits, gating the final content; one more than Task 1's recorded 534 because the plan file itself became tracked at Task 1's commit) |
+| `git diff --check` | clean, exit 0 (run AFTER the close-out edits) |
+| Prohibited-path diff: `git diff 61853ab0faa0ceb55c68504d737daed3e91b9ee8 --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/` | **EMPTY** (run AFTER the close-out edits; expected final diff over prohibited paths confirmed empty) |
+
+Sequencing note: `npm test` ran BEFORE the documentation-only close-out edits, at HEAD `7261da8b…` with
+the tree clean except the three preserved scratch files — the clean exact source containing ALL changed
+implementation (the implementation diff vs the merged baseline is EMPTY, so HEAD is that source). The
+six suite/lint/typecheck runs also preceded the edits (they are content-independent of them); the three
+tree-state gates at the table's end ran AFTER the edits, so they gate the final committed content.
+
+**Independent review.** The independent whole-branch review (spec fidelity; executability;
+measurement/privacy safety) is **CLEAN** on the branch diff
+`61853ab0faa0ceb55c68504d737daed3e91b9ee8..35d7a71be56d2a91a9c94c227a47e63ecb689301` — the reviewed
+bytes are the four-commit branch diff at `35d7a71b…`. The reviewer independently recomputed the
+executing-observer digest (`9e764bfd…` — identical at `1f8f684c…`/`7261da8b…`/`35d7a71b…`), the
+prohibited-path and implementation diffs (both EMPTY) and the LF count (535), and cross-checked the
+A0 record field-by-field. Regarding the `npm test` failure, the reviewer's finding was a NON-BLOCKING
+adjudication, not a pass (wording corrected 2026-10-16 after user review): the suite result remains
+**3393 pass / 1 FAIL** — one failure whose cause and environmental clues are recorded on the battery
+row above — and it REMAINS a recorded failure; the zero-implementation delta and this non-blocking
+adjudication do NOT convert it into a pass. The reviewer returned two P3 notes, both applied and
+narrowly rechecked in that amendment: the uniform Task 5 tick convention in the plan, and the
+reproduction's proxy-state caveat recorded on the `npm test` battery row above. Remaining pipeline
+step: the final codex whole-branch gate — its verdict is recorded in the root's close-out report, not
+pre-written here.
+
+**Pre-PR correction round (2026-10-16, user review).** Before PR submission the user reviewed the
+branch, this report and the retained A0 structural record and required three wording corrections,
+applied in this round with dated flags and never silently: (i) conclusion scope — the FALSE result
+plus the instrument-side pattern analysis establishes exactly and only that the EXISTING parser set
+and the PLANNED `parseCallEvent` fallback cannot accept THIS cell, not that any bounded recognition
+scheme is impossible (whether a new finite whitelist recognition form could accept the cell is unknown
+and was not assessed); (ii) shape — the "multi-line statement" characterization was NOT established by
+the diagnostic (the retained facts are line-1-only, `withheldLines` 0 / listed set complete, exactly
+one non-empty content line; whether the second line was an empty/trailing-newline line is unknown;
+the pattern-based proof does not depend on that characterization and stands unchanged); (iii)
+`npm test` — recorded as one FAIL (3393 pass / 1 FAIL) with cause and environmental clues, REMAINING a
+recorded failure — neither the zero-implementation delta nor any reviewer adjudication converts it
+into a pass. The user CONFIRMED that stopping A1/C0/C1 was correct per the plan (execution agent no
+fault) and confirmed the campaign's standing characterization: the measurement instrument blocks
+verification — long waits are NOT proven infeasible. The user's stated priority for any next plan:
+controlled shape diagnosis under the isolated fixture — in-memory analysis only, retain redacted
+structure — to determine which finite call form is missing, then decide a minimal recognition
+adaptation; explicitly NOT a forced binary between privacy relaxation and waiting for a host update.
+Self-reference note (dated 2026-10-16): the Independent review paragraph's byte-range citations
+(`…35d7a71b…`) name the bytes as reviewed when written; the close-out commit has since been amended
+in place — once for the P3 application (tip before this round
+`fcbcd43560612ef268b0692d331efbcad7510adf`) and again by this correction round (message unchanged,
+`docs: record config path-a close-out, S/Q mapping and full gate battery (task 5)`) — a commit cannot
+contain its own hash, so the exact corrected-tip SHA is set by this round's amend and is recorded in
+the branch log and the root's PR submission.
+
+**Smallest next decision (neutral and bounded; the user decides — nothing below was executed, designed
+or requested by this close-out).** The measured blocker is precise and bounded (user-corrected
+2026-10-16): the A0 cell reached the executing observer inside raw input the existing whole-body
+grammar cannot accept, with the retained record holding ONLY — a 2-physical-input-lines / 243-byte
+envelope, directive absent, exactly one listed diagnostic line (line 1: prefix class `const-r-await`,
+`braceDepthEnd: 0`, `endsWithSemicolon: true`, tools `["exec_command"]`), `withheldLines` 0 (recorded
+as the field's absence — the instrument emits it only when > 0, `tools/shell-wait-probe/evidence.mjs:322`
+— so the retained listed-lines set is complete) and therefore exactly one non-empty content line;
+whether the second line was an empty/trailing-newline line is unknown, and the specific statement form
+(single- vs multi-line syntax) is NOT established. No raw body is retained, none is reproduced here,
+no grammar-extension design is proposed, and no automatic privacy-relaxation request is made. What the
+FALSE result plus the instrument-side pattern analysis establish is exactly and only that the EXISTING
+parser set and the PLANNED `parseCallEvent` fallback cannot accept THIS cell; whether a NEW finite
+whitelist recognition form could accept it is unknown and was not assessed. The user's stated priority
+for any next plan (recorded 2026-10-16): controlled shape diagnosis under the isolated fixture —
+in-memory analysis only, retain redacted structure — to determine which finite call form is missing,
+then decide a minimal recognition adaptation; explicitly NOT a forced binary between privacy
+relaxation and waiting for a host update. Production scope remains **ZERO**: spec §8 still requires
+the current-route quantitative long discriminator and repeat, reduced re-entry, exact output linkage,
+and native pending-observation interruption with owned/no-collateral settlement — all outstanding;
+§13.10/§13.11's boundaries (five unknowable pre-gate flags; per-pin scoping) stand.
