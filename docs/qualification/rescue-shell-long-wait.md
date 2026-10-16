@@ -4570,3 +4570,114 @@ the shell route must not be concluded infeasible from the inconclusive. The sens
 effective configuration and interruption capability, and resolve the probe recognition boundary
 (§13.10's Path A candidate); only then consider small-scale verification. This section authorizes no
 production Skill/Role/config change (spec S7; §13.10's delivery boundary).
+
+## 14. 2026-10-16 config-path-a execution log
+
+Task 1 of the 2026-10-16 plan (`docs/superpowers/plans/2026-10-16-rescue-shell-wait-config-path-a.md`)
+was executed on 2026-10-16 in worktree
+`.worktrees/rescue-shell-wait-config-path-a` (branch `docs/rescue-shell-wait-config-path-a`).
+Read-only throughout: zero model turns, zero authenticated host launches, no managed fixture, no
+code or test modification, no user configuration read or written (every installed-CLI probe ran with
+a throwaway empty `CODEX_HOME`). The run ledger stands at **A0/A1/C0/C1 all unspent** — local CLI
+inspections (`--version`, `--help`, `features list`) are not qualification runs and consumed no
+label. This section records new facts only; §§1–13 and every historical flag/verdict above stand
+byte-unchanged, and current-state pointers remain for the close-out task to update.
+
+**Pins (re-pinned at execution time, per the plan's re-pin requirement).**
+Committed plugin baseline `61853ab0faa0ceb55c68504d737daed3e91b9ee8` (the PR #67 merge; pre-commit
+worktree status: only the untracked plan plus the three preserved drafting scratch files, zero
+modified tracked files). Installed native CLI, resolved by realpath of `command -v codex` (never the
+npm development-dependency pin): `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+reporting `codex-cli 0.163.0`, sha256
+`8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — the same 0.163.0 as the
+drafting observation; the re-pin is recorded regardless. Codex source checkout still exactly
+`dffa0deb69268ed4ac31578794c9ea897b336ae3` with an empty `git status --short` (clean; the drafting
+pin needed no correction, and no newer checkout bytes were read). Model selection basis: the probe's
+host argv carries no model flag (`CODEX_EXEC_COMMON_ARGUMENTS` / `composeHostLaunchArguments`,
+`tools/shell-wait-probe/driver.mjs:1780-1784` and `:1703-1711`), so `codex exec` resolves the
+installed CLI's own default and the instrument cannot observe it — records persist `model: null` by
+design (`EXECUTING_OBSERVER_PROVENANCE`, `driver.mjs:49-60`); the fixture's synthetic `model: 'gpt'`
+hook payload (`fixture.mjs:737-738`) is fixture plumbing, not a live selection fact.
+
+**§13.11 recheck: every citation re-verified at the recorded pin via `git show dffa0deb…:<path>`;
+all CONFIRMED; none contradicted, none absent.** The three wait layers stand exactly as §13.11
+records them: inner clamp constants `codex-rs/core/src/unified_exec/mod.rs:68-74` with the
+`process_manager.rs:1029-1036` clamp, `core/src/config/mod.rs:4026-4029` resolution,
+`codex-rs/config/src/config_toml.rs:345-347` TOML field, `write_stdin.rs:23-32` serde-default
+argument and `unified_exec/mod.rs:212-218` exec-yield clamp; outer code-mode default
+`codex-rs/features/src/feature_configs.rs:38-43` (field at :43), core default
+`core/src/config/mod.rs:1200` (`30_000`) and `:1219`, resolution `:2778-2792` (table lookup
+`:3060-3066`), and the `CodeModeService::execute` absent-yield fill
+`core/src/tools/code_mode/mod.rs:130-137` (`get_or_insert`); protocol 10_000 constants
+`code-mode-protocol/src/runtime.rs:15-16` with the runtime `min()` only against a session-explicit
+`max_yield_time_ms` (`code-mode-runtime/src/service.rs:201-212`, fallback :71, `YieldAfter`
+:76/:140); independent wait handler `tools/code_mode/wait_handler.rs:30,38-40,134-141` (10_000,
+never reads the exec default); non-`Yielded`-only cell end `tools/code_mode/execute_handler.rs:135,146-149`;
+V2 wait constants `core/src/config/mod.rs:257-259`, struct `:1368-1373`, validation `:3957-3992`,
+per-turn-config reads `handlers/multi_agents_v2/wait.rs:53-55` and mailbox wake `:213-220`;
+config-real inheritance `agent/child_config.rs:132-133` (`turn.config.clone()`, serving spawn
+:110-122 and resume :124-130) with `session/session.rs:1730-1731` and `:1818-1823` constructing both
+services from the child config; Role whitelist `agent/role.rs:36-47` excluding both keys (bool-only
+`features` map). Interrupt path at the pin: `features/src/lib.rs:1197-1202` (Stable,
+default-enabled), `tasks/mod.rs:960-971` (feature-gated `interrupt_active_cells()`),
+`tools/code_mode/mod.rs:164-179`, `session/turn.rs:2565,3280`. Historical cross-checks
+re-verified: old-pin `code_mode_interrupt` `UnderDevelopment`/false at `67727e7c…`
+`features/src/lib.rs:1103-1108`; flip commit `72c959528ee4ca74abdb8575fbbc4e36960a8c47`
+(2026-10-07, #51835); `d0c8f422…` an ancestor of the old pin by merge-base. Exact at-pin line
+numbers drift from §13.11's recorded ranges by at most ±3 lines and are recorded in the plan's
+execution ledger; the drift changes no claim.
+
+**Config transport: the candidate is accepted as the supported seam; Task 4 will use it unchanged.**
+The decision (recorded locally by Task 1; the driver change itself belongs to Task 4): add
+`-c features.code_mode.default_exec_yield_time_ms=<finite positive integer ms>` to the isolated host
+argv inside `CODEX_EXEC_COMMON_ARGUMENTS` — after the existing `-c shell_environment_policy.inherit=all`,
+still before `-C <workspace>` and the prompt — preserving every existing argument; the driver already
+ships a dotted `-c` override in exactly that block. Source mapping at the pin: clap-global
+`CliConfigOverrides` (`codex-rs/utils/cli/src/config_override.rs:19`, with `parse_overrides` at
+:49-84 parsing the value as TOML and falling back to a raw string at :72-78); dotted-path layer
+`codex-rs/config/src/overrides.rs:9-27`; CLI layer
+merged last, highest precedence (`codex-rs/config/src/loader/mod.rs:256-265,346-347`);
+`FeaturesToml.code_mode: Option<FeatureToml<CodeModeConfigToml>>` (`features/src/lib.rs:871-872`;
+untagged enum :990-993) resolving through `resolve_code_mode_config` into `Config.code_mode` and the
+service field (session.rs:1818-1823; get_or_insert mod.rs:130-137). The fixture home's
+`config.toml` contains no competing `[features.code_mode]` table (setup writes only the cap key,
+`fixture.mjs:853-862`). Acceptance evidence (installed 0.163.0, isolated empty `CODEX_HOME`, no
+model turn): `-c features.code_mode.default_exec_yield_time_ms=30000` and `=240000` with
+`features list` exit 0 with the full feature table — that command loads and deserializes the config,
+so acceptance is real. Negatives: `…=abc` and a bogus subkey `features.code_mode.not_a_real_key=1`
+both exit 1 with `data did not match any variant of untagged enum FeatureToml in features.code_mode`,
+proving the key path and numeric type are genuinely validated against `CodeModeConfigToml`; an
+unrelated dotted key (`definitely.not_a.key=1`) exits 0 silently ignored (the driver passes no
+`--strict-config`). Recorded caveat: `codex -c … --version` short-circuits BEFORE config
+deserialization — even the malformed value exits 0 there — so `--version` is argv-parse acceptance
+only and is never cited as key-validation evidence. Privacy projection: the current driver persists
+NO argv (`HeldTurnRecord`, `driver.mjs:1263-1282`; `buildCaseRecord`, `driver.mjs:545-588` —
+whitelisted facts only), no config content and no auth material anywhere; the fixture `config.toml`
+lives in the disposed fixture home and survives in records only as the `capVerified` boolean plus
+the whitelisted `requestedCapMs` numeric. Task 4 must add its own closed whitelisted numeric
+provenance field for the selected value; until then the record schema stays byte-identical. As
+always: successful parsing is acceptance, not effective runtime proof — propagation to the actual
+Child is precisely what C0/C1 must establish.
+
+**`code_mode_interrupt` — four separated evidence classes; no force-enable, no live interrupt, no
+Companion/job-settlement inference.** Source at `dffa0deb…`: Stable/default-true
+(`features/src/lib.rs:1197-1202`) gating the abort-path `interrupt_active_cells()`
+(`tasks/mod.rs:960-968` → `tools/code_mode/mod.rs:164-178`). Default: flipped 2026-10-07 by
+`72c95952…` (#51835); the old campaign pin records `UnderDevelopment`/false. Installed-accepted
+(0.163.0 binary only): `codex features list` prints `code_mode_interrupt  stable  true` under an
+isolated home; strings presence in the binary (`code_mode_interrupt` ×7, `default_exec_yield_time_ms`
+×14, `background_terminal_max_timeout` ×25); `--help` documents `--enable/--disable <FEATURE>` as
+`-c features.<name>=true/false`. Not proven: any runtime effect — installed poll/Companion-job
+cancellation, durable/no-collateral settlement, plugin stop/reconciliation — which remains a later
+qualification obligation under spec S5.
+
+**Test suites (nothing fixed, no dependency changes, no `npm audit fix`).**
+`npm run test:shell-research`: 451 tests, 451 passed, 0 failed, 0 skipped (46 suites).
+`node --test tests/test-selection.test.mjs`: 6/6 passed. `node scripts/check-line-endings.mjs`:
+exit 0, LF verified in 534 tracked files.
+
+**Exit state.** Execution pins and a supported candidate config transport are recorded with no
+installed wait/cancellation claim. Source/binary correspondence remains UNESTABLISHED — both are
+0.163.0-generation and the source key validates on the installed binary, but no effective runtime
+effect has been demonstrated. Tasks 2–5 of the plan remain open; no live allowance was spent and no
+historical record, claim, flag or pointer above was altered.
