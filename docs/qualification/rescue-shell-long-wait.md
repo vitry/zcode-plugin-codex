@@ -6504,3 +6504,57 @@ S/Q lines stand as §15.4 recorded them. Spec §8's production gates (quantitati
 and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
 owned/no-collateral settlement) remain entirely outstanding; production scope remains ZERO; research
 completion is not release completion.
+
+### 15.7 Close-out correction 2 and the versioned re-adjudication (2026-10-17, offline; no live run)
+
+**Origin.** The user's close-out review of `531cc30…` returned one P2 (comparator false negative: the
+control band was documented two-sided but implemented asymmetrically — 27000 accepted, 31007 refused
+as `timing-borderline`, contradicting "|firstReturn − controlDefault| ≤ tolerance") and one spec gap
+(the plan's final-source `npm test` gate had not been run on the final source). No new spec/plan, no
+new live run.
+
+**Correction 2 (commit `e34a5dd…`, amended from `9b2921e…` after a narrow recheck).** The control
+band is now genuinely symmetric: a control return within **[controlDefault − tolerance,
+controlDefault + tolerance], both edges inclusive, IS default expiry and PROCEEDS** to the
+raised-arm comparison; above the upper band stays `no-config-effect-observed`; below the lower band
+stays `control-returned-early`; raised-side rules unchanged (`timing-borderline` remains reachable
+ONLY from the raised arm — disclosed). Every returned verdict now carries **`adjudicationVersion: 2`**
+(exported `WAIT_ADJUDICATION_VERSION = 2`; v1 semantics had no field), so the two adjudications of the
+same pair are distinguishable in records. Disclosed supersession: the round-2 control-arm
+borderline pins (30001/31000/33000) were re-pinned to observed per the user-commissioned ruling; the
+symmetric rule also satisfies round-2's original concern (an overhead-pushed expected contrast is no
+longer rejected as no-effect). Narrow independent recheck: CLEAN on function — band symmetry, version
+coverage of all 23 return branches, and the re-adjudication reproduced independently; differential
+sweep over 26000+ arm-return combinations confirms the v1→v2 behavioral delta is confined EXACTLY to
+control ∈ (30000, 33000]; two stale-comment P3s fixed in the same commit.
+
+**Versioned re-adjudication of the RETAINED C0/C1 records (offline, read-only, records unmodified —
+hash-verified):** v1 (as published in §15.5, preserved as history): `inconclusive`/
+`timing-borderline`. **v2 (adjudicationVersion 2): `config-effect-observed`** — the control's
+yielded-pending return at 31007 ms is IN-BAND default expiry (31007 ∈ [27000, 33000]) with its
+verified sanctioned continuation (outerReturns 1), and the raised arm held past the whole band to
+completion at 148838 ms; every identity/pin/qualification/surface/state/inner-yield/route/headroom
+gate passes on both arms. **Label supersession: installed-config effect OBSERVED on this single
+measured pair (v2).** The plan's bullet-7 caveats are unchanged and binding: this pair involves NO
+repeat, and NO inner-cap M/propagation, quantified token-savings, native-cancellation or
+production-readiness claim follows from it; spec §8's quantitative long discriminator and repeat,
+reduced re-entry, exact terminal linkage and native pending-observation interruption requirements
+remain entirely outstanding. Q3's §15.6 wording ("MEASURED-AND-INCONCLUSIVE (timing-borderline)") is
+hereby SUPERSEDED by the v2 record: Q3's config-effect question is MEASURED with an OBSERVED positive
+on one pair, repeat outstanding.
+
+**Final-source `npm test` (the spec-gap closure; plan Task 5's exact procedure).** Executed once at
+the branch's final source (correction 2 included) with the scratch-relocation procedure (the same
+three owned scratch files moved to `/tmp/shape-dg-scratch2.euO9`, sha256 `10e5e039…`/`942f6b98…`/
+`6e61391e…`; restored by the script's finalizer, restore exit 0, files verified): **exit 0 — 3397
+tests, 3394 pass, 0 fail, 3 skipped, duration ≈ 683 s.** This is the plan-required final verification
+on the final source, and it PASSES; §15.4's two local spawn-timeout failures remain historical facts
+on their own runs (never relabeled), and §15.4's narrowed-attribution correction note stands as the
+record of that episode.
+
+**Gates at the final state (`e34a5dd…` + this record):** `npm run test:shell-research` = 594/594
+(55 suites; the +1 test over 593 is correction 2's boundary-matrix test); task-4 subset 41/41;
+selection 6/6; lint/typecheck exit 0; LF 538 tracked files; `git diff --check` clean; prohibited-path
+diff vs `7fe8cbb…` EMPTY. Branch head after the records commit: see the branch log (this entry's own
+commit postdates the reviewed correction commit `e34a5dd…`, which the codex gate for this correction
+covers together with the working-tree records).
