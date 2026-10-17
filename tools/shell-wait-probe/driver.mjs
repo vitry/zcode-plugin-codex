@@ -16,7 +16,7 @@
  * the private task prompt). Unknown facts are `null`, never `false` or zero.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promises';
@@ -29,13 +29,16 @@ import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, extractInterruptInteraction, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt } from './evidence.mjs';
+import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const MAX_CASE_EXCERPTS = 64;
 // Version tag of the observer-digest construction: bump when the hashed input
-// combination changes so old records stay interpretable.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v1';
+// combination changes so old records stay interpretable. v2 adds the
+// controlled shape-diagnosis helper's module-init bytes (plan Task 2) —
+// copying the v1 two-file hash would misattribute the new classifier.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v2';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -52,9 +55,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update(`${OBSERVER_DIGEST_TAG}\0`)
     .update(EXECUTING_EVIDENCE_SOURCE)
     .update('\0')
+    .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -76,20 +81,23 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, driverSource] = await Promise.all([
+  const [evidenceSource, shapeSource, driverSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
     .update(`${OBSERVER_DIGEST_TAG}\0`)
     .update(evidenceSource)
     .update('\0')
+    .update(shapeSource)
+    .update('\0')
     .update(driverSource)
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -240,6 +248,19 @@ function assertPositiveInteger(value, option) {
   }
 }
 
+/**
+ * A positive integer bounded by the documented 3600000 maximum (plan Task 4):
+ * the exec-default override's only permitted shape, matching the host's own
+ * supported finite numeric transport.
+ * @param {string} value @param {string} option
+ */
+function assertBoundedPositiveInteger(value, option) {
+  assertPositiveInteger(value, option);
+  if (Number(value) > 3_600_000) {
+    throw invalidCaseInput(`the ${option} value must be a positive integer number of milliseconds no greater than 3600000.`);
+  }
+}
+
 /** @param {string} label */
 function assertKnownCase(label) {
   if (typeof label !== 'string' || !SHELL_WAIT_CASES.includes(label)) {
@@ -254,6 +275,20 @@ function assertSourceSha(sourceSha) {
   }
 }
 
+// The explicit model-selection seam (plan Task 2): a bounded safe identifier —
+// alphanumeric first character, then name characters, dots, dashes and
+// slashes, at most 64 characters. Shell metacharacters, whitespace, empty and
+// overlength values are refused; the requested id is never interpolated into
+// a shell and is forwarded only as its own `-m <id>` argv items.
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/u;
+
+/** @param {unknown} model */
+function assertModelIdentifier(model) {
+  if (typeof model !== 'string' || !MODEL_ID_PATTERN.test(model)) {
+    throw invalidCaseInput('the requested model must be a bounded safe identifier (alphanumeric first character; then letters, digits, dots, dashes, slashes; at most 64 characters).');
+  }
+}
+
 /** @param {readonly string[]} argv @returns {ShellWaitCaseInput | { help: true }} */
 export function parseShellWaitArguments(argv) {
   if (!Array.isArray(argv) || argv.some((argument) => typeof argument !== 'string')) {
@@ -262,7 +297,7 @@ export function parseShellWaitArguments(argv) {
   if (argv.includes('--help')) return { help: true };
   /** @type {Record<string, string>} */
   const values = {};
-  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic'];
+  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model', '--wait-policy', '--exec-default-ms'];
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -295,6 +330,41 @@ export function parseShellWaitArguments(argv) {
     && values['--unclassified-structural-diagnostic'] !== '1') {
     throw invalidCaseInput('--unclassified-structural-diagnostic only accepts the literal value 1.');
   }
+  // The controlled shape-diagnosis gate (plan Task 2): the same literal-`1`
+  // marker discipline, and it strictly REQUIRES the structural diagnostic —
+  // the shape facts ride the same gated excerpt, never a separate channel.
+  if (values['--unclassified-shape-diagnostic'] !== undefined
+    && values['--unclassified-shape-diagnostic'] !== '1') {
+    throw invalidCaseInput('--unclassified-shape-diagnostic only accepts the literal value 1.');
+  }
+  if (values['--unclassified-shape-diagnostic'] === '1' && values['--unclassified-structural-diagnostic'] !== '1') {
+    throw invalidCaseInput('--unclassified-shape-diagnostic requires --unclassified-structural-diagnostic 1.');
+  }
+  // The explicit model-selection seam (plan Task 2 / report §15.1): a bounded
+  // safe identifier, forwarded as a separate `-m <id>` argv item — never
+  // arbitrary argv, never a silent default change. Absent → legacy behavior
+  // (no `-m`, `model: null`) stays byte-for-byte unchanged.
+  if (values['--model'] !== undefined) assertModelIdentifier(values['--model']);
+  // The Task 4 config-default transport (plan Task 4 bullet 1): the pair is
+  // valid ONLY together and ONLY for the rescue-long case. The policy value is
+  // a closed literal (the literal-gate discipline), and the exec default is a
+  // bounded positive integer — the supported finite numeric host override's
+  // only permitted shape. Absent → legacy behavior byte-for-byte.
+  if (values['--wait-policy'] !== undefined && values['--wait-policy'] !== 'config-default') {
+    throw invalidCaseInput('--wait-policy only accepts the literal value config-default.');
+  }
+  if (values['--exec-default-ms'] !== undefined) {
+    assertBoundedPositiveInteger(values['--exec-default-ms'], '--exec-default-ms');
+  }
+  if (values['--wait-policy'] !== undefined && values['--exec-default-ms'] === undefined) {
+    throw invalidCaseInput('--wait-policy config-default requires --exec-default-ms.');
+  }
+  if (values['--exec-default-ms'] !== undefined && values['--wait-policy'] === undefined) {
+    throw invalidCaseInput('--exec-default-ms requires --wait-policy config-default.');
+  }
+  if (values['--wait-policy'] !== undefined && values['--case'] !== 'rescue-long') {
+    throw invalidCaseInput('--wait-policy config-default is only valid for the rescue-long case.');
+  }
   const defaults = shellWaitCaseDefaults(/** @type {string} */ (values['--case']));
   const capMs = values['--cap-ms'] !== undefined ? Number(values['--cap-ms']) : defaults.capMs;
   const pollMs = values['--poll-ms'] !== undefined ? Number(values['--poll-ms']) : defaults.pollMs;
@@ -316,6 +386,10 @@ export function parseShellWaitArguments(argv) {
       : defaults.statusQueryTimeoutMs,
     budgetMs: values['--budget-ms'] !== undefined ? Number(values['--budget-ms']) : defaults.budgetMs,
     unclassifiedStructuralDiagnostic: values['--unclassified-structural-diagnostic'] === '1',
+    unclassifiedShapeDiagnostic: values['--unclassified-shape-diagnostic'] === '1',
+    model: values['--model'] ?? null,
+    waitPolicy: values['--wait-policy'] ?? null,
+    execDefaultMs: values['--exec-default-ms'] !== undefined ? Number(values['--exec-default-ms']) : null,
   };
 }
 
@@ -343,6 +417,12 @@ export async function runShellWaitCase(input, dependencies = {}) {
   await assertOutputDirectoryExists(caseInput.output);
   const createFixture = dependencies.createFixture ?? createShellWaitFixture;
   const executeCase = executeLiveCase ?? defaultLiveExecutor;
+  // The launched native executable's SHA-256 (codex gate round 5): pinned
+  // for WAIT-POLICY runs only — legacy records keep their pinned provenance
+  // schema (disclosed: no digest added there). A hashing failure resolves to
+  // a null digest with the error recorded honestly; the comparison
+  // adjudicator refuses a missing digest as missing identity evidence.
+  const binaryDigest = caseInput.waitPolicy !== null ? await hashNativeExecutable(caseInput.codexBinary) : null;
   // P2-1 round-8: the provenance read is injectable (and failure-tolerant
   // below) so a mid-trial unreadable observer source can never bypass the
   // disposal guarantees.
@@ -356,6 +436,11 @@ export async function runShellWaitCase(input, dependencies = {}) {
     commandSkillVariant: commandSkillVariantFor(caseInput.case),
     capMs: caseInput.capMs,
     pollMs: caseInput.pollMs,
+    // The Task 4 config-default transport: the fixture receives the closed
+    // policy LABEL only — never the exec-default number, which reaches the
+    // host exclusively as the composed `-c` argv override. Absent → the
+    // legacy fixture input stays byte-for-byte unchanged.
+    ...(caseInput.waitPolicy !== null ? { waitPolicy: caseInput.waitPolicy } : {}),
     // R3: the live status-wait case NEVER uses the fixture's owning-session
     // reservation — production selects explicit Status targets OWNER-SCOPED,
     // so the job must be created inside the live host session itself (the
@@ -390,7 +475,7 @@ export async function runShellWaitCase(input, dependencies = {}) {
     if (liveFactsFromFailure) {
       const recordTime = await collectObserverProvenance(provenanceReader, fixture);
       const { provenance, failure: provenanceFailure } = reconcileObserverProvenance(initialProvenance, recordTime);
-      const record = buildCaseRecord(caseInput, fixture, liveFactsFromFailure, /** @type {'failed'} */ ('failed'), provenance);
+      const record = buildCaseRecord(caseInput, fixture, liveFactsFromFailure, /** @type {'failed'} */ ('failed'), provenance, binaryDigest);
       if (provenanceFailure !== null) record.inconclusive = mergeProvenanceFailure(record.inconclusive, provenanceFailure);
       try {
         await disposeFixture(fixture);
@@ -417,7 +502,7 @@ export async function runShellWaitCase(input, dependencies = {}) {
   }
   const recordTime = await collectObserverProvenance(provenanceReader, fixture);
   const { provenance, failure: provenanceFailure } = reconcileObserverProvenance(initialProvenance, recordTime);
-  const record = buildCaseRecord(caseInput, fixture, liveFacts, 'executed', provenance);
+  const record = buildCaseRecord(caseInput, fixture, liveFacts, 'executed', provenance, binaryDigest);
   if (provenanceFailure !== null) record.inconclusive = mergeProvenanceFailure(record.inconclusive, provenanceFailure);
   // Disposal completes before the record is persisted so the record carries the
   // ACTUAL disposal outcome; a failure is recorded fail-closed, never claimed.
@@ -451,6 +536,27 @@ export function redactPrivatePaths(textOrError, fixture) {
   return redacted.length > 512 ? `${redacted.slice(0, 512)}<truncated>` : redacted;
 }
 
+/**
+ * The launched native executable's SHA-256 (codex gate round 5): a streamed
+ * read of the caller-pinned absolute file — `--version` output reduces to
+ * major.minor.patch and cannot establish native-executable equality. A read
+ * failure resolves to a null digest with the failure recorded; the post-run
+ * comparison treats a missing digest as missing identity evidence, never a
+ * guess.
+ * @param {string} absolutePath
+ * @returns {Promise<{ digest: string | null, error: string | null }>}
+ */
+async function hashNativeExecutable(absolutePath) {
+  try {
+    const hash = createHash('sha256');
+    const stream = createReadStream(absolutePath);
+    for await (const chunk of stream) hash.update(chunk);
+    return { digest: hash.digest('hex'), error: null };
+  } catch (error) {
+    return { digest: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** @param {ShellWaitCaseInput} input @returns {ValidatedShellWaitCase} */
 function validateCaseInput(input) {
   if (!input || typeof input !== 'object') throw invalidCaseInput('the case input must be an object.');
@@ -476,6 +582,33 @@ function validateCaseInput(input) {
     && typeof input.unclassifiedStructuralDiagnostic !== 'boolean') {
     throw invalidCaseInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
   }
+  if (input.unclassifiedShapeDiagnostic !== undefined
+    && typeof input.unclassifiedShapeDiagnostic !== 'boolean') {
+    throw invalidCaseInput('unclassifiedShapeDiagnostic must be a boolean when present.');
+  }
+  if (input.unclassifiedShapeDiagnostic === true && input.unclassifiedStructuralDiagnostic !== true) {
+    throw invalidCaseInput('unclassifiedShapeDiagnostic requires unclassifiedStructuralDiagnostic.');
+  }
+  if (input.model !== undefined && input.model !== null) assertModelIdentifier(input.model);
+  // The Task 4 config-default transport (plan Task 4 bullet 1): the same
+  // closed literal, bounded integer, pair and case gates as the CLI boundary,
+  // enforced BEFORE any side effect (the caller's fixture creation).
+  if (input.waitPolicy !== undefined && input.waitPolicy !== null && input.waitPolicy !== 'config-default') {
+    throw invalidCaseInput('waitPolicy must be exactly "config-default" when present.');
+  }
+  if (input.execDefaultMs !== undefined && input.execDefaultMs !== null
+    && (!Number.isSafeInteger(input.execDefaultMs) || /** @type {number} */ (input.execDefaultMs) <= 0 || /** @type {number} */ (input.execDefaultMs) > 3_600_000)) {
+    throw invalidCaseInput('execDefaultMs must be a positive integer no greater than 3600000 when present.');
+  }
+  if ((input.waitPolicy ?? null) === 'config-default' && (input.execDefaultMs ?? null) === null) {
+    throw invalidCaseInput('waitPolicy config-default requires execDefaultMs.');
+  }
+  if ((input.execDefaultMs ?? null) !== null && (input.waitPolicy ?? null) !== 'config-default') {
+    throw invalidCaseInput('execDefaultMs requires waitPolicy "config-default".');
+  }
+  if (input.waitPolicy === 'config-default' && input.case !== 'rescue-long') {
+    throw invalidCaseInput('the config-default wait policy is only valid for the rescue-long case.');
+  }
   return {
     case: /** @type {ShellWaitCaseLabel} */ (input.case),
     codexBinary: /** @type {string} */ (input.codexBinary),
@@ -487,6 +620,10 @@ function validateCaseInput(input) {
     statusQueryTimeoutMs: input.statusQueryTimeoutMs,
     budgetMs: /** @type {number} */ (input.budgetMs),
     unclassifiedStructuralDiagnostic: input.unclassifiedStructuralDiagnostic === true,
+    unclassifiedShapeDiagnostic: input.unclassifiedShapeDiagnostic === true,
+    model: input.model ?? null,
+    waitPolicy: input.waitPolicy ?? null,
+    execDefaultMs: input.execDefaultMs ?? null,
   };
 }
 
@@ -540,9 +677,11 @@ function commandSkillVariantFor(label) {
  * @param {'executed' | 'failed'} status
  * @param {ShellWaitObserverProvenance | null} observer the executing observer's
  *   own provenance, computed from the actual instrument at record-build time
+ * @param {{ digest: string | null, error: string | null } | null} [binaryDigest]
+ *   the launched native executable's SHA-256 (wait-policy runs only)
  * @returns {ShellWaitCaseRecord}
  */
-function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 'failed'} */ status = 'executed', observer = null) {
+function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 'failed'} */ status = 'executed', observer = null, binaryDigest = null) {
   const fixtureRecord = /** @type {any} */ (fixture).record ?? {};
   const appliedArtifacts = Array.isArray(fixtureRecord.appliedArtifacts) ? fixtureRecord.appliedArtifacts : [];
   return {
@@ -552,7 +691,11 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     // The bounded-diagnostic research gate (follow-up plan Task 4): recorded
     // ONLY when enabled, so the single changed variable of a diagnostic run is
     // visible in the persisted record and default records keep the pinned schema.
+    // The controlled shape-diagnosis gate (plan Task 2) rides the same record;
+    // the shape facts' own schema version (SHAPE_DIAGNOSTIC_SCHEMA_VERSION = 1)
+    // is the closed version marker inside the projected `shape` fact block.
     ...(caseInput.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
+    ...(caseInput.unclassifiedShapeDiagnostic === true ? { unclassifiedShapeDiagnostic: true } : {}),
     provenance: {
       sourceSha: caseInput.sourceSha,
       sourceWorktreeOwnedByFixture: true,
@@ -568,6 +711,34 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       requestedPollMs: caseInput.pollMs ?? null,
       requestedWorkerDurationMs: caseInput.workerDurationMs ?? null,
       requestedBudgetMs: caseInput.budgetMs ?? null,
+      // The REQUESTED model selection (plan Task 2): recorded separately from
+      // every effective host/Child model metadata, which stays unknown/null
+      // (never inferred). Omitted entirely when the flag is absent so legacy
+      // records stay byte-for-byte unchanged.
+      ...(caseInput.model ? { requestedModel: caseInput.model } : {}),
+      // The Task 4 config-default transport (plan Task 4 bullet 1): recorded
+      // ONLY when the pair is active — the closed policy literal plus the
+      // validated host-override number and the fixture's path-normalized
+      // instruction hashes (absent → legacy records stay byte-for-byte
+      // unchanged). The effective host-side settlement stays unknown here:
+      // this block records the REQUESTED transport, never an observed effect.
+      ...(caseInput.waitPolicy !== null ? {
+        waitPolicy: {
+          policy: caseInput.waitPolicy,
+          execDefaultMs: caseInput.execDefaultMs ?? null,
+          instructions: /** @type {any} */ (fixtureRecord).waitPolicy ?? null,
+        },
+      } : {}),
+      // The launched native executable's SHA-256 (codex gate round 5):
+      // `--version`-derived versions cannot establish native-executable
+      // equality, so the wait-policy record pins the binary digest the same
+      // way the Task 1 pin procedure hashed it. A hashing failure is null
+      // WITH the error recorded — the comparison refuses a missing digest as
+      // missing identity evidence. Absent entirely for legacy runs.
+      ...(caseInput.waitPolicy !== null ? {
+        codexBinarySha256: binaryDigest?.digest ?? null,
+        codexBinarySha256Error: binaryDigest?.error ?? null,
+      } : {}),
       // R3 status-wait setup: the RESERVED owned job (returned by the
       // production command path) and the explicit Status query deadline the
       // rendered invocation carries. A non-status case records nulls.
@@ -668,6 +839,13 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     // timeout), with the fail-closed validation verdict. Job IDs are public
     // rendered surfaces (the acknowledgement and renderJob print them).
     statusQuery: /** @type {any} */ (liveFacts).statusQuery ?? null,
+    // The Task 4 comparison marker (plan Task 4 bullet 3): the closed
+    // decisive-poll pragma fact rides ONLY waitPolicy records — a marker
+    // arriving without the validated pair is dropped fail-closed, and legacy
+    // records keep their pinned schema.
+    ...(caseInput.waitPolicy !== null && /** @type {any} */ (liveFacts).waitPolicyObservation
+      ? { waitPolicyObservation: /** @type {any} */ (liveFacts).waitPolicyObservation }
+      : {}),
     cleanup: {
       label: liveFacts.held?.cleanupLabel ?? null,
       nativeInterruptionClaimed: false,
@@ -1691,23 +1869,41 @@ export function renderExecResumeLaunch(launchSessionId, queryPrompt) {
 
 /**
  * The full host launch argv for one held turn: the common exec arguments, the
- * workspace, then the turn's own prompt arguments — a plain prompt for every
- * case except status-wait turn 2, whose prompt arguments are the `resume
- * <SESSION_ID> <PROMPT>` subcommand tokens from
+ * OPTIONAL requested model as its own `-m <id>` argv items (only when an
+ * explicit selection was made; absent → byte-for-byte legacy argv), the
+ * OPTIONAL Task 4 config-default host override as its own `-c
+ * features.code_mode.default_exec_yield_time_ms=<n>` argv items (only when the
+ * validated pair is active; the value is the validated integer only — never an
+ * arbitrary config bag), the workspace, then the turn's own prompt arguments —
+ * a plain prompt for every case except status-wait turn 2, whose prompt
+ * arguments are the `resume <SESSION_ID> <PROMPT>` subcommand tokens from
  * {@link renderExecResumeLaunch} (which deliberately carries no common argv
  * of its own, so the subcommand parses exactly once).
  * @param {unknown} promptArguments
  * @param {unknown} workspace
+ * @param {string | null} [model] the validated requested model identifier (null → no `-m`)
+ * @param {number | null} [execDefaultMs] the validated config-default exec
+ *   override in milliseconds (null → no `-c` override)
  * @returns {string[]}
  */
-export function composeHostLaunchArguments(promptArguments, workspace) {
+export function composeHostLaunchArguments(promptArguments, workspace, model = null, execDefaultMs = null) {
   if (!Array.isArray(promptArguments) || promptArguments.length === 0 || promptArguments.some((value) => typeof value !== 'string')) {
     throw invalidCaseInput('the turn prompt arguments must be a non-empty array of strings.');
   }
   if (typeof workspace !== 'string' || workspace.length === 0) {
     throw invalidCaseInput('the workspace must be a non-empty string.');
   }
-  return [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', workspace, ...promptArguments];
+  if (model !== null) assertModelIdentifier(model);
+  if (execDefaultMs !== null
+    && (!Number.isSafeInteger(execDefaultMs) || execDefaultMs <= 0 || execDefaultMs > 3_600_000)) {
+    throw invalidCaseInput('the exec default override must be a positive integer number of milliseconds no greater than 3600000.');
+  }
+  return [
+    ...CODEX_EXEC_COMMON_ARGUMENTS,
+    ...(model !== null ? ['-m', model] : []),
+    ...(execDefaultMs !== null ? ['-c', `features.code_mode.default_exec_yield_time_ms=${String(execDefaultMs)}`] : []),
+    '-C', workspace, ...promptArguments,
+  ];
 }
 
 /**
@@ -2213,7 +2409,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         // so the subcommand parses instead of a second literal `exec`
         // consuming the PROMPT positional.
         return /** @type {Promise<{ code: number | null, stdout: string, stderr: string }>} */ (runProcess(
-          closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace), { env: runEnv })),
+          closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace, input.model ?? null, input.execDefaultMs ?? null), { env: runEnv })),
           { cwd: fixture.workspace, env: runEnv, timeoutMs: remaining > 0 ? remaining : 1, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal },
         ));
       };
@@ -2307,8 +2503,14 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     }),
     // The bounded-diagnostic research gate (follow-up plan Task 4): threaded
     // ONLY when the validated case input enables it, so the default evidence
-    // input — and default retention — stay unchanged.
+    // input — and default retention — stay unchanged. The controlled
+    // shape-diagnosis gate (plan Task 2) threads identically.
     ...(input.unclassifiedStructuralDiagnostic === true ? { unclassifiedStructuralDiagnostic: true } : {}),
+    ...(input.unclassifiedShapeDiagnostic === true ? { unclassifiedShapeDiagnostic: true } : {}),
+    // The Task 4 comparison gate: the decisive-poll comparison facts are
+    // derived ONLY for the waitPolicy transport (default evidence input
+    // unchanged).
+    ...(input.waitPolicy !== null ? { waitPolicyComparisonFacts: true } : {}),
     redactions,
   });
   const rolloutsFailureReason = rolloutsError === null ? null : redactPrivatePaths(rolloutsError, fixture);
@@ -2402,6 +2604,37 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   const cleanupComplete = held ? cleanupErrors.length === 0 : null;
   const cleanupFailureReason = cleanupErrors.length > 0
     ? `the held cleanup reported ${String(cleanupErrors.length)} error(s) after observation: ${cleanupErrors.join('; ')}`
+    : null;
+  // The Task 4 comparison marker (plan Task 4 bullet 3): the waitPolicy
+  // run's closed facts about the DECISIVE outer cell — its explicit
+  // pragma/yield state ('present' makes default-causality INCONCLUSIVE in
+  // the post-run pair adjudication), its admitted call surface (a direct
+  // native call is a different surface), its ACTUAL requested inner window
+  // (the comparability fact that differing inner requests already explain
+  // any contrast), and its FIRST RETURN duration from the rollout event
+  // timestamps (measured for pending yields exactly like completed
+  // observations). Every unestablishable state stays 'unknown'/null — never
+  // a clean absence, never zero. Computed on BOTH mapping branches from the
+  // evidence's gated facts (absent facts → unknown), and persisted by
+  // buildCaseRecord ONLY for waitPolicy records, so legacy live facts stay
+  // byte-for-byte unchanged.
+  const waitPolicyComparisonFact = /** @type {any} */ (evidence?.facts)?.waitPolicyComparisonFact ?? null;
+  const waitPolicyObservation = input.waitPolicy === 'config-default'
+    ? {
+      decisivePollExplicitYield: waitPolicyComparisonFact?.decisivePollExplicitYield ?? 'unknown',
+      decisiveCallSurface: waitPolicyComparisonFact?.decisiveCallSurface ?? 'unknown',
+      decisiveInnerYieldMs: typeof waitPolicyComparisonFact?.decisiveInnerYieldMs === 'number' && Number.isFinite(waitPolicyComparisonFact.decisiveInnerYieldMs)
+        ? waitPolicyComparisonFact.decisiveInnerYieldMs
+        : null,
+      decisiveFirstReturnWallMs: typeof waitPolicyComparisonFact?.decisiveFirstReturnWallMs === 'number' && Number.isFinite(waitPolicyComparisonFact.decisiveFirstReturnWallMs)
+        ? waitPolicyComparisonFact.decisiveFirstReturnWallMs
+        : null,
+      decisiveFirstReturnState: waitPolicyComparisonFact?.decisiveFirstReturnState === 'yielded-pending'
+        || waitPolicyComparisonFact?.decisiveFirstReturnState === 'completed'
+        ? waitPolicyComparisonFact.decisiveFirstReturnState
+        : 'unknown',
+      decisiveFirstReturnBasis: typeof waitPolicyComparisonFact?.decisiveFirstReturnBasis === 'string' ? waitPolicyComparisonFact.decisiveFirstReturnBasis : null,
+    }
     : null;
   // R1 timing provenance: the held turn's MEASURED timeline is the only
   // sanctioned source of poll-start remaining lifetime — remaining hold time
@@ -2890,6 +3123,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
         timeline: heldTimeline,
       },
       child: childSettlementFacts,
+      ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
       statusQuery: statusQueryFacts,
       excerpts,
       inconclusive: cleanupFailureReason !== null
@@ -2952,6 +3186,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       timeline: heldTimeline,
     },
     child: childSettlementFacts,
+    ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
     statusQuery: statusQueryFacts,
     excerpts,
     inconclusive: cleanupFailureReason !== null
@@ -2994,6 +3229,10 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   statusQueryTimeoutMs?: number,
  *   budgetMs: number,
  *   unclassifiedStructuralDiagnostic: boolean,
+ *   unclassifiedShapeDiagnostic: boolean,
+ *   model: string | null,
+ *   waitPolicy: string | null,
+ *   execDefaultMs: number | null,
  * }} ValidatedShellWaitCase
  * @typedef {'rescue-baseline'|'rescue-long'|'rescue-repeat'|'rescue-noise'|'rescue-interrupt'|'review-wait'|'adversarial-review-wait'|'status-wait'|'background'} ShellWaitCaseLabel
  * @typedef {{
@@ -3008,6 +3247,10 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   statusQueryTimeoutMs?: number,
  *   budgetMs?: number,
  *   unclassifiedStructuralDiagnostic?: boolean,
+ *   unclassifiedShapeDiagnostic?: boolean,
+ *   model?: string | null,
+ *   waitPolicy?: string | null,
+ *   execDefaultMs?: number | null,
  * }} ShellWaitCaseInput
  * @typedef {import('./fixture.mjs').ShellWaitFixtureHandle} ShellWaitFixtureHandle
  * @typedef {{
@@ -3059,7 +3302,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === pathToFileURL(mod
   const usage = 'usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> '
     + `--source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] `
     + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] `
-    + `[--unclassified-structural-diagnostic 1]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
+    + `[--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] `
+    + `[--wait-policy config-default --exec-default-ms ms]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
   try {
     const parsed = parseShellWaitArguments(process.argv.slice(2));
     if ('help' in parsed) {

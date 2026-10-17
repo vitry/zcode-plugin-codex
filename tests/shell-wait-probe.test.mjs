@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -684,16 +684,23 @@ if (process.env[selfTestGuard] === '1') {
       assert.notEqual(observer.digest, record.provenance.sourceSha, 'the observer digest is a separate fact from the fixture source SHA');
       assert.equal(observer.model, null, 'the model is not observable in this instrument and stays unknown');
       assert.equal(observer.reachableToolFamily, null, 'the runtime-reachable tool family is not established and stays unknown');
-      // The digest is derived from the ACTUAL working-tree instrument modules.
+      // The digest is derived from the ACTUAL working-tree instrument modules
+      // under the v2 construction (plan Task 2): evidence.mjs +
+      // shape-diagnostic.mjs + driver.mjs, NUL-separated under the version
+      // tag — the shape-diagnosis helper is part of the adjudicating
+      // instrument, so a two-file v1 hash would misattribute it.
       const evidenceSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url)));
+      const shapeSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v1\0')
+        .update('zcode-shell-wait-observer-v2\0')
         .update(evidenceSource)
+        .update('\0')
+        .update(shapeSource)
         .update('\0')
         .update(driverSource)
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -3812,6 +3819,2145 @@ if (process.env[selfTestGuard] === '1') {
         assert.throws(() => inspectShellWaitEvidence(evidenceInput(rollouts, { unclassifiedStructuralDiagnostic: bad })),
           'a non-boolean diagnostic gate must be refused');
       }
+    });
+  });
+
+  describe('controlled shape diagnosis (opt-in memory classifier, schema v1)', async () => {
+    // Plan Task 2: the pure, non-evaluating memory-only shape classifier in
+    // tools/shell-wait-probe/shape-diagnostic.mjs implementing the frozen
+    // schema v1 (report §15.1). Every retained fact is a boolean or a member
+    // of a closed enum over PUBLIC syntax relations; string/comment content,
+    // binding spellings, identifiers, literals and numbers never survive.
+    const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+    const { parseCallStatements } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+    // Synthetic public placeholders only; any occurrence of a marker in the
+    // returned facts is a privacy leak by construction.
+    const CANARY_CMD = 'synthetic-command-text';
+    const CANARY_STRING_FACTS = 'PRIVATE_MARKER_A';
+    const CANARY_BINDING = 'alias';
+
+    // The plan's pinned example, verbatim (Task 2 first bullet).
+    const pinnedRaw = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_STRING_FACTS}"}); text(${CANARY_BINDING});`;
+
+    test('the pinned plan example projects closed facts without the string content, the binding spelling, or admission', () => {
+      const facts = inspectCallShape(pinnedRaw);
+      assert.equal(facts.version, 1);
+      assert.equal(facts.tool, 'exec_command');
+      assert.equal(facts.head, 'bound-await');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(JSON.stringify(facts).includes(CANARY_STRING_FACTS), false,
+        'the private string literal must never survive the classification');
+      assert.equal(JSON.stringify(facts).includes(CANARY_BINDING), false,
+        'the binding spelling must never survive the classification');
+      // Diagnosis/admission separation pinned on this noncanonical synthetic
+      // binding: the existing grammar rejects the whole cell.
+      assert.equal(parseCallStatements({ payload: { type: 'custom_tool_call', input: pinnedRaw } }), null);
+    });
+
+    // The §15.1 eight-record synthetic alternative set. The canonical control
+    // is the ACCEPTED single-line wrapper family; each other record diverges
+    // on specific closed facts only.
+    const canonical = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);`;
+    const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', input } });
+    const canonicalFacts = {
+      version: 1,
+      coverage: 'complete',
+      statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' }],
+      statementCount: 1,
+      tool: 'exec_command',
+      head: 'bound-await',
+      tail: 'text-binding',
+      bindingEquality: 'equal',
+      parserStage: 'parse-accepted',
+      directive: 'absent',
+      wholeInputConsumed: true,
+    };
+
+    test('record 1 S-canonical: the accepted wrapper control projects the full frozen fact set and the existing parser accepts it', () => {
+      const facts = inspectCallShape(canonical);
+      assert.deepEqual(facts, canonicalFacts);
+      assert.notEqual(parseCallStatements(event(canonical)), null,
+        'the falsifiability control must stay inside the already-admitted family');
+    });
+
+    test('record 2 S-binding: a changed binding keeps every syntax fact identical and reports the wrapper stage the pinned grammar fails at', () => {
+      const changed = 'const responseText = await tools.exec_command({cmd:"synthetic-command-text"}); text(responseText);';
+      const facts = inspectCallShape(changed);
+      const expected = { ...canonicalFacts, parserStage: 'wrapper' };
+      assert.deepEqual(facts, expected,
+        'identical syntax/decision facts apart from the parserStage diagnosis (WRAPPER_PATTERN pins the r spelling)');
+      assert.equal(facts.bindingEquality, 'equal', 'the binding relation holds without the spelling');
+      assert.equal(JSON.stringify(facts).includes('responseText'), false, 'no binding spelling may survive');
+      assert.equal(parseCallStatements(event(changed)), null);
+    });
+
+    test('record 3 S-tail-missing: the emission tail is absent and the output stage diagnosis fires', () => {
+      const missing = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"});`;
+      const facts = inspectCallShape(missing);
+      assert.deepEqual(facts, {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'none' }],
+        tail: 'none',
+        bindingEquality: 'unrelated',
+        parserStage: 'output',
+      });
+    });
+
+    test('record 4 S-tail-changed: the stringify tail is pinned and accepted; a property projection stays text-other with the empty v1 public-field allowlist', () => {
+      const stringify = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(JSON.stringify(r));`;
+      assert.deepEqual(inspectCallShape(stringify), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-stringify-binding' }],
+        tail: 'text-stringify-binding',
+      });
+      const property = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r.status);`;
+      assert.deepEqual(inspectCallShape(property), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-other' }],
+        tail: 'text-other',
+        parserStage: 'output',
+      });
+    });
+
+    test('record 5 S-arg-unsupported: a call-expression argument degrades to the closed unsupported class at the arguments stage', () => {
+      const unsupported = 'const r = await tools.exec_command({cmd: buildCmd()}); text(r);';
+      assert.deepEqual(inspectCallShape(unsupported), {
+        ...canonicalFacts,
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'unsupported', lexical: 'complete', tail: 'text-binding' }],
+        parserStage: 'arguments',
+      });
+      const spread = 'const r = await tools.exec_command(...args); text(r);';
+      const facts = inspectCallShape(spread);
+      assert.equal(facts.statements[0].argument, 'unsupported');
+      assert.equal(facts.parserStage, 'arguments');
+    });
+
+    test('record 6 S-string-contained: tool-like text inside a private literal produces no syntax fact, so every retained fact matches the plain control', () => {
+      const contained = 'const r = await tools.exec_command({cmd:"prep text(r) tools.exec_command (prompt) alias"}); text(r);';
+      const control = `const r = await tools.exec_command({cmd:"plain ${CANARY_CMD} value"}); text(r);`;
+      const containedFacts = inspectCallShape(contained);
+      const controlFacts = inspectCallShape(control);
+      assert.deepEqual(containedFacts, controlFacts,
+        'string-boundary rule: content-only differences must be invisible in the retained facts');
+      assert.deepEqual(containedFacts, canonicalFacts);
+      assert.notEqual(parseCallStatements(event(contained)), null,
+        'the pinned wrapper grammar tolerates arbitrary string content, so the control family still accepts it');
+    });
+
+    test('record 7 S-extra: a hidden third statement is classified other and diagnosed at the residual stage', () => {
+      const extra = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\nconsole.log("synthetic-third");`;
+      const facts = inspectCallShape(extra);
+      assert.deepEqual(facts, {
+        ...canonicalFacts,
+        statements: [
+          { head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' },
+          { head: 'other', tool: 'no-call', argument: 'none', lexical: 'complete', tail: 'none' },
+        ],
+        statementCount: 2,
+        tail: 'none',
+        parserStage: 'residual',
+      });
+      assert.equal(facts.bindingEquality, 'equal', 'the bound result still pairs with the real emission');
+    });
+
+    test('record 8 S-trailing-blank: trailing blank formatting keeps every statement fact and diverges only at the residual stage', () => {
+      const trailing = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\n\n`;
+      assert.deepEqual(inspectCallShape(trailing), { ...canonicalFacts, parserStage: 'residual' });
+    });
+
+    test('the two-line observed live wrapper pair (launch plus poll) stays parse-accepted with equal binding', () => {
+      const pair = 'const r = await tools.exec_command({cmd:"x"}); text(r)\n'
+        + 'const r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n';
+      const facts = inspectCallShape(pair);
+      assert.equal(facts.parserStage, 'parse-accepted');
+      assert.equal(facts.statementCount, 2);
+      assert.equal(facts.head, 'bound-await');
+      assert.equal(facts.tool, 'other', 'the last call-carrying statement mirrors its tool class (write_stdin stays off the v1 exec_command-only allowlist)');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.notEqual(parseCallStatements(event(pair)), null);
+    });
+
+    // --- privacy boundary: adversarial inputs must never leak content ---
+
+    test('secrets in strings, nested objects, comments, identifiers and property names never reach the facts', () => {
+      const canaries = ['SECR-TASK-9QK4', 'SECR-NESTED-3XJ7', 'SECR-COMMENT-7PL2', 'SECR-IDENT-5MW8', 'SECR-PROP-2ND6'];
+      const hostileInputs = [
+        `const r = await tools.exec_command({cmd:"outer ${canaries[0]}"}); text(r);`,
+        `const r = await tools.exec_command({cmd:"a",nested:{deep:{inner:"${canaries[1]}"}}}); text(r);`,
+        `const r = await tools.exec_command({cmd:"x"}); /* ${canaries[2]} */ text(r);`,
+        `const ${canaries[3]} = await tools.exec_command({cmd:"x"}); text(${canaries[3]});`,
+        `const r = await tools.exec_command({${canaries[4]}:"v"}); text(r);`,
+      ];
+      for (const [index, hostile] of hostileInputs.entries()) {
+        let facts;
+        assert.doesNotThrow(() => { facts = inspectCallShape(hostile); }, `hostile input ${index} must never throw`);
+        const serialized = JSON.stringify(facts);
+        for (const canary of canaries) {
+          assert.equal(serialized.includes(canary), false,
+            `canary ${canary} must never survive hostile input ${index}`);
+        }
+      }
+    });
+
+    test('template literal content, malformed directives and tool-like text inside literals stay suppressed', () => {
+      const template = 'const r = await tools.exec_command({cmd:`TEMPL-8VK3-${x} text(r) tools.exec_command`}); text(r);';
+      let facts;
+      assert.doesNotThrow(() => { facts = inspectCallShape(template); });
+      assert.equal(JSON.stringify(facts).includes('TEMPL-8VK3'), false, 'template content must never survive');
+      assert.equal(JSON.stringify(facts).includes('${x}'), false, 'no interpolation may be resolved or retained');
+      assert.equal(facts.statements[0].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial', 'the unknown-classified node makes the whole-input coverage partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      const malformed = '// @exec: {"yield_time_ms": bad}\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      const malformedFacts = inspectCallShape(malformed);
+      assert.equal(malformedFacts.directive, 'invalid');
+      assert.equal(malformedFacts.parserStage, 'directive');
+      assert.equal(JSON.stringify(malformedFacts).includes('yield_time_ms'), false, 'directive keys are never retained');
+    });
+
+    test('regex-or-division code degrades to the closed unsupported-syntax class', () => {
+      // Statement slots are NEWLINE slots (mirroring the existing per-line
+      // cell splitter), so the division operator sits in its own slot.
+      const facts = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst s = a / b;');
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[1].head, 'unknown');
+      assert.equal(facts.statements[1].tool, 'unknown');
+      assert.equal(facts.statementCount, 2);
+    });
+
+    test('a cell with any unknown-classified statement node reports partial coverage and an unconsumed input', () => {
+      // §15.1's whole-input-consumed dimension: a cell whose statement node
+      // classified unknown (unsupported lexical feature) is NOT a complete
+      // classification — coverage 'partial', wholeInputConsumed false.
+      const withTemplate = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst s = `template ${x}`;';
+      const facts = inspectCallShape(withTemplate);
+      assert.equal(facts.statements[0].lexical, 'complete', 'the sayable statements keep their own verdicts');
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax');
+      assert.equal(facts.coverage, 'partial', 'an unknown-classified node makes the whole-input coverage partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      // An unsupported-syntax-ONLY cell is partial for the same reason.
+      const only = inspectCallShape('const s = `template ${x}`;');
+      assert.equal(only.coverage, 'partial');
+      assert.equal(only.wholeInputConsumed, false);
+      // Fully sayable cells stay complete (canonical invariance untouched).
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('lexical state carries across newline slots: comment-wrapped code produces no statement facts', () => {
+      // The finding's adversarial input verbatim: the wrapper lives INSIDE a
+      // multiline block comment, so per-line lexing would leak exec_command
+      // facts from comment content. String/comment boundaries come BEFORE
+      // structural classification — the comment-continuation slots must be
+      // unknown-classified and the cell must not claim a complete result.
+      const wrapped = '/*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(wrapped);
+      assert.equal(facts.statementCount, 3, 'the three content lines stay counted slots');
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'comment content classifies no head');
+        assert.equal(statement.tool, 'unknown', 'comment content classifies no tool');
+        assert.notEqual(statement.lexical, 'complete', 'comment-spanned slots are not complete statements');
+      }
+      assert.equal(facts.tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from comment content');
+      // A template literal spanning lines behaves the same (declared
+      // unsupported): continuation lines cannot produce facts.
+      const template = 'const prefixText = `open\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n`;';
+      const templateFacts = inspectCallShape(template);
+      assert.equal(templateFacts.coverage, 'partial');
+      assert.equal(templateFacts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(templateFacts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from template content');
+    });
+
+    test('unmatched and mismatched delimiters never classify as complete', () => {
+      // Truncated input: the unclosed `(` and `{` leave the delimiter stack
+      // nonempty at end-of-input → 'unterminated' (truncation), never a
+      // complete classification.
+      const truncated = 'const r = await tools.exec_command({cmd:"x"}';
+      const truncatedFacts = inspectCallShape(truncated);
+      assert.equal(truncatedFacts.statements[0].lexical, 'unterminated');
+      assert.equal(truncatedFacts.statements[0].head, 'unknown');
+      assert.equal(truncatedFacts.statements[0].tool, 'unknown');
+      assert.equal(truncatedFacts.coverage, 'partial');
+      assert.equal(truncatedFacts.wholeInputConsumed, false);
+      assert.equal(truncatedFacts.parserStage, 'wrapper');
+      // A mismatched closer (`]` where `)` belongs) is 'invalid', never a
+      // complete classification.
+      const mismatched = 'const r = await tools.exec_command({cmd:"x"}]';
+      const mismatchedFacts = inspectCallShape(mismatched);
+      assert.equal(mismatchedFacts.statements[0].lexical, 'invalid');
+      assert.equal(mismatchedFacts.statements[0].head, 'unknown');
+      assert.equal(mismatchedFacts.statements[0].tool, 'unknown');
+      assert.equal(mismatchedFacts.coverage, 'partial');
+      assert.equal(mismatchedFacts.wholeInputConsumed, false);
+      // A delimiter opened on one line and closed on a later line (the
+      // observed pretty-printed wrapper) stays lexically sound.
+      const pretty = 'const r = await tools.exec_command({\n  cmd: "x"\n}); text(r);';
+      const prettyFacts = inspectCallShape(pretty);
+      assert.equal(prettyFacts.statements[0].lexical, 'complete');
+      assert.equal(prettyFacts.statements[1].lexical, 'complete');
+      // Truncation ACROSS lines (the closer never arrives) poisons the
+      // participating lines, not just the first.
+      const truncatedPretty = 'const r = await tools.exec_command({\n  cmd: "x"\n}';
+      const truncatedPrettyFacts = inspectCallShape(truncatedPretty);
+      for (const statement of truncatedPrettyFacts.statements) {
+        assert.equal(statement.lexical, 'unterminated');
+        assert.equal(statement.head, 'unknown');
+      }
+      assert.equal(truncatedPrettyFacts.coverage, 'partial');
+      assert.equal(truncatedPrettyFacts.wholeInputConsumed, false);
+    });
+
+    test('Unicode inside literals changes no retained fact; raw control characters only move the mechanical parser-stage diagnosis', () => {
+      const unicode = 'const r = await tools.exec_command({cmd:"日本語 ✓ handle"}); text(r);';
+      const control = `const r = await tools.exec_command({cmd:"plain ${CANARY_CMD}"}); text(r);`;
+      assert.deepEqual(inspectCallShape(unicode), inspectCallShape(control));
+      // Raw control characters are invalid INSIDE a JSON string literal, so
+      // the existing grammar mechanically rejects the argument decode; the
+      // classifier stays bounded, content-free and closed.
+      const controlChars = 'const r = await tools.exec_command({cmd:"bad \u0000 \u001f here"}); text(r);';
+      const facts = inspectCallShape(controlChars);
+      assert.equal(facts.parserStage, 'arguments', 'the raw-mirror decode rejection is the mechanical arguments stage');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.statements[0].head, 'bound-await');
+      assert.equal(JSON.stringify(facts).includes('bad'), false);
+      assert.equal(parseCallStatements(event(controlChars)), null);
+    });
+
+    // --- robustness: bounded fixed results, never thrown private text ---
+
+    test('non-string input returns the fixed out-of-scope result and never throws', () => {
+      const fixed = {
+        version: 1,
+        coverage: 'over-scope',
+        statements: [],
+        statementCount: 0,
+        tool: 'no-call',
+        head: 'unknown',
+        tail: 'none',
+        bindingEquality: 'unknown',
+        parserStage: 'unknown',
+        directive: 'unknown',
+        wholeInputConsumed: false,
+      };
+      for (const bad of [undefined, null, 123, true, { cmd: 'x' }, ['x']]) {
+        assert.deepEqual(inspectCallShape(bad), fixed);
+      }
+    });
+
+    test('input over the 8192-byte bound drops the whole statement facts behind the over-budget marker', () => {
+      const oversized = `const r = await tools.exec_command({cmd:"${'x'.repeat(8300)}"}); text(r);`;
+      assert.equal(Buffer.byteLength(oversized, 'utf8') > 8192, true, 'test premise');
+      const facts = inspectCallShape(oversized);
+      assert.equal(facts.version, 1);
+      assert.equal(facts.coverage, 'over-budget');
+      assert.equal(Object.hasOwn(facts, 'statements'), false, 'statement nodes are dropped whole');
+      assert.equal(facts.statementCount, 1, 'the slot count is still retained');
+      assert.equal(facts.head, 'unknown');
+      assert.equal(facts.tool, 'unknown');
+      assert.equal(facts.tail, 'unknown');
+      assert.equal(facts.bindingEquality, 'unknown');
+      assert.equal(facts.parserStage, 'unknown');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('x'.repeat(64)), false, 'no filler or content survives');
+    });
+
+    test('more than 16 statement slots drops the whole statement facts behind the over-scope marker', () => {
+      const statement = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const overflow = Array.from({ length: 17 }, () => statement).join('\n');
+      const facts = inspectCallShape(overflow);
+      assert.equal(facts.coverage, 'over-scope');
+      assert.equal(facts.statementCount, 'over-limit');
+      assert.equal(Object.hasOwn(facts, 'statements'), false);
+      assert.equal(facts.parserStage, 'unknown');
+      assert.equal(facts.wholeInputConsumed, false);
+    });
+
+    test('an argument literal over the 4096-character bound reports over-limit at the arguments stage without dropping the statement', () => {
+      const over = `const r = await tools.exec_command({cmd:"${'y'.repeat(4100)}"}); text(r);`;
+      const facts = inspectCallShape(over);
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(facts.statements[0].argument, 'over-limit');
+      assert.equal(facts.parserStage, 'arguments');
+      assert.equal(JSON.stringify(facts).includes('y'.repeat(64)), false);
+    });
+
+    test('unterminated strings and comments yield the bounded partial result, never thrown text or partial acceptance', () => {
+      const unterminated = 'const r = await tools.exec_command({cmd:"never closed';
+      const facts = inspectCallShape(unterminated);
+      assert.equal(facts.statements[0].lexical, 'unterminated');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.parserStage, 'wrapper', 'the existing grammar mechanically rejects the line at its first stage');
+      const unterminatedComment = 'const r = /* never closed';
+      const commentFacts = inspectCallShape(unterminatedComment);
+      assert.equal(commentFacts.statements[0].lexical, 'unterminated');
+      assert.equal(commentFacts.coverage, 'partial');
+    });
+
+    test('the binding relation distinguishes equal, not-equal and unrelated without retaining spellings', () => {
+      const notEqual = 'const r = await tools.exec_command({cmd:"x"}); text(otherName);';
+      const notEqualFacts = inspectCallShape(notEqual);
+      assert.equal(notEqualFacts.bindingEquality, 'not-equal');
+      assert.equal(notEqualFacts.tail, 'text-binding');
+      assert.equal(JSON.stringify(notEqualFacts).includes('otherName'), false);
+      const bareAwait = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(bareAwait.statements[0].head, 'bare-await');
+      assert.equal(bareAwait.statements[0].tool, 'exec_command');
+      assert.equal(bareAwait.bindingEquality, 'unrelated');
+      assert.equal(bareAwait.head, 'bare-await');
+    });
+
+    test('optional chaining is the declared unsupported syntax, never an established output form', () => {
+      // §15.1: unsupported lexical features map the affected statement to
+      // lexical 'unsupported-syntax' with head/tool unknown — the classifier
+      // must not establish semantics (`text-public-field`/`text-other` output
+      // diagnosis) for a form it declares unsupported.
+      const optional = 'const r = await tools.exec_command({cmd:"x"}); text(r?.status);';
+      const facts = inspectCallShape(optional);
+      assert.equal(facts.statements[0].lexical, 'unsupported-syntax');
+      assert.equal(facts.statements[0].head, 'unknown');
+      assert.equal(facts.statements[0].tool, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.tail, 'unknown', 'no output form is established for the unsupported statement');
+      assert.equal(facts.parserStage, 'wrapper', 'the existing grammar mechanically rejects the line at its first stage');
+      // Optional ELEMENT access (`?.[`) and nullish coalescing (`??`) are the
+      // same declared-unsupported family.
+      for (const hostile of [
+        'const r = await tools.exec_command({cmd:"x"}); text(r?.[0]);',
+        'const r = await tools.exec_command({cmd:"x"}); text(r ?? {});',
+      ]) {
+        const variantFacts = inspectCallShape(hostile);
+        assert.equal(variantFacts.statements[0].lexical, 'unsupported-syntax');
+        assert.equal(variantFacts.coverage, 'partial');
+      }
+      // Plain ternaries remain ordinary code (their facts come only from the
+      // sayable structure).
+      const ternary = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r ? r : r);');
+      assert.equal(ternary.statements[0].lexical, 'complete');
+    });
+
+    test('public syntax facts require COMPLETE tool and emission references', () => {
+      // `$tools` is a private identifier (in JS `$` is an identifier
+      // character): its member reference is NOT the public `tools.` family.
+      const dollarPrefixed = 'const r = await $tools.exec_command({cmd:"x"}); text(r);';
+      const dollarFacts = inspectCallShape(dollarPrefixed);
+      assert.equal(dollarFacts.statements[0].tool, 'no-call', 'a `$tools` suffix must not establish the public tool fact');
+      assert.equal(dollarFacts.statements[0].head, 'bound-await', 'the sayable statement structure is unchanged');
+      assert.equal(dollarFacts.tool, 'no-call');
+      // `obj.text(r)` is a member expression, not the public `text(` emission:
+      // the canonical-exact grammar never establishes it (round-10 redesign:
+      // a non-canonical reference position withholds the WHOLE slot unknown —
+      // the old precise 'no emission here' claim is coarsened to honest
+      // unknown; the member access still establishes nothing public).
+      const memberEmission = 'const r = await tools.exec_command({cmd:"x"}); obj.text(r);';
+      const memberFacts = inspectCallShape(memberEmission);
+      assert.equal(memberFacts.statements[0].tail, 'unknown', 'a member `.text(` access is not a public emission — the slot withholds');
+      assert.equal(memberFacts.tail, 'unknown');
+      assert.equal(memberFacts.bindingEquality, 'unknown', 'no relation without a positively recognized emission');
+      assert.equal(memberFacts.coverage, 'partial');
+      assert.equal(memberFacts.wholeInputConsumed, false);
+      // The genuine references keep their facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('quoted-string state carries across backslash-newline continuations', () => {
+      // A single-quoted string continued with a backslash-newline: the whole
+      // second line is PRIVATE STRING CONTENT and must produce no facts.
+      const continued = "const s = 'private value \\\nconst r = await tools.exec_command({cmd:\"x\"}); text(r);\n';";
+      const facts = inspectCallShape(continued);
+      for (const statement of facts.statements) {
+        assert.notEqual(statement.tool, 'exec_command', 'string continuation content classifies no tool');
+        assert.equal(statement.head, 'unknown', 'string continuation content classifies no head');
+      }
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not survive inside string content');
+    });
+
+    test('lexical boundaries stay tracked after an unsupported token: a later multiline comment leaks nothing', () => {
+      // `?.` precedes a multiline comment: the comment must not be
+      // rediscovered as code on the next line.
+      const before = 'const a = x?.y; /*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(before);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'content after unsupported syntax classifies nothing');
+        assert.equal(statement.tool, 'unknown');
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the withheld remainder');
+    });
+
+    test('escaped backticks do not close a template: the cell remainder stays withheld', () => {
+      // The escaped backtick is not a closing delimiter, so the wrapper lines
+      // are template CONTENT; a later closed template must not restore code
+      // state either — once template syntax is seen, the rest of the cell is
+      // withheld.
+      const escaped = 'const t = `escaped \\` tick\n'
+        + 'const r = await tools.exec_command({cmd:"x"}); text(r);\n'
+        + '`;\n'
+        + 'text(await tools.exec_command({cmd:"y"}));';
+      const facts = inspectCallShape(escaped);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      for (const statement of facts.statements) {
+        assert.equal(statement.head, 'unknown', 'template content and everything after it classify no head');
+        assert.equal(statement.tool, 'unknown', 'template content and everything after it classify no tool');
+        assert.notEqual(statement.lexical, 'complete', 'withheld slots are not complete statements');
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from template content');
+    });
+
+    test('complete-reference checks skip trivia and honor Unicode identifier continuations', () => {
+      // Trivia between the member dot and the reference is a NON-canonical
+      // reference position: the whole slot withholds unknown/partial instead
+      // of asserting either way (round-10 redesign coarsening of the old
+      // precise 'no-call'; the reference still never establishes the public
+      // tool fact).
+      const triviaTool = 'const r = await obj. tools.exec_command({cmd:"x"}); text(r);';
+      const triviaToolFacts = inspectCallShape(triviaTool);
+      assert.equal(triviaToolFacts.statements[0].tool, 'unknown',
+        'whitespace after the member dot is trivia, not a public reference boundary — withheld');
+      assert.equal(triviaToolFacts.coverage, 'partial');
+      // A Unicode identifier continuation (`πtools` is ONE identifier) is
+      // reliably token-free: the sayable structure keeps its precise facts.
+      const unicodeTool = 'const r = await πtools.exec_command({cmd:"x"}); text(r);';
+      const unicodeToolFacts = inspectCallShape(unicodeTool);
+      assert.equal(unicodeToolFacts.statements[0].tool, 'no-call',
+        'a Unicode identifier continuation keeps the reference private');
+      assert.equal(unicodeToolFacts.coverage, 'complete');
+      const triviaEmission = 'const r = await tools.exec_command({cmd:"x"}); obj. text(r);';
+      const triviaEmissionFacts = inspectCallShape(triviaEmission);
+      assert.equal(triviaEmissionFacts.statements[0].tail, 'unknown',
+        'whitespace after the member dot is trivia, not a public emission — withheld');
+      assert.equal(triviaEmissionFacts.bindingEquality, 'unknown');
+      assert.equal(triviaEmissionFacts.coverage, 'partial');
+      // The genuine references stay public across ordinary spacing.
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('an unknown-classified suffix keeps the binding relation unknown', () => {
+      // The actual final emission `text(`done`)` sits in an unsupported slot:
+      // the relation must not be recovered from the EARLIER emission.
+      const unknownSuffix = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext(`done`);';
+      const facts = inspectCallShape(unknownSuffix);
+      assert.equal(facts.statements[1].lexical, 'unsupported-syntax', 'the template argument is unsupported');
+      assert.equal(facts.bindingEquality, 'unknown', 'no relation is established past unclassified slots');
+      assert.equal(facts.coverage, 'partial');
+      // A sayable suffix keeps the precise relation.
+      const sayableSuffix = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext("done");';
+      assert.equal(inspectCallShape(sayableSuffix).bindingEquality, 'unrelated');
+    });
+
+    test('a mismatched delimiter withholds the cell remainder', () => {
+      // The invalid closer returns before the comment opener is scanned: the
+      // next line must NOT resume in code state, or the comment content
+      // produces public facts.
+      const invalid = ']; /*\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n*/';
+      const facts = inspectCallShape(invalid);
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.statements[0].lexical, 'invalid', 'the failing line keeps its own invalid verdict');
+      for (const [index, statement] of facts.statements.entries()) {
+        assert.equal(statement.head, 'unknown', 'content after an invalid delimiter classifies nothing');
+        assert.equal(statement.tool, 'unknown');
+        if (index > 0) {
+          assert.equal(statement.lexical, 'unsupported-syntax', 'the withheld remainder is unknown-classified');
+        }
+      }
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the withheld remainder');
+    });
+
+    test('reference boundaries carry across newline slots', () => {
+      // A member access continued on the next line (trailing dot) is a
+      // non-canonical reference position: the continuation slot withholds
+      // unknown instead of asserting (round-10 redesign coarsening of the
+      // old precise 'no-call'; the cross-line reference still never
+      // establishes a public fact).
+      const memberTool = 'obj.\ntools.exec_command({cmd:"x"}); text(r);';
+      const memberToolFacts = inspectCallShape(memberTool);
+      assert.equal(memberToolFacts.statements[1].tool, 'unknown',
+        'a member chain continued across the newline is not classified as the public tool');
+      assert.equal(memberToolFacts.coverage, 'partial', 'the non-canonical continuation makes the whole-input coverage partial');
+      const memberEmission = 'obj.\ntext(r);';
+      const memberEmissionFacts = inspectCallShape(memberEmission);
+      assert.equal(memberEmissionFacts.statements[1].tail, 'unknown',
+        'a member chain continued across the newline is not classified as the public emission');
+      assert.equal(memberEmissionFacts.bindingEquality, 'unknown');
+      // The genuine references stay public across ordinary line structure.
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.tail, 'text-binding');
+    });
+
+    test('astral identifier continuations keep references private', () => {
+      // 𐐀 is an astral ID_Start character: the boundary check must read the
+      // COMPLETE code point, not its trailing UTF-16 surrogate.
+      const astralTool = '𐐀tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(astralTool).statements[0].tool, 'no-call',
+        'an astral identifier continuation keeps the reference private');
+      const astralEmission = 'const r = await tools.exec_command({cmd:"x"}); 𐐀text(r);';
+      const astralEmissionFacts = inspectCallShape(astralEmission);
+      assert.equal(astralEmissionFacts.statements[0].tail, 'none',
+        'an astral identifier continuation is not the public emission');
+      assert.equal(astralEmissionFacts.bindingEquality, 'unrelated');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('emission tokens separated from their parenthesis by trivia still bind', () => {
+      // `text (r)` is an ordinary binding emission: the tail fact describes
+      // the syntax relation, while parserStage stays the mechanical mirror of
+      // the existing parser, which rejects the noncanonical spacing.
+      const spaced = 'const r = await tools.exec_command({cmd:"x"}); text (r);';
+      const facts = inspectCallShape(spaced);
+      assert.equal(facts.statements[0].tail, 'text-binding');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.parserStage, 'output', 'the existing grammar mechanically rejects the noncanonical spacing');
+      const commented = 'const r = await tools.exec_command({cmd:"x"}); text /* c */ (r);';
+      const commentedFacts = inspectCallShape(commented);
+      assert.equal(commentedFacts.statements[0].tail, 'text-binding', 'masked comments are trivia');
+      assert.equal(commentedFacts.bindingEquality, 'equal');
+      // An emission-first statement with the same spacing keeps its head class.
+      const emissionFirst = inspectCallShape('text (r);');
+      assert.equal(emissionFirst.statements[0].head, 'emission');
+      assert.equal(emissionFirst.statements[0].tail, 'text-binding');
+      // A longer identifier is still not the emission token.
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); textx (r);').statements[0].tail, 'none');
+    });
+
+    test('quoted-string state carries across backslash-CRLF continuations', () => {
+      // A single-quoted string continued with backslash-CRLF: the \r must not
+      // be consumed as an ordinary escape, or the next line resumes in code
+      // state and private string content produces public facts.
+      const crlf = 'const s = \'private value \\\r\nconst r = await tools.exec_command({cmd:"x"}); text(r);\n\';';
+      const facts = inspectCallShape(crlf);
+      for (const statement of facts.statements) {
+        assert.notEqual(statement.tool, 'exec_command', 'string continuation content classifies no tool');
+        assert.equal(statement.head, 'unknown', 'string continuation content classifies no head');
+      }
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(JSON.stringify(facts).includes('exec_command'), false,
+        'the allowlisted tool label must not survive inside string content');
+    });
+
+    test('member-reference context survives leading trivia and trivia-only lines', () => {
+      // Round-10 redesign: a member chain continued over trivia or a
+      // trivia-only line is a non-canonical reference position — the
+      // continuation slot withholds unknown instead of asserting 'no-call'
+      // (the reference still never establishes a public fact).
+      const indented = 'obj.\n  tools.exec_command({cmd:"x"}); text(r);';
+      const indentedFacts = inspectCallShape(indented);
+      assert.equal(indentedFacts.statements[1].tool, 'unknown',
+        'leading indentation does not make the continued member chain public — withheld');
+      const indentedEmission = 'obj.\n  text(r);';
+      const indentedEmissionFacts = inspectCallShape(indentedEmission);
+      assert.equal(indentedEmissionFacts.statements[1].tail, 'unknown',
+        'leading indentation does not make the continued member emission public — withheld');
+      const commentOnly = 'obj.\n// c\ntools.exec_command({cmd:"x"}); text(r);';
+      const commentOnlyFacts = inspectCallShape(commentOnly);
+      // The comment-only line carries NO statement node (self-review round 3,
+      // finding 1), so the tools slot is index 1 — still withheld unknown.
+      assert.equal(commentOnlyFacts.statementCount, 2);
+      assert.equal(commentOnlyFacts.statements[1].tool, 'unknown',
+        'a trivia-only intervening line does not clear the member context — the continuation withholds');
+      assert.equal(commentOnlyFacts.coverage, 'partial');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('declarations and method definitions are not emission calls', () => {
+      // `function text(r) {}` declares a function — it is not a call of the
+      // public emitter. Round-10 redesign: a declaration containing the
+      // emission token is not a positively recognized statement form, so the
+      // slot withholds unknown instead of asserting 'no emission here' — the
+      // declaration still never establishes the tail BY CONSTRUCTION.
+      const declaration = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nfunction text(r) {}';
+      const declarationFacts = inspectCallShape(declaration);
+      assert.equal(declarationFacts.statements[1].tail, 'unknown',
+        'a function declaration establishes no emission — the slot withholds');
+      assert.equal(declarationFacts.tail, 'unknown');
+      // A method definition inside an object literal is not a top-level call.
+      const method = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst privateObject = {text(r) {}};';
+      const methodFacts = inspectCallShape(method);
+      assert.equal(methodFacts.statements[1].tail, 'unknown',
+        'a method definition establishes no emission — the slot withholds');
+      assert.equal(methodFacts.tail, 'unknown');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('a trivia-split tool reference is unknown-classified, never a no-call claim', () => {
+      // `tools . exec_command(` is not a reliably-trackable canonical shape:
+      // conservatively unknown with coverage 'partial', never a confident
+      // "no call exists" under complete coverage. (Round-10 redesign: the
+      // slot is lexically SOUND — the withhold is a classification verdict,
+      // expressed by head/tool 'unknown' + coverage 'partial', so the
+      // lexical verdict stays the lexer's 'complete'.)
+      const spaced = 'const r = await tools . exec_command({cmd:"x"}); text(r);';
+      const spacedFacts = inspectCallShape(spaced);
+      assert.equal(spacedFacts.statements[0].lexical, 'complete');
+      assert.equal(spacedFacts.statements[0].head, 'unknown');
+      assert.equal(spacedFacts.statements[0].tool, 'unknown');
+      assert.equal(spacedFacts.coverage, 'partial');
+      assert.equal(spacedFacts.wholeInputConsumed, false);
+      const commented = 'const r = await tools /* c */ . exec_command({cmd:"x"}); text(r);';
+      const commentedFacts = inspectCallShape(commented);
+      assert.equal(commentedFacts.statements[0].lexical, 'complete');
+      assert.equal(commentedFacts.coverage, 'partial');
+      // The canonical exact reference stays fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.coverage, 'complete');
+    });
+
+    test('a tool reference split across newline slots is unknown-classified, never a confident no-call', () => {
+      // The same round-4 conservative treatment as the same-line trivia split:
+      // a reference continued on the next line (trailing `tools.` or bare
+      // trailing `tools`) is not reliably trackable, so the continuation slot
+      // is unknown-classified with coverage 'partial' — never a confident
+      // 'no-call' under complete coverage.
+      const splitAfterDot = 'const r = await tools.\nexec_command({cmd:"x"});\ntext(r);';
+      const splitAfterDotFacts = inspectCallShape(splitAfterDot);
+      assert.equal(splitAfterDotFacts.statements[1].lexical, 'complete',
+        'the reference continuation slot is withheld though lexically sound');
+      assert.equal(splitAfterDotFacts.statements[1].head, 'unknown');
+      assert.equal(splitAfterDotFacts.statements[1].tool, 'unknown');
+      assert.equal(splitAfterDotFacts.tool, 'unknown', 'no confident no-call in the tool mirror');
+      assert.equal(splitAfterDotFacts.coverage, 'partial');
+      assert.equal(splitAfterDotFacts.wholeInputConsumed, false);
+      assert.equal(splitAfterDotFacts.bindingEquality, 'unknown',
+        'the unknown continuation sits between the binding and the final emission');
+      const splitBare = 'const r = await tools\n.exec_command({cmd:"x"});\ntext(r);';
+      const splitBareFacts = inspectCallShape(splitBare);
+      assert.equal(splitBareFacts.statements[1].lexical, 'complete');
+      assert.equal(splitBareFacts.statements[1].tool, 'unknown');
+      assert.equal(splitBareFacts.coverage, 'partial');
+      assert.equal(JSON.stringify(splitBareFacts).includes('exec_command'), false,
+        'the allowlisted tool label must not be derived from the split reference');
+      // The genuine references stay fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('per-line emission depth is cell-relative across spanning objects', () => {
+      // `text(r) {}` inside a multi-line object literal is a method
+      // declaration at CELL depth 1. Round-10 redesign: a slot inside a
+      // spanning bracket construct is not a top-level statement, so it
+      // withholds unknown — the method line still establishes no emission
+      // BY CONSTRUCTION (the old precise 'no emission here' claim and the
+      // relation it enabled are coarsened to honest unknown).
+      const spanning = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst obj = {\ntext(r) {}\n};';
+      const facts = inspectCallShape(spanning);
+      assert.equal(facts.statements[2].tail, 'unknown',
+        'a method declaration inside a spanning object establishes no emission — the slot withholds');
+      assert.equal(facts.tail, 'unknown');
+      assert.equal(facts.bindingEquality, 'unknown',
+        'unclassified slots after the final emission withhold the relation');
+      assert.equal(facts.coverage, 'partial');
+      // The genuine emission keeps its facts (invariance).
+      assert.equal(facts.statements[0].tail, 'text-binding');
+    });
+
+    test('identifier escapes keep references private', () => {
+      // `privat\u{65}` spells `private` through a Unicode escape: the raw
+      // character before the candidate is `}`. Round-10 redesign (class iv):
+      // an identifier escape ANYWHERE in the slot makes every reference
+      // spelling undecidable, so the slot withholds unknown/partial — never
+      // a confident presence OR absence claim.
+      const escapedTool = 'privat\\u{65}tools.exec_command({cmd:"x"}); text(r);';
+      const escapedToolFacts = inspectCallShape(escapedTool);
+      assert.equal(escapedToolFacts.statements[0].tool, 'unknown',
+        'an identifier escape withholds the reference — never a confident absence');
+      assert.equal(escapedToolFacts.coverage, 'partial');
+      assert.equal(escapedToolFacts.wholeInputConsumed, false);
+      const escapedEmission = 'const r = await tools.exec_command({cmd:"x"}); privat\\u{65}text(r);';
+      const escapedEmissionFacts = inspectCallShape(escapedEmission);
+      assert.equal(escapedEmissionFacts.statements[0].tail, 'unknown',
+        'an identifier escape in the emission position withholds — never a confident absence');
+      assert.equal(escapedEmissionFacts.bindingEquality, 'unknown');
+      // The genuine references stay public (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
+    });
+
+    test('generators, constructors and unproven contexts are not emission calls', () => {
+      // `function* text(r) {}` is a generator declaration. Round-10 redesign:
+      // not a positively recognized statement form — the slot withholds
+      // unknown, so the declaration still establishes no emission BY
+      // CONSTRUCTION (the old precise 'no emission here' claim is coarsened).
+      const generator = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nfunction* text(r) {}';
+      const generatorFacts = inspectCallShape(generator);
+      assert.equal(generatorFacts.statements[1].tail, 'unknown',
+        'a generator declaration establishes no emission — the slot withholds');
+      assert.equal(generatorFacts.tail, 'unknown');
+      // `new text(r)` is a constructor invocation, not the public emitter.
+      const constructed = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nnew text(r);';
+      const constructedFacts = inspectCallShape(constructed);
+      assert.equal(constructedFacts.statements[1].tail, 'unknown',
+        'a constructor invocation establishes no emission — the slot withholds');
+      assert.equal(constructedFacts.tail, 'unknown');
+      // An unproven call context (an assignment) withholds the tail and the
+      // relation instead of asserting either way.
+      const assigned = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst assigned = text(r);';
+      const assignedFacts = inspectCallShape(assigned);
+      assert.equal(assignedFacts.statements[1].tail, 'unknown',
+        'an unproven call context withholds the tail');
+      assert.equal(assignedFacts.bindingEquality, 'unknown',
+        'no relation is asserted when the final emission context is unproven');
+      // An undecidable occurrence as the LAST top-level emission occurrence
+      // withholds the top-level tail itself, not only the relation — an
+      // earlier proven emission is never asserted over it.
+      const undecidableLast = 'const r = await tools.exec_command({cmd:"x"}); text(r); if (x) text(s);';
+      const undecidableLastFacts = inspectCallShape(undecidableLast);
+      assert.equal(undecidableLastFacts.tail, 'unknown',
+        'the final top-level emission occurrence is undecidable, so the tail is unknown');
+      assert.equal(undecidableLastFacts.bindingEquality, 'unknown');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('uncertainty precedes identifier equality regardless of slot layout', () => {
+      // The undecidable assignment SHARES the wrapper's slot: the relation is
+      // still unknown — uncertainty takes precedence over identifier equality.
+      const sameSlot = 'const r = await tools.exec_command({cmd:"x"}); text(r); const assigned = text(other);';
+      const sameSlotFacts = inspectCallShape(sameSlot);
+      assert.equal(sameSlotFacts.bindingEquality, 'unknown',
+        'an undecidable emission in the same slot forces the relation unknown');
+      assert.equal(sameSlotFacts.coverage, 'partial',
+        'the withheld assignment makes the whole-input coverage partial');
+      // An unknown-classified slot BETWEEN the binding and the final emission
+      // forces the relation unknown as well.
+      const betweenUnknown = 'const r = await tools.exec_command({cmd:"x"}); const s = `tpl`;\ntext(r);';
+      const betweenFacts = inspectCallShape(betweenUnknown);
+      assert.equal(betweenFacts.bindingEquality, 'unknown',
+        'an unknown slot between the binding and the final emission forces unknown');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('call-position context carries across newline slots', () => {
+      // An arrow-function body continued on the next line is an unproven call
+      // position: the continuation withholds instead of asserting.
+      const arrowBody = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nconst f = () =>\ntext(other);';
+      const arrowFacts = inspectCallShape(arrowBody);
+      assert.equal(arrowFacts.statements[2].tail, 'unknown',
+        'a start-of-line continuation after a non-boundary is unproven');
+      assert.equal(arrowFacts.bindingEquality, 'unknown');
+      // The constructor keyword survives the line break: the carried slot is
+      // an unproven continuation, so it withholds instead of asserting
+      // (round-10 redesign coarsening of the old precise 'constructor here'
+      // claim — the constructor invocation still establishes no emission).
+      const splitNew = 'const r = await tools.exec_command({cmd:"x"}); text(r);\nnew\ntext(r);';
+      const splitNewFacts = inspectCallShape(splitNew);
+      assert.equal(splitNewFacts.statements[2].tail, 'unknown',
+        'a `new` continued across the newline is still not a classified emission — withheld');
+      // The genuine emission keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('the await keyword requires a complete token boundary', () => {
+      // `await$secret` is the private identifier `await$secret` — no await
+      // expression, so neither the bound-await head nor a relation follows.
+      const dollarAwait = 'const r = await$secret; text(r);';
+      const dollarFacts = inspectCallShape(dollarAwait);
+      assert.equal(dollarFacts.statements[0].head, 'other',
+        'await$secret is not the await keyword');
+      assert.equal(dollarFacts.bindingEquality, 'unrelated');
+      // `awaitπ` is likewise a private identifier.
+      const piAwait = inspectCallShape('awaitπ;');
+      assert.equal(piAwait.statements[0].head, 'other', 'awaitπ is a private identifier, not the await keyword');
+      // The genuine keyword forms keep their heads (invariance).
+      const genuine = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(genuine.statements[0].head, 'bound-await');
+      const bare = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(bare.statements[0].head, 'bare-await');
+    });
+
+    test('an emission reference split across a newline slot withholds the relation', () => {
+      // The `text` token ends one slot and its argument lands on the next:
+      // the split emission is not reliably trackable, so the continuation
+      // slot is unknown-classified and an EARLIER emission never asserts the
+      // relation.
+      const split = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext\n(other);';
+      const facts = inspectCallShape(split);
+      assert.equal(facts.statements[1].lexical, 'complete',
+        'the emission continuation slot is withheld though lexically sound');
+      assert.equal(facts.statements[1].head, 'unknown');
+      assert.equal(facts.coverage, 'partial');
+      assert.equal(facts.wholeInputConsumed, false);
+      assert.equal(facts.bindingEquality, 'unknown',
+        'the earlier emission never asserts the relation over the split');
+      // The genuine emissions stay fully recognized (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tail, 'text-binding');
+      assert.equal(genuineFacts.bindingEquality, 'equal');
+    });
+
+    test('subsequent bindings in one slot agree with the split layout', () => {
+      // The binding preceding the final emission is `s` in BOTH layouts —
+      // the retained relation must depend on the binding relationship, not
+      // on the slot layout.
+      const oneSlot = 'const r = await tools.exec_command({cmd:"x"}); const s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(oneSlot).bindingEquality, 'equal',
+        'the one-slot layout tracks the subsequent binding preceding the final emission');
+      const twoSlots = 'const r = await tools.exec_command({cmd:"x"});\nconst s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(twoSlots).bindingEquality, 'equal',
+        'the split layout agrees with the one-slot layout');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('private-name suffixes never establish the public tool reference', () => {
+      // `this.#tools` is a private member. Round-10 redesign: the class body
+      // is not a positively recognized statement form, so the slot withholds
+      // unknown — the private name still never attributes the public tool
+      // fact BY CONSTRUCTION (the old precise 'no-call' claim is coarsened).
+      const privateName = 'class C { #tools() {} method() { this.#tools.exec_command({cmd:"x"}); } }';
+      const facts = inspectCallShape(privateName);
+      assert.equal(facts.statements[0].tool, 'unknown',
+        'the private member reference never establishes the public tool — withheld');
+      assert.equal(facts.coverage, 'partial');
+    });
+
+    test('escaped identifier continuations after await are not the keyword', () => {
+      // `await\u0061` spells `awaita` — an identifier, not the keyword.
+      // Round-10 redesign (class iv): the escape makes the slot's reference
+      // spellings undecidable, so the slot withholds unknown instead of
+      // asserting either the keyword or a private identifier.
+      const escaped = 'const r = await\\u0061; text(r);';
+      const escapedFacts = inspectCallShape(escaped);
+      assert.equal(escapedFacts.statements[0].head, 'unknown',
+        'an escape after the await token withholds the head');
+      assert.equal(escapedFacts.bindingEquality, 'unknown');
+      assert.equal(escapedFacts.coverage, 'partial');
+      const escapedBare = inspectCallShape('await\\u0061;');
+      assert.equal(escapedBare.statements[0].head, 'unknown',
+        'the bare-await form requires the same complete boundary — withheld');
+      // The genuine keyword forms keep their heads (invariance).
+      const genuine = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(genuine.statements[0].head, 'bound-await');
+    });
+
+    test('nested-declaration bindings are not top-level bindings', () => {
+      // The function-local `const s` cannot supply the top-level emission's
+      // binding: binding candidates are TOP-LEVEL declarations only.
+      const nested = 'const r = await tools.exec_command({cmd:"x"}); async function f() { const s = await other(); } text(r);';
+      const nestedFacts = inspectCallShape(nested);
+      assert.equal(nestedFacts.bindingEquality, 'equal',
+        'the top-level binding r pairs with the top-level emission r');
+      assert.equal(nestedFacts.coverage, 'complete');
+      // The split layout agrees.
+      const nestedSplit = 'const r = await tools.exec_command({cmd:"x"});\nasync function f() { const s = await other(); }\ntext(r);';
+      assert.equal(inspectCallShape(nestedSplit).bindingEquality, 'equal');
+      // The genuine relation keeps its facts (invariance).
+      const genuine = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(genuine).bindingEquality, 'equal');
+    });
+
+    test('Unicode identifier tokens participate like ASCII ones', () => {
+      // A recognized call with a non-allowlisted name is the fixed `other`
+      // class — never a confident no-call.
+      const unicodeTool = 'await tools.工具({});';
+      const unicodeToolFacts = inspectCallShape(unicodeTool);
+      assert.equal(unicodeToolFacts.statements[0].tool, 'other',
+        'a recognized call with a non-allowlisted name is other');
+      assert.equal(unicodeToolFacts.coverage, 'complete');
+      // A Unicode binding identifier participates in bindingEquality.
+      const unicodeBinding = 'const π = await tools.exec_command({cmd:"x"}); text(π);';
+      const unicodeBindingFacts = inspectCallShape(unicodeBinding);
+      assert.equal(unicodeBindingFacts.statements[0].head, 'bound-await');
+      assert.equal(unicodeBindingFacts.statements[0].tail, 'text-binding');
+      assert.equal(unicodeBindingFacts.bindingEquality, 'equal',
+        'the Unicode binding participates like an ASCII one');
+      assert.equal(unicodeBindingFacts.coverage, 'complete');
+    });
+
+    test('declarations split across slots carry their binding forward', () => {
+      // `const s =` ends one slot and the awaited call lands on the next:
+      // the pending declaration binds the next slot's call, so the layouts
+      // must not disagree.
+      const split = 'const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'equal',
+        'the pending declaration binds the next slot\'s call');
+      assert.equal(splitFacts.coverage, 'complete');
+      const joined = 'const s = await tools.exec_command({cmd:"x"}); text(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'equal',
+        'the joined layout agrees with the split layout');
+    });
+
+    test('later tool-calling statements within a slot mirror the top-level tool', () => {
+      // The documented mirror rule is the LAST call-carrying statement: the
+      // slot layout must not change the retained tool fact.
+      const joined = 'await tools.other({}); await tools.exec_command({cmd:"x"});';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.statements[0].tool, 'exec_command',
+        'the last top-level call in the slot is mirrored');
+      assert.equal(joinedFacts.tool, 'exec_command');
+      const split = 'await tools.other({});\nawait tools.exec_command({cmd:"x"});';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.tool, 'exec_command',
+        'the split layout agrees with the joined layout');
+    });
+
+    test('unsupported references relabel a slot even when a canonical call shares it', () => {
+      // The trivia-split reference in the SECOND statement must relabel the
+      // whole slot unknown/partial — a canonical call earlier in the same
+      // slot never suppresses the uncertainty checks.
+      const mixed = 'await tools.exec_command({cmd:"x"}); await tools .other({});';
+      const mixedFacts = inspectCallShape(mixed);
+      assert.equal(mixedFacts.statements[0].lexical, 'complete',
+        'the unsupported reference relabels the slot (lexically sound, classification withheld)');
+      assert.equal(mixedFacts.statements[0].head, 'unknown');
+      assert.equal(mixedFacts.statements[0].tool, 'unknown');
+      assert.equal(mixedFacts.coverage, 'partial');
+      assert.equal(mixedFacts.wholeInputConsumed, false);
+      // The canonical-only slot stays fully recognized (invariance).
+      const canonical = 'await tools.exec_command({cmd:"x"});';
+      const canonicalFacts = inspectCallShape(canonical);
+      assert.equal(canonicalFacts.statements[0].tool, 'exec_command');
+      assert.equal(canonicalFacts.coverage, 'complete');
+    });
+
+    test('bindings declared after a slot-local emission still bind later emissions', () => {
+      // `const s` is declared AFTER the first slot's emission but BEFORE the
+      // final emission: both layouts must agree that `s` pairs with `s`.
+      const joined = 'const r = await f(); text(r); const s = await g();\ntext(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'equal',
+        'the end-of-slot binding state survives into the later final emission');
+      const split = 'const r = await f(); text(r);\nconst s = await g();\ntext(s);';
+      assert.equal(inspectCallShape(split).bindingEquality, 'equal',
+        'the split layout agrees with the joined layout');
+    });
+
+    test('a pending binding without an awaited initializer is never adopted', () => {
+      // `const s =` continued by `0;` establishes no awaited result: the
+      // pending identifier is discarded and both layouts agree on 'unrelated'.
+      const split = 'const s =\n0;\ntext(s);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'unrelated',
+        'a non-await continuation never becomes an awaited-result binding');
+      const joined = 'const s = 0;\ntext(s);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'unrelated',
+        'the joined layout agrees with the split layout');
+      // The awaited continuation keeps the pending binding (invariance).
+      const awaited = 'const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);';
+      assert.equal(inspectCallShape(awaited).bindingEquality, 'equal');
+    });
+
+    test('escaped references in reference position are unknown-classified', () => {
+      // `\u0074ools` spells `tools` through an escape: the reference position
+      // is not reliably decidable, so the slot is withheld — never a
+      // confident absence claim under complete coverage.
+      const escaped = 'await \\u0074ools.exec_command({cmd:"x"});';
+      const escapedFacts = inspectCallShape(escaped);
+      assert.equal(escapedFacts.statements[0].lexical, 'complete',
+        'the escaped reference slot is withheld though lexically sound');
+      assert.equal(escapedFacts.statements[0].head, 'unknown');
+      assert.equal(escapedFacts.statements[0].tool, 'unknown');
+      assert.equal(escapedFacts.coverage, 'partial');
+      assert.equal(escapedFacts.wholeInputConsumed, false);
+      // The genuine reference stays fully recognized (invariance).
+      const genuine = 'await tools.exec_command({cmd:"x"});';
+      const genuineFacts = inspectCallShape(genuine);
+      assert.equal(genuineFacts.statements[0].tool, 'exec_command');
+      assert.equal(genuineFacts.coverage, 'complete');
+    });
+
+    test('an underscore-initial binding is an ordinary JavaScript identifier (round 10, class i)', () => {
+      // `$` AND `_` are ECMAScript identifier-start characters on TOP of the
+      // Unicode \p{ID_Start} property (the low line U+005F is NOT inside
+      // \p{ID_Start}), so the positive grammar's identifier classes spell
+      // both out: the underscore binding participates like any other.
+      const facts = inspectCallShape('const _r = await tools.exec_command({cmd:"x"}); text(_r);');
+      assert.equal(facts.statements[0].head, 'bound-await');
+      assert.equal(facts.statements[0].tool, 'exec_command');
+      assert.equal(facts.tail, 'text-binding');
+      assert.equal(facts.bindingEquality, 'equal');
+      assert.equal(facts.coverage, 'complete');
+      assert.equal(facts.wholeInputConsumed, true);
+      assert.equal(JSON.stringify(facts).includes('_r'), false, 'no binding spelling may survive');
+      // A `$`-initial binding behaves identically.
+      const dollar = inspectCallShape('const $r = await tools.exec_command({cmd:"x"}); text($r);');
+      assert.equal(dollar.head, 'bound-await');
+      assert.equal(dollar.bindingEquality, 'equal');
+      assert.equal(dollar.coverage, 'complete');
+    });
+
+    test('a pending declaration is adopted only when the continuation starts the awaited initializer (round 10, class ii)', () => {
+      // `const r =` continued by `0; await tools.…; text(r);` — the
+      // continuation does NOT itself start the awaited initializer, so the
+      // pending identifier is never adopted and the split layout agrees with
+      // the joined `const r = 0; …` layout ('unrelated').
+      const split = 'const r =\n0; await tools.exec_command({cmd:"x"}); text(r);';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.bindingEquality, 'unrelated',
+        'a non-await continuation never adopts the pending binding');
+      const joined = 'const r = 0; await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(joined).bindingEquality, 'unrelated',
+        'the joined layout agrees with the split layout');
+      // Invariance: the awaited continuation keeps the pending binding.
+      assert.equal(inspectCallShape('const r =\nawait tools.exec_command({cmd:"x"}); text(r);').bindingEquality, 'equal');
+    });
+
+    test('comma-separated declarators bind positionally like the split layout (round 10, class iii)', () => {
+      // The LAST awaited binding before the final emission binds it in BOTH
+      // layouts — the retained relation must not depend on the declarator
+      // layout.
+      const joined = 'const r = await tools.exec_command({cmd:"x"}), s = await tools.exec_command({cmd:"y"}); text(s);';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.bindingEquality, 'equal',
+        'the comma layout tracks the binding preceding the final emission');
+      assert.equal(joinedFacts.coverage, 'complete');
+      const split = 'const r = await tools.exec_command({cmd:"x"});\nconst s = await tools.exec_command({cmd:"y"}); text(s);';
+      assert.equal(inspectCallShape(split).bindingEquality, 'equal',
+        'the split layout agrees with the comma layout');
+    });
+
+    test('an identifier escape anywhere in a reference token withholds the slot (round 10, class iv)', () => {
+      // An escape makes every reference spelling undecidable from raw
+      // characters: the slot is unknown-classified with coverage 'partial' —
+      // never a confident presence OR absence claim.
+      for (const hostile of [
+        'await \\u0074ools.exec_command({cmd:"x"});',
+        'await tools.exec_comman\\u0064({cmd:"x"});',
+        'privat\\u{65}tools.exec_command({cmd:"x"}); text(r);',
+        'const r = await tools.exec_command({cmd:"x"}); privat\\u{65}text(r);',
+      ]) {
+        const facts = inspectCallShape(hostile);
+        assert.equal(facts.coverage, 'partial', hostile);
+        assert.equal(facts.wholeInputConsumed, false, hostile);
+        for (const statement of facts.statements) {
+          assert.equal(statement.head, 'unknown', `no confident head for: ${hostile}`);
+          assert.equal(statement.tool, 'unknown', `never a confident presence or absence for: ${hostile}`);
+        }
+      }
+      // The genuine references stay fully recognized (invariance).
+      const genuine = inspectCallShape('await tools.exec_command({cmd:"x"});');
+      assert.equal(genuine.statements[0].tool, 'exec_command');
+      assert.equal(genuine.coverage, 'complete');
+    });
+
+    test('a trivia-only slot carries no statement node (self-review round 3, finding 1)', () => {
+      // A comment-only line is FORMATTING, not a statement: it must not
+      // become a phantom statement node — no mirror distortion (head is the
+      // first STATEMENT's head, tail the last STATEMENT's tail), no slot
+      // count, no coverage cost.
+      const alone = inspectCallShape('// nothing here');
+      assert.equal(alone.statementCount, 0);
+      assert.deepEqual(alone.statements, []);
+      assert.equal(alone.coverage, 'complete');
+      assert.equal(alone.wholeInputConsumed, true);
+      const trailing = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\n// done');
+      assert.equal(trailing.statementCount, 1);
+      assert.equal(trailing.tail, 'text-binding', 'a trailing comment cannot blank the last statement tail');
+      assert.equal(trailing.bindingEquality, 'equal');
+      assert.equal(trailing.coverage, 'complete');
+      assert.equal(trailing.parserStage, 'residual', 'the existing grammar rejects the trailing comment line at its residual stage');
+      const leading = inspectCallShape('/* lead */\nconst r = await tools.exec_command({cmd:"x"}); text(r);');
+      assert.equal(leading.head, 'bound-await', 'a leading comment cannot blank the first statement head');
+      assert.equal(leading.statementCount, 1);
+      assert.equal(leading.coverage, 'complete');
+    });
+
+    test('const-anchored heads require a proven statement position (self-review round 3, finding 2)', () => {
+      // A `const` declaration continued from an UNPROVEN statement position
+      // (a dangling member dot, an `if` head — the latter not even valid JS)
+      // withholds exactly like every other head: the const anchor alone
+      // proves nothing about the position.
+      for (const hostile of [
+        'foo.\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+        'if (x)\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+      ]) {
+        const facts = inspectCallShape(hostile);
+        assert.equal(facts.coverage, 'partial', hostile);
+        assert.equal(facts.wholeInputConsumed, false, hostile);
+        assert.equal(facts.statements[1].head, 'unknown', `no confident wrapper facts at an unproven position: ${hostile}`);
+        assert.equal(facts.statements[1].tool, 'unknown', hostile);
+        assert.equal(facts.bindingEquality, 'unknown', hostile);
+      }
+      // The genuine positions keep their facts (invariance): the cell start,
+      // a position after a terminated statement, and the observed two-line
+      // pair whose first line is a positively completed statement.
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+      assert.equal(inspectCallShape('text(r);\nconst r = await tools.exec_command({cmd:"x"}); text(r);').statements[1].head, 'bound-await');
+      const pair = 'const r = await tools.exec_command({cmd:"x"}); text(r)\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n';
+      const pairFacts = inspectCallShape(pair);
+      assert.equal(pairFacts.statementCount, 2);
+      assert.equal(pairFacts.coverage, 'complete');
+      assert.equal(pairFacts.tool, 'other');
+    });
+
+    test('a pending declaration withholds emission continuations (self-review round 3, finding 3)', () => {
+      // `const s =` continued by `text(x); …` — the emission is the
+      // INITIALIZER expression, never a top-level emission of the slot: the
+      // split layout must withhold exactly like the joined layout.
+      const split = 'const s =\ntext(x); await tools.exec_command({cmd:"y"});';
+      const splitFacts = inspectCallShape(split);
+      assert.equal(splitFacts.coverage, 'partial');
+      assert.equal(splitFacts.wholeInputConsumed, false);
+      assert.equal(splitFacts.bindingEquality, 'unknown');
+      assert.equal(splitFacts.tail, 'unknown', 'the initializer emission is never a top-level tail');
+      const joined = 'const s = text(x); await tools.exec_command({cmd:"y"});';
+      const joinedFacts = inspectCallShape(joined);
+      assert.equal(joinedFacts.coverage, 'partial');
+      assert.equal(joinedFacts.bindingEquality, 'unknown');
+      assert.equal(joinedFacts.tail, 'unknown');
+    });
+
+    test('mixed declarator lists keep the awaited bindings positionally (self-review round 3, finding 4)', () => {
+      // `const r = await f(), s = 2; text(r);` — the awaited binding r pairs
+      // with the emission in BOTH layouts; the non-awaited declarator is
+      // skipped (it carries no result binding).
+      const joined = inspectCallShape('const r = await f(), s = 2; text(r);');
+      assert.equal(joined.bindingEquality, 'equal');
+      assert.equal(joined.head, 'bound-await');
+      assert.equal(joined.coverage, 'complete');
+      const split = inspectCallShape('const r = await f();\nconst s = 2; text(r);');
+      assert.equal(split.bindingEquality, 'equal');
+      assert.equal(split.head, 'bound-await');
+      // A non-awaited declarator carrying a public-reference token still
+      // withholds (never silently ignored).
+      const hostile = inspectCallShape('const r = await f(), s = text(x); text(r);');
+      assert.equal(hostile.coverage, 'partial');
+    });
+
+    test('a line comment ends at every ECMAScript line terminator (codex round 11)', () => {
+      // JavaScript ends a line comment at LF, CR, U+2028 and U+2029 — not
+      // only at the LF the slot split consumed: code carried after a
+      // separator inside one newline slot is real CODE and must classify.
+      // The old mask swallowed the whole remaining slot into the comment —
+      // a confident wrong absence (zero statements, 'no-call') under
+      // complete coverage.
+      for (const separator of ['\u2028', '\u2029', '\r']) {
+        const input = `// lead${separator}const alias = await tools.exec_command({cmd:"x"}); text(alias);`;
+        const facts = inspectCallShape(input);
+        assert.equal(facts.tool, 'exec_command', `separator ${JSON.stringify(separator)}: the carried statement must classify`);
+        assert.equal(facts.statements[0].head, 'bound-await', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.tail, 'text-binding', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.bindingEquality, 'equal', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.coverage, 'complete', `separator ${JSON.stringify(separator)}`);
+        assert.equal(facts.wholeInputConsumed, true, `separator ${JSON.stringify(separator)}`);
+        assert.equal(JSON.stringify(facts).includes('alias'), false, 'no binding spelling may survive');
+      }
+      // The genuine LF form is unchanged (invariance).
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').tool, 'exec_command');
+    });
+
+    test('a dangling pending declaration at end of input is unresolved truncation (codex round 12)', () => {
+      // §15.1's truncation rule: EOF with an unresolved `const <id> =` is
+      // TRUNCATED input — the initializer's statement never arrived, so the
+      // cell never claims complete coverage, and the uncertainty propagates
+      // to the binding relation (never asserted over the dangling pending).
+      const alone = inspectCallShape('const unfinished =');
+      assert.equal(alone.coverage, 'partial');
+      assert.equal(alone.wholeInputConsumed, false);
+      assert.equal(alone.bindingEquality, 'unknown');
+      const appended = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished =');
+      assert.equal(appended.bindingEquality, 'unknown', 'the wrapper relation is never asserted over the unresolved initializer');
+      assert.equal(appended.coverage, 'partial');
+      assert.equal(appended.wholeInputConsumed, false);
+      // Trailing blank and comment-only formatting lines do not resolve the
+      // dangling pending.
+      const trailed = inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished =\n\n// done');
+      assert.equal(trailed.bindingEquality, 'unknown');
+      assert.equal(trailed.coverage, 'partial');
+      assert.equal(trailed.wholeInputConsumed, false);
+      // Invariance: the valid split initializer stays resolved.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+    });
+
+    test('an unfinished awaited expression withholds its continuation (codex round 13)', () => {
+      // `const alias = await receiver.\ntext(value);` is ONE member call —
+      // the continuation line completes the awaited expression, so it is
+      // never a standalone emission: no fabricated tail, no invented
+      // relation, and the split layout withholds exactly like the joined
+      // one. The trailing-`new` constructor continuation behaves the same.
+      for (const hostile of [
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const split = inspectCallShape(hostile);
+        assert.equal(split.tail, 'unknown', `no fabricated emission tail for: ${hostile}`);
+        assert.equal(split.bindingEquality, 'unknown', `no invented relation for: ${hostile}`);
+        assert.equal(split.coverage, 'partial', hostile);
+        assert.equal(split.wholeInputConsumed, false, hostile);
+        for (const statement of split.statements.slice(1)) {
+          assert.equal(statement.head, 'unknown', `the continuation is not a standalone statement: ${hostile}`);
+          assert.equal(statement.tail, 'unknown', hostile);
+        }
+        const joined = inspectCallShape(hostile.replace('\n', ' '));
+        assert.equal(joined.coverage, 'partial', hostile);
+        assert.equal(joined.bindingEquality, 'unknown', hostile);
+        assert.equal(joined.wholeInputConsumed, false, hostile);
+      }
+      // At end of input an unfinished expression is truncation too — never
+      // complete success.
+      const eof = inspectCallShape('const alias = await receiver.');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: the canonical split initializer stays recognized.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('completion is proven only by the pinned grammar, never by tail denial (codex round 14)', () => {
+      // An expression continues after a LARGE open token set — enumerating
+      // unfinished tails (dot, `new`, `+`, …) can never terminate. COMPLETION
+      // IS ONLY EVER ASSERTED FROM THE PINNED POSITIVE GRAMMAR: a
+      // declaration/awaited segment proves the next slot's statement position
+      // ONLY through a properly closed pinned `tools.<name>(…)` call (or the
+      // slot-level `;` boundary). Any other tail — an operator, a dot, `new`,
+      // an open paren, anything — leaves completion unproven: a following
+      // line withholds (it continues that expression) and end of input is
+      // truncation.
+      for (const hostile of [
+        'const alias = await receiver +\ntext(value);',
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const split = inspectCallShape(hostile);
+        assert.equal(split.tail, 'unknown', `no fabricated emission tail for: ${hostile}`);
+        assert.equal(split.bindingEquality, 'unknown', `no invented relation for: ${hostile}`);
+        assert.equal(split.coverage, 'partial', hostile);
+        assert.equal(split.wholeInputConsumed, false, hostile);
+        for (const statement of split.statements.slice(1)) {
+          assert.equal(statement.head, 'unknown', `the continuation is not a standalone statement: ${hostile}`);
+          assert.equal(statement.tail, 'unknown', hostile);
+        }
+        const joined = inspectCallShape(hostile.replace('\n', ' '));
+        assert.equal(joined.coverage, 'partial', hostile);
+        assert.equal(joined.bindingEquality, 'unknown', hostile);
+      }
+      // End of input after an unproven tail is truncation — never success.
+      const eof = inspectCallShape('const alias = await receiver +');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: the pinned awaited-call form stays the completion proof,
+      // and the `;`-terminated declarations prove completion via the boundary.
+      const resolved = inspectCallShape('const s =\nawait tools.exec_command({cmd:"x"});\ntext(s);');
+      assert.equal(resolved.bindingEquality, 'equal');
+      assert.equal(resolved.coverage, 'complete');
+      assert.equal(resolved.wholeInputConsumed, true);
+      const terminated = inspectCallShape('const s = await other();\ntext(s);');
+      assert.equal(terminated.bindingEquality, 'equal');
+      assert.equal(terminated.coverage, 'complete');
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}); text(r);').coverage, 'complete');
+    });
+
+    test('declaration completion comes from the FINAL declarator (codex round 15)', () => {
+      // `const alias = await tools…(…), other = receiver +\ntext(alias);` —
+      // the second line continues `other`'s initializer: it is never a
+      // standalone emission, and the split layout withholds exactly like the
+      // joined one. The allowlist rule applies to the declaration's ACTUAL
+      // tail — the final declarator's production.
+      const split = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver +\ntext(alias);');
+      assert.equal(split.tail, 'unknown', 'the initializer continuation is never a standalone emission');
+      assert.equal(split.bindingEquality, 'unknown', 'no relation is invented over the continuation');
+      assert.equal(split.coverage, 'partial');
+      assert.equal(split.wholeInputConsumed, false);
+      for (const statement of split.statements.slice(1)) {
+        assert.equal(statement.head, 'unknown', 'the continuation is not a standalone statement');
+        assert.equal(statement.tail, 'unknown');
+      }
+      const joined = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver + text(alias);');
+      assert.equal(joined.coverage, 'partial');
+      assert.equal(joined.bindingEquality, 'unknown');
+      // End of input after the unprovable trailing initializer is truncation.
+      const eof = inspectCallShape('const alias = await tools.exec_command({cmd:"x"}), other = receiver +');
+      assert.equal(eof.coverage, 'partial');
+      assert.equal(eof.wholeInputConsumed, false);
+      assert.equal(eof.bindingEquality, 'unknown');
+      // Invariances: an all-awaited list completes through its final
+      // declarator's pinned production (pinned-closed without `;`), a
+      // `;`-closed list completes through the boundary, and the round-14 /
+      // class-iii positional binding pins keep passing.
+      const pinnedClosed = inspectCallShape('const a = await tools.exec_command({cmd:"x"}), b = await tools.exec_command({cmd:"y"})');
+      assert.equal(pinnedClosed.coverage, 'complete');
+      assert.equal(pinnedClosed.wholeInputConsumed, true);
+      const semicolonClosed = inspectCallShape('const a = await tools.exec_command({cmd:"x"}), b = await tools.exec_command({cmd:"y"});\ntext(b);');
+      assert.equal(semicolonClosed.bindingEquality, 'equal');
+      assert.equal(semicolonClosed.coverage, 'complete');
+      assert.equal(inspectCallShape('const r = await tools.exec_command({cmd:"x"}), s = await tools.exec_command({cmd:"y"}); text(s);').bindingEquality, 'equal');
+      assert.equal(inspectCallShape('const r = await f(), s = 2; text(r);').bindingEquality, 'equal');
+    });
+
+    test('a closed call does not prove a statement boundary (codex round 16)', () => {
+      // `const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);` — JS
+      // continues the initializer through `[0]` (q receives the indexed
+      // value, not the native result): the split layout must withhold
+      // exactly like the joined one — completion proven WITHOUT an explicit
+      // terminator additionally requires the next content slot to START A
+      // NEW STATEMENT (an identifier head: a declaration keyword, `await`,
+      // or an ASI identifier expression). Any punctuation head (`[`, `(`,
+      // `.`, an operator, a template literal, …) CONTINUES the expression.
+      const split = inspectCallShape('const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);');
+      assert.equal(split.tail, 'unknown', 'the index continuation is never a standalone emission');
+      assert.equal(split.bindingEquality, 'unknown', 'no relation is invented over the continuation');
+      assert.equal(split.coverage, 'partial');
+      assert.equal(split.wholeInputConsumed, false);
+      for (const statement of split.statements.slice(1)) {
+        assert.equal(statement.head, 'unknown', 'the continuation is not a standalone statement');
+        assert.equal(statement.tail, 'unknown');
+      }
+      const joined = inspectCallShape('const q = await tools.exec_command({cmd:"x"})[0]; text(q);');
+      assert.equal(joined.coverage, 'partial');
+      assert.equal(joined.bindingEquality, 'unknown');
+      // Invariances: ASI at end of input keeps its completion (the wrapper
+      // skeleton's optional `;`), the identifier-headed ASI continuation
+      // (the canonical two-line pair shape) stays recognized, and slots
+      // after `;`-terminated statements are unaffected.
+      const eof = inspectCallShape('const r = await tools.exec_command({cmd:"x"})');
+      assert.equal(eof.coverage, 'complete');
+      assert.equal(eof.wholeInputConsumed, true);
+      const asi = inspectCallShape('const q = await tools.exec_command({cmd:"x"})\ntext(q);');
+      assert.equal(asi.bindingEquality, 'equal');
+      assert.equal(asi.coverage, 'complete');
+      assert.equal(asi.wholeInputConsumed, true);
+      const terminated = inspectCallShape('const r = await tools.exec_command({cmd:"x"});\ntext(r);\n[0];');
+      assert.equal(terminated.coverage, 'complete');
+      assert.equal(terminated.wholeInputConsumed, true);
+      assert.equal(terminated.bindingEquality, 'equal');
+    });
+
+    test('bindingEquality is judged against the FINAL emission, never an earlier one', () => {
+      // The final emission `text("done")` carries no result-binding reference,
+      // so the relation is 'unrelated' even though an EARLIER emission `text(r)`
+      // would have matched the bound binding.
+      const finalString = 'const r = await tools.exec_command({cmd:"x"}); text(r);\ntext("done");';
+      const facts = inspectCallShape(finalString);
+      assert.equal(facts.statements[1].tail, 'text-other', 'the string-literal argument keeps its frozen tail class');
+      assert.equal(facts.tail, 'text-other');
+      assert.equal(facts.bindingEquality, 'unrelated', 'the final emission is the only one the relation is judged against');
+      // The relation still holds when the final emission IS a binding.
+      const finalBinding = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(finalBinding).bindingEquality, 'equal');
+      // Bindings only PRECEDING the final emission are compared.
+      const laterBinding = 'text(start);\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      assert.equal(inspectCallShape(laterBinding).bindingEquality, 'equal');
+      // A final emission with no preceding binding stays unrelated.
+      assert.equal(inspectCallShape('text(onlyEmission);').bindingEquality, 'unrelated');
+    });
+
+    test('a nested emission inside the outermost text( argument is text-other, not a binding tail', () => {
+      // §15.1 tail semantics: "anything else inside text(…) → text-other".
+      // `text(f(text(r)))` is ONE emission whose argument is a call
+      // expression; the inner text( occurrence must not classify the tail.
+      const nested = 'const r = await tools.exec_command({cmd:"x"}); text(f(text(r)));';
+      const facts = inspectCallShape(nested);
+      assert.equal(facts.statements[0].tail, 'text-other', 'the OUTERMOST emission argument is a call expression');
+      assert.equal(facts.tail, 'text-other');
+      assert.equal(facts.bindingEquality, 'unrelated', 'no identifier tail survives the nested call');
+      // Sibling emissions keep the last-top-level-emission semantics.
+      const siblings = 'const r = await tools.exec_command({cmd:"x"}); text(s); text(r);';
+      assert.equal(inspectCallShape(siblings).tail, 'text-binding');
+      assert.equal(inspectCallShape(siblings).bindingEquality, 'equal');
+    });
+
+    test('a valid directive is diagnosed without retaining keys and keeps the cell parse-accepted', () => {
+      const directed = '// @exec: {"yield_time_ms": 3600000}\nconst r = await tools.exec_command({cmd:"x"}); text(r);';
+      const facts = inspectCallShape(directed);
+      assert.equal(facts.directive, 'valid');
+      assert.equal(facts.parserStage, 'parse-accepted');
+      assert.equal(JSON.stringify(facts).includes('yield_time_ms'), false);
+      assert.notEqual(parseCallStatements(event(directed)), null);
+    });
+
+    test('parserStage parse-accepted agrees with the real existing parser on every synthetic record', () => {
+      const inputs = [
+        canonical,
+        'const responseText = await tools.exec_command({cmd:"synthetic-command-text"}); text(responseText);',
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"});`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(JSON.stringify(r));`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r.status);`,
+        'const r = await tools.exec_command({cmd: buildCmd()}); text(r);',
+        'const r = await tools.exec_command({cmd:"prep text(r) tools.exec_command (prompt) alias"}); text(r);',
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\nconsole.log("synthetic-third");`,
+        `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(r);\n\n`,
+        'const r = await tools.exec_command({cmd:"x"}); text(r)\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n',
+        '// @exec: {"yield_time_ms": 3600000}\nconst r = await tools.exec_command({cmd:"x"}); text(r);',
+        'text(await tools.exec_command({cmd:"x"}));',
+      ];
+      for (const input of inputs) {
+        const facts = inspectCallShape(input);
+        const accepted = parseCallStatements(event(input)) !== null;
+        assert.equal(facts.parserStage === 'parse-accepted', accepted,
+          `parserStage diagnosis must agree with parseCallStatements for: ${input.slice(0, 60)}`);
+      }
+    });
+  });
+
+  describe('controlled shape diagnosis: driver opt-in flag pair', async () => {
+    const { parseShellWaitArguments, runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-noise', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+
+    test('--unclassified-shape-diagnostic accepts only the literal 1, requires the structural gate, and defaults off', () => {
+      const structuralBase = [...baseArguments, '--unclassified-structural-diagnostic', '1'];
+      assert.equal(parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', '1']).unclassifiedShapeDiagnostic, true);
+      assert.equal(parseShellWaitArguments(baseArguments).unclassifiedShapeDiagnostic, false);
+      for (const bad of ['0', 'true', '', 'on']) {
+        assert.throws(() => parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', bad]),
+          `the value ${JSON.stringify(bad)} must be refused`);
+      }
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--unclassified-shape-diagnostic', '1']),
+        /requires/i, 'the shape gate alone must be refused');
+      assert.throws(() => parseShellWaitArguments([...structuralBase, '--unclassified-shape-diagnostic', '1', '--unclassified-shape-diagnostic', '1']),
+        'a duplicate shape gate must be refused');
+      // The structural gate alone keeps working exactly as before.
+      assert.equal(parseShellWaitArguments([...baseArguments, '--unclassified-structural-diagnostic', '1']).unclassifiedShapeDiagnostic, false);
+    });
+
+    test('an invalid programmatic combination fails before any side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-shape-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureCreated = false;
+      const refusingCreateFixture = async () => { fixtureCreated = true; throw new Error('fixture must not be created'); };
+      await assert.rejects(
+        runShellWaitCase({
+          case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output: root,
+          workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+          unclassifiedShapeDiagnostic: true,
+        }, { createFixture: refusingCreateFixture }),
+        /unclassifiedShapeDiagnostic requires unclassifiedStructuralDiagnostic/i,
+      );
+      await assert.rejects(
+        runShellWaitCase({
+          case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output: root,
+          workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+          unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: 'yes',
+        }, { createFixture: refusingCreateFixture }),
+        /must be a boolean/i, 'a non-boolean shape gate is refused');
+      assert.equal(fixtureCreated, false, 'validation must fail before fixture creation');
+    });
+
+    test('the record and the live executor carry the shape gate only when explicitly enabled', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-shape-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const base = {
+        case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+      };
+      const fixture = {
+        workspace: '/private/tmp/shape-ws', codexHome: '/private/tmp/shape-home',
+        installedRoot: '/private/tmp/shape-installed', env: { HOME: '/private/tmp/shape-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      let seenInput;
+      const executor = async (request) => {
+        seenInput = request.input;
+        return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+      };
+      const enabled = await runShellWaitCase({ ...base, output: root, unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenInput.unclassifiedShapeDiagnostic, true, 'the live executor must receive the shape gate');
+      assert.equal(enabled.unclassifiedShapeDiagnostic, true, 'the persisted record must name the enabled shape gate');
+      const structuralOnlyRoot = await mkdtemp(join(tmpdir(), 'shell-wait-shape-struct-'));
+      t.after(() => rm(structuralOnlyRoot, { recursive: true, force: true }));
+      const structuralOnly = await runShellWaitCase({ ...base, output: structuralOnlyRoot, unclassifiedStructuralDiagnostic: true }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenInput.unclassifiedShapeDiagnostic, false, 'the structural-only run keeps the shape gate off');
+      assert.equal(Object.hasOwn(structuralOnly, 'unclassifiedShapeDiagnostic'), false,
+        'the structural-only record stays byte-compatible with the pinned schema');
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-shape-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plain = await runShellWaitCase({ ...base, output: plainRoot }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(Object.hasOwn(plain, 'unclassifiedShapeDiagnostic'), false);
+    });
+
+    test('the driver CLI refuses the shape gate without the structural gate before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(result.status, 1, 'the pair violation must exit 1');
+      assert.match(result.stderr, /requires/i);
+      const badValue = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-structural-diagnostic', '1', '--unclassified-shape-diagnostic', 'true'],
+      { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(badValue.status, 1, 'a non-literal value must exit 1');
+    });
+  });
+
+  describe('controlled shape diagnosis: evidence seam projection', async () => {
+    // Plan Task 2 bullet 5: the classifier is invoked ONLY for unknown raw
+    // calls at the existing in-memory seam, gated by BOTH diagnostics, and
+    // its closed facts are projected through the existing excerpt budget
+    // before record serialization. The fail-closed verdict, the cleanup and
+    // every default-retention byte stay unchanged.
+    const { inspectShellWaitEvidence, projectShapeFactsWithinBudget } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+
+    const PARENT = 'shape-parent';
+    const CHILD = 'shape-child';
+    const AGENT_PATH = '/root/shape_task_1';
+    const LAUNCHER = 'node "/installed/shape/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    // Synthetic canaries: any occurrence in the returned evidence is a leak.
+    const CANARY_CMD = 'SECR-SHAPE-CMD-6TQ9';
+    const CANARY_BINDING = 'secretResultName';
+
+    const meta = (id, extra = {}) => ({ type: 'session_meta', payload: { id, ...extra } });
+    const childMeta = () => meta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+    const scriptCell = (callId, input) => ({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } });
+    const evidenceInput = (rollouts, overrides = {}) => ({
+      rollouts,
+      zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+      command: LAUNCHER,
+      publicResult: SENTINEL,
+      workerStillAliveAfterObservation: false,
+      redactions: [],
+      ...overrides,
+    });
+    const unknownCellRollouts = (body) => [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
+    const unknownBody = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`;
+
+    test('with both gates the unsupported-call-shape excerpt gains the closed shape block and the verdict stays fail-closed', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      assert.equal(result.inconclusive.manualAdjudicationRequired, true, 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      // The pinned base facts are untouched; the gated blocks are additive.
+      for (const key of ['suppressed', 'classification', 'tool', 'bodyType', 'inputLines', 'directivePresent', 'directiveKeys', 'withheldDirectiveKeys', 'inputBytes']) {
+        assert.equal(Object.hasOwn(excerpt, key), true, `base fact ${key} must stay present`);
+      }
+      assert.equal(Object.hasOwn(excerpt, 'diagnostic'), true, 'the structural diagnostic stays present with its own gate');
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true, 'the gated excerpt carries the closed shape facts');
+      assert.equal(excerpt.shape.version, 1, 'the closed schema version marker rides the shape block');
+      assert.equal(excerpt.shape.head, 'bound-await');
+      assert.equal(excerpt.shape.tool, 'exec_command');
+      assert.equal(excerpt.shape.tail, 'text-binding');
+      assert.equal(excerpt.shape.wholeInputConsumed, true);
+      assert.equal(excerpt.shape.parserStage, 'wrapper');
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_CMD), false, 'the private string content must never survive');
+      assert.equal(serialized.includes(CANARY_BINDING), false, 'the binding spelling must never survive');
+      assert.equal(result.inconclusive.excerpt.truncated, false);
+      assert.equal(result.inconclusive.excerpt.text.length <= 2048, true, 'the existing excerpt budget holds');
+    });
+
+    test('with the structural gate only, the excerpt keeps the byte-identical legacy projection and no shape key', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.deepEqual(Object.keys(excerpt).sort(), ['classification', 'diagnostic', 'bodyType', 'directiveKeys',
+        'directivePresent', 'inputBytes', 'inputLines', 'suppressed', 'tool', 'withheldDirectiveKeys'].sort());
+      assert.equal(Object.hasOwn(excerpt, 'shape'), false, 'no shape block without the shape gate');
+    });
+
+    test('the shape gate requires the structural gate at the evidence boundary: shape-only projects no shape block', () => {
+      // The pair is already enforced at the CLI and validateCaseInput layers;
+      // the evidence API makes the invariant total: the shape block rides the
+      // gated excerpt and is never projected on its own.
+      const shapeOnly = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(shapeOnly.status, 'inconclusive');
+      assert.equal(shapeOnly.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const shapeOnlyExcerpt = JSON.parse(shapeOnly.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(shapeOnlyExcerpt, 'shape'), false, 'shape-only must not project the shape block');
+      assert.equal(Object.hasOwn(shapeOnlyExcerpt, 'diagnostic'), false, 'shape-only runs no gated block at all');
+      assert.deepEqual(Object.keys(shapeOnlyExcerpt).sort(), ['bodyType', 'classification', 'directiveKeys',
+        'directivePresent', 'inputBytes', 'inputLines', 'suppressed', 'tool', 'withheldDirectiveKeys'].sort(),
+        'the shape-only excerpt is byte-identical to the ungated default');
+      const both = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      const bothExcerpt = JSON.parse(both.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(bothExcerpt, 'shape'), true, 'both flags project the shape block');
+      assert.equal(Object.hasOwn(bothExcerpt, 'diagnostic'), true);
+    });
+
+    test('with both gates a function_call analog (unparsable string arguments) also projects the shape block; a non-string body does not', () => {
+      const fnCall = (args) => ({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'fc-1', arguments: args } });
+      const unparsable = `{"cmd": "${CANARY_CMD}", truncated`;
+      const result = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(unparsable)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true, 'the string-body analog seam carries the shape block');
+      assert.equal(JSON.stringify(result).includes(CANARY_CMD), false);
+      const nonString = { cmd: CANARY_CMD };
+      const nonStringResult = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(nonString)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(nonStringResult.status, 'inconclusive');
+      const nonStringExcerpt = JSON.parse(nonStringResult.inconclusive.excerpt.text);
+      assert.equal(nonStringExcerpt.bodyType, 'object');
+      assert.equal(Object.hasOwn(nonStringExcerpt, 'shape'), false, 'non-string bodies keep the bodyType marker, no shape block');
+      assert.equal(JSON.stringify(nonStringResult).includes(CANARY_CMD), false, 'the non-string body is never serialized');
+    });
+
+    test('the shape projection respects the shared excerpt budget: whole facts drop in order, the JSON never truncates mid-object', () => {
+      // Three budget tiers of the SAME long-statement cell shape: the full
+      // facts fit at six slots; at eight slots the statements array drops
+      // WHOLE (the closed statementCount survives); at sixteen the fixed
+      // minimal marker is all that fits. Every tier stays parseable within
+      // the 2048-char excerpt budget and never truncates mid-JSON.
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const shapeAt = (count) => {
+        const body = Array.from({ length: count }, () => statement).join('\n');
+        const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
+          unclassifiedStructuralDiagnostic: true,
+          unclassifiedShapeDiagnostic: true,
+        }));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+        const excerpt = result.inconclusive.excerpt;
+        assert.equal(excerpt.truncated, false, 'the excerpt must never truncate mid-JSON');
+        assert.equal(excerpt.text.length <= 2048, true);
+        assert.equal(JSON.stringify(result).includes('z'.repeat(64)), false, 'no literal content survives');
+        return JSON.parse(excerpt.text).shape;
+      };
+      const full = shapeAt(6);
+      assert.equal(full.statements.length, 6, 'the full facts fit the budget at six slots');
+      assert.equal(full.retention, 'full', 'the full tier says serialization retained every fact (close-out P3-1)');
+      const dropped = shapeAt(8);
+      assert.equal(Object.hasOwn(dropped, 'statements'), false, 'statement nodes drop whole before mid-JSON truncation');
+      assert.equal(dropped.statementCount, 8, 'the slot count survives the drop');
+      assert.equal(dropped.coverage, 'complete', 'the classification itself completed; only the record budget dropped nodes');
+      assert.equal(dropped.retention, 'partial', 'the dropped tier says serialization omitted facts (close-out P3-1)');
+      const minimal = shapeAt(16);
+      assert.deepEqual(minimal, { version: 1, coverage: 'over-budget', retention: 'partial' },
+        'below the marker size only the fixed minimal closed marker survives — and it says serialization dropped facts');
+    });
+
+    test('the shape projection marks record-budget retention on every tier (close-out correction)', () => {
+      // Close-out P3-1: when the record budget drops facts, the retained
+      // block SAYS so — a separate closed `retention` field ('full' |
+      // 'partial') describing SERIALIZATION only; `coverage` and
+      // `wholeInputConsumed` keep describing the CLASSIFICATION. The marker
+      // is itself budgeted: every tier carries it inside the same budget,
+      // and below the minimal marker nothing projects (no unmarked partial
+      // result can exist).
+      const body = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const serialized = (value) => JSON.stringify(value).length;
+      // Full tier: every fact serialized and marked 'full'.
+      const full = projectShapeFactsWithinBudget(body, 100000, 'custom-tool-cell');
+      assert.equal(full.retention, 'full');
+      assert.equal(full.coverage, 'complete');
+      assert.equal(full.statements.length, 1);
+      // Dropped tier: a budget that fits the facts minus the statements
+      // array (plus the marker) but not the whole facts.
+      const dropped = projectShapeFactsWithinBudget(body, serialized(full) - 1, 'custom-tool-cell');
+      assert.equal(dropped.retention, 'partial');
+      assert.equal(Object.hasOwn(dropped, 'statements'), false);
+      assert.equal(dropped.coverage, 'complete', 'classification coverage is unchanged by serialization');
+      assert.equal(dropped.wholeInputConsumed, true, 'wholeInputConsumed is unchanged by serialization');
+      // Minimal tier: the marker is present AND rides the retention field.
+      const minimalMarker = { version: 1, coverage: 'over-budget', retention: 'partial' };
+      const minimal = projectShapeFactsWithinBudget(body, serialized(minimalMarker), 'custom-tool-cell');
+      assert.deepEqual(minimal, minimalMarker);
+      // Insufficient tier: below even the minimal marker — nothing projects.
+      assert.equal(projectShapeFactsWithinBudget(body, serialized(minimalMarker) - 1, 'custom-tool-cell'), null);
+    });
+
+    test('the persisted excerpt carries the retention marker when facts drop (close-out correction)', () => {
+      // The reviewer's eight-slot reproduction: the statements array drops,
+      // classification coverage stays 'complete', and the persisted block
+      // now carries the explicit serialization marker inside the 2048
+      // algebra.
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const body = Array.from({ length: 8 }, () => statement).join('\n');
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt.shape, 'statements'), false, 'the eight-slot cell drops the statement nodes');
+      assert.equal(excerpt.shape.retention, 'partial', 'the persisted block says serialization omitted facts');
+      assert.equal(excerpt.shape.coverage, 'complete', 'classification coverage still describes the classification');
+      assert.equal(excerpt.shape.wholeInputConsumed, true);
+      assert.equal(result.inconclusive.excerpt.truncated, false);
+      assert.equal(result.inconclusive.excerpt.text.length <= 2048, true, 'the 2048 algebra holds with the marker present');
+    });
+
+    test('the classifier never throws for hostile inputs (the seam stays fail-closed by construction)', () => {
+      const hostile = [undefined, null, 0, -0, NaN, Infinity, Symbol.iterator, () => {}, new Date(0), Buffer.alloc(0), '', '   ', '\n', ';', '}{', '"', "'", '`'];
+      for (const input of hostile) {
+        let facts;
+        assert.doesNotThrow(() => { facts = inspectCallShape(input); });
+        assert.equal(facts.version, 1);
+      }
+    });
+
+    test('a line comment ended by a non-LF separator cannot hide the carried call (codex round 11)', () => {
+      // The evidence projection inherits the classifier's comment masking:
+      // for each ECMAScript line terminator the carried wrapper statement
+      // must reach the persisted shape facts — never a confident 'no-call'
+      // under complete coverage — and no private content may survive.
+      for (const separator of ['\u2028', '\u2029', '\r']) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(`// lead${separator}const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true, `separator ${JSON.stringify(separator)}: the shape block must project`);
+        assert.equal(excerpt.shape.tool, 'exec_command', `separator ${JSON.stringify(separator)}: the carried call must not hide behind the comment mask`);
+        assert.equal(excerpt.shape.coverage, 'complete', `separator ${JSON.stringify(separator)}`);
+        assert.equal(excerpt.shape.head, 'bound-await', `separator ${JSON.stringify(separator)}`);
+        assert.equal(excerpt.shape.tail, 'text-binding', `separator ${JSON.stringify(separator)}`);
+        const serialized = JSON.stringify(result);
+        assert.equal(serialized.includes(CANARY_CMD), false);
+        assert.equal(serialized.includes(CANARY_BINDING), false);
+      }
+    });
+
+    test('a dangling pending declaration at end of input never persists equal/complete (codex round 12)', () => {
+      // The persisted shape block inherits the classifier's truncation
+      // verdict: the appended unresolved initializer withholds the relation
+      // and coverage — never equal/complete.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const r = await tools.exec_command({cmd:"x"}); text(r);\nconst unfinished ='),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.bindingEquality, 'unknown', 'the unresolved initializer withholds the persisted relation');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('an unfinished awaited expression never persists a fabricated emission (codex round 13)', () => {
+      // The gated evidence projection inherits the classifier's expression-
+      // completion proof: the member and constructor continuations withhold
+      // — never a fabricated persisted emission tail or relation.
+      for (const hostile of [
+        'const alias = await receiver.\ntext(value);',
+        'const alias = await new\ntext(value);',
+      ]) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(hostile),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+        assert.equal(excerpt.shape.tail, 'unknown', `no fabricated persisted tail for: ${hostile}`);
+        assert.equal(excerpt.shape.bindingEquality, 'unknown', hostile);
+        assert.equal(excerpt.shape.coverage, 'partial', hostile);
+        assert.equal(excerpt.shape.wholeInputConsumed, false, hostile);
+      }
+    });
+
+    test('an operator-continued expression never persists a fabricated emission (codex round 14)', () => {
+      // The gated evidence projection inherits the completion proof: the
+      // `receiver +` continuation withholds — never a fabricated persisted
+      // emission tail or relation, and never claimed-complete coverage.
+      for (const hostile of [
+        'const alias = await receiver +\ntext(value);',
+        'const alias = await receiver +',
+      ]) {
+        const result = inspectShellWaitEvidence(evidenceInput(
+          unknownCellRollouts(hostile),
+          { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+        ));
+        assert.equal(result.status, 'inconclusive');
+        assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+        const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+        assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+        assert.equal(excerpt.shape.coverage, 'partial', `never claimed-complete coverage for: ${hostile}`);
+        assert.equal(excerpt.shape.wholeInputConsumed, false, hostile);
+        assert.equal(excerpt.shape.bindingEquality, 'unknown', `the truncation withholds the persisted relation: ${hostile}`);
+      }
+    });
+
+    test('a non-awaited trailing declarator never persists a fabricated emission (codex round 15)', () => {
+      // The gated evidence projection inherits the final-declarator
+      // completion proof: the initializer continuation withholds — never a
+      // fabricated persisted emission, and never claimed-complete coverage.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const alias = await tools.exec_command({cmd:"x"}), other = receiver +\ntext(alias);'),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.tail, 'unknown');
+      assert.equal(excerpt.shape.bindingEquality, 'unknown');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('an index-continued initializer never persists a fabricated emission (codex round 16)', () => {
+      // The gated evidence projection inherits the new-statement-head rule:
+      // the index continuation withholds — never a fabricated persisted
+      // emission, and never claimed-complete coverage.
+      const result = inspectShellWaitEvidence(evidenceInput(
+        unknownCellRollouts('const q = await tools.exec_command({cmd:"x"})\n[0]; text(q);'),
+        { unclassifiedStructuralDiagnostic: true, unclassifiedShapeDiagnostic: true },
+      ));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.tail, 'unknown');
+      assert.equal(excerpt.shape.bindingEquality, 'unknown');
+      assert.equal(excerpt.shape.coverage, 'partial');
+      assert.equal(excerpt.shape.wholeInputConsumed, false);
+    });
+
+    test('a wrapper-shaped direct function_call never reports parse-accepted for its arguments', () => {
+      // The finding's verbatim input: a direct function_call whose arguments
+      // string is shaped like a wrapper cell. parseCallStatements REJECTS the
+      // call (JSON-argument grammar), so the persisted parserStage must never
+      // claim 'parse-accepted' for that call type — the direct-call context
+      // withholds the verdict.
+      const fnCall = (args) => ({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'fc-shape-1', arguments: args } });
+      const wrapperShaped = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`;
+      const result = inspectShellWaitEvidence(evidenceInput([[meta(PARENT)], [childMeta(), fnCall(wrapperShaped)]], {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt, 'shape'), true);
+      assert.equal(excerpt.shape.parserStage, 'unknown',
+        'the direct-call context withholds the wrapper-stage diagnosis');
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(CANARY_CMD), false);
+      assert.equal(serialized.includes(CANARY_BINDING), false);
+      // The custom-tool-cell context keeps its diagnosis (invariance).
+      const cellResult = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      const cellExcerpt = JSON.parse(cellResult.inconclusive.excerpt.text);
+      assert.equal(cellExcerpt.shape.parserStage, 'wrapper');
+    });
+  });
+
+  describe('controlled shape diagnosis: observer provenance binding', async () => {
+    // Plan Task 2 bullet 6: the helper's EXECUTING module-init bytes join the
+    // observer provenance digest under an explicitly versioned construction —
+    // copying the old v1 two-file hash would misattribute the new classifier.
+    const { readFileSync } = await import('node:fs');
+    const { EXECUTING_OBSERVER_PROVENANCE, observerProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { EXECUTING_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+    const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+    const shapePath = fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url));
+
+    const digestV2 = (evidenceBytes, shapeBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v2\0')
+      .update(evidenceBytes)
+      .update('\0')
+      .update(shapeBytes)
+      .update('\0')
+      .update(driverBytes)
+      .digest('hex');
+
+    test('the executing digest binds the shape-diagnostic helper bytes under the versioned v2 construction', () => {
+      const driverBytes = readFileSync(driverPath);
+      const expected = digestV2(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, driverBytes);
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
+        'the digest must hash the executing evidence + shape-diagnostic + driver module-init bytes');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
+        'the digest input description must name the helper');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v2|version/u,
+        'the construction version must be recorded explicitly');
+    });
+
+    test('the helper binding is load-bearing: omitting or changing the helper bytes changes the digest', () => {
+      const driverBytes = readFileSync(driverPath);
+      const twoFileConstruction = createHash('sha256')
+        .update('zcode-shell-wait-observer-v2\0')
+        .update(EXECUTING_EVIDENCE_SOURCE)
+        .update('\0')
+        .update(driverBytes)
+        .digest('hex');
+      assert.notEqual(EXECUTING_OBSERVER_PROVENANCE.digest, twoFileConstruction,
+        'a construction without the helper bytes must not reproduce the executing digest');
+      const mutatedShape = Buffer.concat([EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, Buffer.from('\n')]);
+      assert.notEqual(
+        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a helper-only byte change must change the digest',
+      );
+      assert.notEqual(
+        digestV2(EXECUTING_EVIDENCE_SOURCE, readFileSync(shapePath), driverBytes),
+        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+      );
+    });
+
+    test('the record-time working-tree reader uses the same construction, so mid-run helper edits are detected without relabelling loaded code', async () => {
+      const recordTime = await observerProvenance();
+      assert.equal(recordTime.digest, EXECUTING_OBSERVER_PROVENANCE.digest,
+        'at rest the working-tree bytes equal the module-init snapshot, so the digests agree');
+      assert.match(String(recordTime.digestInput), /shape-diagnostic\.mjs/u);
+      assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
+    });
+  });
+
+  describe('controlled shape diagnosis: model selection seam', async () => {
+    // Plan Task 2 bullet 7: an optional `--model <id>` validated as a bounded
+    // safe identifier and forwarded as SEPARATE `-m <id>` argv items to the
+    // codex child; the REQUESTED model is recorded separately from effective
+    // host/Child metadata (which stays null); absent flag → legacy behavior
+    // byte-for-byte (no `-m`, no requestedModel key).
+    const { parseShellWaitArguments, runShellWaitCase, composeHostLaunchArguments, CODEX_EXEC_COMMON_ARGUMENTS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-noise', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+    const SYNTHETIC_MODEL = 'test-model-placeholder';
+
+    test('--model parses a bounded safe identifier and stays null when absent', () => {
+      assert.equal(parseShellWaitArguments([...baseArguments, '--model', SYNTHETIC_MODEL]).model, SYNTHETIC_MODEL);
+      assert.equal(parseShellWaitArguments(baseArguments).model, null, 'absent flag keeps the legacy null model');
+    });
+
+    test('--model rejects missing values, whitespace, shell metacharacters, bad shapes and overlength identifiers', () => {
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--model']), /unknown option or missing value/i);
+      for (const bad of ['', 'has space', 'semi;colon', 'dollar$x', 'back`tick', 'pipe|x', 'paren(s)', 'quote"x', '.leading', '/leading', '-leading', '_leading', 'a'.repeat(65)]) {
+        assert.throws(() => parseShellWaitArguments([...baseArguments, '--model', bad]),
+          `the model identifier ${JSON.stringify(bad.length > 20 ? `${bad.slice(0, 12)}…(${bad.length})` : bad)} must be refused`);
+      }
+      assert.equal(parseShellWaitArguments([...baseArguments, '--model', 'gpt-5.6-luna/preview']).model, 'gpt-5.6-luna/preview',
+        'dots, dashes and slashes inside the identifier stay allowed');
+    });
+
+    test('composeHostLaunchArguments forwards the requested model as separate -m argv items and stays byte-identical without one', () => {
+      const withModel = composeHostLaunchArguments(['PROMPT'], '/live/workspace', SYNTHETIC_MODEL);
+      assert.deepEqual(withModel, [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', SYNTHETIC_MODEL, '-C', '/live/workspace', 'PROMPT'],
+        'the model rides its own -m and value argv items before the workspace');
+      const legacy = composeHostLaunchArguments(['PROMPT'], '/live/workspace');
+      assert.deepEqual(legacy, [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', '/live/workspace', 'PROMPT'],
+        'no -m without a requested model (legacy argv byte-for-byte)');
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', null), legacy);
+      assert.throws(() => composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'bad id'), /bounded safe identifier/i);
+    });
+
+    test('the programmatic boundary validates the model before side effects and records the REQUESTED model separately', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-model-seam-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const base = {
+        case: 'rescue-noise', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 130_000, capMs: null, pollMs: 3_600_000, budgetMs: 360_000,
+      };
+      const fixture = {
+        workspace: '/private/tmp/model-ws', codexHome: '/private/tmp/model-home',
+        installedRoot: '/private/tmp/model-installed', env: { HOME: '/private/tmp/model-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      let fixtureCreated = 0;
+      let seenModel;
+      const executor = async (request) => {
+        seenModel = request.input.model;
+        return { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } };
+      };
+      for (const bad of [123, 'bad id', ';rm -rf', `${'x'.repeat(65)}`]) {
+        await assert.rejects(
+          runShellWaitCase({ ...base, output: root, model: bad }, {
+            createFixture: async () => { fixtureCreated += 1; throw new Error('fixture must not be created'); },
+          }),
+          /bounded safe identifier/i, `model ${JSON.stringify(typeof bad === 'string' && bad.length > 16 ? `${bad.slice(0, 10)}…` : bad)} must be refused`);
+      }
+      assert.equal(fixtureCreated, 0, 'model validation must fail before fixture creation');
+      const withModel = await runShellWaitCase({ ...base, output: root, model: SYNTHETIC_MODEL }, {
+        createFixture: async () => { fixtureCreated += 1; return fixture; }, executeLiveCase: executor,
+      });
+      assert.equal(seenModel, SYNTHETIC_MODEL, 'the live executor receives the requested model');
+      assert.equal(withModel.provenance.requestedModel, SYNTHETIC_MODEL,
+        'the record carries the REQUESTED model, separate from the effective host/Child metadata (which stays null)');
+      assert.equal(withModel.provenance.observer.model, null, 'the observer effective model stays unknown');
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-model-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plain = await runShellWaitCase({ ...base, output: plainRoot }, {
+        createFixture: async () => fixture, executeLiveCase: executor,
+      });
+      assert.equal(seenModel, null, 'without the flag the executor sees the legacy null model');
+      assert.equal(Object.hasOwn(plain, 'provenance') && Object.hasOwn(plain.provenance, 'requestedModel'), false,
+        'legacy records gain no requestedModel key');
+    });
+
+    test('the driver CLI refuses an unsafe model identifier with exit one before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      for (const bad of ['bad id', 'semi;colon']) {
+        const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', timeout: 30_000 });
+        assert.equal(result.status, 1, `model ${JSON.stringify(bad)} must exit 1`);
+        assert.match(result.stderr, /bounded safe identifier/i);
+      }
+      const missing = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
+        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(missing.status, 1, 'a missing --model value must exit 1');
     });
   });
 
@@ -11607,4 +13753,1482 @@ process.exit(result.status ?? 1);
       }
     });
   });
+
+  describe('config-default wait-policy transport (task 4)', async () => {
+    // Plan Task 4 bullet 1: `--wait-policy config-default` (this EXACT literal
+    // only) plus `--exec-default-ms <bounded positive integer, max 3600000>`,
+    // valid ONLY together and ONLY for rescue-long; the validated integer
+    // reaches the codex child as SEPARATE argv items
+    // `-c features.code_mode.default_exec_yield_time_ms=<n>` BEFORE the prompt
+    // (threaded next to the `-m` pattern). Absent → legacy behavior
+    // byte-for-byte. The number is a host-override fact only: it never
+    // reaches the fixture instructions, so the two arms' rendered
+    // instructions stay identical (bullet 2's arm-agnostic paragraph).
+    const { parseShellWaitArguments, runShellWaitCase, composeHostLaunchArguments, CODEX_EXEC_COMMON_ARGUMENTS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-long', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+    const baseInput = {
+      case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+      workerDurationMs: 180_000, capMs: null, pollMs: 240_000, budgetMs: 600_000,
+    };
+
+    test('--wait-policy config-default parses only together with --exec-default-ms for rescue-long and stays null when absent', () => {
+      const paired = parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', '240000']);
+      assert.equal(paired.waitPolicy, 'config-default');
+      assert.equal(paired.execDefaultMs, 240000);
+      const absent = parseShellWaitArguments(baseArguments);
+      assert.equal(absent.waitPolicy, null, 'absent pair keeps the legacy null policy');
+      assert.equal(absent.execDefaultMs, null, 'absent pair keeps the legacy null exec default');
+    });
+
+    test('the pair is refused when split, on other cases, with unknown policy values, and with out-of-bound durations', () => {
+      // One without the other.
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default']), /--exec-default-ms/i);
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--exec-default-ms', '240000']), /--wait-policy/i);
+      // Wrong cases: the transport exists for the C0/C1 rescue-long arms only.
+      for (const otherCase of ['rescue-baseline', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background', 'status-wait']) {
+        const otherBase = ['--case', otherCase, '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+        assert.throws(
+          () => parseShellWaitArguments([...otherBase, '--wait-policy', 'config-default', '--exec-default-ms', '240000']),
+          /rescue-long/i,
+          `case ${otherCase} must be refused`,
+        );
+      }
+      // Unknown policy values: the closed literal gate.
+      for (const badPolicy of ['raised', '1', 'CONFIG-DEFAULT', 'config-default ', '']) {
+        assert.throws(
+          () => parseShellWaitArguments([...baseArguments, '--wait-policy', badPolicy, '--exec-default-ms', '240000']),
+          /config-default/i,
+          `policy ${JSON.stringify(badPolicy)} must be refused`,
+        );
+      }
+      // Duration bounds: malformed, non-positive, and over-limit values.
+      for (const badMs of ['0', '-5', 'abc', '1.5', '', '240000 ', '3600001']) {
+        assert.throws(
+          () => parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', badMs]),
+          /positive integer/i,
+          `exec default ${JSON.stringify(badMs)} must be refused`,
+        );
+      }
+      // The documented maximum stays allowed.
+      assert.equal(parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', '3600000']).execDefaultMs, 3_600_000);
+    });
+
+    test('an invalid programmatic combination fails before any side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-policy-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureCreated = 0;
+      const refusingCreateFixture = async () => { fixtureCreated += 1; throw new Error('fixture must not be created'); };
+      const negatives = [
+        { waitPolicy: 'config-default' },
+        { execDefaultMs: 240000 },
+        { waitPolicy: 'raised', execDefaultMs: 240000 },
+        { waitPolicy: 'config-default', execDefaultMs: 0 },
+        { waitPolicy: 'config-default', execDefaultMs: -5 },
+        { waitPolicy: 'config-default', execDefaultMs: '240000' },
+        { waitPolicy: 'config-default', execDefaultMs: 1.5 },
+        { waitPolicy: 'config-default', execDefaultMs: Number.NaN },
+        { waitPolicy: 'config-default', execDefaultMs: 3_600_001 },
+        { ...baseInput, case: 'rescue-noise', waitPolicy: 'config-default', execDefaultMs: 240000 },
+      ];
+      for (const negative of negatives) {
+        await assert.rejects(
+          runShellWaitCase({ ...baseInput, output: root, ...negative }, { createFixture: refusingCreateFixture }),
+          /Invalid shell wait case input/i,
+          `negative ${JSON.stringify(negative.execDefaultMs ?? null)}/${String(negative.waitPolicy ?? null)} (case ${negative.case ?? baseInput.case}) must be refused`,
+        );
+      }
+      assert.equal(fixtureCreated, 0, 'validation must fail before fixture creation');
+    });
+
+    test('composeHostLaunchArguments threads the override as separate -c argv items before the workspace and prompt', () => {
+      const withModelAndOverride = composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'test-model-placeholder', 240000);
+      assert.deepEqual(
+        withModelAndOverride,
+        [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', 'test-model-placeholder', '-c', 'features.code_mode.default_exec_yield_time_ms=240000', '-C', '/live/workspace', 'PROMPT'],
+        'the override rides its own -c key/value argv items next to the -m pattern, before the prompt',
+      );
+      const overrideOnly = composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, 30000);
+      assert.deepEqual(overrideOnly, [...CODEX_EXEC_COMMON_ARGUMENTS, '-c', 'features.code_mode.default_exec_yield_time_ms=30000', '-C', '/live/workspace', 'PROMPT']);
+      const legacy = composeHostLaunchArguments(['PROMPT'], '/live/workspace');
+      assert.deepEqual(legacy, [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', '/live/workspace', 'PROMPT'], 'no override without the pair (legacy argv byte-for-byte)');
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, null), legacy);
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'test-model-placeholder'), [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', 'test-model-placeholder', '-C', '/live/workspace', 'PROMPT']);
+      for (const bad of [0, -5, 1.5, Number.NaN, '240000', 3_600_001]) {
+        assert.throws(() => composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, bad), /positive integer/i);
+      }
+    });
+
+    test('the record carries the closed wait-policy block, the fixture input carries only the policy label, and the exec-default number never reaches the fixture', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-policy-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const capturedFixtureInputs = [];
+      const bareFixture = {
+        workspace: '/private/tmp/policy-ws', codexHome: '/private/tmp/policy-home',
+        installedRoot: '/private/tmp/policy-installed', env: { HOME: '/private/tmp/policy-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const control = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async (fixtureInput) => { capturedFixtureInputs.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      const raised = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async (fixtureInput) => { capturedFixtureInputs.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(control.provenance.waitPolicy.policy, 'config-default');
+      assert.equal(control.provenance.waitPolicy.execDefaultMs, 30000);
+      assert.equal(control.provenance.waitPolicy.instructions, null, 'a fixture without instruction provenance records null, never a guess');
+      assert.equal(raised.provenance.waitPolicy.execDefaultMs, 240000);
+      // Arm identity (plan Task 4 bullet 2): the ONLY difference between the
+      // arms is the exec-default number reaching the host argv, so the fixture
+      // inputs — and therefore the rendered instructions — are identical.
+      assert.deepEqual(capturedFixtureInputs[1], capturedFixtureInputs[0]);
+      assert.equal(capturedFixtureInputs[0].waitPolicy, 'config-default');
+      assert.equal(Object.hasOwn(capturedFixtureInputs[0], 'execDefaultMs'), false, 'the exec-default number must never reach the fixture');
+      // The fixture's path-normalized instruction hashes project into the record.
+      const provenanceFixture = {
+        ...bareFixture,
+        record: { ...bareFixture.record, waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'a'.repeat(64), normalizedGenericMessageSha256: 'b'.repeat(64) } },
+      };
+      const withInstructions = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => provenanceFixture, executeLiveCase: executor },
+      );
+      assert.deepEqual(withInstructions.provenance.waitPolicy.instructions, provenanceFixture.record.waitPolicy);
+      // Legacy: absent pair → no record key and no fixture-input key.
+      const legacyCaptured = [];
+      const plain = await runShellWaitCase(
+        { ...baseInput, output: root },
+        { createFixture: async (fixtureInput) => { legacyCaptured.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(plain.provenance, 'waitPolicy'), false, 'legacy records gain no waitPolicy key');
+      assert.equal(Object.hasOwn(legacyCaptured[0], 'waitPolicy'), false, 'the legacy fixture input gains no waitPolicy key');
+    });
+
+    test('the driver CLI refuses a split pair or malformed exec default with exit one before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const negatives = [
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--exec-default-ms', '240000'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'raised', '--exec-default-ms', '240000'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '3600001'],
+        ['--case', 'rescue-noise', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '240000'],
+      ];
+      for (const negative of negatives) {
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
+        assert.match(result.stderr, /Invalid shell wait case input/);
+      }
+    });
+
+    test('the wait-policy record persists the launched executable digest; legacy records do not (codex gate round 5)', async (t) => {
+      // `--version` output reduces to major.minor.patch, so plugin/sourceSha/
+      // codexVersion pins never establish NATIVE EXECUTABLE equality: the
+      // wait-policy record must carry the launched binary's SHA-256 (null
+      // with an honest error when hashing fails). Legacy records stay
+      // byte-for-byte unchanged (disclosed: no digest added there — the
+      // pinned legacy provenance schema must not grow).
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-binary-digest-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = {
+        workspace: '/private/tmp/digest-ws', codexHome: '/private/tmp/digest-home',
+        installedRoot: '/private/tmp/digest-installed', env: { HOME: '/private/tmp/digest-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const createFixture = async () => fixture;
+      const expectedDigest = createHash('sha256').update(await readFile(process.execPath)).digest('hex');
+      const waitPolicyRecord_ = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture, executeLiveCase: executor },
+      );
+      assert.equal(waitPolicyRecord_.provenance.codexBinarySha256, expectedDigest,
+        'the wait-policy record must carry the launched binary SHA-256');
+      assert.equal(waitPolicyRecord_.provenance.codexBinarySha256Error, null);
+      // A hash failure is recorded honestly: an unreadable binary hashes to
+      // null with the failure reason — never a fabricated digest.
+      const blocked = join(root, 'blocked-codex');
+      await writeFile(blocked, 'not executable', { mode: 0o600 });
+      await chmod(blocked, 0o000);
+      let failureRecord;
+      try {
+        failureRecord = await runShellWaitCase(
+          { ...baseInput, codexBinary: blocked, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+          { createFixture, executeLiveCase: executor },
+        );
+      } finally {
+        await chmod(blocked, 0o600);
+      }
+      assert.equal(failureRecord.provenance.codexBinarySha256, null);
+      assert.equal(typeof failureRecord.provenance.codexBinarySha256Error, 'string');
+      assert.match(failureRecord.provenance.codexBinarySha256Error, /blocked-codex|EACCES|permission/i);
+      // Legacy records gain no digest key.
+      const legacy = await runShellWaitCase(
+        { ...baseInput, output: root },
+        { createFixture, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(legacy.provenance, 'codexBinarySha256'), false);
+      assert.equal(Object.hasOwn(legacy.provenance, 'codexBinarySha256Error'), false);
+    });
+  });
+
+  describe('config-default waiting paragraph variant (task 4)', async () => {
+    // Plan Task 4 bullet 2: an isolated named/generic waiting-paragraph
+    // variant applied BEFORE setup/Role rendering. Both arms get identical
+    // instructions (initial launch up to 30000; empty original-handle inner
+    // poll 240000; NO explicit exec pragma/yield on the decisive outer cell;
+    // if it yields, continue that SAME cell with an explicit outer wait of
+    // 240000, not a second inner poll). No original command/preparation/
+    // binding/placement/result change; NO edits to the Root-owned
+    // Review/Adversarial/Status Skills. Artifact hashes and a path-normalized
+    // instruction comparison are recorded; differing fixture paths/IDs are
+    // expected cross-run and must not read as cross-arm incompatibility.
+    const { createShellWaitFixture, configDefaultWaitingParagraph, normalizeFixtureInstructionText } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+    const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+    const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
+
+    async function fakeInstallPlugin({ codexHome, cleanSource }) {
+      const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      await mkdir(join(installedRoot, 'agents'), { recursive: true });
+      await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+      for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+        await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+        await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+      }
+      await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+      return { pluginVersion: '0.1.0' };
+    }
+
+    async function fakeBuildSnapshot({ output, sourceSha }) {
+      await mkdir(join(output, '.agents', 'plugins'), { recursive: true });
+      await writeFile(join(output, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+    }
+
+    function fastDependencies() {
+      return {
+        buildSnapshot: fakeBuildSnapshot, installPlugin: fakeInstallPlugin,
+        runSetup: async (context) => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: context.capMs === null ? null : true }),
+      };
+    }
+
+    async function createFastFixture(t, overrides = {}, dependencies = fastDependencies()) {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-config-default-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot,
+        sourceSha: repositorySha,
+        codexBinary: process.execPath,
+        output,
+        variant: 'candidate',
+        capMs: null,
+        pollMs: 240_000,
+        waitPolicy: 'config-default',
+        ...overrides,
+      }, dependencies);
+      t.after(() => fixture.dispose());
+      return fixture;
+    }
+
+    test('waitPolicy validation refuses unknown values and the baseline pairing before any side effect', async () => {
+      // validateFixtureInput runs before any filesystem side effect, so these
+      // rejections prove the fail-closed boundary (no fixture root is created).
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: join(tmpdir(), 'config-default-never-created'), variant: 'candidate', waitPolicy: 'raised',
+        }),
+        /waitPolicy must be exactly "config-default"/i,
+      );
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: join(tmpdir(), 'config-default-never-created'), variant: 'baseline', waitPolicy: 'config-default',
+        }),
+        /requires variant "candidate"/i,
+      );
+      assert.equal(await stat(join(tmpdir(), 'config-default-never-created')).then(() => true, () => false), false,
+        'the refused input must not have created any directory');
+    });
+
+    test('a config-default fixture changes only the waiting paragraph to the isolated variant and records hashes and normalized instructions', async (t) => {
+      const fixture = await createFastFixture(t);
+      const { installedRoot, codexHome } = fixture;
+      const template = await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+      const skill = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+      for (const [label, source, modified] of [['named Role template', realTemplate, template], ['generic assignment skill', realSkill, skill]]) {
+        const originalLines = source.split('\n');
+        const modifiedLines = modified.split('\n');
+        assert.equal(modifiedLines.length, originalLines.length, `${label} must not add or remove lines`);
+        const changed = originalLines.flatMap((line, index) => line === modifiedLines[index] ? [] : [index]);
+        assert.deepEqual(changed.length, 1, `${label} must change exactly one line`);
+        assert.match(originalLines[changed[0]], /subsequent same-handle observations are 60000/, `${label} must change only the waiting-policy paragraph`);
+        // The four plan clauses, in the delivered text:
+        assert.match(modifiedLines[changed[0]], /up to 30000 ms/u, `${label} must keep the fixed initial launch window`);
+        assert.match(modifiedLines[changed[0]], /requesting a single observation window of 240000 ms/u, `${label} must request the 240000 inner poll`);
+        assert.match(modifiedLines[changed[0]], /emit no directive line and no other explicit yield override/u, `${label} must forbid a pragma on the decisive outer cell`);
+        // The yield continuation continues the RETURNED CELL with the
+        // sanctioned outer-wait primitive (tools.wait for its cell id) and
+        // forbids a second write_stdin poll while the cell is pending —
+        // another empty-input write_stdin would be a second inner poll
+        // against a pending cell (codex gate round 1, finding 1).
+        assert.match(modifiedLines[changed[0]], /continue that SAME returned cell with one explicit outer wait/u, `${label} must continue the returned cell`);
+        assert.match(modifiedLines[changed[0]], /call tools\.wait exactly once for that cell/u, `${label} must use the sanctioned outer-wait primitive`);
+        assert.match(modifiedLines[changed[0]], /cell_id: the cell identifier the yielded observation returned and yield_time_ms: 240000/u, `${label} must bind the wait to the returned cell id`);
+        assert.match(modifiedLines[changed[0]], /issue no further write_stdin for the original handle until that cell resolves/u, `${label} must forbid a second poll while the cell is pending`);
+        assert.doesNotMatch(modifiedLines[changed[0]], /immediately before the next empty-input write_stdin call/u, `${label} must not instruct a second write_stdin poll`);
+        assert.doesNotMatch(modifiedLines[changed[0]], /every subsequent same-handle observation requests the/u, `${label} must not be the directive-led candidate paragraph`);
+        // Authority, fixed command, and initial/choice assignment literals are preserved byte-for-byte.
+        for (const preserved of [
+          'invoke-prepared rescue',
+          'invoke-status rescue',
+          'invoke-choice rescue resume',
+          'invoke-choice rescue fresh',
+          'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.',
+          'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.',
+          'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.',
+        ]) {
+          assert.equal(modifiedLines.filter((line) => line.includes(preserved)).length, originalLines.filter((line) => line.includes(preserved)).length, `${label} must preserve ${preserved}`);
+        }
+      }
+      assert.doesNotMatch(template, /background_terminal_max_timeout/u, 'no cap configuration may enter the Role template');
+      // Artifact hashes ride the existing appliedArtifacts pipeline.
+      assert.equal(fixture.record.appliedArtifacts.length, 2);
+      for (const artifact of fixture.record.appliedArtifacts) {
+        assert.notEqual(artifact.beforeSha256, artifact.afterSha256);
+        assert.match(artifact.afterSha256, /^[a-f0-9]{64}$/);
+      }
+      // The closed waitPolicy provenance block with the path-normalized hashes.
+      assert.equal(fixture.record.waitPolicy.policy, 'config-default');
+      assert.match(fixture.record.waitPolicy.normalizedNamedRoleSha256, /^[a-f0-9]{64}$/);
+      assert.match(fixture.record.waitPolicy.normalizedGenericMessageSha256, /^[a-f0-9]{64}$/);
+      const rendered = renderManagedRescueRole({ template, pluginRoot: installedRoot });
+      assert.equal(
+        fixture.record.waitPolicy.normalizedNamedRoleSha256,
+        createHash('sha256').update(normalizeFixtureInstructionText(rendered, [installedRoot, codexHome]), 'utf8').digest('hex'),
+        'the normalized hash must describe the rendered role under exactly the fixture-private-root normalization',
+      );
+      // The Root-owned command Skills stay untouched.
+      assert.equal(fixture.record.commandSkillVariants.variant, 'baseline');
+      assert.deepEqual(fixture.record.commandSkillVariants.differences, []);
+      for (const commandSkill of ['review', 'adversarial-review', 'status']) {
+        assert.equal(
+          await readFile(join(installedRoot, 'skills', commandSkill, 'SKILL.md'), 'utf8'),
+          await readFile(join(repositoryRoot, 'skills', commandSkill, 'SKILL.md'), 'utf8'),
+          `the ${commandSkill} command Skill must stay byte-identical`,
+        );
+      }
+    });
+
+    test('the config-default paragraph is applied before setup renders the managed Role', async (t) => {
+      const setupCalls = [];
+      await createFastFixture(t, {}, {
+        ...fastDependencies(),
+        runSetup: async (context) => {
+          setupCalls.push(context);
+          const template = await readFile(join(context.installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+          assert.match(template, /emit no directive line and no other explicit yield override/u,
+            'the config-default waiting paragraph must be applied before setup renders the Role');
+          return { sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: null };
+        },
+      });
+      assert.equal(setupCalls.length, 1, 'the setup step must run exactly once, after variant application');
+    });
+
+    test('the paragraph is arm-agnostic: identical for both arms and stable across differing private paths', () => {
+      // The exec-default numbers (30000 for C0, 240000 for C1) parameterize
+      // only the host argv override — never the paragraph (pinned at the
+      // driver boundary). The delivered text depends only on the shared poll
+      // window, so both arms render byte-identical instructions.
+      // Independent literal oracle (review finding 3; continuation corrected
+      // per codex gate round 1 finding 1): the EXACT expected paragraph is
+      // transcribed verbatim here, so any construction change can actually
+      // fail this assertion — f(x)-compared-to-f(x) could not. The yield
+      // continuation is the evidence pipeline's sanctioned outer-wait
+      // primitive (`tools.wait` for the RETURNED cell id) — never a second
+      // write_stdin poll while the yielded cell is pending.
+      const paragraph = configDefaultWaitingParagraph(240_000);
+      assert.equal(paragraph, 'Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls requesting a single observation window of 240000 ms: pass yield_time_ms: 240000 on that same empty-input call, and emit no directive line and no other explicit yield override for that observation. If that observation yields back a pending cell while the command is still running, continue that SAME returned cell with one explicit outer wait: call tools.wait exactly once for that cell, passing exactly cell_id: the cell identifier the yielded observation returned and yield_time_ms: 240000, and issue no further write_stdin for the original handle until that cell resolves. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue\'s named and generic Role assignments; the initial launcher yield is 30000, a yielded cell continues through the wait call for its returned cell identifier with the explicit 240000 ms outer wait, and no second write_stdin observation is issued while a cell is pending.');
+      assert.doesNotMatch(paragraph, /default_exec_yield_time_ms/u, 'the host override key must never enter the instructions');
+      assert.equal(paragraph.includes('30000'), true);
+      assert.equal(paragraph.includes('240000'), true);
+      // Path normalization: two rendered roles differing ONLY in their
+      // fixture-private roots normalize to identical hashes.
+      const rendered = (installedRoot) => renderManagedRescueRole({
+        template: realTemplate.replace(ORIGINAL_WAITING_PARAGRAPH, paragraph),
+        pluginRoot: installedRoot,
+      });
+      const runA = '/private/tmp/run-a-AAAA';
+      const runB = '/private/tmp/run-b-BBBB';
+      const installedA = join(runA, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      const installedB = join(runB, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      const textA = rendered(installedA);
+      const textB = rendered(installedB);
+      assert.notEqual(textA, textB, 'premise: raw rendered text differs across runs');
+      const hashA = createHash('sha256').update(normalizeFixtureInstructionText(textA, [installedA, runA]), 'utf8').digest('hex');
+      const hashB = createHash('sha256').update(normalizeFixtureInstructionText(textB, [installedB, runB]), 'utf8').digest('hex');
+      assert.equal(hashA, hashB, 'path-normalized instruction hashes must be identical across runs');
+    });
+  });
+
+  describe('wait-comparison adjudication helper (task 4)', async () => {
+    // Plan Task 4 bullet 3's comparison regressions, pinned as a small PURE
+    // closed-enum pair adjudicator the root runs AFTER C0/C1 on the persisted
+    // records. Missing/null evidence maps to explicit unknowns — never zero —
+    // and legacy structural/terminal completion is NEVER a config-effect
+    // gate: a legacy-success record yields no positive config verdict.
+    // Codex gate round 1: the decisive timing is the pipeline-derived FIRST
+    // RETURN of the decisive outer cell (yield or completion), the decisive
+    // call's SURFACE must be an admitted code-mode wrapper, and required
+    // identity evidence must be PRESENT on both arms before any equality
+    // comparison (absent-absent nulls never match).
+    const { WAIT_COMPARISON_VERDICTS, WAIT_ADJUDICATION_VERSION, adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
+
+    const INSTRUCTION_HASHES = { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) };
+    const ABSENT_WRAPPER_OBSERVATION = {
+      decisivePollExplicitYield: 'absent',
+      decisiveCallSurface: 'code-mode-wrapper',
+      decisiveInnerYieldMs: 240000,
+      decisiveFirstReturnWallMs: 28000,
+      decisiveFirstReturnState: 'yielded-pending',
+      decisiveFirstReturnBasis: 'rollout-event-timestamps',
+    };
+    /** A fully comparable control-arm record; overrides deepen per test. */
+    const waitPolicyRecord = (overrides = {}) => ({
+      status: 'executed',
+      inconclusive: null,
+      provenance: {
+        sourceSha: 'a'.repeat(40),
+        codexVersion: '0.163.0',
+        plugin: { identity: 'zcode@vitry', version: '0.1.0' },
+        requestedCapMs: null,
+        requestedPollMs: 240_000,
+        requestedWorkerDurationMs: 180_000,
+        requestedBudgetMs: 600_000,
+        observer: { revision: 'working-tree-uncommitted', digest: 'd'.repeat(64) },
+        codexBinarySha256: 'c'.repeat(64),
+        requestedModel: 'authorized-test-model',
+        waitPolicy: {
+          policy: 'config-default',
+          execDefaultMs: 30000,
+          instructions: INSTRUCTION_HASHES,
+        },
+      },
+      route: { requested: 'rescue-foreground', actual: 'named' },
+      linkage: { childLinkageChecked: true, originalHandleChecked: true },
+      observations: { outerReturns: 1, pollWallTimesMs: [28000], remainingLifetimeMs: 120000 },
+      result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      waitPolicyObservation: ABSENT_WRAPPER_OBSERVATION,
+      ...overrides,
+    });
+    const raisedArm = (overrides = {}) => waitPolicyRecord({
+      provenance: {
+        ...waitPolicyRecord().provenance,
+        waitPolicy: { policy: 'config-default', execDefaultMs: 240000, instructions: INSTRUCTION_HASHES },
+      },
+      observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 60000 },
+      waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed', decisiveFirstReturnWallMs: 150000 },
+      ...overrides,
+    });
+    const verdictOf = (control, raised) => adjudicateWaitComparison(control, raised);
+
+    test('the verdict and reason sets are closed, frozen enums', () => {
+      assert.deepEqual(WAIT_COMPARISON_VERDICTS, [
+        'config-effect-observed', 'no-config-effect-observed', 'inconclusive', 'unknown', 'no-causal-comparison', 'different-surface',
+      ]);
+      assert.equal(Object.isFrozen(WAIT_COMPARISON_VERDICTS), true);
+      const seen = new Set();
+      for (const control of [waitPolicyRecord(), null]) {
+        for (const raised of [raisedArm(), null]) {
+          const { verdict } = verdictOf(control, raised);
+          seen.add(verdict);
+        }
+      }
+      for (const mutation of [
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisivePollExplicitYield: 'present' } }),
+        (record) => ({ ...record, observations: { outerReturns: null, pollWallTimesMs: null, remainingLifetimeMs: null } }),
+      ]) {
+        seen.add(verdictOf(mutation(waitPolicyRecord()), raisedArm()).verdict);
+        seen.add(verdictOf(waitPolicyRecord(), mutation(raisedArm())).verdict);
+      }
+      seen.add(verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: 'unknown' } }), raisedArm()).verdict);
+      seen.add(verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, sourceSha: 'b'.repeat(40) } })).verdict);
+      // Type-level guard only: this loop can never fail against the enum it
+      // reads; the REAL enum evidence is the exact per-verdict pins elsewhere
+      // in this describe (each expected { verdict, reason } asserted literally).
+      for (const verdict of seen) assert.equal(WAIT_COMPARISON_VERDICTS.includes(verdict), true, `verdict ${verdict} must be a closed value`);
+    });
+
+    test('the comparable pair adjudicates the expected discriminator on the first-return timing', () => {
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm()), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
+        'C0 returning around the short window while C1 holds beyond it is the observed effect');
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({
+          observations: { outerReturns: 1, pollWallTimesMs: [null], remainingLifetimeMs: 120000 },
+          waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 28000 },
+        })),
+        { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 },
+        'a raised arm whose first return also lands within the short window shows no observed effect',
+      );
+      // Boundary semantics: the first return must be STRICTLY beyond the
+      // control default PLUS the timing tolerance (codex gate round 2,
+      // finding 3) to count as "held"; a first return inside the tolerance
+      // band (controlDefault, controlDefault + tolerance] is timing-
+      // borderline — inconclusive, never a verdict. With controlDefault
+      // 30000 the band ends at 33000.
+      assert.equal(verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30000 } }), raisedArm()).verdict, 'config-effect-observed');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30000 } })).verdict, 'no-config-effect-observed');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30001 } })).reason, 'timing-borderline');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 33000 } })).reason, 'timing-borderline');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 33001 } })).verdict, 'config-effect-observed');
+    });
+
+    test('timing overhead around the control deadline is classified, never silently accepted (codex gate round 2, finding 3)', () => {
+      // Basis: the first return is measured between two rollout records, so
+      // it carries scheduling/transport/append overhead on top of the
+      // configured timeout. The tolerance is 10% of the control default with
+      // a 1000 ms floor — D0's own measured lags (observation detected at
+      // 32436 ms against a 30000 ms requested yield) bound the real overhead
+      // under 10%, which stays an order of magnitude below the intended C1
+      // separation (240000 vs 30000).
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // Close-out correction 2 — the band is genuinely SYMMETRIC: a control
+      // return within [controlDefault − tolerance, controlDefault + tolerance]
+      // IS default expiry and PROCEEDS to the raised comparison (the
+      // user-commissioned ruling supersedes the round-2 control-arm
+      // borderline reading: a control ~31 s pending versus a raised ~149 s
+      // completed must not be un-adjudicable merely because the control ran
+      // ~1 s over; the symmetric rule also satisfies round-2's original
+      // concern — the expected contrast is no longer rejected as no-effect).
+      // Raised-side rules are unchanged.
+      // Exactly at the deadline: decisive.
+      assert.deepEqual(verdictOf(controlAt(30000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // Inside the band above the default: STILL default expiry.
+      assert.deepEqual(verdictOf(controlAt(30001), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(31000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // Decisively beyond the band: the control default did not govern.
+      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(45000), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // A raised first return inside the band is borderline too; decisively
+      // within the short window is no effect. (The raised-side borderline is
+      // the ONLY remaining producer of 'timing-borderline'.)
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(30000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+    });
+
+    test('the control band edges are both decisive and every verdict is versioned (close-out correction 2)', () => {
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // BOTH edges decisive: 26999 is early; 27000 proceeds.
+      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // The user's verbatim case with the REAL retained shapes: a ~31007 ms
+      // PENDING control versus a ~148838 ms COMPLETED raised arm.
+      assert.deepEqual(verdictOf(controlAt(31007), raisedAt(148838)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // 33000 (the upper edge) proceeds; 33001 refuses.
+      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // Raised-side refusals keep their current outcomes.
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      // EVERY returned object carries the closed adjudication version — the
+      // two adjudications of the same pair are distinguishable in records
+      // (v1 semantics had no field).
+      const samples = [
+        [waitPolicyRecord(), raisedArm()],
+        [null, raisedArm()],
+        [waitPolicyRecord(), null],
+        [waitPolicyRecord({ inconclusive: { reason: 'discipline' }, linkage: { childLinkageChecked: true, originalHandleChecked: false } }), raisedArm()],
+        [waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed' } })],
+        [waitPolicyRecord({ waitPolicyObservation: null }), raisedArm()],
+      ];
+      for (const [control, raised] of samples) {
+        const outcome = verdictOf(control, raised);
+        assert.equal(outcome.adjudicationVersion, 2, `verdict ${outcome.verdict}/${String(outcome.reason)} must carry the closed adjudication version`);
+        assert.equal(WAIT_ADJUDICATION_VERSION, 2);
+      }
+    });
+
+    test('a control first return materially below the default is an alternative ender (codex gate round 3, finding 1)', () => {
+      // The control band is TWO-SIDED: default expiry means |firstReturn −
+      // controlDefault| ≤ tolerance. A return MATERIALLY BELOW the band
+      // (controlDefault − tolerance) is an alternative ender — explicit
+      // yield/preemption, input, transport/resource limits, or real
+      // completion (plan Task 4 bullet 6) — and the closed fact set does not
+      // identify WHICH: the verdict is inconclusive either way, never a
+      // positive config effect.
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // The reviewer's verbatim reproduction: 1000 ms vs 150000 ms at
+      // defaults 30000/240000 — the 1000 ms control return is an early
+      // preemption, not a 30000 ms default expiry.
+      assert.deepEqual(verdictOf(controlAt(1000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      // The lower band edge is 27000 ms; everything strictly below is early.
+      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      // Exactly at the lower edge the return is still IN the band (decisive).
+      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // An early RAISED return is the same alternative-ender family.
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+    });
+
+    test('a COMPLETED control cell never counts as default expiry (codex gate round 6)', () => {
+      // The plan's expected discriminator is precisely "C0 PENDING around the
+      // short outer window versus C1 holding beyond it". A control whose
+      // decisive inner poll COMPLETED (e.g. empty output + live handle, with
+      // a later poll reaching the sentinel — zero outer yields) is an inner
+      // or transport return masquerading as outer-default expiry: eventual
+      // terminal success does not establish that causal link.
+      const completedControl = waitPolicyRecord({
+        waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed' },
+      });
+      assert.deepEqual(verdictOf(completedControl, raisedArm()), { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(completedControl, raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed', decisiveFirstReturnWallMs: 150000 } })),
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 },
+        'the reviewer\'s completed-live-handle reproduction verbatim');
+      // A yielded-pending control whose continuation was never verified
+      // cannot attribute its return either.
+      const unverifiedContinuation = waitPolicyRecord({
+        observations: { ...waitPolicyRecord().observations, outerReturns: 0 },
+      });
+      assert.deepEqual(verdictOf(unverifiedContinuation, raisedArm()), { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
+      // Unknown states stay in the unknown family — both arms.
+      const unknownState = { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown' };
+      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownState }), raisedArm()), { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown', decisiveFirstReturnWallMs: 150000 } })),
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
+      // The expected pair: a yielded-pending control WITH the verified
+      // continuation against a holding raised arm proceeds.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('a legacy-success record without the wait-policy marker is never a positive config verdict', () => {
+      // Structural/terminal completion is NOT a config-effect gate: the
+      // helper demands the waitPolicy marker and never derives a positive
+      // from completion fields alone.
+      const legacy = {
+        status: 'executed',
+        provenance: { sourceSha: 'a'.repeat(40), codexVersion: '0.163.0', requestedModel: 'authorized-test-model' },
+        route: { requested: 'rescue-foreground', actual: 'named' },
+        linkage: { childLinkageChecked: true },
+        observations: { outerReturns: 0, pollWallTimesMs: [28000], remainingLifetimeMs: 120000 },
+        result: { processExit: 0, hostExit: 0, publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      };
+      assert.deepEqual(verdictOf(legacy, raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), legacy), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker', adjudicationVersion: 2 });
+      // A marker without the validated number is no marker either.
+      const numberless = waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { policy: 'config-default' } } });
+      assert.equal(verdictOf(numberless, raisedArm()).verdict, 'no-causal-comparison');
+      assert.equal(verdictOf(numberless, raisedArm()).reason, 'missing-wait-policy-marker');
+    });
+
+    test('the manipulated variable must be a real contrast: identical or reversed exec defaults cannot compare', () => {
+      assert.deepEqual(verdictOf(waitPolicyRecord(), waitPolicyRecord({
+        waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 150000 },
+        observations: { outerReturns: 0, pollWallTimesMs: [150000], remainingLifetimeMs: 60000 },
+      })),
+        { verdict: 'no-causal-comparison', reason: 'identical-exec-default', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(raisedArm(), waitPolicyRecord()),
+        { verdict: 'no-causal-comparison', reason: 'reversed-exec-default-order', adjudicationVersion: 2 },
+        'the control arm must carry the SHORTER exec default');
+    });
+
+    test('silent-default or mismatched model selections never compare', () => {
+      const withoutModel = (record) => {
+        const provenance = { ...record.provenance };
+        delete provenance.requestedModel;
+        return { ...record, provenance };
+      };
+      assert.deepEqual(verdictOf(withoutModel(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutModel(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection', adjudicationVersion: 2 });
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, requestedModel: 'other-test-model' } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-model-selection', adjudicationVersion: 2 },
+      );
+    });
+
+    test('missing required identity evidence never matches as null-equals-null (codex gate round 1, finding 4)', () => {
+      // Identity evidence (normalized instruction hashes, observer digest,
+      // codex version, plugin identity+version) must be PRESENT on both arms
+      // before any equality comparison; absent-absent nulls cannot match.
+      const removals = [
+        ['instructions', (record) => ({ ...record, provenance: { ...record.provenance, waitPolicy: { ...record.provenance.waitPolicy, instructions: undefined } } })],
+        ['observer', (record) => ({ ...record, provenance: { ...record.provenance, observer: undefined } })],
+        ['codexVersion', (record) => ({ ...record, provenance: { ...record.provenance, codexVersion: undefined } })],
+        ['plugin', (record) => ({ ...record, provenance: { ...record.provenance, plugin: { identity: 'zcode@vitry' } } })],
+        ['emptyDigest', (record) => ({ ...record, provenance: { ...record.provenance, observer: { revision: 'working-tree-uncommitted', digest: '' } } })],
+      ];
+      for (const [name, remove] of removals) {
+        const controlOnly = verdictOf(remove(waitPolicyRecord()), raisedArm());
+        const raisedOnly = verdictOf(waitPolicyRecord(), remove(raisedArm()));
+        const both = verdictOf(remove(waitPolicyRecord()), remove(raisedArm()));
+        const expected = { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 };
+        assert.deepEqual(controlOnly, expected, `${name} missing on the control arm must refuse the comparison`);
+        assert.deepEqual(raisedOnly, expected, `${name} missing on the raised arm must refuse the comparison`);
+        assert.deepEqual(both, expected, `${name} missing on BOTH arms must never match as null-equals-null`);
+      }
+    });
+
+    test('the launched native executable digest is required identity evidence (codex gate round 5)', () => {
+      // The driver reduces `--version` output to major.minor.patch and pins
+      // no binary digest, so DIFFERENT same-version binaries pass every
+      // version/plugin pin. The executable's SHA-256 is therefore required
+      // identity (missing ⇒ missing-identity-evidence) and a pin
+      // (present-but-different ⇒ mismatched-pin).
+      const withoutDigest = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: undefined } });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
+      // Different same-version binaries never compare.
+      const differentBinary = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: 'f'.repeat(64) } });
+      assert.deepEqual(verdictOf(differentBinary(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), differentBinary(raisedArm())), { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 });
+      // Equal digests proceed.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('mismatched executable, version, plugin, cap, poll, or worker pins block the causal comparison', () => {
+      const mismatches = [
+        (record) => ({ ...record, provenance: { ...record.provenance, sourceSha: 'b'.repeat(40) } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, codexVersion: '0.162.1' } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, plugin: { identity: 'zcode@vitry', version: '0.0.9' } } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedCapMs: 3_600_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedPollMs: 3_600_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedWorkerDurationMs: 130_000 } }),
+        // Plan Task 4 pins the WHOLE instrument context, not just the Child
+        // inputs: a differing observation budget or executing-observer
+        // revision is exactly as disqualifying as a differing executable.
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedBudgetMs: 360_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, observer: { revision: 'working-tree-uncommitted', digest: 'e'.repeat(64) } } }),
+      ];
+      for (const [index, mismatch] of mismatches.entries()) {
+        const asControl = verdictOf(mismatch(waitPolicyRecord()), raisedArm());
+        const asRaised = verdictOf(waitPolicyRecord(), mismatch(raisedArm()));
+        assert.deepEqual(asControl, { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 }, `control-side pin mismatch ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 }, `raised-side pin mismatch ${index}`);
+      }
+      // Rendered-instruction identity uses the PATH-NORMALIZED hashes: raw
+      // rendered hashes differ cross-run, so they are deliberately not pins.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+      const differingInstructions = { ...INSTRUCTION_HASHES, normalizedNamedRoleSha256: 'x'.repeat(64) };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, waitPolicy: { ...raisedArm().provenance.waitPolicy, instructions: differingInstructions } } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-instruction-variant', adjudicationVersion: 2 },
+      );
+      // A present-vs-absent instruction projection is missing identity
+      // evidence (not a mere mismatch): neither arm may lack the hashes.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { ...waitPolicyRecord().provenance.waitPolicy, instructions: null } } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 },
+      );
+    });
+
+    test('the planned arms must have used the SAME named route (codex gate round 3, finding 2)', () => {
+      // The plan's route.requested is rescue-foreground → named; changing the
+      // Role/instruction-delivery path alongside the configured default
+      // destroys the causal attribution (instruction-hash equality does not
+      // prove the same variant was USED). Both arms must be 'named';
+      // differing or non-named routes refuse the comparison.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: 'generic' } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
+        'named control versus generic raised changes the delivery path',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: 'generic' } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
+      );
+      for (const routeActual of ['unknown', null, 'review-wait']) {
+        assert.deepEqual(
+          verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: routeActual } }), raisedArm()),
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
+          `route actual ${String(routeActual)} is not the planned named route`,
+        );
+        assert.deepEqual(
+          verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: routeActual } })),
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
+        );
+      }
+      // named versus named proceeds (pinned beside the refusal for contrast).
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('evidence outside the managed code-mode Child surface is a different surface', () => {
+      // Route mismatches are refusals of their own (above); this test covers
+      // the remaining surface fact: an UNCHECKED child linkage on either arm.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: false } })),
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: null } })),
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
+      );
+    });
+
+    test('a direct-native decisive call is a different surface; an unestablished surface stays unknown (codex gate round 1, finding 3)', () => {
+      // Named/generic routing plus checked linkage establish DELEGATION, not
+      // code-mode execution: a decisive poll observed as a direct native
+      // call can never attribute its timing to a code-mode default.
+      const directNative = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'direct-native' };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: directNative }), raisedArm()),
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
+        'a direct-native control arm is a different surface',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: directNative })),
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
+        'a direct-native raised arm is a different surface',
+      );
+      const unknownSurface = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'unknown' };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownSurface }), raisedArm()),
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
+        'an unestablished decisive surface is missing evidence, never code mode',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: null }), raisedArm()),
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
+      );
+    });
+
+    test('a structurally unqualified arm never yields a positive effect verdict (codex gate round 2, finding 1)', () => {
+      // The reviewer's reproduction: a second original-handle poll while the
+      // first cell was pending makes the observer report an observation-
+      // discipline failure (completion unqualified, originalHandleChecked
+      // false) while the terminal sentinel booleans stay true. Affirmative
+      // structural qualification is required on BOTH arms before any effect
+      // verdict — a protocol violation is never positive causal evidence.
+      const unqualified = waitPolicyRecord({
+        inconclusive: { reason: 'completion cannot be qualified: the original-handle observation discipline did not hold.' },
+        linkage: { childLinkageChecked: true, originalHandleChecked: false },
+        result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      });
+      assert.deepEqual(verdictOf(unqualified, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
+      const unqualifiedRaised = raisedArm({
+        inconclusive: { reason: 'completion cannot be qualified: the original-handle observation discipline did not hold.' },
+        linkage: { childLinkageChecked: true, originalHandleChecked: false },
+        result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
+      // Both arms unqualified (with a real contrast) refuse identically.
+      assert.deepEqual(verdictOf(unqualified, unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
+      // The sentinels alone never restore comparability.
+      assert.notEqual(verdictOf(unqualified, raisedArm()).verdict, 'config-effect-observed');
+      // A null-checked handle (unknown) is equally unqualified.
+      const unchecked = waitPolicyRecord({ linkage: { childLinkageChecked: true, originalHandleChecked: null } });
+      assert.deepEqual(verdictOf(unchecked, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
+    });
+
+    test('differing or unverifiable actual inner yields refuse the comparison (codex gate round 2, finding 2)', () => {
+      // The reviewer's reproduction: control actual yield 1000 ms against
+      // raised 240000 ms — differing inner requests already explain any
+      // contrast, so the pair must refuse before any causal verdict.
+      const controlFastPoll = waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } });
+      assert.deepEqual(verdictOf(controlFastPoll, raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
+      // An unverifiable actual yield (absent from the admitted arguments) is
+      // a refusal, never assumed equal.
+      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: null } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: null })),
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
+      // The actual yield must ALSO match the intended observation window.
+      assert.deepEqual(
+        verdictOf(
+          waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, requestedPollMs: 3_600_000 } }),
+          raisedArm({ provenance: { ...raisedArm().provenance, requestedPollMs: 3_600_000 } }),
+        ),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 },
+        'actual 240000 against an intended 3600000 window is not the compared trial',
+      );
+      // Equal actual yields matching the intended window proceed.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('an explicit pragma on either decisive cell makes default-causality inconclusive', () => {
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } }), raisedArm()),
+        { verdict: 'inconclusive', reason: 'explicit-pragma', adjudicationVersion: 2 },
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } })),
+        { verdict: 'inconclusive', reason: 'explicit-pragma', adjudicationVersion: 2 },
+      );
+    });
+
+    test('missing or null first-return timings and counts map to unknown, never zero', () => {
+      const unknownEvidence = [
+        (record) => ({ ...record, waitPolicyObservation: null }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisivePollExplicitYield: 'unknown' } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: null } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: '28000' } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: Number.NaN } }),
+        (record) => ({ ...record, observations: { ...record.observations, remainingLifetimeMs: null } }),
+        (record) => ({ ...record, observations: { ...record.observations, outerReturns: null } }),
+        (record) => ({ ...record, observations: null }),
+      ];
+      for (const [index, unknown] of unknownEvidence.entries()) {
+        const asControl = verdictOf(unknown(waitPolicyRecord()), raisedArm());
+        const asRaised = verdictOf(waitPolicyRecord(), unknown(raisedArm()));
+        assert.deepEqual(asControl, { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 }, `control-side missing evidence ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 }, `raised-side missing evidence ${index}`);
+      }
+    });
+
+    test('early completion, unknown output, or thin headroom stays inconclusive', () => {
+      const early = [
+        (record) => ({ ...record, result: { ...record.result, publicResultMatchedSentinel: false } }),
+        (record) => ({ ...record, result: { ...record.result, terminalStdoutChecked: null } }),
+        (record) => ({ ...record, result: null }),
+      ];
+      for (const [index, earlyMutation] of early.entries()) {
+        assert.deepEqual(verdictOf(earlyMutation(waitPolicyRecord()), raisedArm()), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal', adjudicationVersion: 2 }, `control-side early/unknown terminal ${index}`);
+        assert.deepEqual(verdictOf(waitPolicyRecord(), earlyMutation(raisedArm())), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal', adjudicationVersion: 2 }, `raised-side early/unknown terminal ${index}`);
+      }
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 59999 } })),
+        { verdict: 'inconclusive', reason: 'insufficient-headroom', adjudicationVersion: 2 },
+        'below 60000 ms remaining the short-window contrast cannot be interpreted',
+      );
+      // The control's verified single continuation is part of the expected
+      // C0 shape (round 6): a zero-continuation control is missing evidence
+      // before headroom is even reached (asserted in the round-6 test).
+      assert.equal(verdictOf(waitPolicyRecord({ observations: { outerReturns: 1, pollWallTimesMs: [28000], remainingLifetimeMs: 59999 } }), raisedArm()).reason, 'insufficient-headroom');
+      assert.equal(
+        verdictOf(waitPolicyRecord(), raisedArm({ observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 60000 } })).verdict,
+        'config-effect-observed',
+        'exactly 60000 ms is the documented minimum interpretable headroom',
+      );
+    });
+
+    test('non-object inputs fail closed without throwing', () => {
+      for (const hostile of [undefined, null, 42, 'record', []]) {
+        assert.equal(verdictOf(hostile, raisedArm()).verdict, 'no-causal-comparison');
+        assert.equal(verdictOf(waitPolicyRecord(), hostile).verdict, 'no-causal-comparison');
+      }
+    });
+  });
+
+  describe('wait-policy comparison evidence and record marker (task 4)', async () => {
+    // The comparison facts' provenance chain: the evidence layer derives the
+    // closed decisive-poll facts (directive state, admitted code-mode wrapper
+    // vs direct native surface, and the FIRST RETURN duration from rollout
+    // event timestamps — measured for pending yields as well as completed
+    // observations) ONLY under the explicit gate; the live-facts mapping
+    // carries them ONLY for waitPolicy runs; and the record persists them
+    // ONLY for waitPolicy records (fail-closed on every boundary; legacy
+    // bytes unchanged everywhere).
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts, runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
+
+    const PARENT = 'wp'; const CHILD = 'wp-c'; const AGENT_PATH = '/root/wp1'; const HANDLE = 92;
+    const LAUNCHER = 'node "/i/l.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    // Realistic RolloutLine ISO timestamps: t0 is the launch, and every later
+    // event is dated by an additive offset in milliseconds.
+    const T0 = '2026-10-17T03:00:00.000Z';
+    const at = (offsetMs) => new Date(Date.parse(T0) + offsetMs).toISOString();
+    /** The bounded input_text output pair of a completed host response. */
+    const completed = (result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+    /** The NATIVE PENDING code-mode string body of a YIELDED poll (cell id only). */
+    const yielded = (cellId) => `Script running with cell ID ${cellId}\nOutput:\n`;
+
+    /**
+     * A code-mode (custom_tool_call wrapper) Rescue sequence. Poll shape:
+     * 'yielded' emits a pending output at `pollReturnMs` and continues the
+     * returned cell through the sanctioned `tools.wait` outer wait (whose
+     * completion resolves the cell — pollWallTimesMs then records null for
+     * the yielded poll, exactly the expected C0 shape); 'completed' lets the
+     * poll run to its own completion at `pollReturnMs`.
+     * @param {{ poll: 'yielded' | 'completed', pollReturnMs: number, directive?: string, direct?: boolean }} options
+     */
+    function rescueSequence({ poll, pollReturnMs, directive = '', direct = false, innerYieldMs = 240000, shared = false, liveHandleFirstPoll = false }) {
+      const meta = (id, extra) => ({ type: 'session_meta', payload: { id, ...extra } });
+      const childMeta = meta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+      const fnCall = (name, callId, args) => ({ type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) } });
+      const wrapped = (kind, callId, value, prefix = '') => ({
+        type: 'response_item', timestamp: at(0),
+        payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `${prefix}const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n` },
+      });
+      // The sanctioned linked outer-continuation shape: the `wait` call is
+      // admitted only in the INLINE wrapper form (WRAPPER_PATTERN admits
+      // exec_command/write_stdin; INLINE_WRAPPER_PATTERN adds wait).
+      const inlineWait = (callId, value) => ({
+        type: 'response_item', timestamp: at(0),
+        payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `text(await tools.wait(${JSON.stringify(value)}));\n` },
+      });
+      const out = (callId, output, offsetMs) => ({ type: 'response_item', timestamp: at(offsetMs), payload: { type: 'custom_tool_call_output', call_id: callId, output } });
+      const started = () => ({ type: 'event_msg', timestamp: at(0), payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD, agent_path: AGENT_PATH } } });
+      const call = direct ? fnCall : wrapped;
+      const output = (callId, output_, offsetMs) => direct
+        ? { type: 'response_item', timestamp: at(offsetMs), payload: { type: 'function_call_output', call_id: callId, output: output_ } }
+        : out(callId, output_, offsetMs);
+      const pollArgument = innerYieldMs === null
+        ? { session_id: HANDLE, chars: '' }
+        : { session_id: HANDLE, chars: '', yield_time_ms: innerYieldMs };
+      // The reviewer's round-4 shared cell: the SANCTIONED v5 preparation
+      // write and the empty-input poll share ONE admitted cell (blank line
+      // separated), whose output resolves BOTH statements — the cell's
+      // measured duration then includes the preparation time.
+      const envelope = {
+        version: 5, source: 'explicit',
+        task: 'Perform shell-wait-probe-fixture-task. Run exactly `npm test` as the safe deterministic fixture action.',
+        options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' },
+        continuationTarget: null,
+      };
+      const sharedCellInput = `text(await tools.write_stdin({session_id:${HANDLE},chars:JSON.stringify(${JSON.stringify(envelope)})+"\\n",max_output_tokens:1000}));\n\n${directive}const r = await tools.write_stdin(${JSON.stringify(pollArgument)}); text(JSON.stringify(r))\n`;
+      const sharedCellOutput = [
+        { type: 'input_text', text: 'Script completed\n' },
+        { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) },
+        { type: 'input_text', text: JSON.stringify({ output: SENTINEL, exit_code: 0 }) },
+      ];
+      const childEvents = [
+        call('exec_command', 'l1', { cmd: LAUNCHER }),
+        output('l1', completed({ output: '', session_id: HANDLE }), 1000),
+        ...(shared ? [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', sharedCellOutput, pollReturnMs),
+        ] : poll === 'yielded' ? [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', yielded('2'), pollReturnMs),
+          inlineWait('w1', { cell_id: '2', yield_time_ms: 240000 }),
+          output('w1', completed({ output: SENTINEL, exit_code: 0 }), pollReturnMs + 92000),
+        ] : liveHandleFirstPoll ? [
+          // The reviewer's round-6 C0: the first inner poll COMPLETES with
+          // empty output and the live handle; a second poll reaches the
+          // sentinel — zero outer yields.
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', completed({ output: '', session_id: HANDLE }), pollReturnMs),
+          call('write_stdin', 'p2', pollArgument),
+          output('p2', completed({ output: SENTINEL, exit_code: 0 }), 150000),
+        ] : [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', completed({ output: SENTINEL, exit_code: 0 }), pollReturnMs),
+        ]),
+      ];
+      childEvents[2].payload.input = shared
+        ? sharedCellInput
+        : (typeof childEvents[2].payload.input === 'string' ? `${directive}const r = await tools.write_stdin(${JSON.stringify(pollArgument)}); text(JSON.stringify(r))\n` : childEvents[2].payload.input);
+      return [
+        [meta(PARENT), { type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name: 'spawn_agent', call_id: 's1', arguments: JSON.stringify({ task_name: 't1', agent_type: 'zcode-rescue' }) } }, started(), { type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name: 'wait_agent', call_id: 'w0', arguments: JSON.stringify({ timeout_ms: 600000 }) } }],
+        [childMeta, ...childEvents],
+      ];
+    }
+    const evidenceFor = (rollouts, overrides = {}) => inspectShellWaitEvidence({
+      rollouts, zcodeCalls: [{ method: 'session/send' }], command: LAUNCHER,
+      publicResult: SENTINEL, redactions: [], ...overrides,
+    });
+
+    test('the gated evidence facts observe the decisive poll: directive, admitted surface, and first-return timing', () => {
+      const absent = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(absent.status, 'supported', 'the admitted-cell evidence stays supported');
+      assert.deepEqual(absent.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 150000,
+        decisiveFirstReturnState: 'completed',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      });
+      const present = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, directive: '// @exec: {"yield_time_ms": 60000}\n' }), { waitPolicyComparisonFacts: true });
+      assert.equal(present.status, 'supported', 'a directive-led poll stays admitted (the existing grammar accepts the directive)');
+      assert.equal(present.facts.waitPolicyComparisonFact.decisivePollExplicitYield, 'present');
+      // The EXPECTED yielded-C0 shape: a pending (yielded) output at ~28 s
+      // whose duration is measured from the rollout event timestamps.
+      const yieldedC0 = evidenceFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(yieldedC0.status, 'supported');
+      assert.deepEqual(yieldedC0.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 28000,
+        decisiveFirstReturnState: 'yielded-pending',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      });
+      // A direct-native sequence (plain function_call cells) is derived from
+      // the EXISTING admitted-wrapper classification — no new inference.
+      const direct = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, direct: true }), { waitPolicyComparisonFacts: true });
+      assert.equal(direct.status, 'supported');
+      assert.equal(direct.facts.waitPolicyComparisonFact.decisiveCallSurface, 'direct-native');
+      // No original-handle empty poll → every fact stays unknown, never absent.
+      const noPollRollouts = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      noPollRollouts[1] = noPollRollouts[1].filter((event) => event?.payload?.call_id !== 'p1');
+      const unknown = evidenceFor(noPollRollouts, { waitPolicyComparisonFacts: true });
+      assert.deepEqual(unknown.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'unknown',
+        decisiveCallSurface: 'unknown',
+        decisiveInnerYieldMs: null,
+        decisiveFirstReturnWallMs: null,
+        decisiveFirstReturnState: 'unknown',
+        decisiveFirstReturnBasis: 'unavailable',
+      });
+    });
+
+    test('the decisive poll ACTUAL inner yield is projected from the admitted arguments (codex gate round 2, finding 2)', () => {
+      // The reviewer's reproduction: a control poll with an ACTUAL 1000 ms
+      // yield — the fact must expose it from the admitted call's arguments.
+      const fastPoll = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, innerYieldMs: 1000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(fastPoll.status, 'supported');
+      assert.equal(fastPoll.facts.waitPolicyComparisonFact.decisiveInnerYieldMs, 1000);
+      // No yield argument at all → null (unavailable), never assumed.
+      const noYield = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, innerYieldMs: null }), { waitPolicyComparisonFacts: true });
+      assert.equal(noYield.status, 'supported');
+      assert.equal(noYield.facts.waitPolicyComparisonFact.decisiveInnerYieldMs, null);
+    });
+
+    test('the decisive first-return STATE is persisted, and a completed live-handle control never reads as default expiry (codex gate round 6)', async (t) => {
+      // The reviewer's reproduction: a qualified C0 whose first inner poll
+      // COMPLETED at 28000 ms with empty output and a live handle, followed
+      // by another poll reaching the sentinel — zero outer yields, null
+      // inconclusive. The pending/complete distinction is essential: an
+      // inner or transport return can masquerade as outer-default expiry.
+      const liveHandle = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000, liveHandleFirstPoll: true }), { waitPolicyComparisonFacts: true });
+      assert.equal(liveHandle.status, 'supported');
+      assert.equal(liveHandle.facts.waitPolicyComparisonFact.decisiveFirstReturnState, 'completed');
+      assert.equal(liveHandle.facts.waitPolicyComparisonFact.decisiveFirstReturnWallMs, 28000);
+      // End to end: the completed-live-handle control versus a holding
+      // raised arm is inconclusive — NEVER a positive config effect.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-state-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 27500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const recordFor = async (sequence, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+          evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          sequence, []) },
+      );
+      const completedControl = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000, liveHandleFirstPoll: true }), 30000);
+      const holdingRaised = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), 240000);
+      // Premise: the qualified completed control reads exactly as the
+      // reviewer described — null inconclusive, sentinels true, zero yields.
+      assert.equal(completedControl.inconclusive, null);
+      assert.equal(completedControl.result.publicResultMatchedSentinel, true);
+      assert.equal(completedControl.linkage.originalHandleChecked, true);
+      assert.equal(completedControl.waitPolicyObservation.decisiveFirstReturnState, 'completed');
+      assert.equal(completedControl.observations.outerReturns, 0);
+      assert.deepEqual(
+        adjudicateWaitComparison(completedControl, holdingRaised),
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 },
+        'eventual terminal success does not establish the outer-default causal link',
+      );
+      // The EXPECTED discriminator keeps working: a yielded-pending control
+      // with the verified continuation against a holding raised arm.
+      const pendingControl = await recordFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), 30000);
+      assert.equal(pendingControl.waitPolicyObservation.decisiveFirstReturnState, 'yielded-pending');
+      assert.deepEqual(
+        adjudicateWaitComparison(pendingControl, holdingRaised),
+        { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
+      );
+    });
+
+    test('without the gate the facts carry no waitPolicyComparisonFact key at all', () => {
+      const facts = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }));
+      assert.equal(facts.status, 'supported');
+      assert.equal(Object.hasOwn(facts.facts, 'waitPolicyComparisonFact'), false);
+      // A non-boolean gate value is refused fail-closed at the evidence
+      // boundary (the same convention as the other optional evidence inputs).
+      assert.throws(() => evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: 'yes' }),
+        /waitPolicyComparisonFacts must be a boolean when present/i);
+    });
+
+    test('the live-facts mapping and the persisted record carry the comparison facts only for waitPolicy runs', async (t) => {
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+      };
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+      };
+      const mapped = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), [],
+      );
+      assert.deepEqual(mapped.waitPolicyObservation, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 28000,
+        decisiveFirstReturnState: 'yielded-pending',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      }, 'the pipeline-derived comparison facts reach the live facts');
+      const legacyMapped = mapShellWaitLiveFacts(mappingInput, held, evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture, rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), []);
+      assert.equal(Object.hasOwn(legacyMapped, 'waitPolicyObservation'), false, 'legacy live facts gain no marker');
+      // Record boundary: executor-provided facts persist only with the pair.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-marker-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const markerFacts = { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] }, waitPolicyObservation: { decisivePollExplicitYield: 'present' } };
+      const record = await runShellWaitCase({ ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 }, {
+        createFixture: async () => ({ ...mappingFixture, dispose: async () => {} }),
+        executeLiveCase: async () => markerFacts,
+      });
+      assert.deepEqual(record.waitPolicyObservation, { decisivePollExplicitYield: 'present' }, 'the waitPolicy record carries the pragma marker');
+      const legacyRecord = await runShellWaitCase({ ...mappingInput, codexBinary: process.execPath, output: root }, {
+        createFixture: async () => ({ ...mappingFixture, dispose: async () => {} }),
+        executeLiveCase: async () => markerFacts,
+      });
+      assert.equal(Object.hasOwn(legacyRecord, 'waitPolicyObservation'), false, 'a legacy record drops the fail-closed marker entirely');
+    });
+
+    test('the pipeline-derived yielded-C0 versus completed-C1 pair adjudicates the effect (codex gate round 1, finding 2)', async (t) => {
+      // End-to-end over REALISTIC evidence shapes: C0's poll YIELDS at 28 s
+      // (pending output, wait continuation — pollWallTimesMs records null for
+      // the yielded poll) and C1's poll completes at 150 s. The decisive
+      // timing is the pipeline-derived FIRST RETURN, never the inner-poll
+      // wall-time array the yielded path deliberately leaves null.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-yield-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        // Plan Task 4: the shared explicit model selection is a comparability
+        // PREREQUISITE — the pipeline records carry it identically on both arms.
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        // The held turn's measured monotonic timeline grounds the record's
+        // remaining-lifetime fact (150 s at the decisive poll start).
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 29500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const liveFactsFor = (sequence, execDefaultMs) => mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+        evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        sequence, [],
+      );
+      const controlSequence = rescueSequence({ poll: 'yielded', pollReturnMs: 28000 });
+      const raisedSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      const recordFor = async (liveFacts, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => liveFacts },
+      );
+      const controlRecord = await recordFor(liveFactsFor(controlSequence, 30000), 30000);
+      const raisedRecord = await recordFor(liveFactsFor(raisedSequence, 240000), 240000);
+      assert.equal(controlRecord.waitPolicyObservation.decisiveFirstReturnWallMs, 28000);
+      assert.equal(raisedRecord.waitPolicyObservation.decisiveFirstReturnWallMs, 150000);
+      assert.deepEqual(
+        adjudicateWaitComparison(controlRecord, raisedRecord),
+        { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
+        'the yielded control return (28 s) versus the held raised return (150 s) is the observed effect',
+      );
+      // A raised arm whose first return also lands within the short window
+      // shows no observed effect — same pipeline shapes.
+      const earlyRaisedRecord = await recordFor(liveFactsFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), 240000), 240000);
+      assert.deepEqual(
+        adjudicateWaitComparison(controlRecord, earlyRaisedRecord),
+        { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 },
+      );
+    });
+
+    test('a pipeline-derived direct-native decisive call is a different surface end to end (codex gate round 1, finding 3)', async (t) => {
+      // Plain function_call cells (direct native exec_command/write_stdin)
+      // satisfy routing/linkage but are NOT code mode: their timing can never
+      // be attributed to a code-mode default.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-direct-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        // Plan Task 4: the shared explicit model selection is a comparability
+        // PREREQUISITE — the pipeline records carry it identically on both arms.
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+      };
+      const directSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000, direct: true });
+      const liveFacts = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(directSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        directSequence, [],
+      );
+      assert.equal(liveFacts.waitPolicyObservation.decisiveCallSurface, 'direct-native');
+      const record = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => liveFacts },
+      );
+      const wrapperSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      const wrapperRecord = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts({ ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 240000 }, held, evidenceFor(wrapperSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture, wrapperSequence, []) },
+      );
+      assert.deepEqual(
+        adjudicateWaitComparison(record, wrapperRecord),
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
+        'a direct-native decisive call never compares against a code-mode wrapper arm',
+      );
+    });
+
+    test('a shared preparation+poll raised cell is missing evidence, never observed (codex gate round 4)', async (t) => {
+      // The reviewer's reproduction: a 60000 ms SHARED raised cell (59000 ms
+      // preparation + 1000 ms polling) against a standalone 28000 ms control
+      // produced qualified arms with null inconclusive and
+      // config-effect-observed — preparation time masquerading as longer
+      // shell observation. With the standalone requirement the shared arm's
+      // first return is unavailable, so the pair is unknown.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-shared-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 59500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const recordFor = async (sequence, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+          evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          sequence, []) },
+      );
+      const sharedRaised = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 60000, shared: true }), 240000);
+      const standaloneControl = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000 }), 30000);
+      // Premise: both arms are pipeline-qualified with true sentinels.
+      assert.equal(sharedRaised.inconclusive, null);
+      assert.equal(sharedRaised.result.publicResultMatchedSentinel, true);
+      assert.equal(sharedRaised.linkage.originalHandleChecked, true);
+      assert.equal(sharedRaised.waitPolicyObservation.decisiveFirstReturnBasis, 'shared-cell');
+      assert.deepEqual(
+        adjudicateWaitComparison(standaloneControl, sharedRaised),
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
+        'preparation time must never masquerade as longer shell observation',
+      );
+    });
+
+    test('a pipeline-shaped overlapping-poll arm refuses before any effect verdict (codex gate round 2, finding 1)', async (t) => {
+      // The reviewer's reproduction, end to end over REALISTIC pipeline
+      // shapes: a second original-handle poll issued while the first cell is
+      // pending makes the observer report the observation-discipline failure
+      // (inconclusive reason + originalHandleChecked false) while the
+      // terminal sentinel booleans stay true. The comparator must refuse.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-overlap-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      // OVERLAP: poll p1 yields, then p2 polls the SAME handle BEFORE the
+      // pending cell resolves (no wait continuation between them).
+      const overlapSequence = (() => {
+        const base = rescueSequence({ poll: 'yielded', pollReturnMs: 28000 });
+        const childEvents = base[1];
+        const wrapped = (callId, value) => ({
+          type: 'response_item', timestamp: at(28000),
+          payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify(value)}); text(JSON.stringify(r))\n` },
+        });
+        const output = (callId, output_, offsetMs) => ({ type: 'response_item', timestamp: at(offsetMs), payload: { type: 'custom_tool_call_output', call_id: callId, output: output_ } });
+        // Replace the wait continuation with the second same-handle poll.
+        const waitIndex = childEvents.findIndex((event) => event?.payload?.call_id === 'w1');
+        childEvents.splice(waitIndex, 2,
+          wrapped('p2', { session_id: HANDLE, chars: '', yield_time_ms: 240000 }),
+          output('p2', completed({ output: SENTINEL, exit_code: 0 }), 150000));
+        return base;
+      })();
+      const overlapFacts = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(overlapSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        overlapSequence, [],
+      );
+      // Premise: the observer flagged the discipline failure, the terminal
+      // booleans stayed true, and the first-return timing exists.
+      assert.equal(overlapFacts.inconclusive === null, false, 'the pipeline must report the discipline failure');
+      assert.equal(overlapFacts.linkage.originalHandleChecked, false);
+      assert.equal(overlapFacts.hostResult.sentinelMatched, true);
+      assert.equal(overlapFacts.hostResult.terminalStdoutChecked, true);
+      const overlapRecord = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => overlapFacts },
+      );
+      const cleanRaised = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 240000 }, held,
+          evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), []) },
+      );
+      assert.deepEqual(
+        adjudicateWaitComparison(overlapRecord, cleanRaised),
+        { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 },
+        'an observation-discipline violation is never positive causal evidence, whatever the sentinels read',
+      );
+    });
+  });
+
 }

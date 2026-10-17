@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { RESCUE_ENVELOPE_MAX_BYTES, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { inspectCallShape } from './shape-diagnostic.mjs';
 
 // P2 round-29: module-INIT snapshot of THIS module's executing source — read
 // synchronously at initialization (the closest instant to the bytes Node
@@ -342,6 +343,45 @@ function diagnosticBudgetChars(baseFacts) {
 }
 
 /**
+ * Project the controlled shape-diagnosis facts (schema v1) for one unknown
+ * string body into a bounded character budget, dropping WHOLE optional facts
+ * when they do not fit — never truncating mid-JSON, never falling back to raw
+ * content, never claiming a complete classification that was not serialized.
+ * Drop order: the full facts; then the `statements` array (the closed
+ * `statementCount` survives — the schema's own drop-whole rule); then a fixed
+ * minimal closed marker; and when even the marker does not fit, nothing (the
+ * caller omits the block). EVERY tier carries the closed record-budget
+ * retention marker (`retention: 'full' | 'partial'` — close-out adjudication
+ * 2026-10-17): a reader can always tell whether serialization omitted facts,
+ * while `coverage`/`wholeInputConsumed` keep describing the CLASSIFICATION.
+ * The classifier never throws by construction; the guard keeps an unexpected
+ * internal failure from reaching the excerpt.
+ * @param {string} raw the unknown call body (memory-only)
+ * @param {number} budgetChars the serialized character budget for the shape block
+ * @param {'custom-tool-cell' | 'direct-arguments'} shapeCallContext the call-type context
+ * @returns {Record<string, unknown> | null}
+ */
+export function projectShapeFactsWithinBudget(raw, budgetChars, shapeCallContext) {
+  let facts = null;
+  try {
+    facts = inspectCallShape(raw, shapeCallContext);
+  } catch { facts = null; }
+  // The minimal marker drops the redundant `wholeInputConsumed`
+  // ('over-budget' always means false — the classification meaning is
+  // unchanged) so the marker PLUS the retention field stays inside the
+  // tightest observed tier budget (67 serialized chars at sixteen slots).
+  const minimalMarker = { version: 1, coverage: 'over-budget', retention: 'partial' };
+  if (facts === null || budgetChars < JSON.stringify(minimalMarker).length) return null;
+  const withFullRetention = { ...facts, retention: 'full' };
+  if (JSON.stringify(withFullRetention).length <= budgetChars) return withFullRetention;
+  const withoutStatements = { ...facts };
+  delete withoutStatements.statements;
+  const withPartialRetention = { ...withoutStatements, retention: 'partial' };
+  if (JSON.stringify(withPartialRetention).length <= budgetChars) return withPartialRetention;
+  return minimalMarker;
+}
+
+/**
  * Build the STRUCTURAL excerpt for a call whose raw body cannot safely be
  * classified as a supported shape. Path-only scrubbing cannot certify that a
  * failed classification removed private preparation/task content, so the raw
@@ -364,8 +404,18 @@ function diagnosticBudgetChars(baseFacts) {
  *   is a string, the excerpt additionally carries the bounded structural
  *   diagnostic facts (`unclassifiedStructuralDiagnosticFacts`), budgeted against
  *   the excerpt limit so the serialized JSON always stays parseable; default retention is unchanged
+ * @param {boolean} [shapeDiagnosticEnabled] the controlled shape-diagnosis gate
+ *   (plan Task 2), already AND-combined with `diagnosticEnabled` by the caller —
+ *   the pair invariant is enforced at the evidence input boundary: when true AND
+ *   the body is a string, the excerpt additionally carries the closed schema-v1
+ *   `shape` fact block (`projectShapeFactsWithinBudget`), budgeted against the
+ *   SAME excerpt limit after the structural diagnostic's room is reserved;
+ *   default retention is unchanged
+ * @param {'custom-tool-cell' | 'direct-arguments'} [shapeCallContext] which
+ *   existing grammar the body was presented to (drives the shape facts'
+ *   parserStage verdict: withheld for direct function_call arguments)
  */
-function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null, diagnosticEnabled = false) {
+function structuralExcerptForUnclassifiedInput(rawInput, classification, redactions, knownTool = null, diagnosticEnabled = false, shapeDiagnosticEnabled = false, shapeCallContext = 'custom-tool-cell') {
   const isString = typeof rawInput === 'string';
   const raw = isString ? rawInput : '';
   const bodyType = isString ? 'string'
@@ -414,17 +464,31 @@ function structuralExcerptForUnclassifiedInput(rawInput, classification, redacti
       withheldDirectiveKeys,
       inputBytes: isString ? Buffer.byteLength(raw, 'utf8') : null,
     };
-    excerptFactsJson = JSON.stringify(
-      // The research gate (follow-up plan Task 4): only an explicitly enabled
-      // string-body diagnostic extends the fact set; default retention above
-      // is unchanged and pinned by test. The diagnostic's serialized size is
-      // budgeted against the excerpt limit (see the retention-bound note on
-      // unclassifiedStructuralDiagnosticFacts) so the scrubber can never
-      // truncate the gated JSON mid-object.
-      diagnosticEnabled === true && isString
-        ? { ...baseFacts, diagnostic: unclassifiedStructuralDiagnosticFacts(raw, diagnosticBudgetChars(baseFacts)) }
-        : baseFacts,
-    );
+    // The research gate (follow-up plan Task 4): only an explicitly enabled
+    // string-body diagnostic extends the fact set; default retention above
+    // is unchanged and pinned by test. The diagnostic's serialized size is
+    // budgeted against the excerpt limit (see the retention-bound note on
+    // unclassifiedStructuralDiagnosticFacts) so the scrubber can never
+    // truncate the gated JSON mid-object.
+    const diagnostic = diagnosticEnabled === true && isString
+      ? unclassifiedStructuralDiagnosticFacts(raw, diagnosticBudgetChars(baseFacts))
+      : null;
+    // The controlled shape-diagnosis gate (plan Task 2): the closed schema-v1
+    // facts for the unknown string body, projected into whatever room remains
+    // of the SAME excerpt budget after the base facts and the structural
+    // diagnostic; whole facts drop when they do not fit, never mid-JSON.
+    const baseJsonLength = JSON.stringify(baseFacts).length;
+    const shapeBudget = MAX_EXCERPT_CHARS - (baseJsonLength - 1)
+      - (diagnostic !== null ? JSON.stringify(diagnostic).length + ',"diagnostic":'.length : 0)
+      - ',"shape":'.length - 1;
+    const shape = shapeDiagnosticEnabled === true && isString
+      ? projectShapeFactsWithinBudget(raw, shapeBudget, shapeCallContext)
+      : null;
+    excerptFactsJson = JSON.stringify({
+      ...baseFacts,
+      ...(diagnostic !== null ? { diagnostic } : {}),
+      ...(shape !== null ? { shape } : {}),
+    });
   } catch {
     excerptFactsJson = '{"suppressed":"the call body could not be classified as a supported shape; its structural facts are withheld"}';
   }
@@ -2028,6 +2092,27 @@ export function inspectShellWaitEvidence(input) {
     throw invalidEvidenceInput('unclassifiedStructuralDiagnostic must be a boolean when present.');
   }
   const diagnosticEnabled = unclassifiedDiagnostic === true;
+  // The controlled shape-diagnosis gate (plan Task 2): the same optional-input
+  // convention; only an explicitly enabled boolean extends the unknown-call
+  // excerpt with the closed schema-v1 shape facts, and default retention stays
+  // byte-identical. The pair invariant is TOTAL at this boundary too: the
+  // shape facts ride the gated excerpt, so a shape flag without the
+  // structural diagnostic projects nothing (the driver's CLI and
+  // validateCaseInput layers already refuse the combination outright).
+  const unclassifiedShapeDiagnostic = input.unclassifiedShapeDiagnostic;
+  if (unclassifiedShapeDiagnostic !== undefined && unclassifiedShapeDiagnostic !== null && typeof unclassifiedShapeDiagnostic !== 'boolean') {
+    throw invalidEvidenceInput('unclassifiedShapeDiagnostic must be a boolean when present.');
+  }
+  const shapeDiagnosticEnabled = diagnosticEnabled && unclassifiedShapeDiagnostic === true;
+  // The Task 4 comparison gate (plan Task 4 bullet 3): an explicitly enabled
+  // boolean adds the closed decisive-poll comparison facts to the IN-MEMORY
+  // facts (the driver persists them only for waitPolicy records). The
+  // absent/false default projects nothing, so default retention and every
+  // pinned excerpt byte stay identical.
+  if (input.waitPolicyComparisonFacts !== undefined && input.waitPolicyComparisonFacts !== null && typeof input.waitPolicyComparisonFacts !== 'boolean') {
+    throw invalidEvidenceInput('waitPolicyComparisonFacts must be a boolean when present.');
+  }
+  const waitPolicyComparisonFactsEnabled = input.waitPolicyComparisonFacts === true;
   if (rollouts.length === 0) return inconclusive('rollouts-unavailable', 'No rollout evidence was collected.');
   for (const events of rollouts) {
     if (events.length > MAX_EVENTS_PER_ROLLOUT) return inconclusive('rollouts-overflow', 'A rollout exceeds the observer event bound.');
@@ -2051,6 +2136,7 @@ export function inspectShellWaitEvidence(input) {
           redactions,
           null,
           diagnosticEnabled,
+          shapeDiagnosticEnabled,
         );
         return inconclusive('unsupported-call-shape',
           'A collected tool call does not match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual adjudication.',
@@ -2070,6 +2156,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has non-string arguments; the body type is recorded and its content withheld.',
@@ -2083,6 +2171,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has truncated or unparsable arguments; the case needs manual adjudication.',
@@ -2095,6 +2185,8 @@ export function inspectShellWaitEvidence(input) {
             redactions,
             payload.name,
             diagnosticEnabled,
+            shapeDiagnosticEnabled,
+            'direct-arguments',
           );
           return inconclusive('unsupported-call-shape',
             'A collected direct tool call has arguments of an unsupported shape; the case needs manual adjudication.',
@@ -2163,12 +2255,22 @@ export function inspectShellWaitEvidence(input) {
   };
   const observations = inspectObservations(linkage, calls, input, sequence, mode, rootIdentification, rootQueryEvents);
   const completion = inspectCompletion(linkage, companion, handle, sequence, observations, input, mode, rootIdentification);
+  const waitPolicyComparisonFact = waitPolicyComparisonFactsEnabled
+    ? projectDecisivePollComparisonFact(
+        calls,
+        sequence?.originalHandleId ?? null,
+        mode === 'root' ? (rootQueryEvents ?? rootIdentification?.rootEvents ?? null) : (linkage.childEvents ?? null),
+      )
+    : null;
 
   return {
     status: 'supported',
     inconclusive: null,
     facts: {
       linkage: mode === 'root' && rootIdentification !== null ? rootIdentification.facts : linkage.facts, companion, handle, observations, completion,
+      // The Task 4 comparison gate: present ONLY under the explicit boolean
+      // (see the gate validation above); default facts stay byte-identical.
+      ...(waitPolicyComparisonFact !== null ? { waitPolicyComparisonFact } : {}),
       collection: {
         rolloutCount: rollouts.length,
         childToolCallCount: calls?.length ?? null,
@@ -2564,6 +2666,122 @@ function parseStatementOutputs(output, count) {
   }
   if (results.length !== count) return [];
   return results;
+}
+
+/** @param {any[]} events @param {string} callId @param {'call' | 'output'} kind @param {number | null} preferredIndex */
+function rolloutEventForCallId(events, callId, kind, preferredIndex) {
+  const wantedTypes = kind === 'call'
+    ? ['custom_tool_call', 'function_call']
+    : ['custom_tool_call_output', 'function_call_output'];
+  const preferred = typeof preferredIndex === 'number' && Number.isFinite(preferredIndex) ? Math.floor(preferredIndex) : -1;
+  let fallback = null;
+  for (const [index, event] of events.entries()) {
+    const payload = event?.payload;
+    if (payload?.call_id !== callId || !wantedTypes.includes(payload?.type)) continue;
+    if (index === preferred) return event;
+    if (fallback === null) fallback = event;
+  }
+  return fallback;
+}
+
+/**
+ * The Task 4 closed decisive-poll comparison facts (plan Task 4 bullet 3),
+ * ALL derived from the EXISTING admitted-call classification (no new
+ * inference), for the FIRST original-handle empty-input poll:
+ *  - `decisivePollExplicitYield`: the `// @exec:` pragma state. That pragma
+ *    is exactly the outer-yield override whose presence makes the C0/C1
+ *    default-causality comparison inconclusive, so absence must be OBSERVED
+ *    on an admitted poll — never inferred, and any unestablishable state
+ *    stays 'unknown' (never a clean absence). Any non-null parsed directive
+ *    counts as 'present' (a pragma attempt on the decisive cell is a
+ *    conservative inconclusive either way).
+ *  - `decisiveCallSurface`: the admitted call FORM — 'code-mode-wrapper' for
+ *    a custom_tool_call wrapper cell, 'direct-native' for a plain
+ *    function_call (delegation routing never establishes code-mode
+ *    execution), 'unknown' when unestablishable.
+ *  - `decisiveFirstReturnWallMs`: the decisive outer cell's FIRST RETURN —
+ *    the output event's rollout timestamp minus the call event's timestamp —
+ *    measured for PENDING yields exactly like completed observations (the
+ *    yield's pending output is the model-visible first return). This is the
+ *    separately attributable duration the post-run comparison needs: the
+ *    inner-poll wall-time array deliberately records null for a yielded poll
+ *    resolved through its outer wait. Unmeasurable (missing/invalid event
+ *    timestamps) stays null with basis 'unavailable' — never zero, never
+ *    guessed. The attribution requires a STANDALONE single-statement cell:
+ *    a multi-statement cell containing the decisive poll (e.g. the
+ *    sanctioned preparation write sharing the poll's cell) contributes its
+ *    preceding statements' time to the measurement, so its timing stays null
+ *    with basis 'shared-cell' (codex gate round 4) — the comparison
+ *    adjudicator treats it as missing evidence, never observed.
+ *  - `decisiveFirstReturnState`: whether the decisive poll's own parsed
+ *    output was a PENDING yield or a completion (codex gate round 6) — the
+ *    plan's expected discriminator is a yielded-pending control cell, so the
+ *    state must be observed before a control return is attributed to its
+ *    configured default.
+ *  - `decisiveInnerYieldMs`: the decisive poll's ACTUAL requested inner
+ *    window from the admitted call's arguments — the comparability fact that
+ *    differing inner requests already explain any contrast (unavailable ⇒
+ *    null).
+ * Runs only under the explicit `waitPolicyComparisonFacts` gate.
+ * @param {ReturnType<typeof collectCalls> | null} calls
+ * @param {number | null} originalHandleId
+ * @param {any[] | null} events the identified rollout's events (the source
+ *   of the call/output event timestamps)
+ * @returns {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }}
+ */
+function projectDecisivePollComparisonFact(calls, originalHandleId, events) {
+  /** @type {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }} */
+  const unknownFact = { decisivePollExplicitYield: 'unknown', decisiveCallSurface: 'unknown', decisiveInnerYieldMs: null, decisiveFirstReturnWallMs: null, decisiveFirstReturnState: 'unknown', decisiveFirstReturnBasis: 'unavailable' };
+  if (calls === null || originalHandleId === null || !Array.isArray(events)) return unknownFact;
+  for (const entry of calls) {
+    if (entry?.call?.kind !== 'write_stdin') continue;
+    if (readHandleId(entry.call.value?.session_id) !== originalHandleId) continue;
+    // The sanctioned one-shot preparation frame is not a poll; only an
+    // empty-input observation can be the decisive cell.
+    if (entry.call.value?.chars !== '') continue;
+    const decisiveCallSurface = entry.call.wrapped === true ? 'code-mode-wrapper'
+      : entry.call.wrapped === false ? 'direct-native' : 'unknown';
+    // The decisive call's ACTUAL requested inner window (codex gate round 2,
+    // finding 2): read from the admitted call's already-validated arguments
+    // (`yield_time_ms` is a sanctioned write_stdin protocol field carried as
+    // a numeric literal by the parser). Unavailable (absent or non-numeric)
+    // stays null — the comparison refuses rather than assume equality.
+    const rawInnerYield = entry.call.value?.yield_time_ms;
+    const decisiveInnerYieldMs = typeof rawInnerYield === 'number' && Number.isSafeInteger(rawInnerYield) && rawInnerYield > 0 ? rawInnerYield : null;
+    // STANDALONE requirement (codex gate round 4): the cell-duration
+    // projection measures the WHOLE admitted cell, so a multi-statement cell
+    // containing the decisive poll (e.g. the sanctioned preparation write
+    // sharing the poll's cell) attributes its PRECEDING statements' time to
+    // the shell observation. Causal qualification requires the decisive poll
+    // to occupy a STANDALONE single-statement cell (the canonical grammar
+    // already rejects trailing content, so a shared cell is exactly the
+    // non-canonical case this instrument must not causally qualify): a
+    // shared cell keeps its per-statement facts but records the timing as
+    // unavailable with the closed 'shared-cell' basis — the comparison
+    // adjudicator treats it as missing evidence (unknown), never observed.
+    const standaloneCell = entry.statementCount === 1;
+    // The decisive first return's STATE (codex gate round 6): whether the
+    // decisive poll's own parsed output was a PENDING yield or a completion —
+    // read from the existing observation classification, no new inference.
+    // The plan's expected discriminator is a yielded-pending control cell,
+    // so a completed return must never masquerade as default expiry.
+    const decisiveFirstReturnState = entry.output?.state === 'pending' ? 'yielded-pending'
+      : entry.output?.state === 'completed' ? 'completed' : 'unknown';
+    const callEvent = rolloutEventForCallId(events, entry.callId, 'call', entry.callIndex);
+    const outputEvent = rolloutEventForCallId(events, entry.callId, 'output', entry.outputIndex);
+    const callTimestampMs = callEvent === null ? null : interruptEventTimestampMs(callEvent);
+    const outputTimestampMs = outputEvent === null ? null : interruptEventTimestampMs(outputEvent);
+    const measurable = standaloneCell && callTimestampMs !== null && outputTimestampMs !== null && outputTimestampMs >= callTimestampMs;
+    return {
+      decisivePollExplicitYield: entry.call.directive !== null && entry.call.directive !== undefined ? 'present' : 'absent',
+      decisiveCallSurface,
+      decisiveInnerYieldMs,
+      decisiveFirstReturnWallMs: measurable ? outputTimestampMs - callTimestampMs : null,
+      decisiveFirstReturnState,
+      decisiveFirstReturnBasis: measurable ? 'rollout-event-timestamps' : (standaloneCell ? 'unavailable' : 'shared-cell'),
+    };
+  }
+  return unknownFact;
 }
 
 /**
@@ -3097,6 +3315,8 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
  *   workerDurationMs?: number | null,
  *   workerStillAliveAfterObservation?: boolean | null,
  *   unclassifiedStructuralDiagnostic?: boolean | null,
+ *   unclassifiedShapeDiagnostic?: boolean | null,
+ *   waitPolicyComparisonFacts?: boolean | null,
  *   redactions?: string[],
  * }} ShellWaitEvidenceInput
  */

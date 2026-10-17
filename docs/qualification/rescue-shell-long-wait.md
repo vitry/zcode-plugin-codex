@@ -5053,3 +5053,1508 @@ relaxation and waiting for a host update. Production scope remains **ZERO**: spe
 the current-route quantitative long discriminator and repeat, reduced re-entry, exact output linkage,
 and native pending-observation interruption with owned/no-collateral settlement — all outstanding;
 §13.10/§13.11's boundaries (five unknowable pre-gate flags; per-pin scoping) stand.
+
+## 15. 2026-10-16 shape-diagnostic campaign execution log
+
+> Continuation under the same spec (S1–S7, Q1–Q6, §8) authorized by plan
+> `docs/superpowers/plans/2026-10-16-rescue-shell-wait-shape-diagnostic.md`. Budget ledger resets to
+> zero here: D0/D1/C0/C1 all unspent until a §15 entry states otherwise. Process-channel facts first
+> recorded in §15.1 apply to later entries until corrected.
+
+### 15.1 Task 1: pins, seam survey, frozen diagnostic schema, model/config transport recheck (2026-10-16; no code change, no live run, no model turn)
+
+**Process-channel record (dated; not a code fact).** Three environmental degradations were recorded as
+OPEN at execution start (2026-10-16 ~09:35Z): (1) the local proxy `http://127.0.0.1:7890`'s FOREIGN
+upstream was down (github/google/chatgpt unreachable through it and directly, domestic 200), making
+network-dependent codex review submission impossible and recorded pending-backfill, never passed;
+(2) the general-purpose subagent channel was provider-rejected on five dispatch attempts spanning
+~15 minutes (including a trivial probe) while the harness's Explore (read-only) agent type worked, so
+this task's read-only survey evidence was produced by Explore agents and the root performed only the
+mechanical doc edits, schema synthesis from that evidence, and the commits — a recorded degradation for
+THIS docs-only task, with code tasks (Task 2+) still held to the standard
+implementer→self-review→codex-gate chain; (3) no live model-turn run was attempted (plan §3 makes
+failed startup launches count against the run ledger). **Recovery record (~11:15Z, 2026-10-16):** the
+foreign upstream was restored (google 200 through the proxy; chatgpt 403 on bare curl = normal bot
+protection per the standing service-recovery rule), the general-purpose channel probe succeeded, and
+the pending Task 1 review was submitted the same day through the plain non-adversarial `review`
+channel (user-directed; no focus text required because the plan/report/spec ride in the reviewed
+diff): background job `review-mvavfwqo-dqcqv4`, full branch diff against `7fe8cbb…`, verdict **zero
+actionable findings** ("The diff changes only research documentation and does not modify executable
+code or existing contracts. No actionable regressions were identified; the six test-selection tests
+and diff whitespace checks passed."). No backfill remains owed for Task 1. Self-reference note: the
+review ran against the task commit as it stood before this verdict-recorded amendment (HEAD
+`492604d…`); the amend that records the verdict sets the final task SHA in the branch log, and the
+amend adds only this process-channel paragraph plus the plan's matching one-line recovery note — no
+reviewed claim is altered.
+
+**Pins (all re-verified today at execution start).** `shell_plugin_sha` =
+`7fe8cbb80489664eb6ea56917c795cb9a17233cb` (worktree
+`.worktrees/rescue-shell-wait-shape-diagnostic`, branch `docs/rescue-shell-wait-shape-diagnostic`,
+fresh worktree exactly on merged PR #68; dirty state = only the plan file itself plus root scratch
+`findings.md` / `progress.md` / `task_plan.md`, all untracked and never committed).
+`shell_codex_binary` = `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+(realpath of `command -v codex` via `~/.local/bin/codex`; the npm devDependency is NOT used —
+driver `--help` documents an explicit `--codex <absolute executable>` argument with no
+devDependency fallback), `codex --version` = `codex-cli 0.163.0`,
+SHA-256 = `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`. Codex source checkout
+`/Users/zhangzikai/Workspace/Codes/github/codex` HEAD = `dffa0deb69268ed4ac31578794c9ea897b336ae3`,
+`git status --short` empty (clean); inspected read-only via `git show <pin>:<path>` only. Source/binary
+correspondence remains UNPROVEN (unchanged from §13.11); the pin pair is recorded for attribution, not
+as an equivalence claim. Driver `--help` on this pin lists only the pre-Task-2 option set (no `--model`,
+no `--unclassified-shape-diagnostic`, no `--wait-policy`).
+
+**Seam survey (read-only, Explore-produced; file:line on the worktree at `7fe8cbb…`).** All named
+helpers exist under their exact names in `tools/shell-wait-probe/evidence.mjs`:
+`structuralExcerptForUnclassifiedInput` (evidence.mjs:368, private; builds the JSON fact excerpt —
+`suppressed`, `classification`, `tool`, `bodyType`, `inputLines`, `directivePresent/Keys`,
+`withheldDirectiveKeys`, `inputBytes` — ends in `scrubExcerpt`:431); `parseCallStatements` (:605,
+exported; per-line single-statement parse via `parseCallEvent`, any bad/trailing content line rejects
+the whole cell); `parseCallEvent` (:668, exported; dispatches `function_call` string-JSON args,
+`custom_tool_call` preparation :685 / root-control :713 / `parseWrappedToolInput` :719; returns
+`{kind, value, directive, wrapped}` or null); `parseWrapperArguments` (:809, private; bounded by
+`MAX_WRAPPER_ARGUMENT_CHARS` 4096 at :40, JSON-first with a string-aware JS-literal fallback);
+`inspectShellWaitEvidence` (:1970, exported; whole-evidence adjudicator returning
+`{status:'supported', facts}` at :2167-2190 or `{status:'inconclusive', inconclusive:{reason, detail,
+manualAdjudicationRequired?, excerpt?}, facts:null}` via the private `inconclusive()` helper at
+:2193-2196). Privacy scrubber `scrubExcerpt`
+(:130, private; redaction-string replacement, control-char drop, 2048-char `MAX_EXCERPT_CHARS` :41
+truncation at :139-140); driver-side `redactPrivatePaths` (driver.mjs:443, path-only error redaction).
+Fixture disposal `dispose` (fixture.mjs:457-478; worktree-registration removal then `rm -rf` of the
+temporary root; error-path cleanup :479-489).
+
+**Raw-call lifecycle seam (the location Task 2 must use).** Raw text lives only in memory on
+`payload.input` of events in the in-memory `rollouts` array (`loadShellWaitRollouts` driver.mjs:1791,
+loaded at :2288). During the held turn the watches (`waitForLauncherObservation` driver.mjs:1905,
+`waitForPollObservation` :1963/:1990, settlement watch :2054) call `parseCallStatements` per event and
+retain nothing for unknown shapes. Post-run, `inspectShellWaitEvidence` re-scans every event
+(evidence.mjs:2032-2105): for `custom_tool_call`, when `parseCallStatements(event) !== null` the call is
+admitted (:2043), and otherwise the raw `payload.input` flows to
+`structuralExcerptForUnclassifiedInput` (:2048) producing
+`inconclusive('unsupported-call-shape', …, {manualAdjudicationRequired: true, excerpt})` (:2055-2057);
+function_call non-string/unparsable/non-object args take the same path at :2066-2102. **The in-memory
+seam for a future `inspectCallShape(raw)` is evidence.mjs:2043-2048 (and the analog :2065-2102)** —
+after the existing-parser rejection and BEFORE the suppression/fact-projection — where the raw string
+is still in scope and the `diagnosticEnabled` gate (:2026-2030, threaded from driver.mjs:2311) already
+exists. Raw bytes persist only in the in-memory rollouts originating from fixture-owned session
+rollouts deleted by fixture disposal; the record already carries only a one-way `sha256` digest.
+Opting in keeps that boundary: classification consumes the raw in memory, projects closed enums through
+the existing serialization (`buildCaseRecord` driver.mjs:545-688 → `record.evidence.excerpts[]`
+(≤`MAX_CASE_EXCERPTS` :693) → `writeCaseRecord` :704-714, `JSON.stringify` at 0600), and never attaches
+the raw string to the object graph or an exception message.
+
+**Existing redacted-record flow (downstream of the seam).** `mapShellWaitLiveFacts`
+(driver.mjs:2713-2715) turns the inconclusive into `inconclusive = {reason: reason + ': ' + detail}` +
+`excerpts.push({kind: 'unsupported-call-shape', ...excerpt})`; `record.inconclusive = {reason}` only
+(:686) and the optional `unclassifiedStructuralDiagnostic: true` marker at :555; CLI echo at
+:3069-3070. Today's structural-diagnostic retention (evidence.mjs:280-330) is:
+`wholeBodyStatementMatch`, per-line `{line, prefix, braceDepthEnd, endsWithSemicolon, tools,
+withheldToolNames}`, `withheldLines` (emitted only when >0, :322), `sha256` digest, and a
+`diagnosticBudgetChars` (:340-342) with end-dropping at :325-328. Cleanup-error text is path-redacted
+(driver.mjs:2391-2393). The Task 2 shape diagnostic must join THIS record as additional closed facts
+projected by the same budget rules — missing budget room means dropping whole optional facts with an
+incomplete marker, never mid-JSON truncation, raw fallback, or a claimed-complete classification.
+
+**Naive brace hint verdict.** The existing counter is `unclassifiedStructuralDiagnosticFacts`
+(evidence.mjs:288-295), reporting per-line `braceDepthEnd` (:310) as a cumulative +1/−1 over
+`([{/)]}` on retained content lines with no lexer. It cannot distinguish string-vs-code braces (its own
+contract states this at :253-259), gives no one-vs-multiple statement count (only per-line prefix classes
+from `DIAGNOSTIC_LINE_PREFIX_TESTS` :232-236 — `const-r-await`, `text-await-tools`, `text(`, `other` —
+plus `wholeBodyStatementMatch` :284), and exposes trailing post-closing content only as an
+`other`-prefix line or nonzero residual depth (`parseCallStatements` rejects trailing content at
+:622-628). Verdict: NOT information-sufficient for the seven synthetic hypotheses below; a bounded
+string-aware static scan (string/comment-aware linear lexical scan; no AST, no evaluation) is required
+and is specified as the Task 2 implementation basis.
+
+**Synthetic information-sufficiency alternative set (design; Task 2 tests these as RED candidates).
+Seven hypothesis classes share A0's known envelope class (2 physical input lines ≈243 bytes, exactly one
+listed nonempty diagnostic line, `withheldLines` 0, prefix class `const-r-await`, `wholeBodyStatementMatch`
+false — §14.1); they appear as EIGHT concrete records below because the missing/changed-emission-tail
+class is split into two records, and they are DIFFERENT hypotheses sharing only that envelope, never
+reconstructions of A0:**
+
+1. `S-canonical` — accepted canonical wrapper control: `const r = await tools.exec_command({cmd:"…"});`
+   + `text(r);`. Expected: `parserStage: parse-accepted`, `wholeInputConsumed: true` (this is the
+   already-admitted family, listed as the falsifiability control: records 3–5 and 7–8 are each
+   expected to diverge from it on a specific closed fact; records 2 and 6 are expected to be
+   indistinguishable from it on the syntax/decision facts — record 6 on EVERY retained fact
+   (string-boundary rule: tool-like text inside a private literal produces no syntax fact), record 2
+   solely excepting the `parserStage` diagnosis, which necessarily reports the existing wrapper stage
+   because the existing grammar pins the canonical `r` spelling (WRAPPER_PATTERN, evidence.mjs:49;
+   `parseWrappedToolInput` :853-873 has no other accepting path for a `const <binding>` wrapper form —
+   its inline `text(await tools.…)` alternative, evidence.mjs:53, cannot match that shape) — no
+   binding-spelling-dependent syntax/decision fact exists).
+2. `S-binding` — changed result binding: `const q = …; text(q);` (binding spelling varies; identical
+   syntax relations; retained facts must be identical apart from the existing sanctioned
+   digest/envelope AND apart from the `parserStage` diagnosis — the existing grammar pins the `r`
+   spelling (WRAPPER_PATTERN, evidence.mjs:49), so a changed binding necessarily reports the wrapper
+   stage, exactly as the plan's Task 2 example asserts via `parseCallStatements(…) === null` for a
+   noncanonical binding; no binding-spelling-dependent syntax/decision fact exists).
+3. `S-tail-missing` — missing emission tail: first statement only.
+4. `S-tail-changed` — changed emission tail: `text(JSON.stringify(r));` or `text(r.status);`.
+5. `S-arg-unsupported` — unsupported argument expression: `{cmd: buildCmd()}` or spread.
+6. `S-string-contained` — tool-like text inside a private literal: `cmd:"prep text(r) tools.exec_command
+   (prompt) alias"`; lexer boundaries first, so NO syntax fact may be derived from that content.
+7. `S-extra` — extra hidden statement: a third plausible statement after the accepted pair.
+8. `S-trailing-blank` — trailing blank formatting after the final statement (`;\n\n`, trailing blanks).
+
+**Closed decision dimensions (each alternative is expected to differ on a specific subset; one
+dimension per existing failure family):** whole-wrapper mismatch (head class + whole-body coverage);
+argument decoding rejection (literal-object vs unsupported vs over-limit); output projection (tail
+class); extra/unresolved content (residual statements / trailing formatting / slot-limit); lexical
+state (complete vs unterminated vs unsupported syntax); parser stage (which existing stage rejects);
+directive state (absent/valid/invalid/unknown); tool family (`exec_command` vs other). These dimensions
+are the Task 1-frozen discriminator set; the classifier reports closed enums ONLY.
+
+**FROZEN diagnostic schema v1 (`inspectCallShape` — Task 2 implements exactly this; local
+investigation decision under plan §2 privacy contract).** A pure, non-evaluating static classifier over
+the raw call string; fixed input bounds: byte length ≤ 8192 (UTF-8), ≤ 16 statement slots, argument
+literal ≤ 4096 chars (matches `MAX_WRAPPER_ARGUMENT_CHARS`); excerpt/diagnostic record still bounded by
+the existing 2048-char budget. Truncated input NEVER becomes success; a fact that cannot be established
+inside these bounds is dropped whole with an incomplete marker.
+
+```jsonc
+{
+  "version": 1,
+  "coverage": "complete | partial | over-budget | over-scope",   // classification coverage ONLY, never admission
+  "statements": [ {                                              // ≤16 nodes; dropped whole (with statementCount retained) when unsayable
+      "head":       "bound-await | bare-await | emission | other | unknown",
+      "tool":       "exec_command | other | no-call | unknown",    // allowlist = {"exec_command"}; any other established name, incl. spelling, is "other"; unknown only when lexical state blocks classification
+      "argument":   "literal-object | unsupported | none | over-limit",
+      "lexical":    "complete | unterminated | invalid | unsupported-syntax",
+      "tail":       "text-binding | text-stringify-binding | text-public-field | text-other | none | unknown"
+  } ],
+  "statementCount":   "<integer 0..16> | over-limit",
+  "tool":             "exec_command | other | no-call | unknown", // top-level mirror: tool class of the LAST call-carrying statement ('no-call' when none)
+  "head":             "bound-await | bare-await | emission | other | unknown",  // top-level mirror: FIRST statement's head
+  "tail":             "text-binding | text-stringify-binding | text-public-field | text-other | none | unknown",  // top-level mirror: LAST statement's tail
+  "bindingEquality":  "equal | not-equal | unrelated | unknown", // head binding identifier == tail emission identifier (equality only; spelling never retained)
+  "parserStage":      "parse-accepted | wrapper | arguments | output | residual | directive | unknown",  // existing-parser stage order (diagnosis only)
+  "directive":        "absent | valid | invalid | unknown",      // directive verdict read from the existing parseCallEvent directive readback; keys never retained
+  "wholeInputConsumed": <boolean>                                // classification coverage only
+}
+```
+
+**Schema v1 amendment (close-out correction, 2026-10-17, user-commissioned two-axis review;
+adjudicated — the frozen block above is NOT rewritten).** One record-budget retention field joins
+the PROJECTED shape block, quoted field line:
+
+```jsonc
+  "retention": "full | partial",   // record-budget serialization marker: 'partial' when any fact was dropped for the excerpt budget ('statements' array or everything), 'full' when every fact was serialized — NEVER a classification verdict
+```
+
+It describes SERIALIZATION only — `coverage`/`wholeInputConsumed` keep describing CLASSIFICATION
+and are unchanged in every tier. The projector sets it on every tier and budgets it with them:
+full facts → `retention: 'full'`; the `statements`-dropped tier → `retention: 'partial'`;
+and the minimal marker becomes `{ "version": 1, "coverage": "over-budget", "retention":
+"partial" }` — the redundant `wholeInputConsumed` field is OMITTED there ('over-budget' always
+means `false`, so the classification meaning is unchanged) because the tightest observed tier
+budget (67 serialized characters at sixteen slots — 2048 − baseJson 296 − diagnosticJson 1662 −
+23 separator characters, re-derived from the projector's own formula) otherwise could not hold
+both the marker and the retention field; when even the 60-character marker does not fit, the
+block is omitted
+entirely (no unmarked partial result exists). Provenance: the evidence.mjs byte change flows
+into the observer digest automatically (designed behavior).
+
+Retains-a-count note (plan §2 anchoring): beyond booleans/enums, the ONLY new count-like facts are
+`statementCount` and the `statements` array length — both directly represent the schema-projected
+syntax tree's fixed statement-slot count, which plan §2 expressly allows ("fixed public node kinds,
+fixed child slots and binding-equality relations, at most 64 nodes/depth 8/16 statement slots"); no
+other numeric series (string lengths, source offsets, per-token counts) is retained.
+
+Field semantics fixed at freeze: `head` from the first significant token class (declaration-binding of
+an await → `bound-await`; bare await statement → `bare-await`; emission-first (`text(…)` as its own
+head) → `emission`; anything else → `other`/`unknown`). `tail` 'value' classes: `text(<result binding
+identifier>)` → `text-binding`; `text(JSON.stringify(<identifier>))` → `text-stringify-binding`;
+`text(<identifier>.<allowlisted public result field>)` → `text-public-field` (allowlist table is EMPTY
+at v1 — no public field is enumerated, so any property projection stays `text-other`; extending it
+requires a new adjudication); anything else inside `text(…)` → `text-other`; no emission → `none`.
+`tail` at top level mirrors the LAST statement's tail; top-level `tool` and `head` are the remaining
+mirror fields the plan's Task 2 example pins — top-level `tool` is the tool class of the LAST
+call-carrying statement (`no-call` when none), top-level `head` mirrors the FIRST statement's head —
+so the plan's single-call example (`const alias = await …; text(alias);`) projects
+`head: bound-await`, `tool: exec_command`, `tail: text-binding` with no binding spelling retained.
+`bindingEquality` compares only identifier
+equality between an earlier statement's bound result and the final emission's argument identifier — no
+name retained (the plan's example asserts `JSON.stringify(facts)` does not contain `alias`). Public
+syntax strings (`exec_command`, `text(`, `JSON.stringify`) exist ONLY as fixed enum labels. Lexical
+state unsupported features (template literals, regex literals, class fields, optional chaining, etc.)
+map the affected statement to `lexical: unsupported-syntax` and `head/tool: unknown` — never probed
+further. Statement slot order: lexical string/comment boundaries are applied BEFORE structural
+classification, so tool-like text inside task strings never produces `tool` facts. `parserStage`
+mirrors the classification order of existing `parseCallStatements` stages (wrapper → arguments →
+output → residual → directive); `parse-accepted` is a diagnosis report of that parser's response, NOT
+an admission verdict and NEVER a fake validated-call object (`parseCallStatements`' own null/parsed
+outcome stays pinned separately as the plan's example requires). Directive state read from the
+in-memory `parseCallEvent` directive value with the existing private-key withholding; errors →
+`unknown`.
+
+**Model comparison provenance (source-verified read-only at `dffa0deb…`).** The `-m/--model` option:
+`codex-rs/utils/cli/src/shared_options.rs:22-23` — plain `Option<String>` built into the interactive
+CLI (`codex`/`codex resume`/`codex fork` via TuiSharedCliOptions; codex-rs/tui/src/cli.rs:71,110-142)
+and `codex exec` (ExecSharedCliOptions; codex-rs/exec/src/cli.rs:121, flattened at :25) with
+`mark_exec_global_args` promoting it so `codex exec resume/fork/review` accept `-m` (exec/src/cli.rs:164).
+Clap applies NO charset/length validation; an unknown slug downgrades to "Unknown model … will use
+fallback model metadata." (models-manager/src/model_info.rs:94-99), while the plugin-side
+`spawn_agent` Child path separately rejects unknown requested models against its preset list
+(core/src/agent/child_config.rs:327-348). Precedence: CLI `-m` overrides `-c model=…` overrides
+profile overrides config.toml (`core/src/config/mod.rs:3401,4083,4409`; loader docs
+config/src/loader/README.md:26-37). Design resolved (Task 2 implements): optional research
+`--model <id>` on the probe driver, forwarded as a SEPARATE `-m <id>` argv item to the probe's codex
+child, validated at CLI and programmatic boundaries by a bounded safe-identifier check (allowlist of
+name/visible-ASCII-without-shell-metacharacters; no arbitrary argv passthrough), with requested-model
+recorded separately from effective host/Child metadata which may remain unknown
+(`model:(…)`-stays-null contract at driver.mjs:58/:93). `codex features list` runs offline (main.rs:1870-1896;
+errors from the bounded cloud-config refresh are ignored, 20 s cap; no auth/model turn needed).
+**Validated `shell_trial_model`: NOT established.** The scoped repo docs deliberately never name an
+authorized model id (report §92 — the executing observer is contractually blind to model identity;
+historical runs pinned "SAME model" as a provenance requirement without an id string, spec :127; the
+only concrete ids are §306-309's `codex debug models` catalog dump explicitly recorded as
+corroboration, not authorization). Today's offline `codex debug models` (isolated empty CODEX_HOME,
+unauthenticated, bundled catalog data) lists 11 entries, 8 with `list` visibility
+(`gpt-6.1-sol` priority 1, `gpt-6-astra` 2, `gpt-6-sol` 3, `gpt-6-luna` 4, `gpt-5.6-sol` 5,
+`gpt-5.6-terra` 8, `gpt-5.6-luna` 9, `gpt-5.5` 13) plus 3 hidden (`gpt-daybreak-blue-latest`,
+`gpt-daybreak-red-latest`, `codex-auto-review`). Compared against the 0.161.0 dump recorded at
+§306-309 (8 default-capable `multi_agent_version:"v2"` slugs — the six non-daybreak ones, plus the
+plain `gpt-daybreak-blue` / `gpt-daybreak-red` pair counted as two slugs — with `gpt-5.6-luna`
+recorded as v1 and `gpt-5.5` as null): the eight non-daybreak visible slugs match that recorded
+eight-slug non-daybreak set one-for-one, the daybreak pair appears on 0.163.0 only as hidden `*-latest`
+rebindings, and `codex-auto-review` is new-hidden (absent from the §306-309 record); no binding
+relationship beyond the catalog entries is claimed. Consequence recorded:
+authenticating the real account-default model needs foreign network + auth (outage-state, §15.1
+channel record), and no explicit selection can be VALIDATED against the deliberately-unnamed
+historical pin. Until a user-authorized model id exists for this campaign, D0/D1 run with model
+`unknown`-preserved (diagnosis is single-run and cannot make model claims), and C0/C1's shared
+explicit-selection prerequisite is UNMET: per plan Task 4 they remain unspent rather than run as two
+silent-default arms.
+
+**Config transport recheck (isolated `CODEX_HOME=$(mktemp -d)`, no model turn, true exit codes):**
+baseline `features list` exit 0 offline; `-c features.code_mode.default_exec_yield_time_ms=30000`
+exit 0 (key deserializes through the feature-table path); `=0` exit 0; `=abc` exit 1 with "failed to
+load bootstrap configuration … did not match any variant of untagged enum FeatureToml in
+features.code_mode"; `=-5` exit 1; `-c …=abc --version` prints the version and exits 0 (version/help
+path does not deserialize the key — consistent with report §14's positive/malformed rows, plus today's
+zero-accept and negative-reject boundary evidence). No force-enable of interruption was performed and
+installed settlement remains unclaimed; root-join / inner-cap / exec-default / outer-continuation
+defaults stay distinct as recorded in §14.
+
+**Baseline gates on this fresh worktree (2026-10-16):** `npm run test:shell-research` = 451 tests /
+46 suites / pass 451 / fail 0 / skipped 0 (matches the plan's drafting baseline 451/451);
+`node --test tests/test-selection.test.mjs` = 6 tests / pass 6 / fail 0; tracked LF check
+(`node scripts/check-line-endings.mjs`) = 535 tracked files verified, exit 0. The three high-severity
+npm audit advisories disclosed in plan §4 stand disclosed, not adjudicated or fixed.
+
+**Task 1 exit statement.** Concrete safe schema (frozen above), raw-call lifecycle seam
+(evidence.mjs:2043-2048/:2065-2102), model/control limits (`shell_trial_model` unestablished; request
+channel designed and source-verified; C0/C1 comparability prerequisite unmet until user-authorized),
+and parser-stage distinctions (closed dimension set + frozen schema) are recorded. Unknown host syntax
+is still an investigation result, not a frozen API: acceptance of any live form remains gated by
+existing `parseCallStatements`, and the schema's `parse-accepted` value diagnoses rather than admits.
+
+### 15.2 Task 2: opt-in shape-diagnostic classifier, provenance binding and model seam implemented (2026-10-16; no live run, no model turn, research-only code)
+
+**Deliverable (commit amended in place on `docs/rescue-shell-wait-shape-diagnostic`; file:line at this
+commit — anchors REFRESHED to the final canonical-exact state by the round-10 redesign paragraph
+below).** New pure helper `tools/shell-wait-probe/shape-diagnostic.mjs` implementing the FROZEN schema
+v1 exactly: `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` (=1) at :84; executing module-init snapshot
+`EXECUTING_SHAPE_DIAGNOSTIC_SOURCE` :91; frozen input bounds 8192 UTF-8 bytes / 16 statement slots /
+4096 argument characters :96-98; verbatim mirrors of the existing pinned patterns
+(DIRECTIVE/WRAPPER/INLINE/PREPARATION/ROOT_CONTROL + the wrapper head prefix) :104-113; the public
+`inspectCallShape(raw, callContext)` :1105 (never throws, never evaluates: no `eval`/`Function`/
+`vm`, no variable resolution or interpolation; the optional context withholds the wrapper-stage
+verdict for a direct function_call's arguments so the persisted parserStage can never contradict
+the real parser's response for the call type) over the CELL-level length-preserving FORWARD STATE
+MACHINE `lexCellLines`/`lexCellLine` :203/:269 (kept VERBATIM through the redesign; the codex
+round-11 fix below extends the line-comment mask to end at EACH ECMAScript line terminator —
+LF, CR, U+2028, U+2029 — with lexing continuing over the masked terminators in code state) —
+quoted strings
+(including backslash-newline AND backslash-CRLF line continuations), block comments AND the typed
+bracket-delimiter stack carry ACROSS newline slots, and when the lexer meets a boundary it cannot
+prove (template literals with their escape-sensitive delimiters, optional chaining/nullish
+coalescing, a lone slash, or a MISMATCHED delimiter) the remainder of the CELL is WITHHELD
+conservatively (unknown classes, coverage 'partial'), so private content after any lexer boundary
+can never establish a public syntax fact; string content becomes same-length filler, so the raw
+argument bound stays measurable while no literal or comment content survives anywhere
+classification reads — plus the CANONICAL-EXACT classification core :423-1091 (the round-10
+redesign below): ECMAScript identifier classes with `$` AND `_` spelled out on top of
+`\p{ID_Start}`/`\p{ID_Continue}` :432-437 (an underscore-initial binding is an ordinary
+identifier); the positive statement forms, each a DIRECT mechanical variant of the pinned
+mirrors — the dangling pending declaration :440, the awaited declarator (comma-separated
+declarator lists handled POSITIONALLY; non-awaited declarators carry no binding and are skipped
+positionally when token-free) :444-446, the awaited-call statement (the wrapper skeleton
+without the binding prefix) :448, the trivia-tolerant emission head :450 (`text\s*\(` — masked
+comments ARE trivia), the inline-wrapper call position :454, and the frozen tail argument forms
+:460-462; the EXACT public-reference token boundaries :451-458 (`tools`/`text` with identifier-
+continuation lookarounds, surrogate-pair exact under /u — `$tools`, `πtools`, `𐐀text` are single
+identifiers, never public tokens); top-level segmentation at `;` and at a depth-closing `}` :506
+(the grammar's proven statement boundaries); the pinned tools-call extraction :567 (exact
+adjacency, balanced argument span, empty residual) with the bounded argument verdict :551; the
+awaited-expression verdict :584 (pinned call, or token-free — a tools token outside the pinned
+position withholds, never a confident no-call); per-segment classification :639; per-slot
+classification `classifyStatementSlot` :770 (the codex-round-16
+new-statement-head gate :799-808) — EVERY non-positive segment, any public-reference
+token outside a pinned position, any backslash escape in code position (an identifier escape
+anywhere makes reference spellings undecidable — never a confident presence OR absence), any slot
+inside a spanning bracket construct, or an unproven statement position (cell start, after
+`;`/`}`, or after a positively COMPLETED statement are the proven starts; a dangling pending
+declaration licenses only its own initializer continuation — awaited/declaration/pending/
+token-free-plain heads — NEVER an emission head; const-anchored heads are gated like every
+other) takes the ONE conservative
+unknown path: head/tool 'unknown', coverage 'partial', wholeInputConsumed false; tool calls are
+collected POSITIONALLY per segment and the LAST call-carrying segment mirrors the top-level tool
+fact; result bindings are POSITIONAL top-level declarators with the slot's END-OF-SLOT binding
+kept separate from its pre-emission binding so a binding declared after a slot-local emission
+still binds a later final emission; a declaration SPLIT across slots (`const s =\nawait
+tools.…`) is carried as a pending declaration adopted ONLY when the continuation slot itself
+STARTS the awaited initializer (`const s =\n0; await …` is never adopted — the split and joined
+layouts agree); the existing grammar's bounded in-memory literal decoder ported verbatim :899
+(values discarded), the verbatim `parseCallStatements` acceptance mirror (:957-1055, used ONLY to
+diagnose `parserStage` in the frozen stage order wrapper → arguments → output → residual →
+directive :1073), the await-token boundary (an identifier continuation — `await$secret`,
+`awaitπ` — after `await` is a plain statement, not the keyword), the final-emission
+binding-equality rule (UNCERTAINTY PRECEDES EQUALITY: any unknown-classified slot anywhere, or
+between the binding and the final emission, forces 'unknown' regardless of slot layout; no
+relation recovered past unclassified slots) and the whole-input coverage rule in
+`inspectCallShapeBody` :1130-1315 (the codex-round-12/13/14 EOF-truncation check `truncatedAtEnd` :1214). Evidence integration: `inspectCallShape` import :31, the
+budgeted whole-fact drop projection `projectShapeFactsWithinBudget` :364 (full facts → drop the
+`statements` array whole with `statementCount` retained → fixed minimal closed marker → omit), the
+shape block assembly inside the gated excerpt :478-493 after the structural diagnostic's room is
+reserved, the shape gate AND-combined with the structural gate at the evidence input boundary :2106,
+and the classifier invoked ONLY for unknown raw calls at the existing seam (:2130 custom_tool_call;
+:2150/:2165 function_call analogs — string bodies only). Driver: `--unclassified-shape-diagnostic`
+added to the closed option set :287 with the literal-`1` gate :325 and the pair requirement
+:328 (:523 programmatic, validated before any side effect); opt-in record marker `unclassifiedShapeDiagnostic`
+:608 (the schema `version` inside the projected `shape` block is the closed version marker);
+`--model` validated by the bounded safe-identifier pattern :270-275, forwarded as separate
+`-m <id>` argv items :1772 threaded into the held-turn launch :2278, with `provenance.requestedModel`
+recorded only when present :628 (effective host/Child model metadata stays `null`); observer provenance
+bumped to `zcode-shell-wait-observer-v2` :41 hashing evidence.mjs ⊥ shape-diagnostic.mjs ⊥ driver.mjs
+module-init bytes in BOTH the executing snapshot and the record-time re-read (a helper-only change
+changes the executing digest; a two-file construction provably does not reproduce it — negative
+control pinned by test). No admission path, parser, fixture, or production surface changed; default
+retention (no gates) is byte-identical and pinned by test.
+
+**Tests and gates (final counts at this correction commit — refreshed by the round-10 redesign,
+self-review-round-3, the codex-round-11 through -15 paragraphs and the close-out corrections
+below; history in the disposition paragraphs below).** Focused
+`node --test --test-name-pattern='controlled shape diagnosis' tests/shell-wait-probe.test.mjs` =
+102 tests / 5 suites / pass 102 / fail 0 (the pre-redesign count was 80, the post-redesign count
+84, the post-round-3 count 88, the post-round-11 count 90, the post-round-12 count 92, the
+post-round-13 count 94, the post-round-14 count 96, the post-round-15 count 98 and the
+post-round-16 count 100; the +2 delta over 100 is the close-out-correction tests; the plan's
+pinned example verbatim; the §15.1 eight-record
+synthetic set with per-record divergence; record-6 fact-identity; the two-line accepted pair;
+privacy canaries over strings/nested objects/templates/comments/identifiers/property names/
+malformed directives; bounds over-budget/over-scope/argument-over-limit; unterminated string and
+comment; template/regex unsupported-syntax; optional-chaining/nullish declared-unsupported family;
+cross-line comment/template carrying; unmatched/mismatched delimiters incl. cross-line truncation;
+Unicode invariance and raw-control-char mechanical rejection; nested-emission tail rule;
+final-emission binding rule; partial-coverage rule; complete-reference rule; non-string fixed
+result; never-throws battery; `parserStage` ⇔ `parseCallStatements` agreement over 12 inputs;
+driver flag pair at CLI + programmatic + record + spawnSync-negative boundaries; evidence seam
+projection, legacy byte-identity, budget tiers, shape-only refusal; provenance v2 binding with
+negative control; model seam at CLI parse, argv composition, programmatic and CLI-negative
+boundaries; quoted-string LF and CRLF continuations, withheld remainders after unsupported
+syntax, invalid delimiters and templates, and the full round-2-through-round-9 boundary family
+re-pinned to the canonical-exact expectations below).
+`npm run test:shell-research` = 553/553 pass, 51 suites, 0 fail/skip (pre-Task-2 baseline on this
+branch: 451/451 in 46 suites; the pre-redesign Task-2 count was 531, the post-redesign count 535,
+the post-round-3 count 539, the post-round-11 count 541, the post-round-12 count 543, the
+post-round-13 count 545, the post-round-14 count 547, the post-round-15 count 549 and the
+post-round-16 count 551 — the deltas are the round-10, round-3, round-11 through round-16 and the
+close-out finding tests). `node --test
+tests/test-selection.test.mjs` = 6/6 (untouched — no isolation defect exists: the helper is imported
+by the existing suite, no new test entry was created). `npm run lint` and `npm run typecheck` clean;
+`node scripts/check-line-endings.mjs` = 537 tracked files verified, exit 0; `git diff --check` clean.
+Importing the new helper launches nothing (Node builtins only; no spawn surface).
+
+**Interpretive decisions as implemented (schema corners the frozen block leaves open; flagged for
+the D0 adjudication, not silently).** (a) Non-string input returns the fixed out-of-scope result
+`{version:1, coverage:'over-scope', statements:[], statementCount:0, tool:'no-call', head:'unknown',
+tail:'none', bindingEquality:'unknown', parserStage:'unknown', directive:'unknown',
+wholeInputConsumed:false}` — the schema has no invalid-input member, so "over-scope" reads as
+outside the classifier's scope. (b) Record-budget overflow of the excerpt projection reuses
+`coverage:'over-budget'` on the minimal marker — the incomplete marker semantics, not a new enum
+member. (c) Statement slots are NEWLINE slots (mirroring the existing per-line cell splitter), so
+the wrapper+emission pair on ONE line is ONE schema node carrying both head and tail — this is what
+lets the plan's single-line example project `head:'bound-await'`/`tail:'text-binding'` as pinned.
+(d) `parserStage` is the mechanical RAW-line mirror of the existing grammar (e.g. raw control
+characters inside a JSON string literal reject the decode → 'arguments'; lexically broken lines →
+'wrapper'), which can differ from the string-boundary-aware statement facts by design: the facts
+describe the shape, the stage diagnoses the parser's response. (e) Trailing blank formatting keeps
+every statement fact identical to the canonical control and diverges only on
+`parserStage:'residual'` (the existing grammar rejects a blank line after the last statement).
+
+**Self-review disposition (2026-10-16, commit `bde4bb6` reviewed; fixes amended into the same
+commit).** Independent self-review verdict: CLEAN of P1/P2, five P3 findings. Findings 1, 2 and 4
+were FIXED test-first (each RED observed for the stated reason, then GREEN): (1) the tail now
+classifies the OUTERMOST emission's argument (shape-diagnostic.mjs:232 — `text(f(text(r)))` reports
+`tail:'text-other'`/`bindingEquality:'unrelated'` instead of reading the nested `text(r)`; sibling
+emissions keep last-top-level semantics), RED: tail was 'text-binding'; (2) coverage is
+whole-input — any unknown-classified statement node (lexical not 'complete' or head 'unknown') now
+yields `coverage:'partial'`/`wholeInputConsumed:false` (shape-diagnostic.mjs:600), RED: an
+unsupported-syntax cell claimed 'complete'; the earlier "scan completed" interpretation is
+superseded by this adjudication; (4) the pair invariant is total at the evidence API boundary too —
+`unclassifiedShapeDiagnostic` alone projects NO shape block (evidence.mjs:2092), RED: shape-only
+still projected the block. Findings 3 and 5 are ADJUDICATED, NO CODE CHANGE: (3) multi-call
+`bindingEquality` is judged against the FINAL top-level emission only (refined to exactly this by
+codex round 1, finding 4): the final emission's own argument must be a result-binding identifier for
+any relation to hold, and only bindings at or before the final emission's own slot are compared —
+the correct natural reading of §15.1's "an earlier statement's bound result vs the final emission's
+argument identifier"; spellings never retained; recorded here as the v1 semantics, revisitable only
+by a new adjudication. (5) The shape
+budget assumes `scrubExcerpt` does not EXPAND the serialized JSON; a caller redaction string shorter
+than the text it replaces could push serialized output past 2048, where the pre-existing scrubber
+truncates honestly with `truncated:true` (never mid-JSON into a claimed-complete fact set — the
+same exposure the legacy structural diagnostic has had since its introduction; pre-existing
+pattern, not a Task 2 regression; no live or record-path change made this round).
+
+**Codex gate round 1 disposition (2026-10-16, commit `5a51eed` reviewed; fixes amended into the
+same task commit).** The independent codex review returned five P2 findings — all accuracy/privacy
+defects where the classifier OVER-REPORTED on hostile or malformed input. All five were FIXED
+test-first in the frozen v1 schema (no enum or bounds change needed), each RED observed for the
+stated reason before the fix: (1) lexical state now carries ACROSS newline slots
+(shape-diagnostic.mjs:150/:195) — the finding's `/*\ncode\n*/` comment-wrapped wrapper verbatim
+previously leaked `exec_command` + equal-binding facts from COMMENT CONTENT (RED: middle slot
+classified 'bound-await'); comment/template continuation slots are now unknown-classified and the
+cell reports coverage 'partial'/wholeInputConsumed:false; (2) delimiters are tracked BY TYPE with
+the stack carried across lines (:195, cell-end truncation rule in `lexCellLines` :150) — truncated
+`…({cmd:"x"}` was 'complete'/wholeInputConsumed:true (RED) and is now 'unterminated' with coverage
+'partial'; a mismatched `]` is now 'invalid'; the observed pretty-printed wrapper (delimiters
+across lines) stays lexically sound; (3) `?.`/`?.[` and `??` are detected as the DECLARED
+unsupported family BEFORE structural classification (:255) — `text(r?.status)` established a
+'text-other' output diagnosis (RED) and is now 'unsupported-syntax'/head/tool unknown/'wrapper'
+stage/coverage 'partial' (plain ternaries unaffected); class-field syntax has no reliably lexible
+detector at v1 and is disclosed as not specially detected; (4) `bindingEquality` is judged ONLY
+against the FINAL top-level emission (:721) — `const r = …; text(r);\ntext("done");` reported
+'equal' from the EARLIER emission (RED) and is now 'unrelated' with the final emission keeping its
+'text-other' class; (5) public tool/emission facts require COMPLETE references (:323/:345) —
+`$tools.exec_command(…)` established the allowlisted tool fact (RED: `` treats `$` as a boundary)
+and is now 'no-call', and `obj.text(r)` established a binding tail + 'equal' (RED) and is now
+tail 'none'/'unrelated'. Implementation choices disclosed: the complete-reference left boundary
+excludes `.` in addition to identifier characters (STRICTER than the finding's letter, matching its
+"arbitrary member accesses" defect class); unsupported-syntax slots diagnose `parserStage:'wrapper'`
+(the pinned patterns cannot match a form the grammar does not know — consistent with the
+lexically-broken rule); no EXISTING assertion encoded the defective behavior, so none was updated —
+the only test correction was this round's OWN new finding-5 test (a newline-slot indexing premise).
+Gates rerun after the fixes, all green at that round: focused 47/47 (5 suites);
+`npm run test:shell-research` 498/498 pass in 51 suites, 0 fail/skip; selection 6/6; lint clean;
+typecheck clean; LF 537 tracked files; `git diff --check` clean. Canonical/record-2/record-6
+invariances and the evidence seam's legacy byte-identity all re-pinned green after the rewrite
+(final counts at this amended commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 2 disposition (2026-10-16, commit `40fe233` reviewed; fixes amended into the
+same task commit).** A second independent codex review returned five NEW P2 findings of the same
+class (lexer-state/attribution corners where private content could still establish public syntax
+facts); round 1's fixes were verified good. All five were FIXED test-first inside the frozen schema,
+each RED observed for the stated reason before the fix: (1) quoted-string state now carries across
+backslash-newline line continuations (:210 — the finding's `cmd:'x'}); text(r);` continuation line
+was previously lexed as CODE and produced tool/binding facts; it is now string content, unknown-
+classified); (2) lexical boundaries are no longer abandoned after an unsupported token — the lexer
+meets the finding's `x?.y; /*\ncode\n*/` shape by withholding the whole cell remainder once ANY
+unsupported token is seen, so the trailing comment content can never be rediscovered as code;
+(3) template literals (declared unsupported, escape-sensitive delimiters) now withhold the rest of
+the cell on FIRST contact — an escaped backtick no longer "closes" anything and a later closed
+template cannot restore code state; (4) the complete-reference boundary (`followsPrivateExpression`
+:342, used by both `completeToolCall` :382 and `outermostEmissionIndex` :361) now skips
+whitespace/comment trivia back to the significant preceding character (a `.` there means member
+access — `obj. tools. …` and `obj. text(…)` stay private) and honors a bounded Unicode ID_Continue
+class plus `$` (`πtools. …` stays private) while keyword boundaries survive (`await tools. …` stays
+public); (5) `bindingEquality` is never recovered past unclassified slots (:781) — `const r = …;
+text(r);\ntext(` `done` `);` reports 'unknown', not 'equal'. SYSTEMATIC HARDENING (review
+direction): rather than five point fixes, the lexer is now ONE forward state machine over the whole
+cell whose states are exactly the constructs it tracks reliably (code, single/double-quoted strings
+with line-continuation carry, block comments, the typed delimiter stack), and EVERY boundary it
+cannot prove (templates, optional chaining, nullish coalescing, lone slashes) triggers the
+conservative cell-remainder withhold (unknown classes + coverage 'partial' +
+wholeInputConsumed:false) — over-reporting is structurally excluded rather than patched per case.
+Disclosures: withholding after a lone slash makes a mid-cell division operator withhold the rest of
+the cell (conservative; no observed wrapper family contains one); class-field syntax remains
+undetected (no reliably lexible detector at v1, carried disclosure); one new round-2 test premise
+corrected BEFORE its RED run (the escaped-backtick case originally ended at the closing template
+and passed — strengthened to the finding's full shape with post-template code). Gates rerun after
+the fixes, all green at that round: focused 52/52 (5 suites); `npm run test:shell-research` 503/503
+pass in 51 suites, 0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean
+(final counts at this amended commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 3 disposition (2026-10-16, commit `d3ece34` reviewed; fixes amended into the
+same task commit).** A third independent codex review returned four NEW P2 findings of the same
+lexer/boundary class (5→5→4, narrowing); the reviewer's sandbox could not execute the test suite,
+so its reproductions were code-read-based — each was still treated as a real defect and proven with
+this implementer's own RED→GREEN runs. All four were FIXED inside the frozen schema: (1) a
+MISMATCHED delimiter now also conservatively withholds the cell remainder (:295-307) — the
+finding's `]; /*\ncode\n*/` shape previously resumed the next line in code state and leaked
+bound-await/exec_command/text-binding facts from comment content (RED observed); the failing line
+keeps its own 'invalid' verdict while the remainder is 'unsupported-syntax' unknown-classified;
+(2) reference-boundary context now carries ACROSS newline slots (:510/:833-841,
+`maskedEndsWithSignificantDot` :385) — `obj.\ntools.exec_command({cmd:"x"})` established the public
+tool fact and `obj.\ntext(r)` a public emission (both RED observed); a trailing member dot on the
+previous masked line now makes the next line's leading references private while the lines stay
+fully sayable (coverage 'complete'); (3) the boundary check reads the COMPLETE preceding Unicode
+code point (`identifierContinuationBefore` :343, surrogate-pair aware) — `𐐀tools.exec_command(…)`
+(astral ID_Start previously split into a lone low surrogate) reported public exec_command and
+`𐐀text(r)` a binding tail (both RED observed), now 'no-call'/'none'; (4) emission matching is
+TRIVIA-INSENSITIVE (:406): the `text` token is matched to its opening parenthesis across
+whitespace and masked comments, so `text (r)` and `text /* c */ (r)` keep their 'text-binding'
+tail and 'equal' relation (previously 'none'/'unrelated' — RED observed), the emission-first head
+class survives the same spacing, longer identifiers (`textx (`) stay excluded, and — recorded
+interpretation — `parserStage` stays the MECHANICAL mirror of the existing grammar, which rejects
+the noncanonical spacing at its output stage ('output'), the same dual-report treatment as record
+2's binding spelling. The output-stage rule was generalized accordingly (a pinned-head slot the
+pinned skeleton does not accept diagnoses 'output' once the earlier wrapper/arguments stages pass).
+Disclosures: the head-emission check was made trivia-tolerant (`^text\s*\(`) for consistency with
+the tail rule beyond the finding's letter; the cross-line dot context is carried only as a
+trailing-dot fact (a bare identifier at the previous line's end stays a token boundary, so the
+genuine multi-line canonical family is unaffected); no EXISTING assertion encoded the defective
+behavior — the only correction was this round's OWN new finding-1 test (its remainder assertion
+over-pinned 'invalid' for the withheld lines; corrected before GREEN). Gates rerun after the
+fixes, all green at that round: focused 56/56 (5 suites); `npm run test:shell-research` 507/507
+pass in 51 suites, 0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean
+(final counts at this amended commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 4 disposition (2026-10-16, commit `ffc5bfd` reviewed; fixes amended into the
+same task commit).** A fourth independent codex review returned five NEW P2 findings of the same
+class (5→5→4→5). Under the review's CONVERGENCE DIRECTIVE — per-corner cleverness is the problem;
+where two treatments are admissible, take the conservative one — all five were FIXED test-first
+inside the frozen schema: (1) quoted-string state now carries across backslash-CRLF line
+continuations (:210 — a backslash-CR at end-of-line was previously consumed as an ordinary escape
+and the next line resumed in code state, leaking exec_command/literal-object/text-binding facts
+from private string content; RED observed); (2) the carried member-reference context is consulted
+whenever leading trivia is skipped (`followsPrivateExpression` :384) and trivia-only lines keep it
+alive (:833-843) — `obj.\n  tools.exec_command(…)` and `obj.\n  text(r);` and a comment-only
+intervening line previously established public facts (RED observed); (3) emission candidates are
+now TOP-LEVEL CALLS only (`depthBefore` :413 excludes in-braces candidates such as the method
+definition `{text(r) {}}`; `precededByFunctionKeyword` :429 excludes `function text(r) {}`
+declarations) — appending either to a wrapper previously re-established tail 'text-binding' from
+the declaration (RED observed); the top-level-emission question is reliably decidable with the
+depth rule, so the conservative-and-precise verdict is tail 'none' rather than 'unknown'
+(disclosed); (4) a PUBLIC-POSITION trivia-split tool reference (`tools . exec_command(`,
+`tools /* c */ . exec_command(`) is unknown-classified with coverage 'partial' instead of a
+confident no-call claim under complete coverage (`publicPositionTriviaSplitToolReference` :503;
+the preferred conservative treatment; RED observed) while reliably-decidable private references
+and the canonical exact reference keep their precise facts — an initial over-broad version of this
+check also unknown-classified reliably-decidable private references and was corrected before GREEN
+(disclosed); (5) `inspectCallShape` now takes the call-type context
+(`'custom-tool-cell' | 'direct-arguments'`, threaded through evidence.mjs :404/:2110/:2130/:2144/
+:2157) — a direct function_call's wrapper-shaped arguments string previously persisted the
+wrapper-stage diagnosis (the reviewer's `const r` example reads 'parse-accepted'; this
+implementer's RED with a noncanonical binding read 'wrapper' — the same contradiction class), and
+the direct-call context now withholds the verdict ('unknown') so the persisted parserStage can
+never contradict the real parser's response for that call type. No enum or bounds change; no
+existing assertion encoded a defective behavior and none was updated. Gates rerun after the fixes,
+all green at that round: focused 61/61 (5 suites); `npm run test:shell-research` 512/512 pass in
+51 suites, 0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean (final counts at this
+amended commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 5 disposition (2026-10-16, commit `045d74b` reviewed; fixes amended into the
+same task commit).** A fifth independent codex review returned three NEW P2 findings of the same
+class (5→5→4→5→3, narrowing). Under the standing convergence directive, all three were FIXED
+test-first inside the frozen schema: (1) per-line emission depth is CELL-RELATIVE — `depthBefore`
+(:435) now adds the lexer's carried delimiter-stack depth for the line, so `text(r) {}` inside an
+object spanning lines (`const obj = {\ntext(r) {}\n};`) is a method declaration at cell depth 1
+and no longer established tail 'text-binding'/'equal' (RED observed; the genuine emission keeps
+its facts); (2) identifier ESCAPES keep references private — `precededByUnicodeEscape` (:379)
+detects a `\u{...}` escape immediately before the candidate (`privat\u{65}tools` spells
+`privatetools`), treating the boundary as not reliably decidable and the reference as non-public
+(previously the raw `}` read as a public boundary; RED observed for both the tool and the emission
+fact); (3) the emission-token guard extends to `function*` generator declarations
+(`precededByFunctionKeyword` :452) and `new` constructor invocations
+(`precededByNewKeyword` :464), and beyond the reliable skips the candidate must sit in a PROVEN
+call position (`provenCallPosition` :482: start-of-slot or after `;`/`}`/`{`) — an unproven context
+(e.g. an assignment `const assigned = text(r);`) withholds the tail as 'unknown' AND the binding
+relation as 'unknown' (RED observed for all three), per the convergence directive: withhold rather
+than assert where the preceding-token context is not reliably decidable. Disclosures: the proven-
+position allowlist is deliberately narrow (start/`;`/`}`/`{`), so ordinary-call positions after
+other tokens now withhold rather than bind — conservative within the frozen contract; a relation
+is never asserted while any undecidable emission exists in the cell. No enum or bounds change; no
+existing assertion encoded a defective behavior and none was updated. Gates rerun after the fixes,
+all green at that round: focused 64/64 (5 suites); `npm run test:shell-research` 515/515 pass in
+51 suites, 0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean (final counts at this
+amended commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 6 disposition (2026-10-16, commit `85a923e` reviewed; fixes amended into the
+same task commit).** A sixth independent codex review returned three NEW P2 findings of the same
+family — new instances the round-5 allowlist narrowing had not yet covered. Under the standing
+convergence directive, all three were FIXED test-first inside the frozen schema: (1) UNCERTAINTY
+PRECEDES IDENTIFIER EQUALITY — the binding-equality rule is now global: ANY undecidable emission
+in the cell (even one SHARING a slot with a proven emission:
+`const r = await tools.exec_command({cmd:"x"}); text(r); const assigned = text(other);` reported
+'equal' — RED observed), or ANY unknown-classified slot between the binding and the final
+emission, forces 'unknown' regardless of slot layout; (2) call-position context carries ACROSS
+newline slots — start-of-slot is a proven call position ONLY when the previous content line ended
+at a proven statement boundary (`;` or `}`; `maskedEndsWithStatementBoundary` :481), so an
+arrow-body continuation (`const f = () =>\ntext(other);`) withholds as 'unknown' instead of
+reporting 'text-other'/'not-equal' under complete coverage (RED observed), and a trailing `new`
+carries across the break (`maskedEndsWithIdentifierNew` :492 / `precededByNewKeyword` :466) so
+`new\ntext(r);` stays a constructor invocation ('none'; RED observed); (3) the await token
+requires a COMPLETE boundary — the head regexes now reject an identifier continuation after
+`await` (`(?![\p{ID_Continue}$])`), so `await$secret` no longer reports head 'bound-await' +
+'equal' and `awaitπ;` no longer reports 'bare-await' (both RED observed; renaming a private
+identifier no longer changes retained facts). Disclosures: the cell start counts as a proven
+statement boundary (the canonical first-slot emission family stays recognized); a trivia-only
+line keeps all carried contexts; no enum or bounds change; no existing assertion encoded a
+defective behavior and none was updated. Gates rerun after the fixes, all green at that round: focused 67/67
+(5 suites); `npm run test:shell-research` 518/518 pass in 51 suites, 0 fail/skip; selection 6/6;
+lint/typecheck/LF/diff-check clean (final counts at this amended commit are in the Tests-and-gates
+paragraph above).
+
+**Self-review round 2 disposition, post-codex-round-6 (2026-10-16, commit `a2b1f41` reviewed;
+fixes amended into the same task commit).** A fresh full-diff self-review returned one P2 and two
+P3 findings, all FIXED test-first inside the frozen schema: (1) [P2] a public tools reference SPLIT
+across newline slots (`const r = await tools.\nexec_command({cmd:"x"}); …` and
+`const r = await tools\n.exec_command({cmd:"x"}); …`) yielded a confident tool 'no-call' under
+complete coverage while the identical same-line trivia split is unknown-classified — a new carried
+context (`maskedEndsWithSplitToolReference` :510: the previous line's significant tail is the bare
+`tools` token or `tools` + member dot) now routes the continuation slot through the SAME round-4
+conservative relabeling (unknown-classified, coverage 'partial', never a confident 'no-call';
+RED: the continuation slot was lexical 'complete' with tool 'no-call'; GREEN observed for both
+demonstrated inputs); (2) [P3] RULE CHANGE, conservative per the round-5 directive: when the FINAL
+top-level emission occurrence is UNDECIDABLE, the top-level tail itself is now 'unknown' — an
+earlier proven emission is never asserted over it (`const r = await tools.exec_command({cmd:"x"});
+text(r); if (x) text(s);` previously asserted tail 'text-binding' while only the relation was
+withheld; the pinned round-5 regression test was EXTENDED with this case, disclosed here as the
+one existing-test update, and it encoded the defective behavior by omission); (3) [P3] the §15.2
+decoder anchor was stale (:629 → the function head :617 at review time; re-measured to :639 after
+this round's own insertions shifted it again — the deliverable paragraph above always carries the
+FINAL amended-state anchors). No enum or bounds change; no live run. Gates rerun after the fixes,
+all green at that round: focused 68/68 (5 suites); `npm run test:shell-research` 519/519 pass in
+51 suites, 0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean (final counts at this
+amended commit are in the Tests-and-gates paragraph above; anchors re-measured after every
+round's insertions).
+
+**Codex gate round 7 disposition (2026-10-16, commit `db23163` reviewed; fixes amended into the
+same task commit).** A seventh independent codex review returned four NEW P2 findings of the same
+conservative family, all confirmed reaching the persisted evidence projection. All four were FIXED
+test-first inside the frozen schema: (1) an emission reference SPLIT across a newline slot
+(`const r = await tools.exec_command({cmd:"x"}); text(r);\ntext\n(other);` — the scan only
+searched the current line for the opening parenthesis, so the final emission was missed and the
+EARLIER emission asserted 'equal' under complete coverage; RED observed) — a new carried context
+(`maskedEndsWithSplitEmissionReference` :532: a line whose significant tail is the bare `text`
+token, including the ORIGINATING slot itself) routes the continuation through the round-4
+conservative treatment (unknown-classified, coverage 'partial', relation 'unknown');
+(2) SUBSEQUENT result bindings within one slot (`const r = await …; const s = await …; text(s);`
+persisted 'not-equal' from the FIRST declaration while the split layout reported 'equal' — RED
+observed for both layouts) — the slot now tracks POSITIONAL result bindings and the relation uses
+the last binding BEFORE the final emission point (the implementer's chosen treatment: the finding's
+option (a) — the binding preceding the final emission IS reliably decidable positionally, so both
+layouts now agree on the truthful 'equal' rather than withholding; disclosed); (3) PRIVATE-NAME
+suffixes (`this.#tools.exec_command(…)`) persisted tool 'exec_command' because the boundary check
+accepted `#` (RED observed) — a `#` immediately before the candidate now keeps the reference
+private ('no-call', the reliably-decidable treatment); (4) ESCAPED identifier continuations after
+await (`const r = await\u0061; text(r);` — the identifier `awaita`, not the keyword) persisted
+head 'bound-await' + 'equal' because the lookahead accepted the backslash as a boundary (RED
+observed) — the await-token lookaheads now also reject a following backslash (any escape), for
+both the bound-await and bare-await checks. No enum or bounds change; no existing assertion
+encoded a defective behavior and none was updated. Gates rerun after the fixes, all green at
+that round: focused 72/72 (5 suites); `npm run test:shell-research` 523/523 pass in 51 suites,
+0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean (final counts at this amended
+commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 8 disposition (2026-10-16, commit `b2dc633` reviewed; fixes amended into the
+same task commit).** An eighth independent codex review returned four NEW P2 findings under a
+UNIFYING DIRECTION: replace the remaining piecemeal first/last-match scans with POSITIONAL,
+token-based per-slot analysis (the round-7 `bindings` array as the model), make identifier
+tokenization Unicode-aware via the bounded ID_Continue/ID_Start classes, and carry declaration
+state across slots like the other carried contexts; where a question remains undecidable, withhold.
+All four were FIXED test-first inside the frozen schema: (1) NESTED-DECLARATION bindings — the
+binding scan now keeps TOP-LEVEL declarations only (cell-relative depth via `depthBefore`), so a
+function-local `const s = await other();` can no longer supply the top-level emission's binding
+(`…async function f() { const s = await other(); } text(r);` persisted 'not-equal' — RED observed;
+now 'equal', agreeing with the split layout); (2) UNICODE identifier tokens — tool names, binding
+identifiers, and emission-tail identifier patterns use the bounded ID_Continue/ID_Start classes:
+`await tools.工具({});` persisted a confident 'no-call' under complete coverage (RED observed) and
+now reports the fixed 'other' class for the recognized non-allowlisted call, and
+`const π = await tools.exec_command({cmd:"x"}); text(π);` persisted 'unrelated' (RED observed)
+and now participates in bindingEquality as 'equal' with head 'bound-await'/tail 'text-binding'
+(the finding's conservative unknown-fallback was NOT needed — full Unicode tokenization is
+reachable with the existing bounded classes); (3) declarations SPLIT across slots — a new carried
+context (`pendingDeclarationIdentifier` :550, top-level only) makes `const s =\nawait
+tools.exec_command({cmd:"x"});\ntext(s);` bind the next slot's call (persisted 'unrelated' — RED
+observed; now 'equal', agreeing with the joined layout); (4) LATER tool-calling statements within
+a slot — tool calls are collected POSITIONALLY (`completeToolCalls` :640) and the LAST one mirrors
+the top-level tool fact, so `await tools.other({}); await tools.exec_command({cmd:"x"});` now
+mirrors 'exec_command' like the split layout (persisted 'other' — RED observed); the slot's
+argument class pairs with the same last call. No enum or bounds change; no existing assertion
+encoded a defective behavior and none was updated. Gates rerun after the fixes, all green at
+that round: focused 76/76 (5 suites); `npm run test:shell-research` 527/527 pass in 51 suites,
+0 fail/skip; selection 6/6; lint/typecheck/LF/diff-check clean (final counts at this amended
+commit are in the Tests-and-gates paragraph above).
+
+**Codex gate round 9 disposition (2026-10-16, commit `add2d85` reviewed; fixes amended into the
+same task commit).** A ninth independent codex review returned four NEW P2 findings. All four
+were FIXED test-first inside the frozen schema: (1) UNSUPPORTED-REFERENCE checks now fire
+INDEPENDENTLY of canonical matches — `await tools.exec_command({cmd:"x"}); await tools
+.other({});` previously hid the trivia-split reference behind the earlier canonical call
+(persisted tool 'exec_command' under complete coverage; RED observed) and now relabels the slot
+unknown/partial; the trivia-split pattern was tightened to require ACTUAL trivia adjacent to the
+member dot so it never relabels a canonical call (the canonical-only invariance stays pinned);
+(2) a binding declared AFTER a slot-local emission now still binds a LATER final emission — the
+slot keeps its END-OF-SLOT binding state separately from its pre-emission binding
+(`const r = await f(); text(r); const s = await g();\ntext(s);` persisted 'not-equal' while the
+split layout gave 'equal' — RED observed for the disagreement; both layouts now 'equal');
+(3) a PENDING binding is adopted ONLY when the continuation slot establishes the corresponding
+AWAITED initializer — `const s =\n0;\ntext(s);` persisted 'equal' (RED observed; a non-await
+initializer can never become an awaited-result binding) and now discards the pending identifier
+to 'unrelated', agreeing with the joined layout, while the awaited continuation stays 'equal';
+(4) an identifier-START escape in reference position (`await \u0074ools.exec_command({cmd:"x"});
+` — spelling `tools` through an escape) persisted a confident tool 'no-call' under complete
+coverage (RED observed) and now withholds the slot unknown/partial
+(`containsIdentifierStartEscape` :396; escapes BETWEEN identifier characters remain reliably
+handled by the boundary device, disclosed). No enum or bounds change; no existing assertion
+encoded a defective behavior and none was updated. Gates rerun after the fixes, all green:
+focused 80/80 (5 suites); `npm run test:shell-research` 531/531 pass in 51 suites, 0 fail/skip;
+selection 6/6; lint clean; typecheck clean; LF 537 tracked files; `git diff --check` clean;
+canonical/record-2/record-6 invariances and the evidence seam's legacy byte-identity re-pinned
+green.
+
+**Canonical-exact design evaluation (root adjudication requested; NOT redesigned this round).**
+After nine rounds of carried-context corners, a "canonical-exact recognition + everything
+non-canonical unknown/partial" design would likely be a SIMPLER TERMINATING SHAPE: pros — one
+positive grammar (the pinned wrapper/inline/preparation/root-control patterns already exist),
+every non-match falls to a single unknown/partial path (no carried-context matrix to grow), the
+frozen 8-record set is fully discriminated by exactly that grammar, and the review surface
+shrinks from ~20 boundary helpers to pattern-conjunction checks; cons — the current classifier
+additionally answers questions the canonical grammar cannot (e.g. distinguishing an
+unsupported-argument wrapper from a foreign statement, the trivia-tolerant `text (r)` emission,
+and per-statement head/tail classes for partial cells), so a naive collapse would lose that
+diagnostic richness unless the unknown path also carried a small coarse-fact block (statement
+count, byte class, await presence); effort — a focused rewrite of `classifyStatementSlot` +
+`diagnoseParserStage` (~200 lines) plus re-pinning ~30 of the 80 focused tests, est. one session.
+Root's call; the current design remains within contract.
+
+**Canonical-exact redesign (round 10 adjudication, EXECUTED; 2026-10-16, same amended task
+commit).** After codex round 10 returned four more P2 findings (stable ~4/round, all living in the
+classifier's carried-context/boundary-helper web), the root adjudicated the redesign this
+evaluation paragraph anticipated, a first attempt was abandoned mid-rewrite and rolled back
+cleanly, and this rewrite was executed at full capacity. ARCHITECTURE: positive recognition is now
+the pinned grammar mirrors ALONE — every statement slot is segmented at top-level `;`/`}`
+boundaries over the string/comment-masked code (the lexer `lexCellLines`/`lexCellLine` is kept
+verbatim), and EVERY segment must match one explicit positive statement form anchored in a proven
+statement position; the positive forms are the frozen 8-record discrimination set expressed as
+direct mechanical variants of the verbatim WRAPPER/INLINE mirrors (generalized binding
+identifier, missing tail, changed tail incl. `text(JSON.stringify(r))`/`text(r.<prop>)`,
+unsupported argument form, extra statement, trailing blank formatting), the trivia-tolerant
+emission (`text\s*\(` — masked comments ARE trivia), and the awaited-call statement (the wrapper
+skeleton without the binding prefix, required by the split-declaration and comma-declarator
+variants); the mechanical parser-stage mirror (`diagnoseParserStage` and its raw-line helpers) is
+kept verbatim as variant (c). EVERYTHING ELSE collapses into ONE conservative unknown path BY
+CONSTRUCTION — a non-matching segment, a `tools`/`text` token (exact identifier boundaries,
+surrogate-pair exact) outside a pinned position, any backslash escape in code position, a slot
+inside a spanning bracket construct, or an unproven statement position classifies the whole slot
+unknown (head/tool 'unknown', coverage 'partial', wholeInputConsumed false, bindingEquality
+'unknown') — which is what DELETES the boundary-helper web wholesale (eleven helpers:
+`identifierContinuationBefore`, `precededByUnicodeEscape`, `containsIdentifierStartEscape`,
+`followsPrivateExpression`, `maskedEndsWithSignificantDot`, `maskedEndsWithIdentifierNew`,
+`maskedEndsWithSplitToolReference`, `maskedEndsWithSplitEmissionReference`,
+`pendingDeclarationIdentifier`, `provenCallPosition`, `publicPositionTriviaSplitToolReference`,
+plus `depthBefore`, `completeToolCalls`, `outermostEmissionIndex`, `precededByFunctionKeyword`,
+`precededByNewKeyword`; only the trivial `maskedEndsWithStatementBoundary` survives as the
+carried proven-start bit). The frozen schema v1 is UNCHANGED (same enums, bounds, mirrors,
+budget projection, truncation-never-success); evidence.mjs/driver.mjs interfaces stay as-is;
+provenance digest v2 bytes changed automatically with the helper rewrite (designed behavior,
+pinned by the negative-control tests). ROUND-10 CLASSES, CORRECT BY CONSTRUCTION, EACH PINNED AS
+A TEST: (i) `const _r = await tools.exec_command({cmd:"x"}); text(_r);` binds normally — `$` and
+`_` are ECMAScript identifier-start characters NOT inside `\p{ID_Start}` (the low line U+005F is
+a separate property), so the identifier classes spell both out; head 'bound-await', tail
+'text-binding', bindingEquality 'equal', coverage 'complete' (test 'an underscore-initial binding
+is an ordinary JavaScript identifier (round 10, class i)'; the pre-redesign classifier reported
+head 'other'/tail 'text-other'/'unrelated' — a genuine defect); (ii) `const r =\n0; await
+tools.exec_command({cmd:"x"}); text(r);` — the pending declaration is adopted ONLY when the
+continuation slot itself STARTS the awaited initializer, so the split layout reports
+'unrelated', AGREEING with the joined `const r = 0; …` layout (test 'a pending declaration is
+adopted only when the continuation starts the awaited initializer (round 10, class ii)';
+pre-redesign: 'equal' vs joined 'unrelated' — a layout disagreement defect); (iii) `const r =
+await tools.exec_command({cmd:"x"}), s = await tools.exec_command({cmd:"y"}); text(s);` —
+comma-separated declarators are handled POSITIONALLY (the last awaited binding before the final
+emission binds it): both layouts 'equal' (test 'comma-separated declarators bind positionally
+like the split layout (round 10, class iii)'; pre-redesign: 'not-equal' vs split 'equal'); (iv)
+an identifier escape ANYWHERE inside a reference token (`await \u0074ools.exec_command(…)`,
+`await tools.exec_comman\u0064(…)`, `privat\u{65}tools…`) withholds the slot unknown/partial —
+never a confident presence OR absence (test 'an identifier escape anywhere in a reference token
+withholds the slot (round 10, class iv)'; pre-redesign: the escape-at-end form persisted a
+confident 'no-call' under COMPLETE coverage — the over-reporting defect class all ten rounds
+kept finding). EIGHT-RECORD + PARSER-STAGE NON-COARSENING, VERIFIED EXPLICITLY: records 1-8
+re-verified at this commit with FULL fact-set equality against the frozen expectations (record 1
+canonical 'parse-accepted'/'equal' deep-equal; record 2 identical facts except parserStage
+'wrapper'; record 3 'output'/'none'/'unrelated'; record 4 stringify canonical and property
+'text-other'/'output'/'equal'; record 5 'unsupported' at the 'arguments' stage; record 6
+fact-identical to the canonical control AND still accepted by the real parser; record 7 'other'
+statement at 'residual' with 'equal'; record 8 residual-stage-only divergence), and the
+`parserStage` ⇔ `parseCallStatements` agreement holds over all 12 pinned inputs. COARSENING
+DISCLOSURES (per item; every affected existing test re-pinned to the honest new expectation —
+each is the plan's "smallest finite classifier" + honest-unknown semantics doing exactly what
+they sanction: a public syntax fact the canonical grammar cannot positively recognize is no
+longer asserted): (1) same-line member-receiver emission `obj.text(r)` — was tail 'none'/
+'unrelated' under complete coverage, now the slot withholds unknown/partial (test 'public syntax
+facts require COMPLETE tool and emission references'); (2) trivia-after-dot references `obj.
+tools.…`/`obj. text(…)` — was 'no-call'/'none', now withheld unknown/partial (test
+'complete-reference checks skip trivia and honor Unicode identifier continuations'; the
+Unicode-continuation `πtools` case KEEPS its precise 'no-call' — it is a single identifier, so
+the token scan is reliably decidable); (3) cross-line member chains `obj.\ntools.…`,
+`obj.\n  tools.…`, `obj.\ntext(r);`, and the comment-line-carried variant — was
+'no-call'/'none' under complete coverage, now withheld unknown/partial (tests 'reference
+boundaries carry across newline slots', 'member-reference context survives leading trivia and
+trivia-only lines'); (4) identifier-escape references `privat\u{65}tools…`/`…privat\u{65}text(r)`
+— was 'no-call'/'none', now withheld (round-10 class iv; test 'identifier escapes keep
+references private'); (5) function/generator declarations, method definitions and constructor
+invocations carrying the emission token (`function text(r) {}`, `function* text(r) {}`,
+`{text(r) {}}` incl. the spanning-object case, `new text(r);`, `new\ntext(r);`) — was tail
+'none' under complete coverage, now withheld unknown/partial; the safety property (these never
+establish an emission) is now true BY CONSTRUCTION rather than by exclusion lists (tests
+'declarations and method definitions are not emission calls', 'generators, constructors and
+unproven contexts are not emission calls', 'per-line emission depth is cell-relative across
+spanning objects' — the spanning case additionally coarsens bindingEquality 'equal'→'unknown'
+and coverage 'complete'→'partial' because unclassified slots follow the final emission); (6)
+unproven-position assignments (`const assigned = text(other);`) — tail/relation stay 'unknown'
+but coverage coarsens 'complete'→'partial' (test 'uncertainty precedes identifier equality
+regardless of slot layout'); (7) private-name class bodies (`this.#tools.…`) — was 'no-call'
+under complete coverage, now withheld unknown/partial (test 'private-name suffixes never
+establish the public tool reference'); (8) escaped await continuations (`await\u0061`) — was
+head 'other'/'unrelated', now withheld 'unknown' (test 'escaped identifier continuations after
+await are not the keyword'; the `await$secret`/`awaitπ` cases KEEP their precise 'other' heads —
+token-boundary failures are decidable without escapes); (9) the trivia-split and cross-line
+split reference slots keep their unknown classification but the slot's LEXICAL verdict is now
+the lexer's honest 'complete' (the withhold is a classification verdict, not a broken-lexical
+verdict — the old 'unsupported-syntax' label on lexically sound lines is retired) in tests 'a
+trivia-split tool reference is unknown-classified, never a no-call claim', 'a tool reference
+split across newline slots is unknown-classified, never a confident no-call', 'an emission
+reference split across a newline slot withholds the relation', 'unsupported references relabel a
+slot even when a canonical call shares it', 'escaped references in reference position are
+unknown-classified'; (10) `await tools.工具({});` KEEPS its recognized 'other' call class
+(Unicode tool names are inside the pinned call form); the astral `𐐀tools` case KEEPS its precise
+'no-call' (𐐀 is ID_Start ⊂ ID_Continue, so `𐐀tools` is one identifier — no re-pin needed).
+Net: 17 existing tests re-pinned, 4 tests added, focused suite 84/84, shell-research 535/535;
+all gates re-run green after the rewrite (focused 84/84 in 5 suites; selection 6/6; lint clean;
+typecheck clean; LF 537 tracked files; `git diff --check` clean; canonical/record-2/record-6
+invariances, the evidence seam's legacy byte-identity and the privacy canary battery re-pinned
+green). At that round the helper was 1184 lines (was 1246): the deleted boundary-helper/scanner
+web exceeded the added explicit grammar and segmentation machinery even with the expanded module
+documentation.
+
+**Self-review round 3 (post-redesign) disposition (2026-10-16, commit `49e33cc` reviewed;
+fixes amended into the same task commit).** An independent full-diff self-review of the
+redesign returned three P2 and two P3 findings; the architecture itself held (anchoring
+verified for awaited/emission/plain heads, the 8-record set un-coarsened, the deleted helpers
+confirmed gone), and all five were FIXED test-first inside the frozen schema (each RED observed
+for the stated reason before the fix; the round-10 by-construction tests, the 8-record
+fact-set equality and the parser-stage agreement were all re-verified after the fixes).
+(1) [P2] TRIVIA-ONLY SLOTS BECAME PHANTOM STATEMENT NODES — `// nothing here` alone reported
+statementCount 1/head 'other'/complete/consumed-true, a canonical cell plus a trailing `// done`
+reported tail 'none' (truth 'text-binding') and count 2, and a leading `/* lead */` blanked the
+head (truth 'bound-await'): a comment-only line is now FORMATTING — it carries NO statement
+node, skipped like a blank line for the mirrors, the statement count and whole-input coverage
+(RED: the three shapes asserted; GREEN: count 0 / tail 'text-binding' / head 'bound-await'; a
+line whose lexed view is blank but NOT complete — an unterminated comment opener, a withheld
+remainder — stays real unrecognized content). parserStage stays the mechanical raw mirror: the
+trailing comment line still rejects the existing grammar at its residual stage (pinned); the
+one sanctioned re-pin is the comment-only intervening line in 'member-reference context
+survives leading trivia and trivia-only lines', whose tools slot moved from index 2 to index 1
+(the phantom node is gone). (2) [P2] THE CONST-ANCHORED EXEMPTION RECOGNIZED PUBLIC FACTS AT
+UNPROVEN STATEMENT POSITIONS — `foo.\nconst r = await tools…; text(r);` and the invalid-JS
+`if (x)\nconst r = …` reported complete/consumed-true with the full wrapper fact set because
+the withholding gate covered only awaited/emission/plain heads. TREATMENT (the review's
+preferred option (a), consistency with the pre-redesign rounds-2/6 direction): EVERY head now
+requires a proven statement position — cell start, a previous content slot that ended at
+`;`/`}`, or a previous POSITIVELY COMPLETED statement (the declaration/awaited-call/emission
+forms are anchored complete statements even without their optional trailing `;`, which keeps
+the observed two-line pair recognized — its first line ends on the completed emission form).
+The false module comment claiming const-anchored forms are self-proven was rewritten.
+`foo.`/`if (x)` continuations now withhold unknown/partial; cell-start, after-`;`-statement and
+the pair keep their facts (RED→GREEN pinned in 'const-anchored heads require a proven statement
+position (self-review round 3, finding 2)'). (3) [P2] A PENDING DECLARATION'S NON-AWAIT
+CONTINUATION WAS ASSERTED AS A STANDALONE STATEMENT — `const s =\ntext(x); await tools…`
+reported complete with statements[1] emission/text-binding and top-level tail 'text-binding'
+while the joined `const s = text(x); await …` withholds. TREATMENT: a dangling pending
+declaration licenses ONLY its own initializer continuation (awaited-call, declaration, pending
+and token-free plain heads — `const r =\n0;` stays the recognized initializer); an EMISSION
+head after a pending declaration withholds exactly like the joined layout (RED→GREEN pinned in
+'a pending declaration withholds emission continuations (self-review round 3, finding 3)';
+both layouts now unknown/partial, layouts agree). (4) [P3] ONE NON-AWAITED DECLARATOR
+DOWNGRADED THE WHOLE DECLARATION — `const r = await f(), s = 2; text(r);` collapsed to plain
+('unrelated'/'other') while the split layout reported 'equal'. TREATMENT (the review's
+positional option, disclosed): mixed declarator lists are handled PER-DECLARATOR — non-awaited
+declarators are skipped positionally (they carry no result binding) when token-free, so the
+awaited bindings survive in both layouts ('equal'/'bound-await' in both, pinned in 'mixed
+declarator lists keep the awaited bindings positionally (self-review round 3, finding 4)'); a
+non-awaited declarator carrying a public-reference token is never silently ignored — the slot
+withholds (pinned in the same test). (5) [P3] ANCHOR DRIFT — the deliverable paragraph cited
+the pending-declaration pattern at :403 (actually :408 at that commit); all deliverable
+anchors were re-measured and refreshed to this commit's final state (the classifier file is
+now 1221 lines). Gates rerun after the fixes, all green: focused
+`node --test --test-name-pattern='controlled shape diagnosis' tests/shell-wait-probe.test.mjs`
+= 88/88 in 5 suites (the +4 delta over the post-redesign 84 is this round's four
+finding tests); `npm run test:shell-research` = 539/539 in 51 suites, 0 fail/skip; selection
+6/6; lint clean; typecheck clean; LF 537 tracked files; `git diff --check` clean; the 8-record
+fact-set equality, the 12-input parser-stage agreement and the round-10 by-construction tests
+re-verified green after the fixes.
+
+**Codex gate channel record (rounds 7/11; 2026-10-16).** The plain `review` channel died 4/4
+attempts on the post-redesign diff, all with the same signature: the reviewer's
+`node --input-type=module -e` reproduction wedged and the job was lost ~10 minutes later (jobs
+review-mvb31x8r-nckguf, review-mvb4449r-cd5kba, review-mvbaymia-bca13k, review-mvbdjvrk-ou80vi).
+The review was then completed via the adversarial-review channel with an honest scope statement —
+root adjudication after the user-directed plain-channel preference proved mechanically blocked;
+the deviation is recorded here, not silently substituted.
+
+**Codex gate round 11 disposition (2026-10-16, commit `655b926` reviewed; fix amended into the
+same task commit).** The adversarial review of the post-round-3 state returned needs-attention
+with ONE finding, FIXED test-first inside the frozen schema (RED observed verbatim before the
+fix): the line-comment mask ended only at the LF the slot split consumed, so `// lead<U+2028>
+const alias = await tools.exec_command({cmd:"x"}); text(alias);` (and the CR and U+2029
+variants) swallowed the ENTIRE remaining slot into the comment — zero statements, tool
+'no-call', coverage 'complete', wholeInputConsumed true — a confident wrong absence reaching the
+persisted evidence projection. TREATMENT (the review's preferred option (a), verified): the
+comment mask now terminates at EACH ECMAScript line terminator (LF, CR, U+2028, U+2029 —
+`isEcmascriptLineTerminator` :240; the terminators themselves are masked trivia) and lexing
+CONTINUES over them in code state, so the remainder of the slot is still fully lexed and private
+content after the separator stays masked; the post-separator code is then classified normally
+by the top-level segmenter — the finding's verbatim inputs now report the TRUE facts
+(bound-await/exec_command/text-binding/equal/complete) for all three separators. Regressions
+pinned at both seams: 'a line comment ends at every ECMAScript line terminator (codex round 11)'
+(classifier; asserts true facts + no binding spelling for U+2028/U+2029/CR) and 'a line comment
+ended by a non-LF separator cannot hide the carried call (codex round 11)' (evidence
+projection; asserts the persisted shape block carries tool 'exec_command' with the fail-closed
+verdict unchanged and no canary survival). Invariances re-verified after the fix: whole-line
+comments stay formatting, block-comment content stays masked (the round-1 leak pin), string
+content after a separator produces no fake tokens or leaks, a non-canonical remainder after a
+separator still withholds, and the 8-record fact-set equality plus the 12-input parser-stage
+agreement hold. Gates rerun after the fix, all green: focused 90/90 in 5 suites (the +2 delta
+over the post-round-3 88 is this round's two seam tests); `npm run test:shell-research` =
+541/541 in 51 suites, 0 fail/skip; selection 6/6; lint clean; typecheck clean; LF 537 tracked
+files; `git diff --check` clean.
+
+**Codex gate round 12 disposition (2026-10-16, commit `a28678e` reviewed; fix amended into the
+same task commit).** The twelfth adversarial review returned ONE finding (converging), FIXED
+test-first inside the frozen schema (RED observed verbatim before the fix): a cell ending in a
+dangling pending declaration — `const unfinished =` at end of input, alone or appended to a
+canonical wrapper — reported coverage 'complete'/wholeInputConsumed true, and the appended form
+even preserved bindingEquality 'equal', violating §15.1's truncation rule (never turn truncated
+input into success): the slot loop carries `pendingIdentifier` but the completeness checks only
+consulted unknown heads and lexical failures, so EOF never invalidated the unresolved
+initializer. TREATMENT: the EOF-truncation flag (then `unresolvedPendingAtEnd` at :1156; generalized to
+`truncatedAtEnd` :1189 by the round-13/14 fixes below) — the carried pending binding at end
+of input (trailing blank and comment-only formatting lines do not resolve it; a genuine awaited
+continuation resolves it inside the slot loop) — then folded into the whole-input coverage check
+(now :1219) and takes precedence in the binding-equality chain (now :1265-1267): the cell reports
+coverage 'partial'/wholeInputConsumed false with bindingEquality 'unknown' whenever the
+initializer never arrived. All four required directions pinned in 'a dangling pending
+declaration at end of input is unresolved truncation (codex round 12)': (i) `const unfinished
+=` alone → partial/false/'unknown'; (ii) canonical wrapper + the dangling pending → the
+wrapper's relation is NOT asserted ('unknown'); (iii) the valid split
+`const s =\nawait tools…;\ntext(s);` stays 'equal'/complete; (iv) trailing blank/comment lines
+do not resolve the dangling pending. The evidence-projection regression for (ii) is pinned in
+'a dangling pending declaration at end of input never persists equal/complete (codex round
+12)' — the persisted shape block reports bindingEquality 'unknown'/coverage
+'partial'/wholeInputConsumed false with the fail-closed verdict unchanged. No existing
+assertion encoded the defect and none was re-pinned. Gates rerun after the fix, all green:
+focused 92/92 in 5 suites (the +2 delta over the post-round-11 90 is this round's two seam
+tests); `npm run test:shell-research` = 543/543 in 51 suites, 0 fail/skip; selection 6/6; lint
+clean; typecheck clean; LF 537 tracked files; `git diff --check` clean; the 8-record fact-set
+equality and the 12-input parser-stage agreement re-verified green after the fix.
+
+**Codex gate round 13 disposition (2026-10-16, commit `c0e74c2` reviewed; fix amended into the
+same task commit).** The thirteenth adversarial review returned ONE finding (1/round for three
+rounds — converging), FIXED test-first inside the frozen schema (RED observed verbatim before
+the fix): `const alias = await receiver.\ntext(value);` — valid JavaScript for ONE member call
+`receiver.text(value)` — was classified as a standalone emission (tail 'text-binding', a
+'not-equal' relation, complete coverage, wholeInputConsumed true), and the constructor
+continuation `const alias = await new\ntext(value);` fabricated the same; both reached the
+gated evidence projection. ROOT CAUSE: the token-free awaited-expression fallback accepted
+UNFINISHED fragments (a trailing member dot, a trailing `new` keyword), and
+`endsInCompleteStatement` treated every declaration/awaited segment as completed regardless.
+TREATMENT (the review's withhold option, chosen for consistency with the joined layouts —
+DISCLOSED: the joined member/constructor forms already withhold unknown/partial, so the split
+layouts now agree on the truthful withheld verdict rather than recognizing the continuation):
+`expressionEndsUnfinished` (a denylist: a trailing member dot or a trailing `new` keyword —
+deleted by the round-14 inversion below) gave every declaration/awaited segment an expression-
+completion verdict, `endsInCompleteStatement` (now :852) is set only for a positively completed
+statement, and the round-12 EOF flag was generalized to `truncatedAtEnd` (now :1189 = an
+unresolved pending binding OR an unproven end) so an unfinished expression at end of input is truncation too — the cell
+reports partial/wholeInputConsumed-false with the relation 'unknown' in every direction, and
+the continuation slot withholds through the existing unproven-start gate instead of
+fabricating a standalone emission. The module header's completeness claim was rewritten
+accordingly. Regressions pinned at both seams: 'an unfinished awaited expression withholds its
+continuation (codex round 13)' (classifier; both verbatim inputs, both continuation statements
+unknown, joined-layout agreement, the EOF variant, and the canonical split-initializer/canonical
+invariances) and 'an unfinished awaited expression never persists a fabricated emission (codex
+round 13)' (evidence projection; the persisted shape blocks report tail 'unknown'/relation
+'unknown'/partial/false with the fail-closed verdict unchanged). No existing assertion encoded
+the defect and none was re-pinned. Gates rerun after the fix, all green: focused 94/94 in 5
+suites (the +2 delta over the post-round-12 92 is this round's two seam tests);
+`npm run test:shell-research` = 545/545 in 51 suites, 0 fail/skip; selection 6/6; lint clean;
+typecheck clean; LF 537 tracked files; `git diff --check` clean; the 8-record fact-set equality
+and the 12-input parser-stage agreement re-verified green after the fix.
+
+**Codex gate round 14 disposition (2026-10-16, commit `a35ee1c` reviewed; fix amended into the
+same task commit).** The fourteenth adversarial review returned ONE finding and its own
+recommendation became the fix's shape: enumerating unfinished expression tails (dot, `new`, now
+`+`, …) can never terminate, because JavaScript expressions continue after a LARGE open token
+set — the round-13 denylist accepted `const alias = await receiver +\ntext(value);` as a
+standalone emission (tail 'text-binding', a 'not-equal' relation, complete coverage,
+wholeInputConsumed true; same facts in the gated evidence excerpt) and claimed complete
+coverage for `const alias = await receiver +` alone at EOF. STRUCTURAL FIX — THE ALLOWLIST
+INVERSION (the terminating generalization of rounds 12-14: completion is only ever asserted
+from the pinned positive grammar): the `expressionEndsUnfinished` denylist is DELETED;
+`expressionComplete` is now a positive proof — the segment's awaited expression IS a properly
+closed pinned `tools.<name>(…)` call (`pinnedToolsCall`, the wrapper skeleton's own production,
+balanced delimiters + empty residual) — and `endsInCompleteStatement` (:875) is set only for a
+positively completed statement (the emission's closed `text(…)` counts as its own production).
+ANY other awaited/declaration tail — an operator, a dot, `new`, an open paren, a comma,
+anything — leaves completion unproven: a following line withholds through the existing
+unproven-start gate (it continues that expression → unknown/partial, agreeing with the joined
+layouts) and end of input is truncation through `truncatedAtEnd` (:1214 = an unresolved pending
+binding OR an unproven end) → partial/false/'unknown'. The slot-level `;`/`}` boundary remains
+the other completion proof, so `;`-terminated declarations (e.g. `const s = await other();`)
+still prove completion. Regressions pinned at both seams: 'completion is proven only by the
+pinned grammar, never by tail denial (codex round 14)' (classifier; the `receiver +`
+continuation verbatim, BOTH round-13 forms routed through the same new rule, the `receiver +`
+EOF truncation, and the pinned-call/`;`-boundary/canonical invariances) and 'an
+operator-continued expression never persists a fabricated emission (codex round 14)' (evidence
+projection; the persisted shape blocks report partial/false/'unknown' relation with the
+fail-closed verdict unchanged — one test premise corrected before its GREEN run: the EOF
+cell's persisted tail is 'none', the honest no-emission value, since truncation rides
+coverage/relation). No existing assertion encoded the defect and none was re-pinned. Gates
+rerun after the fix, all green: focused 96/96 in 5 suites (the +2 delta over the
+post-round-13 94 is this round's two seam tests); `npm run test:shell-research` = 547/547 in
+51 suites, 0 fail/skip; selection 6/6; lint clean; typecheck clean; LF 537 tracked files;
+`git diff --check` clean; the 8-record fact-set equality and the 12-input parser-stage
+agreement re-verified green after the fix.
+
+**Codex gate round 15 disposition (2026-10-16, commit `a95034a` reviewed; fix amended into the
+same task commit).** The fifteenth adversarial review returned ONE finding (same family — the
+allowlist rule's application to MIXED declarator lists), FIXED test-first inside the frozen
+schema (RED observed verbatim before the fix): `const alias = await tools.exec_command({cmd:
+"x"}), other = receiver +\ntext(alias);` persisted complete/true with bindingEquality 'equal',
+classifying the second line as a standalone emission — it actually continues `other`'s
+initializer (the joined equivalent correctly withholds), and ending at `+` alone also claimed
+complete coverage. ROOT CAUSE: the round-14 completion proof consulted `lastAwaitedExpression`
+even when a LATER non-awaited declarator continues the declaration. TREATMENT: the declaration's
+completion proof derives from the FINAL declarator's production (:663-678, :691-692 — a trailing
+non-awaited initializer is the declaration's tail and has no allowlist production, so the
+statement did NOT complete): the following line withholds through the existing unproven-start
+gate (never a standalone emission/relation) and end of input is truncation through
+`truncatedAtEnd` (:1202). Regressions pinned at both seams: 'declaration completion comes from
+the FINAL declarator (codex round 15)' (classifier; the verbatim split, its EOF variant, the
+joined-equivalent agreement, and the invariances — an all-awaited list completes through its
+final declarator's pinned production pinned-closed without `;`, a `;`-closed list completes
+through the boundary, and the round-14/class-iii positional binding pins keep passing) and 'a
+non-awaited trailing declarator never persists a fabricated emission (codex round 15)' (evidence
+projection; the persisted shape block reports tail 'unknown'/relation 'unknown'/partial/false
+with the fail-closed verdict unchanged). No existing assertion encoded the defect and none was
+re-pinned. Gates rerun after the fix, all green: focused 98/98 in 5 suites (the +2 delta over
+the post-round-14 96 is this round's two seam tests); `npm run test:shell-research` = 549/549
+in 51 suites, 0 fail/skip; selection 6/6; lint clean; typecheck clean; LF 537 tracked files;
+`git diff --check` clean; the 8-record fact-set equality and the 12-input parser-stage
+agreement re-verified green after the fix.
+
+**Close-out corrections (2026-10-17, user-commissioned independent two-axis review of the
+closed campaign; ONE dedicated correction commit on top of the task commits — cross-task
+findings, not amended into them).** Two P3 findings, both FIXED test-first (RED observed before
+each fix): (P3-1) the record-budget projection dropped facts without an explicit
+serialization marker — `projectShapeFactsWithinBudget` (evidence.mjs :364, now EXPORTED for the
+tier algebra) now sets the closed `retention: 'full' | 'partial'` field on EVERY tier (full
+facts → 'full'; the `statements`-dropped tier → 'partial'; the minimal marker → 'partial'),
+describing SERIALIZATION only — `coverage`/`wholeInputConsumed` keep describing the
+CLASSIFICATION and are unchanged — and the minimal marker omits the redundant
+`wholeInputConsumed` ('over-budget' always means false) so marker + retention fit the tightest
+observed tier budget (67 serialized chars at sixteen slots; marker 60 chars); below even the
+marker nothing projects. Tests: 'the shape projection marks record-budget retention on every
+tier (close-out correction)' (unit tier algebra incl. the insufficient tier), 'the persisted
+excerpt carries the retention marker when facts drop (close-out correction)' (the reviewer's
+eight-slot reproduction through the gated excerpt), and the budget-tier test re-pinned with
+retention assertions (the one disclosed re-pin). The §15.1 frozen schema record carries the
+dated v1 amendment note quoting the field line. (P3-2) §15.4's environmental attribution
+narrowed by the dated correction note appended in place: the base-worktree failure SUPPORTS
+pre-existing environmental instability but load is NOT isolated as the unique cause (machine
+state and other environmental factors not separated), CI-on-identical-production-files is NOT a
+passing CI result for this research branch, and the categorical phrases are superseded by the
+evidence-bounded reading — both local runs stay recorded FAILED and all counts/records stand.
+Gates after both fixes: focused
+`node --test --test-name-pattern='controlled shape diagnosis' tests/shell-wait-probe.test.mjs`
+= 102/102 in 5 suites (the +2 delta over the post-round-16 100 is the two close-out tests);
+`npm run test:shell-research` = 553/553 in 51 suites, 0 fail/skip; selection 6/6; lint clean;
+typecheck clean; LF 537 tracked files; `git diff --check` clean; prohibited-path diff EMPTY;
+no live run launched.
+
+**Task 2 exit statement (updated at the redesign).** Opt-in diagnosis is informative on the
+synthetic alternative set and cannot serialize private source or values (canary assertions across
+every adversarial input class);
+`parserStage:'parse-accepted'` diagnoses and never admits; the default admission and legacy
+retention regressions are intact (structural-only and plain excerpts stay byte-identical, pinned).
+D0/D1 remain unspent; the plan's Task 3 command is now runnable against this branch but no live
+turn was launched.
+
+### 15.3 Task 3: D0 executed — the fresh cell was admitted naturally; measurement restored; D1/C0/C1 dispositions (2026-10-17, live run 1/4)
+
+**Task 2 closure record (opening note, kept out of the Task 2 commit to preserve the approved bytes).**
+Task 2 closed at `7e5fbc7…` after 17 codex gate rounds: rounds 1–10 (pre-redesign architecture) produced
+37 fixed findings (trajectory 5→5→4→5→3→3→4→4→4→4, all fixed test-first, every round's disposition in
+§15.2); the root then adjudicated the canonical-exact redesign (§15.2), and rounds 11–16 on the
+redesigned architecture produced 6 further fixed findings (1 each in rounds 12–16), with round 17
+(job `review-mvbh2zud-9fb2fq`, adversarial channel, full branch diff `bf98839..7e5fbc7`) returning
+**approve — zero material findings** ("No defensible material blocker found in bf98839..7e5fbc7 within
+the stated scope"). This §15.3 entry is the first record AFTER that approval; the approved task commit
+`7e5fbc7…` is byte-identical to what the review certified. Channel summary for Task 2: the plain
+`review` channel completed rounds 1–6 and died 4/4 attempts on the post-redesign diff (recorded in
+§15.2's channel record); the adversarial-review channel with an honest scope statement completed every
+round thereafter — the root's channel switch is recorded as an adjudicated deviation, not a silent
+substitution.
+
+**D0 execution (ledger: spent 1 of 4; D1/C0/C1 unspent).** Command exactly per plan Task 3 (fresh
+private output directory `tmp.XyQbWNUQwq`, record `rescue-long.record.json`; no `--cap-ms`; both
+`--unclassified-structural-diagnostic 1` and `--unclassified-shape-diagnostic 1`; `--worker-duration-ms
+130000 --poll-ms 3600000 --budget-ms 360000`; NO `--model` — model stays unknown per §15.1's unmet
+model-control record). Pins: `shell_plugin_sha` = `7fe8cbb…` (the PLUGIN source pin — verified
+identical to the executing HEAD `7e5fbc7…` on every prohibited path: `git diff 7fe8cbb..7e5fbc7 --
+skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/` is EMPTY; the research instrument differs
+and is bound by the observer digest, not the plugin sha); `shell_codex_binary` =
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+(sha256 `8813367…dee31`, codex-cli 0.163.0); executing observer digest v2 =
+`e53f20a0833304b4267b03e671496080dcd03d895305e542d390498a5c5233d6` (binds evidence.mjs ⊥
+shape-diagnostic.mjs ⊥ driver.mjs module-init bytes; `sourcesChangedDuringRun: false`). Driver exit 0.
+One honesty note on the provenance label: the record's `observer.revision` reads
+`working-tree-uncommitted` although the worktree was clean at `7e5fbc7…` — this is the driver's
+commit-resolution label inside a linked worktree; the authoritative binding is the v2 digest plus
+`sourcesChangedDuringRun: false`, and the label is recorded here as observed.
+
+**Fresh-cell adjudication (plan Task 3, fixed facts only).** The A0 blocker did NOT recur: BOTH tool
+cells of this run were admitted naturally by the existing grammar — the record contains two
+`rollout-tool-call` excerpts (`exec_command` launcher invocation with `yield_time_ms: 30000`, and the
+`write_stdin` empty poll with `yield_time_ms: 3600000`), `inconclusive: null`, and NO
+`unsupported-call-shape` cell — the opt-in shape diagnostic was present and armed but had NOTHING to
+classify. Per plan: no recognizer is invented for an admitted cell, and no multi-line-syntax claim is
+inferred from anything. What this adjudicates is exactly and only that THIS fresh cell was admissible;
+A0's historical cell stays unreconstructed and its envelope facts stay historical (§14.1); "a new
+run's form may differ; each diagnosis belongs only to its own fresh cell" (plan §3) — so this result
+does NOT retroactively explain A0.
+
+**Managed-route measurement (the §2 goal's second clause is reachable).** Route: requested
+`rescue-foreground`, actual `named`. Linkage: child linkage checked (mode `rescue`), child thread
+`01a1469d-e23e-…` under parent `01a1469d-797c-…` (distinct namespaces), companionLaunchCount 1,
+companionSendCount 1 (one mapped launch/send), originalHandleChecked true. Held turn (monotonic
+elapsed): launch 1 ms, observation detected 32436 ms, poll started 65010 ms, hold deadline 162436 ms,
+root acknowledgement 171552 ms, ended 171557 ms. Poll: `pollWallTimesMs [97500]` — the empty original-handle
+poll occupied the entire remaining hold window (65010 + 97500 = 162510 ≈ deadline 162436, Δ≈74 ms);
+`remainingLifetimeMs 97426` at poll start (the ≥60000 ms interpretability headroom holds);
+`outerReturns: 0`; `modelCalls: 2`; `rootJoins: 1`; `pendingInnerAtEnd: false`. Terminal:
+`processExit 0`, `hostExit 0`, `publicResultMatchedSentinel true`, `terminalStdoutChecked true`.
+Cleanup: `observation` label, fixture disposed, 0 cleanup errors. Honest null observations: Child
+settlement was NOT observed (`child.settlement.observed: false` — the Root acknowledged and ended
+before any Child settlement was detected), and no interruption was requested (by design for D0).
+`setupAttempts: 2` (setup retried once, then `roleStatus: ready`).
+
+**D1 disposition: unspent — both prongs cause-less.** Prong 1 (diagnostic refinement) requires D0 to
+be insufficient — it was sufficient (the cell admitted; route/handle/poll/terminal evidence all
+measurable, no missing discriminator). Prong 2 (adapted replay) requires a demonstrated finite
+adaptation — none was needed or built (plan: "If code is already admitted naturally, do not invent a
+recognizer"). D1 stays unspent under §3's "not both" ledger.
+
+**C0/C1 disposition: unspent — the model-control prerequisite remains UNMET.** D0 satisfied Task 4's
+measurability precondition ("only after actual managed-route observation can be fully admitted/
+measured" — it now is), so the ONLY blocker is the Task 1 record: no authorized model id exists for
+this campaign (§15.1: `shell_trial_model` NOT established; scoped docs deliberately name none), and
+plan Task 4 forbids running the two arms on two silent defaults ("record both arms unspent rather than
+assume two default models match"). The `--wait-policy config-default` / `--exec-default-ms` transport
+is likewise NOT implemented (plan Task 4 bullet 1): with the arms blocked on a user-owned input,
+building the transport now would be unreachable comparison work. Unblocking requires exactly one
+user input — an authorized model id — after which the transport implementation (TDD) and the two
+runs remain available under this plan's ledger (2 of 4 runs would remain).
+
+**Task 3 exit statement.** Recognition was restored by the host itself on the fresh cell (no adapter),
+attributable actual-route evidence is measured (route/handle/empty-poll/hold-deadline/terminal with
+97.4 s headroom), and D0/D1 use and choice are explicit (D0 spent, D1 unspent-cause-less, C0/C1
+unspent-model-prerequisite). The plan's remaining §8 production gates (quantitative long discriminator
+and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
+owned/no-collateral settlement) are untouched by this result and still required before any production
+recommendation; production scope remains ZERO.
+
+### 15.4 Task 5: verification, gates, S/Q mapping, honest limits and the next decision (2026-10-17, no host launch beyond D0)
+
+**Task 2 closure restated for this section's baseline.** Task 2 closed at `7e5fbc7…` (17 codex gate
+rounds, final round APPROVE with zero material findings — §15.3 opening note); Task 3 recorded D0 at
+`f2eb938…`. This section's gates ran on the branch at its Task 5 state (HEAD `f2eb938…` plus the
+scratch-relocation procedure below; the Task 5 doc commit follows this entry and carries only report/
+plan records).
+
+**Full gate battery (exact plan commands, this date, this worktree):** `npm run test:shell-research` =
+**551/551 pass** (51 suites, 0 fail, 0 skipped); `node --test tests/test-selection.test.mjs` = **6/6**;
+`node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs
+tests/rescue-route-planner.test.mjs` = **417/417**; `node --test tests/rescue-lifecycle.test.mjs
+tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` = **126/126**;
+`node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` = **213/213**; `npm run lint` exit 0;
+`npm run typecheck` exit 0; `node scripts/check-line-endings.mjs` = 537 tracked files, exit 0;
+`git diff --check` clean; final prohibited-path diff
+(`git diff 7fe8cbb… --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/
+docs/superpowers/specs/`) = **EMPTY** — production scope ZERO holds on the branch.
+
+**Full routine `npm test` (once, against the clean exact source including the new helper):**
+executed with the plan's scratch procedure — the session's three owned untracked scratch files
+(`findings.md`, `progress.md`, `task_plan.md`) were moved to a private OS-temp directory
+(`/tmp/shape-dg-scratch.qCpV`, sha256 `10e5e039…`, `942f6b98…`, `6e61391e…`), the suite ran, and the
+files were restored by the same script's finalizer (restore exit 0; the three files verified present
+afterwards; nothing else was stashed and no expectation changed). Result: **3397 tests, 3392 pass,
+2 fail, 3 skipped, duration ≈ 894 s.** Both failures are the same environmental class —
+`ZCODE_PROCESS_TIMEOUT` (~120 s) spawning the real external ZCode binary:
+`tests/integration/package-install.test.mjs` ("packed production install loads and locks on Node
+22.13") and `tests/release-contracts.test.mjs` ("future writable-concurrency ADR remains absent…" via
+`buildMarketplaceSnapshot`). Neither test imports anything this branch changed (the prohibited-path
+diff above is empty, so the test infrastructure is byte-identical to the merged base). **Attribution
+experiment (recorded, decisive):** the complete `npm test` was then run on the plugin-identical,
+instrument-free worktree `.worktrees/rescue-shell-wait-config-path-a` (`b5cd056…`): it ALSO failed —
+**3393 pass / 1 fail**, and the failing test is a DIFFERENT member of the same class
+(`tests/integration/marketplace-install.test.mjs` "isolated Codex marketplace lists and installs…",
+external-process spawn timeout). Conclusion: full-suite external-process spawn timeouts on this
+machine are load-dependent run lottery, present on the merged base and NOT attributable to this
+branch. The failed local runs stay failed with this cause recorded — neither run is relabeled as
+passed, consistent with the standing rule; the same precedent (local full-suite spawn-timeout
+failure, CI green on the identical plugin source) is on record from the config-path-a campaign
+(report §14.1/§15.1 predecessor notes).
+
+**Correction (2026-10-17, user-commissioned close-out review):** the attribution conclusion
+above is narrowed to evidence-bounded inference; nothing else in the record changes. What the
+experiment ESTABLISHES: both local full-suite runs stand recorded FAILED (never relabeled — two
+DISTINCT external-process spawn timeouts of the same environmental class, ~120 s, on
+`package-install.test.mjs`/`release-contracts.test.mjs` and
+`marketplace-install.test.mjs` respectively), and the complete `npm test` on the
+plugin-identical, instrument-free base worktree (`b5cd056…`, prohibited-path diff empty so the
+test infrastructure is byte-identical) ALSO failed with a spawn timeout on a DIFFERENT failing
+member of the same class. That SUPPORTS pre-existing environmental instability on this machine.
+What it does NOT establish: load is NOT isolated as the unique cause (no load measurement
+accompanied either run), machine state and other environmental factors are NOT separated, and
+the base failure does not conclusively exclude every branch effect — it excludes only the claim
+that this branch's presence is NECESSARY for such timeouts. A green CI run on identical
+production files is likewise NOT a passing CI result for THIS research branch (different runner,
+different load, different environment). ROOT CAUSE: UNISOLATED (load vs machine state vs other
+environmental factors not separated). The three categorical phrases above — "(recorded,
+decisive)", "load-dependent run lottery", and "NOT attributable to this branch" — are superseded
+by this bounded reading; the failed-run records, counts and precedent citations stand unchanged.
+
+**S1–S7 mapping (this campaign's deltas; all prior campaign mappings in §9–§14 carry forward
+unchanged):**
+- **S1 (entry points, binding, preparation):** unchanged and exercised — D0's route reached
+  `rescue-foreground`→`named` through the existing launcher/preparation/binding path with
+  child-linkage and original-handle checks all true (§15.3); no new `_meta`/workspace/binding
+  mechanism introduced (production diff empty). Fixture regressions: the prep/binding/route-planner
+  battery (417/417).
+- **S2 (one Companion, one handle, empty input, no second inner poll):** observed on the live route —
+  companionLaunchCount 1, companionSendCount 1, originalHandleChecked true, empty-poll excerpt
+  (`write_stdin` chars ""), outerReturns 0, `pendingInnerAtEnd` false (§15.3). The outer-cell
+  continuation semantics were not separately stressed by D0 (the single poll occupied the hold
+  window) — carried, not newly proved.
+- **S3 (terminal/exit semantics):** processExit 0, hostExit 0, publicResultMatchedSentinel true,
+  terminalStdoutChecked true on the live run (§15.3); job-control/mcp-result battery 213/213.
+  Child-side settlement remained unobserved (honest null) — the terminal evidence is Root-side
+  measured, and exact Child-terminal linkage stays with §8's outstanding production gates.
+- **S4 (placement matrix):** untouched by this campaign (production diff empty; the fixture pins the
+  rescue-foreground→named path only). Review/Adversarial/Status scopes remain their own (§13.7).
+- **S5 (interruption/timeouts/ceiling):** no interruption requested or claimed (D0 by design);
+  `nativeInterruptionClaimed: false` recorded. The source/default capability is STILL NOT installed
+  native interruption with durable no-collateral settlement — §13.11's distinction and §8's
+  requirement stand unchanged. No new timeout or ceiling introduced (production diff empty).
+- **S6 (named/generic alignment):** the D0 route exercised the named Role only; the generic message's
+  wait instructions and matching contracts are unchanged (production diff empty). No generic-route
+  claim follows from D0.
+- **S7 (production surface unchanged):** verified by the empty prohibited-path diff at the Task 5
+  state; the fixture's candidate/instruction variants were isolated to the disposable fixture home
+  and disposed with 0 cleanup errors (§15.3).
+
+**Q1–Q6 mapping (deltas only):**
+- **Q1 (actual Child route/config layers):** already qualified in prior campaigns; D0 re-confirmed the
+  installed-route reachability on 0.163.0 (route actual=named; plugin identity `zcode@vitry` 0.1.0;
+  codex 0.163.0). No new configuration-layer claim.
+- **Q2 (longer observation on named + generic):** the named route carried the empty poll holding
+  97.5 s within the authorized 130 s worker window (§15.3) — a live re-confirmation on the current
+  pin, NOT a new raised-cap result. Generic route: no new evidence; prior scopes stand.
+- **Q3 (re-entry reduction vs 30000/60000):** NOT measured — this is exactly C0/C1's comparison, and
+  the arms remain unspent on the model-control prerequisite (§15.3). D0's single poll with
+  `outerReturns: 0` is one managed-route data point, not the discriminating A/B pair; no
+  re-entry/token-savings claim is made.
+- **Q4 (noise/interruption during pending observation):** not exercised this campaign (no interruption
+  requested; no noise case run). §13.6's not-proven status and §8's requirement stand.
+- **Q5 (Root Review/Adversarial/Status eligibility):** untouched; §13.7's separate qualifications
+  stand (review-wait not-proven on early host exit; adversarial-review-wait/status-wait qualified on
+  their own pins).
+- **Q6 (smallest deployment change):** unchanged from §14.1 — the config-path-a close-out's candidate
+  (supported numeric `-c` transport, re-verified §15.1) remains the evidence-bounded candidate;
+  D0 adds no deployment recommendation, and no config efficacy was measured (C0/C1 unspent).
+
+**Honest limits of this campaign.** (1) The shape diagnostic shipped and survived its gate, but on
+the only live cell observed (D0) it had nothing to classify — its value on a REAL unknown cell is
+fixture-proven (90 focused tests incl. adversarial/privacy batteries) and gate-approved, never
+live-proven. (2) A0's historical form remains unexplained: this campaign proves only that a fresh
+cell admitted naturally; per-run form variance is real (plan §3 anticipated it) and a future run may
+produce another unknown cell — the instrument for that case now exists. (3) The configured
+outer-wait default's runtime effect remains unproven (C0/C1 unspent on the model id) — the config
+efficacy question is exactly where this campaign hands off. (4) Local full-suite spawn-timeout
+failures are recorded as environmental with the base-attribution experiment; CI remains the
+authoritative green for the identical plugin source until a PR exists.
+
+**Next decision (smallest evidence-backed step; user-owned).** Provide one authorized model id for
+this campaign (`shell_trial_model`) — Task 4's transport implementation (TDD) and the two remaining
+ledger runs (C0 at 30000 ms default, C1 at 240000 ms) then execute unblocked on an already-measured
+route, answering the campaign's remaining question: whether the configured outer default actually
+holds the managed Rescue Child past the short outer window. No other input is missing; no new plan or
+authority is needed for those two runs (2/4 ledger remains). Alternatively, close the campaign here:
+the §15 records are complete, the research instrument is qualified, production scope is ZERO, and all
+§8 production gates (quantitative long discriminator + repeat, reduced re-entry, exact terminal
+linkage, native pending-observation interruption with owned settlement) remain outstanding before any
+production recommendation — research completion is not release completion.
+
+### 15.5 Task 4: model selection established, transport implemented through its gate, C0/C1 executed — adjudication `inconclusive`/`timing-borderline` (2026-10-17, live runs 2-3 of 4; ledger closes 3/4 spent, D1 unspent)
+
+**Model selection (the §15.3 blocker, resolved by discovery).** Per the user's handoff directive
+("establish approved/current selection through supported bounded read-only means; if still
+unavailable, ask the user"), the AUTHENTICATED catalog was taken read-only on 2026-10-17
+(`codex debug models` with the real CODEX_HOME; network restored; NO model turn; no config/auth
+dump): 9 entries, 7 `list`-visible — `gpt-6.1-sol` at priority **0** (the account's current default
+candidate; default reasoning level medium), `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, plus hidden `gpt-reserve`/`codex-auto-review`. This differs from the
+§15.1 offline bundled catalog (no `gpt-5.5`; `gpt-reserve` new) — the authenticated view is the
+operative one. `shell_trial_model` = **`gpt-6.1-sol`** (the discovered CURRENT selection; a user
+confirmation prompt went unanswered, and the handoff's primary path — read-only discovery of the
+current selection — resolved; the selection is recorded as REQUESTED on every run and remains
+user-overridable; effective host/Child metadata stays `null`/never-inferred as always).
+
+**Transport implementation (plan Task 4 bullets 1-3; commit chain e372579→…→`efb1fce…`, ONE amended
+task commit).** Implemented by a fresh implementer subagent and hardened through its full review
+loop: an independent self-review (2 rounds: pin-matrix gap fixed with genuine RED; tautological
+assertion replaced by an independent literal oracle) then the codex adversarial gate — **7 rounds
+(4→3→2→1→1→1 findings → approve, zero material findings)**. The gate's findings, each fixed
+test-first, materially hardened the instrument BEFORE any live run: the paragraph's yield
+continuation now continues the RETURNED CELL via the sanctioned `tools.wait` + `cell_id` +
+`yield_time_ms: 240000` instead of a second inner poll; the comparator adjudicates on a newly derived
+`decisiveFirstReturnWallMs` (rollout-event timestamps, pending yields measured like completions)
+instead of `pollWallTimesMs[0]`; requires `decisiveCallSurface = code-mode-wrapper` on both arms
+(direct-native ⇒ `different-surface`); requires identity evidence PRESENT (normalized instruction
+hashes, observer digest, codexVersion, plugin identity+version, and — round 5 — the launched
+binary's SHA-256 `provenance.codexBinarySha256`; missing ⇒ `missing-identity-evidence`, different
+⇒ `mismatched-pin`); requires affirmative structural qualification (inconclusive/handle failures ⇒
+`unqualified-arm`); matching actual inner yields (= each other and requestedPollMs ⇒ else
+`mismatched-inner-yield`); a two-sided control timing band with tolerance max(1000, 10%·controlDefault)
+(basis: D0's own measured overheads; inside-band ⇒ `timing-borderline`, below-band ⇒
+`control-returned-early`, above-band ⇒ `no-config-effect-observed`); a standalone single-statement
+decisive cell (shared cells ⇒ basis `shared-cell` ⇒ timing `null` ⇒ unknown); matching `route.actual
+=== 'named'` on both arms (⇒ else `mismatched-route`); and — round 6 — `decisiveFirstReturnState`
+(`yielded-pending`/`completed`/`unknown`): a COMPLETED control ⇒ `control-completed-without-yield`,
+and `config-effect-observed` requires an OBSERVED pending control yield WITH its verified sanctioned
+continuation. Reasons enum: 18 closed values; verdict enum: 6 closed values. Gates at `efb1fce…`:
+file-level tests 593/593 (55 suites; task-4 subset 40/40), selection 6/6, lint/typecheck/LF clean,
+prohibited-path diff EMPTY.
+
+**C0 (ledger run 2/4; the plan's control arm).** Command exactly per plan (fresh private dir; worker
+180000; poll 240000; budget 600000; `--model gpt-6.1-sol`; both diagnostic flags;
+`--wait-policy config-default --exec-default-ms 30000`). Driver exit 0; `status: executed`;
+`inconclusive: null`. Route actual=named; linkage 1 launch/1 send, handle checked; outerReturns 1;
+modelCalls 3; rootJoins 1; remainingLifetimeMs 148472; process/host exit 0; sentinel matched.
+`requestedModel: gpt-6.1-sol`; `codexBinarySha256` recorded (equals the §15.1 pin `8813367…`);
+normalized instruction hashes recorded. **waitPolicyObservation: `decisiveFirstReturnWallMs` 31007,
+state `yielded-pending`, surface `code-mode-wrapper`, innerYield 240000, explicitYield absent** — the
+model followed the paragraph exactly: the decisive poll yielded pending at ≈ the 30000 ms default
+(+1007 ms) and the model continued the SAME cell with the sanctioned explicit wait (the `wait`
+cell_id excerpt is in the retained evidence).
+
+**C1 (ledger run 3/4; the raised arm).** Same command changing ONLY `--exec-default-ms 240000`; NEW
+private dir. Driver exit 0; `status: executed`; `inconclusive: null`. Route actual=named; linkage 1/1
+handle-checked; outerReturns 0; modelCalls 2; rootJoins 3 (counted separately per plan; no gate
+hinges on it); remainingLifetimeMs 148734; process/host exit 0; sentinel matched; same
+requestedModel/binary digest; **normalized instruction hashes byte-identical to C0**
+(`f0367925…`/`e39d2941…`). **waitPolicyObservation: `decisiveFirstReturnWallMs` 148838, state
+`completed`, surface `code-mode-wrapper`, innerYield 240000, explicitYield absent** — with the raised
+default the decisive poll NEVER yielded: the Companion's work completed at ≈148.8 s inside the
+240000 ms window (real completion — a legitimate alternative ender, disclosed per plan bullet 6).
+
+**Adjudication (the exported `adjudicateWaitComparison`, run on the two retained records):**
+**`{ verdict: 'inconclusive', reason: 'timing-borderline' }`.** Trace: every identity/pin/qualification/
+surface/state/inner-yield/route/headroom gate PASSES (both arms qualified, named×named, wrapper×wrapper,
+identity complete and equal, instructions identical, model shared and explicit); the CONTROL's first
+return 31007 ms falls inside the frozen tolerance band (30000, 33000] — 1007 ms of overhead above the
+default — and the codex-round-2 semantics the gate itself demanded classify exactly this band as
+`timing-borderline`: indistinguishable from overhead, therefore inconclusive, NEVER a verdict. The
+plan's bullet-6 alternative enders are all ruled OUT on the control (yielded-pending + verified
+continuation, no early return, no completion), but the +1007 ms overshoot cannot be attributed within
+the frozen tolerance. **Label: INCONCLUSIVE (timing-borderline) with actual basis — installed-config
+effect is NOT proven by this pair.** No quantified token/re-entry/latency claim follows; rootJoins are
+counted, not interpreted; the C1 completion at 148.8 s means the raised default's own boundary was
+never reached (the work finished inside it), so even the direction of the contrast — C0 yielding at
+≈31 s vs C1 completing at ≈148.8 s without yielding, both sentinel-matched exit-0 — is recorded as
+OBSERVED BUT NOT ADJUDICATED-POSITIVE evidence, exactly the fail-closed behavior the gate demanded.
+Per plan §3: no new budget from an inconclusive result; **the ledger closes at 3/4 spent (D0, C0, C1),
+D1 unspent (cause-less), no registered label remains.**
+
+### 15.6 Task 5 refresh for the Task 4/correction commits (2026-10-17)
+
+**New commits since §15.4:** `e372579…` (close-out corrections: retention marker + narrowed
+attribution — narrow recheck CLEAN after 2 numeric P3s fixed, codex adversarial gate APPROVE),
+`efb1fce…` (task 4 transport — self-review 2 rounds CLEAN + codex gate 7 rounds to APPROVE), and the
+Task 4 execution records (this entry + plan ticks). **Refreshed gates on the final state:**
+`npm run test:shell-research` = **593/593** (55 suites; the file-level suite subsumes the classifier
+and task-4 subsets — 102 classifier-pattern and 40 task-4 tests pass inside it); selection **6/6**;
+lint/typecheck exit 0; LF 538 tracked files exit 0; `git diff --check` clean; prohibited-path diff vs
+`7fe8cbb…` **EMPTY** (production scope ZERO holds at the final state). The full routine `npm test` was
+NOT rerun for the task-4/correction commits: §15.4's environmental attribution record (as narrowed by
+the §15.4 correction note) stands for the machine-level spawn-timeout lottery, and no prohibited or
+shared-infrastructure path changed since (the prohibited-path diff above is the operative check).
+Branch final state: `docs/rescue-shell-wait-shape-diagnostic` at the Task 4 records commit; **not
+pushed — push/PR remains separate user authority.**
+
+**Campaign-final S/Q deltas (superseding §15.4's Q3 line only):** Q3's config-effect question is now
+MEASURED-AND-INCONCLUSIVE (timing-borderline) instead of unspent-blocked: the managed route carried
+both arms end-to-end with the model following the isolation paragraph, and the fail-closed instrument
+refused the positive verdict on a 1007 ms control overshoot inside its frozen tolerance. All other
+S/Q lines stand as §15.4 recorded them. Spec §8's production gates (quantitative long discriminator
+and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
+owned/no-collateral settlement) remain entirely outstanding; production scope remains ZERO; research
+completion is not release completion.
+
+### 15.7 Close-out correction 2 and the versioned re-adjudication (2026-10-17, offline; no live run)
+
+**Origin.** The user's close-out review of `531cc30…` returned one P2 (comparator false negative: the
+control band was documented two-sided but implemented asymmetrically — 27000 accepted, 31007 refused
+as `timing-borderline`, contradicting "|firstReturn − controlDefault| ≤ tolerance") and one spec gap
+(the plan's final-source `npm test` gate had not been run on the final source). No new spec/plan, no
+new live run.
+
+**Correction 2 (commit `e34a5dd…`, amended from `9b2921e…` after a narrow recheck).** The control
+band is now genuinely symmetric: a control return within **[controlDefault − tolerance,
+controlDefault + tolerance], both edges inclusive, IS default expiry and PROCEEDS** to the
+raised-arm comparison; above the upper band stays `no-config-effect-observed`; below the lower band
+stays `control-returned-early`; raised-side rules unchanged (`timing-borderline` remains reachable
+ONLY from the raised arm — disclosed). Every returned verdict now carries **`adjudicationVersion: 2`**
+(exported `WAIT_ADJUDICATION_VERSION = 2`; v1 semantics had no field), so the two adjudications of the
+same pair are distinguishable in records. Disclosed supersession: the round-2 control-arm
+borderline pins (30001/31000/33000) were re-pinned to observed per the user-commissioned ruling; the
+symmetric rule also satisfies round-2's original concern (an overhead-pushed expected contrast is no
+longer rejected as no-effect). Narrow independent recheck: CLEAN on function — band symmetry, version
+coverage of all 23 return branches, and the re-adjudication reproduced independently; differential
+sweep over 26000+ arm-return combinations confirms the v1→v2 behavioral delta is confined EXACTLY to
+control ∈ (30000, 33000]; two stale-comment P3s fixed in the same commit.
+
+**Versioned re-adjudication of the RETAINED C0/C1 records (offline, read-only, records unmodified —
+hash-verified):** v1 (as published in §15.5, preserved as history): `inconclusive`/
+`timing-borderline`. **v2 (adjudicationVersion 2): `config-effect-observed`** — the control's
+yielded-pending return at 31007 ms is IN-BAND default expiry (31007 ∈ [27000, 33000]) with its
+verified sanctioned continuation (outerReturns 1), and the raised arm held past the whole band to
+completion at 148838 ms; every identity/pin/qualification/surface/state/inner-yield/route/headroom
+gate passes on both arms. **Label supersession: installed-config effect OBSERVED on this single
+measured pair (v2).** The plan's bullet-7 caveats are unchanged and binding: this pair involves NO
+repeat, and NO inner-cap M/propagation, quantified token-savings, native-cancellation or
+production-readiness claim follows from it; spec §8's quantitative long discriminator and repeat,
+reduced re-entry, exact terminal linkage and native pending-observation interruption requirements
+remain entirely outstanding. Q3's §15.6 wording ("MEASURED-AND-INCONCLUSIVE (timing-borderline)") is
+hereby SUPERSEDED by the v2 record: Q3's config-effect question is MEASURED with an OBSERVED positive
+on one pair, repeat outstanding.
+
+**Final-source `npm test` (the spec-gap closure; plan Task 5's exact procedure).** Executed once at
+the branch's final source (correction 2 included) with the scratch-relocation procedure (the same
+three owned scratch files moved to `/tmp/shape-dg-scratch2.euO9`, sha256 `10e5e039…`/`942f6b98…`/
+`6e61391e…`; restored by the script's finalizer, restore exit 0, files verified): **exit 0 — 3397
+tests, 3394 pass, 0 fail, 3 skipped, duration ≈ 683 s.** This is the plan-required final verification
+on the final source, and it PASSES; §15.4's two local spawn-timeout failures remain historical facts
+on their own runs (never relabeled), and §15.4's narrowed-attribution correction note stands as the
+record of that episode.
+
+**Gates at the final state (`e34a5dd…` + this record):** `npm run test:shell-research` = 594/594
+(55 suites; the +1 test over 593 is correction 2's boundary-matrix test); task-4 subset 41/41;
+selection 6/6; lint/typecheck exit 0; LF 538 tracked files; `git diff --check` clean; prohibited-path
+diff vs `7fe8cbb…` EMPTY. Branch head after the records commit: see the branch log (this entry's own
+commit postdates the reviewed correction commit `e34a5dd…`, which the codex gate for this correction
+covers together with the working-tree records).
