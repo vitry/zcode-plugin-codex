@@ -14190,7 +14190,7 @@ process.exit(result.status ?? 1);
     // call's SURFACE must be an admitted code-mode wrapper, and required
     // identity evidence must be PRESENT on both arms before any equality
     // comparison (absent-absent nulls never match).
-    const { WAIT_COMPARISON_VERDICTS, adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
+    const { WAIT_COMPARISON_VERDICTS, WAIT_ADJUDICATION_VERSION, adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
 
     const INSTRUCTION_HASHES = { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) };
     const ABSENT_WRAPPER_OBSERVATION = {
@@ -14268,14 +14268,14 @@ process.exit(result.status ?? 1);
     });
 
     test('the comparable pair adjudicates the expected discriminator on the first-return timing', () => {
-      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm()), { verdict: 'config-effect-observed', reason: null },
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm()), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
         'C0 returning around the short window while C1 holds beyond it is the observed effect');
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({
           observations: { outerReturns: 1, pollWallTimesMs: [null], remainingLifetimeMs: 120000 },
           waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 28000 },
         })),
-        { verdict: 'no-config-effect-observed', reason: null },
+        { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 },
         'a raised arm whose first return also lands within the short window shows no observed effect',
       );
       // Boundary semantics: the first return must be STRICTLY beyond the
@@ -14301,21 +14301,62 @@ process.exit(result.status ?? 1);
       // separation (240000 vs 30000).
       const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
       const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // Close-out correction 2 — the band is genuinely SYMMETRIC: a control
+      // return within [controlDefault − tolerance, controlDefault + tolerance]
+      // IS default expiry and PROCEEDS to the raised comparison (the
+      // user-commissioned ruling supersedes the round-2 control-arm
+      // borderline reading: a control ~31 s pending versus a raised ~149 s
+      // completed must not be un-adjudicable merely because the control ran
+      // ~1 s over; the symmetric rule also satisfies round-2's original
+      // concern — the expected contrast is no longer rejected as no-effect).
+      // Raised-side rules are unchanged.
       // Exactly at the deadline: decisive.
-      assert.deepEqual(verdictOf(controlAt(30000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null });
-      // The reviewer's exact case: 30001 vs 150000 is INSIDE the 3000 ms
-      // band — inconclusive, not a silent no-effect verdict.
-      assert.deepEqual(verdictOf(controlAt(30001), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
-      // The whole band is borderline.
-      assert.deepEqual(verdictOf(controlAt(31000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
-      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
+      assert.deepEqual(verdictOf(controlAt(30000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // Inside the band above the default: STILL default expiry.
+      assert.deepEqual(verdictOf(controlAt(30001), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(31000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
       // Decisively beyond the band: the control default did not govern.
-      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null });
-      assert.deepEqual(verdictOf(controlAt(45000), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null });
+      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(45000), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
       // A raised first return inside the band is borderline too; decisively
-      // within the short window is no effect.
-      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
-      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(30000)), { verdict: 'no-config-effect-observed', reason: null });
+      // within the short window is no effect. (The raised-side borderline is
+      // the ONLY remaining producer of 'timing-borderline'.)
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(30000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+    });
+
+    test('the control band edges are both decisive and every verdict is versioned (close-out correction 2)', () => {
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // BOTH edges decisive: 26999 is early; 27000 proceeds.
+      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // The user's verbatim case with the REAL retained shapes: a ~31007 ms
+      // PENDING control versus a ~148838 ms COMPLETED raised arm.
+      assert.deepEqual(verdictOf(controlAt(31007), raisedAt(148838)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // 33000 (the upper edge) proceeds; 33001 refuses.
+      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 });
+      // Raised-side refusals keep their current outcomes.
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
+      // EVERY returned object carries the closed adjudication version — the
+      // two adjudications of the same pair are distinguishable in records
+      // (v1 semantics had no field).
+      const samples = [
+        [waitPolicyRecord(), raisedArm()],
+        [null, raisedArm()],
+        [waitPolicyRecord(), null],
+        [waitPolicyRecord({ inconclusive: { reason: 'discipline' }, linkage: { childLinkageChecked: true, originalHandleChecked: false } }), raisedArm()],
+        [waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed' } })],
+        [waitPolicyRecord({ waitPolicyObservation: null }), raisedArm()],
+      ];
+      for (const [control, raised] of samples) {
+        const outcome = verdictOf(control, raised);
+        assert.equal(outcome.adjudicationVersion, 2, `verdict ${outcome.verdict}/${String(outcome.reason)} must carry the closed adjudication version`);
+        assert.equal(WAIT_ADJUDICATION_VERSION, 2);
+      }
     });
 
     test('a control first return materially below the default is an alternative ender (codex gate round 3, finding 1)', () => {
@@ -14331,13 +14372,13 @@ process.exit(result.status ?? 1);
       // The reviewer's verbatim reproduction: 1000 ms vs 150000 ms at
       // defaults 30000/240000 — the 1000 ms control return is an early
       // preemption, not a 30000 ms default expiry.
-      assert.deepEqual(verdictOf(controlAt(1000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+      assert.deepEqual(verdictOf(controlAt(1000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
       // The lower band edge is 27000 ms; everything strictly below is early.
-      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
       // Exactly at the lower edge the return is still IN the band (decisive).
-      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null });
+      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 });
       // An early RAISED return is the same alternative-ender family.
-      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early', adjudicationVersion: 2 });
     });
 
     test('a COMPLETED control cell never counts as default expiry (codex gate round 6)', () => {
@@ -14350,21 +14391,21 @@ process.exit(result.status ?? 1);
       const completedControl = waitPolicyRecord({
         waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed' },
       });
-      assert.deepEqual(verdictOf(completedControl, raisedArm()), { verdict: 'inconclusive', reason: 'control-completed-without-yield' });
+      assert.deepEqual(verdictOf(completedControl, raisedArm()), { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 });
       assert.deepEqual(verdictOf(completedControl, raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed', decisiveFirstReturnWallMs: 150000 } })),
-        { verdict: 'inconclusive', reason: 'control-completed-without-yield' },
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 },
         'the reviewer\'s completed-live-handle reproduction verbatim');
       // A yielded-pending control whose continuation was never verified
       // cannot attribute its return either.
       const unverifiedContinuation = waitPolicyRecord({
         observations: { ...waitPolicyRecord().observations, outerReturns: 0 },
       });
-      assert.deepEqual(verdictOf(unverifiedContinuation, raisedArm()), { verdict: 'unknown', reason: 'missing-evidence' });
+      assert.deepEqual(verdictOf(unverifiedContinuation, raisedArm()), { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
       // Unknown states stay in the unknown family — both arms.
       const unknownState = { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown' };
-      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownState }), raisedArm()), { verdict: 'unknown', reason: 'missing-evidence' });
+      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownState }), raisedArm()), { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
       assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown', decisiveFirstReturnWallMs: 150000 } })),
-        { verdict: 'unknown', reason: 'missing-evidence' });
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
       // The expected pair: a yielded-pending control WITH the verified
       // continuation against a holding raised arm proceeds.
       assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
@@ -14382,8 +14423,8 @@ process.exit(result.status ?? 1);
         observations: { outerReturns: 0, pollWallTimesMs: [28000], remainingLifetimeMs: 120000 },
         result: { processExit: 0, hostExit: 0, publicResultMatchedSentinel: true, terminalStdoutChecked: true },
       };
-      assert.deepEqual(verdictOf(legacy, raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker' });
-      assert.deepEqual(verdictOf(waitPolicyRecord(), legacy), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker' });
+      assert.deepEqual(verdictOf(legacy, raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), legacy), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker', adjudicationVersion: 2 });
       // A marker without the validated number is no marker either.
       const numberless = waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { policy: 'config-default' } } });
       assert.equal(verdictOf(numberless, raisedArm()).verdict, 'no-causal-comparison');
@@ -14395,9 +14436,9 @@ process.exit(result.status ?? 1);
         waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 150000 },
         observations: { outerReturns: 0, pollWallTimesMs: [150000], remainingLifetimeMs: 60000 },
       })),
-        { verdict: 'no-causal-comparison', reason: 'identical-exec-default' });
+        { verdict: 'no-causal-comparison', reason: 'identical-exec-default', adjudicationVersion: 2 });
       assert.deepEqual(verdictOf(raisedArm(), waitPolicyRecord()),
-        { verdict: 'no-causal-comparison', reason: 'reversed-exec-default-order' },
+        { verdict: 'no-causal-comparison', reason: 'reversed-exec-default-order', adjudicationVersion: 2 },
         'the control arm must carry the SHORTER exec default');
     });
 
@@ -14407,11 +14448,11 @@ process.exit(result.status ?? 1);
         delete provenance.requestedModel;
         return { ...record, provenance };
       };
-      assert.deepEqual(verdictOf(withoutModel(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection' });
-      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutModel(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection' });
+      assert.deepEqual(verdictOf(withoutModel(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutModel(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection', adjudicationVersion: 2 });
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, requestedModel: 'other-test-model' } })),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-model-selection' },
+        { verdict: 'no-causal-comparison', reason: 'mismatched-model-selection', adjudicationVersion: 2 },
       );
     });
 
@@ -14430,7 +14471,7 @@ process.exit(result.status ?? 1);
         const controlOnly = verdictOf(remove(waitPolicyRecord()), raisedArm());
         const raisedOnly = verdictOf(waitPolicyRecord(), remove(raisedArm()));
         const both = verdictOf(remove(waitPolicyRecord()), remove(raisedArm()));
-        const expected = { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' };
+        const expected = { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 };
         assert.deepEqual(controlOnly, expected, `${name} missing on the control arm must refuse the comparison`);
         assert.deepEqual(raisedOnly, expected, `${name} missing on the raised arm must refuse the comparison`);
         assert.deepEqual(both, expected, `${name} missing on BOTH arms must never match as null-equals-null`);
@@ -14444,13 +14485,13 @@ process.exit(result.status ?? 1);
       // identity (missing ⇒ missing-identity-evidence) and a pin
       // (present-but-different ⇒ mismatched-pin).
       const withoutDigest = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: undefined } });
-      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
-      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
-      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 });
       // Different same-version binaries never compare.
       const differentBinary = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: 'f'.repeat(64) } });
-      assert.deepEqual(verdictOf(differentBinary(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-pin' });
-      assert.deepEqual(verdictOf(waitPolicyRecord(), differentBinary(raisedArm())), { verdict: 'no-causal-comparison', reason: 'mismatched-pin' });
+      assert.deepEqual(verdictOf(differentBinary(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), differentBinary(raisedArm())), { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 });
       // Equal digests proceed.
       assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
     });
@@ -14472,8 +14513,8 @@ process.exit(result.status ?? 1);
       for (const [index, mismatch] of mismatches.entries()) {
         const asControl = verdictOf(mismatch(waitPolicyRecord()), raisedArm());
         const asRaised = verdictOf(waitPolicyRecord(), mismatch(raisedArm()));
-        assert.deepEqual(asControl, { verdict: 'no-causal-comparison', reason: 'mismatched-pin' }, `control-side pin mismatch ${index}`);
-        assert.deepEqual(asRaised, { verdict: 'no-causal-comparison', reason: 'mismatched-pin' }, `raised-side pin mismatch ${index}`);
+        assert.deepEqual(asControl, { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 }, `control-side pin mismatch ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'no-causal-comparison', reason: 'mismatched-pin', adjudicationVersion: 2 }, `raised-side pin mismatch ${index}`);
       }
       // Rendered-instruction identity uses the PATH-NORMALIZED hashes: raw
       // rendered hashes differ cross-run, so they are deliberately not pins.
@@ -14481,13 +14522,13 @@ process.exit(result.status ?? 1);
       const differingInstructions = { ...INSTRUCTION_HASHES, normalizedNamedRoleSha256: 'x'.repeat(64) };
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, waitPolicy: { ...raisedArm().provenance.waitPolicy, instructions: differingInstructions } } })),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-instruction-variant' },
+        { verdict: 'no-causal-comparison', reason: 'mismatched-instruction-variant', adjudicationVersion: 2 },
       );
       // A present-vs-absent instruction projection is missing identity
       // evidence (not a mere mismatch): neither arm may lack the hashes.
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { ...waitPolicyRecord().provenance.waitPolicy, instructions: null } } }), raisedArm()),
-        { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' },
+        { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence', adjudicationVersion: 2 },
       );
     });
 
@@ -14499,22 +14540,22 @@ process.exit(result.status ?? 1);
       // differing or non-named routes refuse the comparison.
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: 'generic' } })),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
         'named control versus generic raised changes the delivery path',
       );
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: 'generic' } }), raisedArm()),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
       );
       for (const routeActual of ['unknown', null, 'review-wait']) {
         assert.deepEqual(
           verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: routeActual } }), raisedArm()),
-          { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
           `route actual ${String(routeActual)} is not the planned named route`,
         );
         assert.deepEqual(
           verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: routeActual } })),
-          { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route', adjudicationVersion: 2 },
         );
       }
       // named versus named proceeds (pinned beside the refusal for contrast).
@@ -14526,11 +14567,11 @@ process.exit(result.status ?? 1);
       // the remaining surface fact: an UNCHECKED child linkage on either arm.
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: false } })),
-        { verdict: 'different-surface', reason: null },
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
       );
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: null } })),
-        { verdict: 'different-surface', reason: null },
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
       );
     });
 
@@ -14541,23 +14582,23 @@ process.exit(result.status ?? 1);
       const directNative = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'direct-native' };
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ waitPolicyObservation: directNative }), raisedArm()),
-        { verdict: 'different-surface', reason: null },
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
         'a direct-native control arm is a different surface',
       );
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: directNative })),
-        { verdict: 'different-surface', reason: null },
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
         'a direct-native raised arm is a different surface',
       );
       const unknownSurface = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'unknown' };
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownSurface }), raisedArm()),
-        { verdict: 'unknown', reason: 'missing-evidence' },
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
         'an unestablished decisive surface is missing evidence, never code mode',
       );
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ waitPolicyObservation: null }), raisedArm()),
-        { verdict: 'unknown', reason: 'missing-evidence' },
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
       );
     });
 
@@ -14573,20 +14614,20 @@ process.exit(result.status ?? 1);
         linkage: { childLinkageChecked: true, originalHandleChecked: false },
         result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
       });
-      assert.deepEqual(verdictOf(unqualified, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      assert.deepEqual(verdictOf(unqualified, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
       const unqualifiedRaised = raisedArm({
         inconclusive: { reason: 'completion cannot be qualified: the original-handle observation discipline did not hold.' },
         linkage: { childLinkageChecked: true, originalHandleChecked: false },
         result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
       });
-      assert.deepEqual(verdictOf(waitPolicyRecord(), unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
       // Both arms unqualified (with a real contrast) refuse identically.
-      assert.deepEqual(verdictOf(unqualified, unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      assert.deepEqual(verdictOf(unqualified, unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
       // The sentinels alone never restore comparability.
       assert.notEqual(verdictOf(unqualified, raisedArm()).verdict, 'config-effect-observed');
       // A null-checked handle (unknown) is equally unqualified.
       const unchecked = waitPolicyRecord({ linkage: { childLinkageChecked: true, originalHandleChecked: null } });
-      assert.deepEqual(verdictOf(unchecked, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      assert.deepEqual(verdictOf(unchecked, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 });
     });
 
     test('differing or unverifiable actual inner yields refuse the comparison (codex gate round 2, finding 2)', () => {
@@ -14594,22 +14635,22 @@ process.exit(result.status ?? 1);
       // raised 240000 ms — differing inner requests already explain any
       // contrast, so the pair must refuse before any causal verdict.
       const controlFastPoll = waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } });
-      assert.deepEqual(verdictOf(controlFastPoll, raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+      assert.deepEqual(verdictOf(controlFastPoll, raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
       assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } })),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
       // An unverifiable actual yield (absent from the admitted arguments) is
       // a refusal, never assumed equal.
       assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: null } }), raisedArm()),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 });
       assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: null })),
-        { verdict: 'unknown', reason: 'missing-evidence' });
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 });
       // The actual yield must ALSO match the intended observation window.
       assert.deepEqual(
         verdictOf(
           waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, requestedPollMs: 3_600_000 } }),
           raisedArm({ provenance: { ...raisedArm().provenance, requestedPollMs: 3_600_000 } }),
         ),
-        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' },
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield', adjudicationVersion: 2 },
         'actual 240000 against an intended 3600000 window is not the compared trial',
       );
       // Equal actual yields matching the intended window proceed.
@@ -14619,11 +14660,11 @@ process.exit(result.status ?? 1);
     test('an explicit pragma on either decisive cell makes default-causality inconclusive', () => {
       assert.deepEqual(
         verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } }), raisedArm()),
-        { verdict: 'inconclusive', reason: 'explicit-pragma' },
+        { verdict: 'inconclusive', reason: 'explicit-pragma', adjudicationVersion: 2 },
       );
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } })),
-        { verdict: 'inconclusive', reason: 'explicit-pragma' },
+        { verdict: 'inconclusive', reason: 'explicit-pragma', adjudicationVersion: 2 },
       );
     });
 
@@ -14641,8 +14682,8 @@ process.exit(result.status ?? 1);
       for (const [index, unknown] of unknownEvidence.entries()) {
         const asControl = verdictOf(unknown(waitPolicyRecord()), raisedArm());
         const asRaised = verdictOf(waitPolicyRecord(), unknown(raisedArm()));
-        assert.deepEqual(asControl, { verdict: 'unknown', reason: 'missing-evidence' }, `control-side missing evidence ${index}`);
-        assert.deepEqual(asRaised, { verdict: 'unknown', reason: 'missing-evidence' }, `raised-side missing evidence ${index}`);
+        assert.deepEqual(asControl, { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 }, `control-side missing evidence ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 }, `raised-side missing evidence ${index}`);
       }
     });
 
@@ -14653,12 +14694,12 @@ process.exit(result.status ?? 1);
         (record) => ({ ...record, result: null }),
       ];
       for (const [index, earlyMutation] of early.entries()) {
-        assert.deepEqual(verdictOf(earlyMutation(waitPolicyRecord()), raisedArm()), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal' }, `control-side early/unknown terminal ${index}`);
-        assert.deepEqual(verdictOf(waitPolicyRecord(), earlyMutation(raisedArm())), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal' }, `raised-side early/unknown terminal ${index}`);
+        assert.deepEqual(verdictOf(earlyMutation(waitPolicyRecord()), raisedArm()), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal', adjudicationVersion: 2 }, `control-side early/unknown terminal ${index}`);
+        assert.deepEqual(verdictOf(waitPolicyRecord(), earlyMutation(raisedArm())), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal', adjudicationVersion: 2 }, `raised-side early/unknown terminal ${index}`);
       }
       assert.deepEqual(
         verdictOf(waitPolicyRecord(), raisedArm({ observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 59999 } })),
-        { verdict: 'inconclusive', reason: 'insufficient-headroom' },
+        { verdict: 'inconclusive', reason: 'insufficient-headroom', adjudicationVersion: 2 },
         'below 60000 ms remaining the short-window contrast cannot be interpreted',
       );
       // The control's verified single continuation is part of the expected
@@ -14897,7 +14938,7 @@ process.exit(result.status ?? 1);
       assert.equal(completedControl.observations.outerReturns, 0);
       assert.deepEqual(
         adjudicateWaitComparison(completedControl, holdingRaised),
-        { verdict: 'inconclusive', reason: 'control-completed-without-yield' },
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield', adjudicationVersion: 2 },
         'eventual terminal success does not establish the outer-default causal link',
       );
       // The EXPECTED discriminator keeps working: a yielded-pending control
@@ -14906,7 +14947,7 @@ process.exit(result.status ?? 1);
       assert.equal(pendingControl.waitPolicyObservation.decisiveFirstReturnState, 'yielded-pending');
       assert.deepEqual(
         adjudicateWaitComparison(pendingControl, holdingRaised),
-        { verdict: 'config-effect-observed', reason: null },
+        { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
       );
     });
 
@@ -15012,7 +15053,7 @@ process.exit(result.status ?? 1);
       assert.equal(raisedRecord.waitPolicyObservation.decisiveFirstReturnWallMs, 150000);
       assert.deepEqual(
         adjudicateWaitComparison(controlRecord, raisedRecord),
-        { verdict: 'config-effect-observed', reason: null },
+        { verdict: 'config-effect-observed', reason: null, adjudicationVersion: 2 },
         'the yielded control return (28 s) versus the held raised return (150 s) is the observed effect',
       );
       // A raised arm whose first return also lands within the short window
@@ -15020,7 +15061,7 @@ process.exit(result.status ?? 1);
       const earlyRaisedRecord = await recordFor(liveFactsFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), 240000), 240000);
       assert.deepEqual(
         adjudicateWaitComparison(controlRecord, earlyRaisedRecord),
-        { verdict: 'no-config-effect-observed', reason: null },
+        { verdict: 'no-config-effect-observed', reason: null, adjudicationVersion: 2 },
       );
     });
 
@@ -15066,7 +15107,7 @@ process.exit(result.status ?? 1);
       );
       assert.deepEqual(
         adjudicateWaitComparison(record, wrapperRecord),
-        { verdict: 'different-surface', reason: null },
+        { verdict: 'different-surface', reason: null, adjudicationVersion: 2 },
         'a direct-native decisive call never compares against a code-mode wrapper arm',
       );
     });
@@ -15113,7 +15154,7 @@ process.exit(result.status ?? 1);
       assert.equal(sharedRaised.waitPolicyObservation.decisiveFirstReturnBasis, 'shared-cell');
       assert.deepEqual(
         adjudicateWaitComparison(standaloneControl, sharedRaised),
-        { verdict: 'unknown', reason: 'missing-evidence' },
+        { verdict: 'unknown', reason: 'missing-evidence', adjudicationVersion: 2 },
         'preparation time must never masquerade as longer shell observation',
       );
     });
@@ -15184,7 +15225,7 @@ process.exit(result.status ?? 1);
       );
       assert.deepEqual(
         adjudicateWaitComparison(overlapRecord, cleanRaised),
-        { verdict: 'inconclusive', reason: 'unqualified-arm' },
+        { verdict: 'inconclusive', reason: 'unqualified-arm', adjudicationVersion: 2 },
         'an observation-discipline violation is never positive causal evidence, whatever the sentinels read',
       );
     });

@@ -45,12 +45,19 @@
  *     conservative headroom at either decisive poll start, stays
  *     `inconclusive` (the short-window contrast cannot be interpreted).
  * 12. Only then, under the timing tolerance (10% of the control default,
- *     1000 ms floor — see the discriminator's basis note): the control
- *     arm's first return at-or-under its default while the raised arm's
- *     holds beyond the whole tolerance band is `config-effect-observed`; a
- *     first return inside the band is `timing-borderline` (inconclusive); a
- *     control return decisively beyond the band, or both arms inside the
- *     short window, is `no-config-effect-observed`.
+ *     1000 ms floor — see the discriminator's basis note): a control first
+ *     return within [controlDefault − tolerance, controlDefault + tolerance]
+ *     — BOTH edges inclusive, close-out correction 2 — is default expiry
+ *     and PROCEEDS; a control return below the lower edge was an alternative
+ *     ender and a return above the upper edge means the default did not
+ *     govern (`no-config-effect-observed`). A raised arm beyond the whole
+ *     band is `config-effect-observed`; a raised return inside the band
+ *     above controlDefault stays `timing-borderline` (inconclusive — the
+ *     ONLY remaining producer of that reason); both arms inside the short
+ *     window is `no-config-effect-observed`.
+ * 13. Every returned object carries the closed `adjudicationVersion`
+ *     (close-out correction 2): v1 semantics had no field, so the two
+ *     adjudications of the same pair are distinguishable in records.
  */
 
 /** The closed verdict enum. */
@@ -62,6 +69,14 @@ export const WAIT_COMPARISON_VERDICTS = Object.freeze([
   'no-causal-comparison',
   'different-surface',
 ]);
+
+/**
+ * The closed adjudication VERSION (close-out correction 2): v1 semantics had
+ * no field; v2 makes the control band genuinely SYMMETRIC (both edges
+ * decisive) and therefore distinguishes the two adjudications of the same
+ * pair in records. Every returned verdict object carries this value.
+ */
+export const WAIT_ADJUDICATION_VERSION = 2;
 
 /**
  * The closed reason enum accompanying every non-null reason (the two effect
@@ -83,6 +98,9 @@ export const WAIT_COMPARISON_REASONS = Object.freeze([
   'missing-evidence',
   'early-or-unknown-terminal',
   'insufficient-headroom',
+  // 'timing-borderline' is reachable ONLY from the RAISED arm (a raised
+  // first return inside the band above controlDefault) since close-out
+  // correction 2 made the CONTROL band genuinely symmetric.
   'timing-borderline',
   'control-returned-early',
   'control-completed-without-yield',
@@ -233,14 +251,6 @@ function terminalProven(record) {
     && /** @type {any} */ (record)?.result?.terminalStdoutChecked === true;
 }
 
-/**
- * Adjudicate one C0/C1 pair. Pure: reads the two persisted records, throws
- * nothing, and returns a closed `{ verdict, reason }` — `reason` is null only
- * for the two effect verdicts and `different-surface`.
- * @param {unknown} control the shorter-default arm's persisted case record
- * @param {unknown} raised the longer-default arm's persisted case record
- * @returns {{ verdict: (typeof WAIT_COMPARISON_VERDICTS)[number], reason: (typeof WAIT_COMPARISON_REASONS)[number] | null }}
- */
 /** @param {unknown} record */
 function decisiveCallSurface(record) {
   return /** @type {any} */ (record)?.waitPolicyObservation?.decisiveCallSurface ?? null;
@@ -283,13 +293,27 @@ function structurallyQualified(record) {
 
 /**
  * Adjudicate one C0/C1 pair. Pure: reads the two persisted records, throws
- * nothing, and returns a closed `{ verdict, reason }` — `reason` is null only
- * for the two effect verdicts and `different-surface`.
+ * nothing, and returns a closed `{ verdict, reason, adjudicationVersion }` —
+ * `reason` is null only for the two effect verdicts and `different-surface`,
+ * and `adjudicationVersion` is always {@link WAIT_ADJUDICATION_VERSION} so
+ * the two adjudications of the same pair are distinguishable in records (v1
+ * semantics had no field).
  * @param {unknown} control the shorter-default arm's persisted case record
  * @param {unknown} raised the longer-default arm's persisted case record
- * @returns {{ verdict: (typeof WAIT_COMPARISON_VERDICTS)[number], reason: (typeof WAIT_COMPARISON_REASONS)[number] | null }}
+ * @returns {{ verdict: (typeof WAIT_COMPARISON_VERDICTS)[number], reason: (typeof WAIT_COMPARISON_REASONS)[number] | null, adjudicationVersion: number }}
  */
 export function adjudicateWaitComparison(control, raised) {
+  return { ...adjudicateWaitComparisonVerdict(control, raised), adjudicationVersion: WAIT_ADJUDICATION_VERSION };
+}
+
+/**
+ * The v2 verdict body (see {@link adjudicateWaitComparison} for the public
+ * contract and version stamp).
+ * @param {unknown} control
+ * @param {unknown} raised
+ * @returns {{ verdict: (typeof WAIT_COMPARISON_VERDICTS)[number], reason: (typeof WAIT_COMPARISON_REASONS)[number] | null }}
+ */
+function adjudicateWaitComparisonVerdict(control, raised) {
   const controlPolicy = waitPolicyBlock(control);
   const raisedPolicy = waitPolicyBlock(raised);
   if (controlPolicy === null || raisedPolicy === null) return { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker' };
@@ -382,9 +406,10 @@ export function adjudicateWaitComparison(control, raised) {
   // bound the real rollout-append and dispatch overhead well under 10%, 10%
   // stays an order of magnitude below the intended C1 separation
   // (240000 vs 30000), and the floor covers fixed transport costs for tiny
-  // configured defaults. A first return INSIDE the band
-  // (controlDefault, controlDefault + tolerance] cannot be distinguished
-  // from overhead and is `timing-borderline` — inconclusive, never a
+  // configured defaults. Under v2's symmetric band a CONTROL return inside
+  // the band (either edge) IS default expiry and proceeds (see the
+  // supersession note below); the inside-the-band `timing-borderline`
+  // outcome now holds ONLY for the RAISED arm — inconclusive, never a
   // verdict.
   const controlDefaultMs = controlPolicy.execDefaultMs;
   const toleranceMs = Math.max(1000, Math.ceil(controlDefaultMs * 0.1));
@@ -403,8 +428,17 @@ export function adjudicateWaitComparison(control, raised) {
   const controlReturnMs = /** @type {number} */ (decisiveFirstReturnWallMs(control));
   const raisedReturnMs = /** @type {number} */ (decisiveFirstReturnWallMs(raised));
   if (controlReturnMs < lowerBandMs || raisedReturnMs < lowerBandMs) return { verdict: 'inconclusive', reason: 'control-returned-early' };
+  // Close-out correction 2: the band is genuinely SYMMETRIC — a control
+  // return within [controlDefault − tolerance, controlDefault + tolerance]
+  // (BOTH edges inclusive) IS default expiry and PROCEEDS to the raised-arm
+  // comparison. The user-commissioned ruling supersedes the round-2
+  // control-arm borderline reading (a control ~31 s pending versus a raised
+  // ~149 s completed must not be un-adjudicable merely because the control
+  // ran ~1 s over); the symmetric rule also satisfies round-2's original
+  // concern — the expected contrast is no longer rejected as no-effect.
+  // Raised-side rules are unchanged; 'timing-borderline' therefore remains
+  // reachable ONLY from the raised arm.
   if (controlReturnMs > bandMs) return { verdict: 'no-config-effect-observed', reason: null };
-  if (controlReturnMs > controlDefaultMs) return { verdict: 'inconclusive', reason: 'timing-borderline' };
   if (raisedReturnMs > bandMs) return { verdict: 'config-effect-observed', reason: null };
   if (raisedReturnMs > controlDefaultMs) return { verdict: 'inconclusive', reason: 'timing-borderline' };
   return { verdict: 'no-config-effect-observed', reason: null };
