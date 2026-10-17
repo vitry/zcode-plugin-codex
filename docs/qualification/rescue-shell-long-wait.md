@@ -6558,3 +6558,352 @@ selection 6/6; lint/typecheck exit 0; LF 538 tracked files; `git diff --check` c
 diff vs `7fe8cbb…` EMPTY. Branch head after the records commit: see the branch log (this entry's own
 commit postdates the reviewed correction commit `e34a5dd…`, which the codex gate for this correction
 covers together with the working-tree records).
+
+## 16. 2026-10-18 release-qualification: re-pin, oracle freeze and live ledger registration
+
+Task 1 of the 2026-10-18 plan (`docs/superpowers/plans/2026-10-18-rescue-shell-wait-release-qualification.md`),
+executed 2026-10-18 in worktree `.worktrees/rescue-shell-wait-release-qualification` (branch
+`docs/rescue-shell-wait-release-qualification`). Read-only and offline throughout: zero model turns,
+zero `ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no production/source/config edit; the Codex
+source checkout was read through `git show <pin>:<path>` only. This section is ADDITIVE — every prior
+section stands byte-unchanged, and §16 records new pins, mechanism traces and frozen preregistrations
+only; no new measured run exists anywhere in it.
+
+### 16.1 Re-pin (all commands re-executed 2026-10-18; nothing trusted from drafting)
+
+- Plugin worktree: `git rev-parse HEAD` = `5effa1704eed2a646bb326bd5e1b2cf36a2a764b` (merged PR #69);
+  `git status --short` = only the untracked plan plus the three preserved drafting scratch files
+  (`findings.md`, `progress.md`, `task_plan.md`), zero modified tracked files.
+- Native binary, resolved by realpath of `command -v codex`:
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+  `codex --version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — identical to the §14/§15.1
+  pin; NO auto-update occurred, so no cross-version boundary was triggered.
+- Codex source checkout `/Users/zhangzikai/Workspace/Codes/github/codex`: HEAD =
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --short` empty (clean). As always: NO
+  source/binary mapping is implied by recording the pair (§13.11 boundary, unchanged).
+- Driver surface (`node tools/shell-wait-probe/driver.mjs --help`, recorded verbatim): usage
+  `--case <case> --codex <absolute executable> --source-sha <40-hex> --output <private empty directory>
+  [--worker-duration-ms ms] [--cap-ms ms] [--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms]
+  [--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>]
+  [--wait-policy config-default --exec-default-ms ms]`; cases: `rescue-baseline, rescue-long,
+  rescue-repeat, rescue-noise, rescue-interrupt, review-wait, adversarial-review-wait, status-wait,
+  background`.
+- **Model selection re-established: `shell_trial_model` = `gpt-6.1-sol`.** Discovery path: the SAME
+  supported bounded read-only call §15.5 used — `codex debug models` with the real `CODEX_HOME`
+  (authenticated catalog, network available; NO model turn, no config/auth dump). Raw output was
+  reduced to slug/visibility/priority only. Result: 9 entries, 7 `list`-visible — `gpt-6.1-sol` at
+  **priority 0** (the account's current default candidate), `gpt-6-astra` (2), `gpt-6-sol` (3),
+  `gpt-6-luna` (4), `gpt-5.6-sol` (5), `gpt-5.6-terra` (6), `gpt-5.6-luna` (7), plus hidden
+  `gpt-reserve` (4) and `codex-auto-review` (43). This matches §15.5's 2026-10-17 authenticated record
+  one-for-one (same 9-entry set; the full numeric priority ladder is recorded here for the first time).
+  The selection stays REQUESTED on every future run (forwarded as `-m gpt-6.1-sol` through the
+  validated `--model` seam, driver.mjs:278-290) and remains user-overridable; effective host/Child
+  model metadata stays `null`/never-inferred (`model: null` contract, driver.mjs:63, inside the
+  `EXECUTING_OBSERVER_PROVENANCE` object). Role
+  overrides: unchanged from §4 — the rendered Role is `developer_instructions` only, the two wait keys
+  are NOT in the Role typed whitelist (source `agent/role.rs:36-47`), and the fixture's synthetic
+  `model: 'gpt'` hook payload (fixture.mjs) remains fixture plumbing, not a live selection fact.
+
+### 16.2 Source mechanism trace at the re-verified pin (read-only; no new source/binary claim)
+
+All citations reproduce at `dffa0deb69268ed4ac31578794c9ea897b336ae3` via `git show <pin>:<path>`;
+the §14 line-level recheck of §13.11's citations is incorporated by reference and was spot-re-verified
+today (clamp, config clone, abort path, V2 wait). New/first-party citations recorded this round:
+
+- **Config clone (inheritance is config-real).** `build_agent_shared_config` starts from
+  `turn.config.clone()` (`codex-rs/core/src/agent/child_config.rs:133-134`; fresh spawn :110-122,
+  resume :124-130); the Child session constructs `UnifiedExecProcessManager::new(config.background_terminal_max_timeout)`
+  (`codex-rs/core/src/session/session.rs:1725-1732`) and `CodeModeService::new(…, &config.code_mode, …)`
+  (:1818-1823) from that clone.
+- **Inner terminal cap.** Constants `MIN_EMPTY_YIELD_TIME_MS = 5000`,
+  `DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300_000` (`codex-rs/core/src/unified_exec/mod.rs:68-74`);
+  empty-poll clamp `[5000, manager cap]` / non-empty `min(30_000)`
+  (`codex-rs/core/src/unified_exec/process_manager.rs:1029-1043`, re-verified); exec-yield clamp
+  `[250, 30000]` (`unified_exec/mod.rs:212-218`).
+- **Outer code-mode default + the 1000-ms grace.** `execute` fills an absent yield via
+  `get_or_insert(self.default_exec_yield_time_ms)` (`codex-rs/core/src/tools/code_mode/mod.rs:130-132`);
+  the runtime resolves the observe timeout as `yield_time + YIELD_GRACE_PERIOD` when
+  `yield_time >= MIN_YIELD_TIME_FOR_GRACE`, then `min()` ONLY against a session-explicit
+  `max_yield_time_ms` — `YIELD_GRACE_PERIOD = Duration::from_secs(1)` (1000 ms) and
+  `MIN_YIELD_TIME_FOR_GRACE = Duration::from_secs(10)`
+  (`codex-rs/code-mode-runtime/src/service.rs:29-30` and `resolve_yield_timeout` :201-212). So a
+  requested 3600000-ms window observes up to 3600001 ms, and there is still NO fixed outer hard cap in
+  the examined paths. The independent already-yielded-cell `wait` keeps its own 10000-ms default and
+  never reads the exec default (`tools/code_mode/wait_handler.rs`; §13.11 boundary unchanged).
+- **Root-for-Child V2 waits.** Per-turn-config reads of
+  `features.multi_agent_v2.{min,default,max}_wait_timeout_ms` (source defaults: min 10000, default
+  30000, max 3600000 — `core/src/config/mod.rs:257-259`)
+  with over-max rejection and min clamp
+  (`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:53-63`); mailbox/steer activity wakes the
+  wait before the deadline (`wait_for_activity`, wait.rs:204-222).
+- **Native abort (the exact interrupt chain).** Root's `interrupt_agent` tool →
+  `handle_interrupt_agent` resolves the target and calls `agent_control.interrupt(...)`, returning the
+  PRE-dispatch status snapshot as `previous_status`
+  (`codex-rs/core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs:33-77`) →
+  `LocalAgentControl::interrupt_spawned_agent` rejects root and self targets, snapshots BEFORE
+  dispatch, and tolerates only ThreadNotFound/InternalAgentDied as already-dead success
+  (`codex-rs/core/src/agent/control/interrupt.rs:16-45`) → `Op::Interrupt` sent to the exact Child
+  session (`codex-rs/core/src/agent/control.rs:330-341`) → the Child's `Session::interrupt_task` runs
+  `abort_all_tasks(TurnAbortReason::Interrupted)` (`codex-rs/core/src/session/mod.rs:5347-5352`;
+  `session/handlers.rs:60-62`) → `handle_task_abort` cancels the task and, because the abort reason is
+  `Interrupted` AND `code_mode_interrupt` is enabled (Stable/default-true at this pin,
+  `features/src/lib.rs:1197-1202`), awaits `interrupt_active_cells()`
+  (`codex-rs/core/src/tasks/mod.rs:945-971`), which terminates EACH active code-mode cell via
+  `session.terminate(cell_id)` (`codex-rs/core/src/tools/code_mode/mod.rs:164-178`) → the abort path
+  then waits at most `GRACEFULL_INTERRUPTION_TIMEOUT_MS = 100` ms for graceful completion before
+  `task.handle.abort()` (`tasks/mod.rs:72` and `:979-984`).
+- **Process-store lifetime.** A cancelled poll future releases only its own store entry via
+  `release_process_id` (`process_manager.rs:479-491`); per-process terminate is `terminate_process`
+  (:1870+) which defers removal while `initial_exec_command_active`; the terminate-ALL path is
+  `terminate_all_processes` (:1823-1838), reached ONLY through the separate
+  `close_unified_exec_processes`/`clean_background_terminals` routes and the session-shutdown route
+  (`tasks/mod.rs:927-931`, `session/handlers.rs:64-66`, and the shutdown handler's call at
+  `session/handlers.rs:313`) — this enumeration is the EXHAUSTIVE caller list at the pin, and the
+  native interrupt chain NEVER calls it.
+  Soft-cap pruning (`MAX_UNIFIED_EXEC_PROCESSES = 64`) never evicts under an interaction lock
+  (:1751-1790). §13.11's boundary therefore stands with the exact cites: a native Child interruption
+  settles the turn and its active cells but does NOT auto-clear the terminal process store, does NOT
+  kill the worker/Companion process, and does NOT cancel the plugin's durable job.
+
+**The existing stop trigger induced by native Child interruption, and obligation convergence WITHOUT a
+second stop authority (worktree trace).** The ONLY stop the delivered interrupt induces is the HOST-side
+chain above: exact-Child turn abort + active-cell termination. At the plugin layer, a native Child turn
+interruption creates NO stop cause: `stopCauseFor` (`scripts/lib/rescue-lifecycle.mjs:114-122`) grants
+stop authority ONLY to (a) an explicit stop intent (`intent.kind === 'stop'`, with Host Coordination
+Loss restricted to attached foreground work), (b) a SessionEnd receipt matching the job's owning
+lifecycle epoch (`:119`), or (c) attached-foreground host-coordination loss (`:120`, gate `:134-137`).
+A delivered-but-foreign-origin interrupt is none of these, so NO durable stop intent is persisted by
+the interrupt itself and no job is explicitly cancelled through a different authority. The plugin's
+obligations converge only through the EXISTING paths: observation passes stay bounded
+(`observeSettle`, rescue-lifecycle.mjs:597); the worker's natural completion publishes `succeeded`
+through the natural-terminal branch after the gated runner cleanup
+(`settleRemoteEvidence` :253-261 → `runRunnerCleanup` :459-471 → `cleanupAllowsSettlement` :485-487);
+a real stop cause later persists the durable stop intent FIRST and settles remote evidence in the
+mandated order (`stopAndSettle` :154-195; first-level `interrupted` classification publishes
+`cancelled` behind the gated cleanup :273-292); every uncertain outcome retains the writable guard.
+The interrupt tool's `previous_status` is a PRE-interruption snapshot (source :74-76), never
+settlement. Companion-side interruption detection exists only as evidence decoding:
+`extractInterruptInteraction` (evidence.mjs:1526) classifies the V2 interaction through
+`previous_status` success-decode and V1 through submission-id presence (evidence.mjs:1506-1508), with
+bound pending observations resolved only by a later bound response (:1535-1597). **Stated plainly: the
+fixture's fake host responses in `tests/shell-wait-probe.test.mjs` (R4 block :8272+) are recording/
+adjudication fixtures, NOT native propagation — the live I1 case must evidence the actual host chain
+above, and `cleanup.nativeInterruptionClaimed` must stay false for any budget cleanup (test :6840).**
+
+Worktree module locations (file:line at this worktree): `waitForLauncherObservation` driver.mjs:2089;
+`waitForPollObservation` driver.mjs:2136 (grounds the exact launch's own original handle from its own
+statement-position output, then requires an empty-input `write_stdin` poll on that handle);
+`waitForChildSettlementObservation` driver.mjs:2228 (settles ONLY on a completed exit-code output
+belonging to the handle's own linked polls/continuations; basis label
+`exact-launch-handle-linked-completed-exit-code-output` :2231); `runHeldHostTurn` driver.mjs:931
+(monotonic held-turn timeline :971-980; budget controller :983-998; gate/result/budget boundary race
+:1100; Root-acknowledgement timestamp on result resolution :1087-1094; background child-settlement
+extension :1104+). Production: `rescue-lifecycle.mjs` as cited; `rescue-child-reconciliation.mjs`
+(`reconcileRescueChildForPreparation` :73; `isInterruption` :630); recovery/state/hook adapters under
+`scripts/lib/recovery.mjs`, `scripts/lib/state.mjs`, `hooks/lib/hook-state.mjs` (unchanged contracts).
+
+### 16.3 Frozen safe observation sequence (preregistered for I1; all stages mandatory)
+
+Every stage's timestamps ride the held-turn monotonic clock (`held-turn-monotonic-elapsed-ms`,
+driver.mjs:971-980) for probe-side events and attributable rollout event timestamps for host-side
+events; a value that cannot be established stays `null`/unknown, never zero. Target identity prefers
+the ACTUAL spawn id; if the host exposes only an alias, resolution happens ONLY through the supported
+authoritative runtime mapping (the launch acknowledgement's own returned identifier in the rollout);
+alias spelling or caller claims never substitute, and a missing mapping keeps target attribution
+unknown.
+
+1. **Exact target / spawn acknowledgement** — the exact managed Child's launch observed through
+   `waitForLauncherObservation` (driver.mjs:2089) and the launch output's own returned Child
+   identifier (session/agent id namespace as the host returns it), one mapped launch/send
+   (`companionLaunchCount`/`companionSendCount`), original handle grounded from the launch's own
+   statement-position output (driver.mjs:2153-2178).
+2. **Pending poll event/window** — `waitForPollObservation` (driver.mjs:2136) records the decisive
+   empty-input original-handle poll and its start on the monotonic timeline
+   (`pollStartedAtElapsedMs`); the pending interval is [poll start, poll resolution) and delivery must
+   occur strictly inside it, before natural completion.
+3. **Delivered native interaction** — `interrupt_agent` to the EXACT running Child id only;
+   `extractInterruptInteraction` (evidence.mjs:1526) records attempted/delivered/`previousStatus`/
+   target-suppression and the call's attributable bounds (`callAtMs`, `notBeforeMs`/`notAfterMs`,
+   evidence.mjs:1599-1619); wrong target, unresolved alias, terminal-before-interrupt, or
+   delivery-unsent all fail the case (no fallback interaction).
+4. **Cell / poll settlement** — the bound pending observation resolves (terminate response /
+   cancelled future / a later bound response per evidence.mjs:1535-1597); settlement is recorded with
+   its own attributable timestamp, and delivery-to-settlement latency is measured on the one monotonic
+   clock against the §16.5 oracle bound.
+5. **Companion liveness** — the exact attached Companion/worker process outcome recorded SEPARATELY
+   (ceased / correct terminal result / survived) via the existing verified-process identity machinery
+   and `waitForChildSettlementObservation` (driver.mjs:2228); never inferred from `previous_status`,
+   a Root final message, gate release or later disposal.
+6. **Exact durable job / stop intent / terminal winner** — read through the existing bounded state
+   adapters: the exact job record, whether a durable stop intent exists (none may exist unless a real
+   stop authority acted), and the terminal winner exactly as published (or explicitly pending).
+7. **Writable-guard / executor obligations** — the writable guard/exclusion and executor-route
+   obligations' settled/unsettled status recorded separately through the existing recovery/state
+   adapters, each never collapsed into another layer's outcome.
+
+### 16.4 Declared unrelated survival control for I1 (concrete design; Task 2 implements + tests)
+
+**Design: root-side independent progress-terminal control.** Within the SAME I1 fixture home and the
+SAME held Root turn lifecycle, and declared in the case registration BEFORE the host launch, the held
+Root turn starts ONE additional harmless background command through the ordinary `exec_command` seam
+on its OWN handle: a fixture-owned bounded script emitting exactly 30 unique progress lines
+(`zcode-survival-control <line-index> <monotonic-tag>`) at a fixed 2000-ms cadence (~60 s total) and
+then exiting 0 naturally. It never touches the observed Companion handle, is not a Rescue Child, and
+shares no job/guard/lease state with the plugin.
+
+**Why it cannot share the interrupt's stop authority (source-proven):** the delivered interaction
+targets the exact Child agent id; the interrupt chain (§16.2) aborts the CHILD's turn and terminates
+the CHILD session's active cells, and never calls the terminate-all route — the ROOT's own terminal
+process store is unreachable from it. A cancelled poll future releases only its own clone
+(process_manager.rs:479-491), so even the control's own observation cell being later ended by turn
+cleanup cannot stop the control process; fixture disposal's clean/shutdown route happens only after
+evidence capture and is recorded as cleanup, never as survival evidence. Rejected alternative
+(recorded): a second V2 spawned agent in the same Root — closer by family, but it shares the V2 agent
+registry and targeting surface and needs spawn/registration seams the fixture does not have; the
+root-side terminal control is smaller and provably outside the interrupt authority.
+
+**Positive activity before/at delivery:** immediately BEFORE delivering the interrupt, the held turn
+issues one bounded read on the control's own handle and REQUIRES a fresh progress line whose
+line-index advanced (index k with k < 30, so the control is provably mid-run — an already-completed
+control, last index 30, fails no-collateral qualification) and whose read event precedes the interrupt
+call event in the bound rollout ordering (the same ordering machinery as §16.2's evidence decode).
+**After delivery (codex round-1 revision, 2026-10-18 — survival binds to EMISSION time, never to
+observation time):** one further bounded read after the interrupt's settlement evidence is NECESSARY
+but never SUFFICIENT: a post-delivery observation proves nothing about WHEN the bytes were written, so
+a control that emitted a line before delivery and died during delivery would still leave that line
+readable afterward. Qualification therefore requires the control's progress lines to carry a monotonic
+emission tag/timestamp written by the control itself AT EMIT TIME, and continued liveness is proven
+ONLY by a line whose EMISSION tag falls strictly AFTER the recorded delivery bound (the delivered
+interaction's attributable timestamp per §16.3 stage 3); independent natural completion is likewise
+proven ONLY by the completion marker's OWN emission time after that same delivery bound — never by the
+post-delivery read/exit-result event timestamp, the observation's rollout event time, or the read
+ordering alone. Unknown/unreadable post-delivery state, no post-delivery evidence, or no emission tag
+establishable after the delivery bound keeps no-collateral NOT qualified. Synthetic source/unit
+assurances never substitute. Projected facts are closed whitelisted fields only (started /
+lastLineIndexAtDelivery / lastEmissionTagBeforeDelivery /
+activityAtDelivery ∈ {active, completed-before, unknown} / postDelivery ∈ {alive, completed, lost,
+unknown} / postDeliveryEmissionTag with its strict-after-delivery-bound comparison + attributable
+timestamps); the selector is a single closed value valid ONLY for `rescue-interrupt`; command bytes
+are fixture-owned, never caller-supplied (no arbitrary argv/config bag). This is NEW finite Task 2
+surface with RED→GREEN validation and privacy tests, which MUST include the buffered-output negative
+regressions BEFORE this oracle freezes: (a) a control whose lines were ALL emitted before delivery —
+even when a post-delivery read returns them — does NOT qualify no-collateral; (b) a control whose
+last line was emitted before delivery and which died during delivery is REJECTED even though the
+post-delivery read returns its buffered bytes; (c) a completion whose marker emission time cannot be
+established after the delivery bound keeps survival NOT qualified.
+
+### 16.5 Preregistered responsiveness oracle (before any I1 launch)
+
+**No applicable measured native-interrupt baseline exists.** Every prior interrupt-bearing run ended
+inconclusive BEFORE delivery (§7.7, §13.5), so there is no delivery-to-settlement measurement to
+reuse; C0's 31007-ms pending yield (§15.5) and D0's 97500-ms pending poll (§15.3) measure the YIELD
+path, not interrupt settlement — they are context, not a latency baseline. I0 remains the one
+conditional label (plan §3) if Task 4 judges the composition-derived bound below insufficient; a
+control that missed its pending window is not a latency baseline, and a wait-until-the-hour-ends
+outcome is never "responsive".
+
+**Production has NO aggregate delivery-to-settlement deadline.** The bounded existing-stage
+composition, from configured values only:
+
+| Stage | Existing configured bound | Source/production cite |
+| --- | --- | --- |
+| Host delivery (interrupt_agent → Op::Interrupt) | no configured numeric bound at the pin (in-process registry send) — UNKNOWN, recorded unknown | interrupt_agent.rs:33-77; control.rs:330-341 |
+| Child turn-abort grace before forced task abort | 100 ms (`GRACEFULL_INTERRUPTION_TIMEOUT_MS`) | tasks/mod.rs:72, :979-984 |
+| Active-cell termination (pending poll future cancellation) | no configured numeric bound at the pin — UNKNOWN, recorded unknown | code_mode/mod.rs:164-178 |
+| Plugin-side stop/reconcile passes (only if a real stop cause exists) | marked-runner termination ≤ 750 ms per pass (non-Windows; min 50; Windows 1500/6000, duty fallback 30000); lock timeouts 30000 ms; broker lookup 250 ms | job-control.mjs:26, :38-72, :121, :138 |
+| Status observation (if used to observe, never to settle) | caller-supplied explicit `--timeout-ms`, `JOB_WAIT_TIMEOUT` at expiry; production 120000-ms deadline confirmed firing un-extended (§13.7) | job-control.mjs:967-968 |
+
+**Preregistered bound (Task 4 measures against this; no production timeout is changed):**
+delivery-to-settlement for the native turn/cell/poll layer is RESPONSIVE only if the attributable
+settlement evidence (§16.3 stage 4) is observed within **60000 ms** of the delivered interaction's
+attributable delivery bound — 1/60 of the 3600000-ms candidate window, ~1/7 of the 420000-ms hold,
+~600× the host's own 100-ms abort grace so ordinary transport overhead cannot false-negative, and on
+the same scale as I0's 60000-ms window so I0 and I1 are directly comparable. An observation with no
+settlement by 60000 ms is recorded NOT responsive (bound exceeded) — never retried into
+responsiveness, and never measured from the window's end instead of the delivery point. The
+Companion, durable-job/guard and no-collateral layers keep their own separate §16.3 stage outcomes and
+are never folded into this latency.
+
+### 16.6 Frozen case/policy matrix (the Task 2 implementation input)
+
+Paragraph treatment: `config-default` = the fixture's `configDefaultWaitingParagraph(pollYieldMs)`
+(fixture.mjs:84-87 — no directive line, same-cell explicit `tools.wait` continuation), applied to the
+temporary named Role template AND generic assignment skill with named/generic parity;
+`canonical` = the installed waiting paragraph byte-identical (`ORIGINAL_WAITING_PARAGRAPH`
+fixture.mjs:52 / `COMMAND_SKILL_WAITING_PARAGRAPH` fixture.mjs:117). Host config transport: the
+fixture-home `background_terminal_max_timeout` key (written before setup, `capVerified` re-read,
+fixture.mjs:826-832) for the inner cap, and the driver's `-c features.code_mode.default_exec_yield_time_ms=<ms>`
+argv override for the outer default. "Reused" = existing tested surface; "NEW (Task 2)" = finite
+support that must exist and be fixture/CLI/programmatic-validated BEFORE the live case runs.
+
+| Label | Case (existing) | Exact flags beyond the shared `--codex/--source-sha/--output/--model gpt-6.1-sol` + both diagnostic flags | Paragraph | Host config | Driver/fixture support |
+| --- | --- | --- | --- | --- | --- |
+| M | `rescue-long` | `--worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --wait-policy config-default --exec-default-ms 3600000` (NO `--cap-ms`) | config-default @3600000 | exec-default 3600000; cap key ABSENT | REUSED (wait-policy already valid for rescue-long, driver.mjs:365-366/:609-610) |
+| L | `rescue-long` | M's flags PLUS `--cap-ms 3600000` | config-default @3600000 | exec-default 3600000; cap 3600000 (`capVerified`) | REUSED |
+| R | `rescue-repeat` | L's exact settings, fresh Child/fixture/output | config-default @3600000 | same as L | NEW (Task 2): extend wait-policy/exec-default validity to `rescue-repeat` (today rescue-long-only) + fresh-repeat matching regressions |
+| B (conditional) | `rescue-baseline` | `--worker-duration-ms 420000 --poll-ms 60000 --budget-ms 1200000 --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` | CANONICAL (variant `baseline`; 60000 inner request preserved; canonical hash recorded, never the candidate's) | exec-default 3600000; cap 3600000 | NEW (Task 2): "baseline variant + host-config override" combination — today fixture requires variant `candidate` for wait-policy (fixture.mjs:263-264) and driver restricts the policy to rescue-long; `rescue-baseline` keeps its poll-ms 60000 refusal rule (driver.mjs:371) |
+| I0 (conditional) | `rescue-interrupt` | `--worker-duration-ms 420000 --poll-ms 60000 --budget-ms 1200000 --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` + the Task 2 finite baseline selector | config-default @60000 | exec-default 3600000 (matched to I1 per plan §3/Task 4 — ONLY the requested window is 60000); cap 3600000 | NEW (Task 2): wait-policy validity for `rescue-interrupt` + the finite native short-window baseline selector (typed, positively/negatively tested) |
+| I1 | `rescue-interrupt` | `--worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` + the single closed survival-control selector (§16.4) | config-default @3600000 | exec-default 3600000; cap 3600000 | NEW (Task 2): wait-policy validity for `rescue-interrupt` + survival-control finite support + the §16.3 delivery/settlement regressions (wrong target, alias unresolved, terminal-before-interrupt, delivery unsent, `previous_status` only, unreadable continuation, still-live Companion, unresolved job/guard, cleanup kill, collateral lost ⇒ reject) |
+| N | `rescue-noise` | `--poll-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` at the case's existing worker/budget (130000/360000) frozen before launch | config-default @3600000 | exec-default 3600000; cap per registered target (frozen before launch) | NEW (Task 2): wait-policy validity for `rescue-noise` |
+| BG | `background` | `--poll-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` at the case's existing worker/budget (120000/300000) frozen before launch | config-default @3600000 | exec-default 3600000; cap per registered target (frozen before launch) | NEW (Task 2): wait-policy validity for `background` |
+| RV (conditional) | `review-wait` | `--wait-policy config-default --exec-default-ms 3600000`, NO candidate command-Skill edit (`commandSkillVariant` baseline) | CANONICAL command-Skill paragraph | exec-default 3600000 applied to the shared host config; cap scope recorded exactly as the existing fixture seam writes it | NEW (Task 2): host-config-only policy combination for root-family cases (no paragraph edit; canonical hash provenance) |
+| AR (conditional) | `adversarial-review-wait` | same combination as RV | CANONICAL | same as RV | NEW (Task 2): same as RV |
+| ST (conditional) | `status-wait` | RV's combination PLUS the explicit `--status-query-timeout-ms` deadline (kept separate from observation windows, existing seam) | CANONICAL | same as RV | NEW (Task 2): same as RV; query-deadline separation regressions already exist and must keep passing |
+| G (conditional) | generic route | (no new surface) | n/a — §13.8's structural cause stands: host supports the shape but it is NOT genuinely reachable under ordinary capability conditions | n/a | REUSED/unspent: stays unspent with the structural reason unless a genuinely changed host/form is observed; never forced |
+| F (1 TOTAL) | shared successor | the one failed case's command with exactly one preregistered named change | per the named change | per the named change | no new surface; requires a specific established cause before launch |
+
+Validation rules Task 2 must implement for every NEW combination (at CLI AND public
+programmatic/fixture boundaries, before any side effect): `--wait-policy` accepts only the literal
+`config-default` and requires `--exec-default-ms`; `--exec-default-ms` is a positive integer
+≤ 3600000; the policy is valid only for the case/policy combinations in the table above (per-case:
+candidate paragraph for M/L/R/I0/I1/N/BG; canonical paragraph with host-config-only application for
+B/RV/AR/ST); `rescue-baseline`'s poll-ms 60000 rule and `status-wait`'s query-timeout-only rule are
+unchanged; the survival-control and baseline selectors are single closed values valid ONLY for their
+declared cases with typed inputs and positive/negative tests; provenance records state WHICH paragraph
+hash (canonical vs config-default) and WHICH host overrides were applied. Existing
+`wait-comparison.mjs` v2 (`adjudicateWaitComparison`, `WAIT_ADJUDICATION_VERSION = 2`) keeps judging
+ONLY the old outer-default pair — it must not be extended to judge M/L cadence or any new case by
+accident.
+
+### 16.7 Baseline gates and registered digests (executed 2026-10-18, offline)
+
+- `npm run test:shell-research`: **594 tests / 55 suites / 594 pass / 0 fail / 0 skipped, exit 0**
+  (matches the drafting baseline recorded in plan §4).
+- `node --test tests/test-selection.test.mjs`: **6/6 pass, exit 0**.
+- Focused ownership/privacy/native-interrupt set
+  (`node --test tests/rescue-binding.test.mjs tests/rescue-lifecycle.test.mjs
+  tests/rescue-child-reconciliation.test.mjs tests/job-control.test.mjs tests/mcp-result.test.mjs`):
+  **489/489 pass, 0 fail, 0 skipped, exit 0** (rescue-binding 154, rescue-lifecycle 67,
+  rescue-child-reconciliation 55, job-control 209, mcp-result 4).
+- Source/observer/fixture/test digests (SHA-256, recorded for live-run provenance binding):
+  `tools/shell-wait-probe/driver.mjs` = `3ff7940b3908fccc5e7d069d5892f96d9b38a90d398d5d7224554a11ba8e6664`;
+  `tools/shell-wait-probe/evidence.mjs` =
+  `8ecf5537f2bcfd721cddb747d70e5ff4edd2885199e7fad8d137aa637a8e47a6`;
+  `tools/shell-wait-probe/fixture.mjs` =
+  `2e933e3b5b4b77ef285753b11cee9e4e91180ec0e7cbfdca9053185da59f7a7d`;
+  `tools/shell-wait-probe/shape-diagnostic.mjs` =
+  `2f300de25af3c12635d2dec400170a3e50b057dbe33f27a2375a01c0ffb1bb31`;
+  `tools/shell-wait-probe/wait-comparison.mjs` =
+  `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`;
+  `tests/shell-wait-probe.test.mjs` =
+  `be071c54360998bccb832ca3cde5854f6defab79b40130be52cecad2c6e947b4`;
+  `tests/test-selection.test.mjs` =
+  `3aec94d52ce48e39d95fa02ab0c114cb6328411b6bfd1edb1cf7f12fecb51e41`.
+- Diagnostic settings for the coming live groups (registered now, before launch): both
+  `--unclassified-structural-diagnostic 1` and `--unclassified-shape-diagnostic 1` on every registered
+  case; instruction provenance through the existing normalized-instruction-hash and observer-digest
+  seams (§15.5's identity gates), unchanged.
+
+### 16.8 Task 1 exit statement
+
+All pins re-established with no correction; `shell_trial_model` = `gpt-6.1-sol` re-established through
+the same supported authenticated bounded discovery §15.5 used (priority 0, 7 list-visible, record
+identical). The native-interrupt stop trigger and its obligation-convergence boundary are now cited at
+exact lines (§16.2): the interrupt settles the Child's turn and active cells only; the plugin's job,
+guard and executor obligations converge exclusively through the existing reconciler/cleanup paths,
+with no second stop authority and `previous_status` never read as settlement. The observation
+sequence (§16.3), survival control (§16.4), responsiveness oracle (§16.5) and case/policy matrix
+(§16.6) are frozen BEFORE any live launch; the matrix's NEW (Task 2) surface list is the authoritative
+implementation input for Task 2. Everything in §16 is offline evidence: no claim in it qualifies any
+live behavior, and every §8 production gate remains outstanding.
