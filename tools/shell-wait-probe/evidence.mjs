@@ -26,9 +26,14 @@
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RESCUE_ENVELOPE_MAX_BYTES, validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
 import { inspectCallShape } from './shape-diagnostic.mjs';
+// The byte-exact terminal/exit linkage oracle (release-qualification Task 2):
+// ONE shared implementation — the evidence layer delegates to it because THIS
+// layer owns the terminal bytes.
+import { evaluateExactTerminalLinkage } from './release-qualification.mjs';
 
 // P2 round-29: module-INIT snapshot of THIS module's executing source — read
 // synchronously at initialization (the closest instant to the bytes Node
@@ -1255,6 +1260,80 @@ function classifyPlainInterruptRejection(output) {
   return kind === 'unclassified' ? null : kind;
 }
 
+// NATIVE CANCELLATION response framings (codex review round 6), verified
+// against the pinned host build (dffa0deb):
+//  - code_mode/mod.rs:307 format_script_status renders a TERMINATED cell's
+//    header as `Script terminated\nWall time <s> seconds\nOutput:\n` (the
+//    FIRST input_text item of the cell form, partial stdout in later items —
+//    the exact framing pinned by core/tests/suite/code_mode.rs).
+//  - tools/parallel.rs:378,380 abort_message renders a CANCELLED direct call
+//    as a single InputText body: `Wall time: <s> seconds\naborted by user`
+//    for exec_command (core/tests/suite/abort_tasks.rs:281) or `aborted by
+//    user after <s>s` for every other tool.
+//  - Codex review round 18: with experimental_show_cell_overhead enabled,
+//    output.rs set_handler_duration_ms REWRITES that terminated cell header
+//    as `Script terminated\nWall time <s:.3> seconds (code-mode <s:.3>
+//    seconds; overhead <s:.3> seconds)\nOutput:\n` — three-decimal timing
+//    plus the overhead suffix (overhead may quantize to zero or negative;
+//    output_tests.rs pins all framings). The suffix follows the
+//    CODE_MODE_WALL_TIME_HEADER_PATTERN / NATIVE_PENDING_STRING_PATTERN
+//    precedent above; only the pinned `Script terminated` status decodes as
+//    cancellation, so an overhead-framed non-marker response still fails
+//    closed.
+// Decoded ONLY at the validated header positions — the plain-string body or
+// the FIRST input_text item (the response-header slot; stdout is never
+// scanned) — so a script that merely prints a marker line can never
+// fabricate a settlement, and any other body (synthetic JSON abort objects
+// included) stays unestablished.
+const NATIVE_CELL_TERMINATED_PATTERN = /^Script terminated\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode -?\d+(?:\.\d+)? seconds; overhead -?\d+(?:\.\d+)? seconds\))?\nOutput:\n$/u;
+const NATIVE_ABORT_EXEC_PATTERN = /^Wall time: \d+(?:\.\d+)? seconds\naborted by user$/u;
+const NATIVE_ABORT_TOOL_PATTERN = /^aborted by user after \d+\.\d+s$/u;
+/**
+ * Whether a raw tool output carries the pinned host's native cancellation
+ * framing at its validated header position. Never consulted for stdout or
+ * result bodies.
+ * @param {unknown} output
+ * @returns {boolean}
+ */
+function isNativeCancellationResponse(output) {
+  let text = null;
+  if (typeof output === 'string') text = output;
+  else if (Array.isArray(output) && output[0]?.type === 'input_text' && typeof output[0].text === 'string' && output[0].text.length <= 4096) {
+    text = output[0].text;
+  }
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return NATIVE_CELL_TERMINATED_PATTERN.test(text)
+    || NATIVE_ABORT_EXEC_PATTERN.test(text)
+    || NATIVE_ABORT_TOOL_PATTERN.test(text);
+}
+
+/**
+ * Whether a whole-cell `Script terminated` response is attributable to ONE
+ * statement's cancellation (codex review round 14). A single-statement cell
+ * (or a bare call) is attributed directly. In a multi-statement cell the
+ * whole-cell header may reflect a termination that hit a LATER statement:
+ * the statement's OWN result being present proves the statement finished
+ * before the termination (never its cancellation), and an unresolved
+ * statement is attributable only as the cell's LAST unresolved statement —
+ * anything else stays unattributed (fail closed).
+ * @param {unknown} output the raw cell response
+ * @param {number} statementIndex the attributed statement's position
+ * @param {number} statementCount the cell's statement total
+ * @returns {boolean}
+ */
+function wholeCellTerminationCancelsStatement(output, statementIndex, statementCount) {
+  if (!Number.isSafeInteger(statementCount) || statementCount < 1) return false;
+  if (!Number.isSafeInteger(statementIndex) || statementIndex < 0 || statementIndex >= statementCount) return false;
+  // Codex review round 17: the statement's OWN completed result is checked
+  // for SINGLE-statement cells too — a terminated response carrying a
+  // completed result means the statement returned normally (its
+  // pending-at-interrupt status is unproven), never cancelled.
+  const results = parseStatementOutputs(output, statementCount);
+  if (results[statementIndex]?.state === 'completed') return false;
+  if (statementCount === 1) return true;
+  return statementIndex === statementCount - 1;
+}
+
 /**
  * A supported multi-statement cell prints one JSON result per completed
  * statement, in order. Return the INTERRUPT STATEMENT's own result object —
@@ -1425,8 +1504,24 @@ function deriveChildObservationBinding(rollouts, options) {
       // treated as "absent": the interval stays unestablished (this poll
       // yields no pending-window claim). Only a genuinely absent response
       // remains an outstanding observation.
-      if (response !== null && entry.output === null) continue;
-      const responseIsSettling = response !== null && entry.output?.state === 'completed';
+      // Codex review round 7: the pinned host's NATIVE CANCELLATION framings
+      // (`Script terminated\nWall time …`, `Wall time: … seconds\naborted by
+      // user`, `aborted by user after …s`) ARE valid poll-response
+      // resolutions — a poll interrupted mid-flight resolves through the
+      // native termination marker, so its interval stays BOUND with the
+      // closing response at the marker event (the same marker the
+      // extractInterruptInteraction settlement collection decodes). Any OTHER
+      // undecodable response keeps the round-16 fail-closed discard.
+      const responseIsCancellation = response !== null && isNativeCancellationResponse(response.output);
+      // Codex review round 14: STATEMENT-LEVEL attribution — the whole-cell
+      // marker closes THIS poll's interval only when the termination is
+      // attributable to the poll's own (unresolved, last) statement; a
+      // finished poll or an ambiguous multi-statement termination keeps the
+      // round-16 fail-closed discard.
+      const cancellationBindsToPoll = responseIsCancellation
+        && wholeCellTerminationCancelsStatement(response.output, entry.statementIndex ?? 0, entry.statementCount ?? 1);
+      if (response !== null && entry.output === null && !cancellationBindsToPoll) continue;
+      const responseIsSettling = response !== null && (entry.output?.state === 'completed' || cancellationBindsToPoll);
       const interval = {
         callId: entry.callId,
         callIndex: startIndex,
@@ -1520,6 +1615,9 @@ function deriveChildObservationBinding(rollouts, options) {
  *   unparseableBoundResponses: number,
  *   completedBeforeCall: { at: string | null, atMs: number | null },
  *   completedAfterCall: { at: string | null, atMs: number | null },
+ *   settledAfterCall: { at: string | null, atMs: number | null },
+ *   cancelledAfterCall: { at: string | null, atMs: number | null },
+ *   explicitTerminateAfterCall: { at: string | null, atMs: number | null },
  *   sameRolloutCompletedBeforeCall: boolean | null,
  * }}
  */
@@ -1537,12 +1635,34 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // OUTSTANDING — a later bound completed response, INCLUDING a still-running
   // nonterminal completion, resolves it (the model received a definitive
   // response), so a historical pending header can never stand in for a
-  // pending observation at the interrupt call. Only exit-code completions
-  // remain settlement evidence.
-  /** @type {{ kind: 'pending' | 'completed-exit' | 'completed-running' | 'unparseable', rolloutIndex: number, index: number, atMs: number | null }[]} */
+  // pending observation at the interrupt call. Only exit-code completions and
+  // the PINNED native cancellation markers (round 6) remain settlement
+  // evidence.
+  /** @type {{ kind: 'pending' | 'completed-exit' | 'completed-running' | 'cancelled' | 'explicit-terminate' | 'unparseable', rolloutIndex: number, index: number, atMs: number | null }[]} */
   const boundObservations = [];
   /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
   const completedOutputs = [];
+  // Codex review round 10: call ids (per-statement key) whose wait carries
+  // `terminate: true` — an EXPLICIT cell stop. Its response carries the same
+  // `Script terminated` framing a native cancellation produces, but it is
+  // that call's OWN alternate-ender action, never interrupt_agent settlement.
+  /** @type {Set<string>} */
+  const explicitTerminateStatements = new Set();
+  // Turn-SETTLEMENT resolutions (codex review rounds 5-6): the bound Child's
+  // post-call response that resolves its interrupted observation — an
+  // exit-code completion, or one of the pinned host's NATIVE cancellation
+  // framings (`Script terminated\nWall time …`, `Wall time: … seconds\n
+  // aborted by user`, `aborted by user after …s`; §16.3 stage 4's
+  // terminate-response / cancelled-future resolutions, decoded from the RAW
+  // response framing). A live-handle return (completed state WITH session_id)
+  // is a re-poll of a surviving process, and any OTHER completed JSON body
+  // (a synthetic `{}` or `{turn_aborted:…}` object) proves nothing about the
+  // turn — neither is settlement. An OBSERVED-but-undecodable body stays
+  // UNKNOWN evidence (the round-26 rule: it can never resolve anything) — its
+  // event time may precede the true abort-chain settlement, so it never
+  // anchors the bound.
+  /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
+  const settlementOutputs = [];
   /** @type {number | null} */
   let lastCallDelivered = null;
   /** @type {string | null} */
@@ -1581,18 +1701,57 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           ? statementOutputAt(payload.output, linkedStatement.statementIndex, linkedStatement.statementCount)
           : parseToolOutput(payload.output);
         if (isBoundChildEvent) {
-          if (parsed?.state === 'pending') boundObservations.push({ kind: 'pending', rolloutIndex, index, atMs });
-          else if (parsed?.state === 'completed') {
+          // Codex review round 6: the pinned host's cancellation responses
+          // are decoded from the RAW response framing FIRST — a terminated
+          // cell's partial stdout could otherwise decode as an unrelated
+          // completed JSON body (or fail decode entirely), and either path
+          // would lose the settlement marker.
+          if (isNativeCancellationResponse(payload.output)) {
+            // Codex review round 10: the response is attributable to a call
+            // whose OWN `terminate: true` flag stopped the cell — the marker
+            // is that EXPLICIT stop (an ALTERNATE ENDER), separately
+            // classified and never credited to interrupt_agent settlement.
+            const explicitTerminateKey = `${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#${linkedStatement?.statementIndex ?? 0}`;
+            // Codex review round 14: STATEMENT-LEVEL attribution — a
+            // whole-cell marker credits THIS statement's cancellation only
+            // when the statement is unresolved and is the cell's last
+            // unresolved statement; a finished poll cancelled during an
+            // unrelated later statement stays unestablished (fail closed).
+            const statementCancelAttributed = wholeCellTerminationCancelsStatement(
+              payload.output,
+              linkedStatement?.statementIndex ?? 0,
+              linkedStatement?.statementCount ?? 1,
+            );
+            if (explicitTerminateStatements.has(explicitTerminateKey)) {
+              boundObservations.push({ kind: 'explicit-terminate', rolloutIndex, index, atMs });
+            } else if (statementCancelAttributed) {
+              boundObservations.push({ kind: 'cancelled', rolloutIndex, index, atMs });
+              settlementOutputs.push({ rolloutIndex, index, atMs });
+            } else {
+              boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs });
+            }
+          } else if (parsed?.state === 'pending') {
+            boundObservations.push({ kind: 'pending', rolloutIndex, index, atMs });
+          } else if (parsed?.state === 'completed') {
             const kind = Number.isSafeInteger(parsed.result?.exit_code) ? 'completed-exit' : 'completed-running';
             boundObservations.push({ kind, rolloutIndex, index, atMs });
-            if (kind === 'completed-exit') completedOutputs.push({ rolloutIndex, index, atMs });
-          }
-          // P2-1 round-26 fix: a linked response that was OBSERVED but fails
-          // its own statement decode is UNKNOWN evidence — recorded so the
-          // pending-window checks treat the window as blocked (the
-          // continuation could already have completed or terminated the
-          // cell), never as an absent response.
-          else if (parsed === null && linkedStatement !== null) {
+            if (kind === 'completed-exit') {
+              completedOutputs.push({ rolloutIndex, index, atMs });
+              settlementOutputs.push({ rolloutIndex, index, atMs });
+            }
+            // A completed JSON body WITHOUT an exit code is never settlement
+            // (codex review round 6): a live handle (session_id) is a re-poll
+            // of a surviving process, and an arbitrary body (`{}`) proves
+            // nothing about the turn — fail closed.
+          } else if (parsed === null && linkedStatement !== null) {
+            // P2-1 round-26 fix: a linked response that was OBSERVED but fails
+            // its own statement decode is UNKNOWN evidence — recorded so the
+            // pending-window checks treat the window as blocked (the
+            // continuation could already have completed or terminated the
+            // cell), never as an absent response. It is never settlement
+            // timing (codex review round 5): the survival bound anchors ONLY
+            // to a decoded resolution, and an undecodable one leaves it
+            // unestablished (fail closed).
             boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs });
           }
         }
@@ -1669,6 +1828,16 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         continue;
       }
       if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') continue;
+      // Codex review round 10: an EXPLICIT wait termination — its marker
+      // response is that call's own stop, never native settlement.
+      if (payload.type === 'function_call' && /(?:^|\.)wait$/u.test(typeof payload.name === 'string' ? payload.name : '')) {
+        try {
+          const waitArgs = typeof payload.arguments === 'string' && payload.arguments.length <= 4096 ? JSON.parse(payload.arguments) : null;
+          if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true) {
+            explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
+          }
+        } catch { /* malformed arguments stay unclassified */ }
+      }
       /** @type {'v2' | 'v1' | null} */
       let family = null;
       /** @type {unknown} */
@@ -1707,6 +1876,9 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         const statements = parseCallStatements(event);
         if (statements) {
           for (const [statementIndex, statement] of statements.entries()) {
+            if (statement.kind === 'wait' && statement.value && /** @type {any} */ (statement.value).terminate === true) {
+              explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#${statementIndex}`);
+            }
             if (!ROOT_CONTROL_TOOLS.has(statement.kind)) continue;
             /** @type {'v2' | 'v1' | null} */
             let statementFamily = null;
@@ -1766,6 +1938,12 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     ? completedOutputs.some((completed) => completed.rolloutIndex === lastCall.rolloutIndex && completed.index < lastCall.index)
     : null;
   const attempted = lastCall !== null;
+  /** @type {number | null} */
+  let settledAfterCallMs = null;
+  /** @type {number | null} */
+  let cancelledAfterCallMs = null;
+  /** @type {number | null} */
+  let explicitTerminateAfterCallMs = null;
   /** @type {{ observed: boolean, at: string | null, atMs: number | null }} */
   const pendingBeforeCall = { observed: false, at: null, atMs: null };
   /** @type {{ at: string | null, atMs: number | null }} */
@@ -1980,6 +2158,62 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         if (completedBeforeCallMs === null || (completed.atMs !== null && completed.atMs > completedBeforeCallMs)) completedBeforeCallMs = completed.atMs;
       }
     }
+    // The turn-settlement bound (codex review rounds 5-6): the EARLIEST
+    // attributable settlement resolution after the call, under the SAME
+    // bounds-aware ordering rules — a cancelled turn settles through one of
+    // the pinned host's NATIVE cancellation framings with NO exit code, so
+    // the exit-only loop above cannot see it. Unknown JSON bodies and
+    // undecodable responses never enter settlementOutputs (fail closed).
+    for (const settled of settlementOutputs) {
+      if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
+        if (settled.atMs !== null && lastCall.notAfterMs !== null && settled.atMs >= lastCall.notAfterMs) {
+          if (settledAfterCallMs === null || (settled.atMs !== null && settled.atMs < settledAfterCallMs)) settledAfterCallMs = settled.atMs;
+        }
+        continue;
+      }
+      const sameRolloutAfter = settled.rolloutIndex === lastCall.rolloutIndex && settled.index > lastCall.index;
+      const stampedAfter = settled.atMs !== null && lastCall.atMs !== null && settled.atMs >= lastCall.atMs;
+      if (sameRolloutAfter || stampedAfter) {
+        if (settledAfterCallMs === null || (settled.atMs !== null && settled.atMs < settledAfterCallMs)) settledAfterCallMs = settled.atMs;
+      }
+    }
+    // The CANCELLATION-ONLY settlement timing (codex review round 7): the
+    // SAME bounds-aware ordering over the native cancellation resolutions
+    // alone, so the mapper can project the §16.3 stage-4 cancellation
+    // settlement separately from the exit-code terminal. The survival bound
+    // keeps consuming settledAfterCall (which spans both resolutions).
+    for (const cancelled of boundObservations) {
+      if (cancelled.kind !== 'cancelled') continue;
+      if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
+        if (cancelled.atMs !== null && lastCall.notAfterMs !== null && cancelled.atMs >= lastCall.notAfterMs) {
+          if (cancelledAfterCallMs === null || (cancelled.atMs !== null && cancelled.atMs < cancelledAfterCallMs)) cancelledAfterCallMs = cancelled.atMs;
+        }
+        continue;
+      }
+      const sameRolloutAfter = cancelled.rolloutIndex === lastCall.rolloutIndex && cancelled.index > lastCall.index;
+      const stampedAfter = cancelled.atMs !== null && lastCall.atMs !== null && cancelled.atMs >= lastCall.atMs;
+      if (sameRolloutAfter || stampedAfter) {
+        if (cancelledAfterCallMs === null || (cancelled.atMs !== null && cancelled.atMs < cancelledAfterCallMs)) cancelledAfterCallMs = cancelled.atMs;
+      }
+    }
+    // The EXPLICIT-termination timing (codex review round 10): the same
+    // bounds-aware ordering over the terminate-flagged wait's own marker
+    // responses — separately classified so the mapper can name the alternate
+    // ender instead of crediting interrupt_agent.
+    for (const explicit of boundObservations) {
+      if (explicit.kind !== 'explicit-terminate') continue;
+      if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
+        if (explicit.atMs !== null && lastCall.notAfterMs !== null && explicit.atMs >= lastCall.notAfterMs) {
+          if (explicitTerminateAfterCallMs === null || (explicit.atMs !== null && explicit.atMs < explicitTerminateAfterCallMs)) explicitTerminateAfterCallMs = explicit.atMs;
+        }
+        continue;
+      }
+      const sameRolloutAfter = explicit.rolloutIndex === lastCall.rolloutIndex && explicit.index > lastCall.index;
+      const stampedAfter = explicit.atMs !== null && lastCall.atMs !== null && explicit.atMs >= lastCall.atMs;
+      if (sameRolloutAfter || stampedAfter) {
+        if (explicitTerminateAfterCallMs === null || (explicit.atMs !== null && explicit.atMs < explicitTerminateAfterCallMs)) explicitTerminateAfterCallMs = explicit.atMs;
+      }
+    }
   }
   completedBeforeCall.atMs = completedBeforeCallMs;
   completedBeforeCall.at = completedBeforeCallMs !== null ? new Date(completedBeforeCallMs).toISOString() : null;
@@ -2004,8 +2238,445 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     unparseableBoundResponses: boundObservations.filter((resolved) => resolved.kind === 'unparseable').length,
     completedBeforeCall,
     completedAfterCall: { at: completedAfterCallMs !== null ? new Date(completedAfterCallMs).toISOString() : null, atMs: completedAfterCallMs },
+    settledAfterCall: { at: settledAfterCallMs !== null ? new Date(settledAfterCallMs).toISOString() : null, atMs: settledAfterCallMs },
+    cancelledAfterCall: { at: cancelledAfterCallMs !== null ? new Date(cancelledAfterCallMs).toISOString() : null, atMs: cancelledAfterCallMs },
+    explicitTerminateAfterCall: { at: explicitTerminateAfterCallMs !== null ? new Date(explicitTerminateAfterCallMs).toISOString() : null, atMs: explicitTerminateAfterCallMs },
     sameRolloutCompletedBeforeCall,
   };
+}
+
+// --- §16.4 survival-control observation reader -------------------------------
+// The I1 fixture-owned progress control's OWN handle, its bounded
+// pre/post-delivery reads, and its EMISSION tags decoded from the collected
+// rollouts. Everything is fixture-owned public text (`zcode-survival-control
+// <index> <tag>`): no private body is ever copied — only parsed integers.
+// `deliveryBoundTag` is the SOUND upper bound B = D − L of the true
+// tag-at-delivery: with S the (unknown) control-process start and L the
+// observed launch event time on the same host rollout clock, S ≥ L, so the
+// true tag at delivery D is D − S ≤ D − L. A line whose EMISSION tag
+// strictly exceeds B was therefore truly emitted after delivery — the bound
+// never assumes a tag↔host offset and never equates buffered-output RECEIPT
+// time with emission time. Absent L or D the bound stays unestablished and
+// nothing qualifies (fail closed).
+
+// The shell-safe argument characters (the pinned shlex.quote rule): a string
+// composed ONLY of these needs no quoting; anything else (e.g. a TMPDIR with
+// spaces) is single-quoted with the closing-quote escaping.
+const SHELL_SAFE_ARGUMENT_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/u;
+
+/**
+ * Render ONE safely shell-quoted command string for the survival-control
+ * script path (codex review round 15): shell-safe paths render unchanged and
+ * every other path is POSIX-single-quoted with the closing-quote escaping.
+ * This ONE implementation drives BOTH the fixture's prompt directive and the
+ * evidence reader's attribution match, so the launched command and the
+ * attributed command can never diverge; a non-canonical form fails the
+ * attribution closed.
+ * @param {string} scriptPath the fixture-owned absolute script path
+ * @returns {string}
+ */
+export function survivalControlShellCommand(scriptPath) {
+  if (typeof scriptPath !== 'string' || scriptPath.length === 0 || scriptPath.length > 512) {
+    throw invalidEvidenceInput('the survival-control shell command needs a bounded nonempty script path.');
+  }
+  if (SHELL_SAFE_ARGUMENT_PATTERN.test(scriptPath)) return scriptPath;
+  return `'${scriptPath.replaceAll("'", `'\\''`)}'`;
+}
+
+const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
+
+/**
+ * @param {unknown[]} rollouts
+ * @param {string} controlPath
+ * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, childThreadId?: string | null }} options
+ *   `lineCount` is the declared §16.4 line count (the fixture-owned design
+ *   constant; the final line IS the completion marker). `interruptInteraction`
+ *   is the ONE interrupt interaction attributed by the EXISTING extractor —
+ *   the same attribution as the main interrupt oracle (admitted wrapper
+ *   shapes included); the survival reader never re-parses interrupt calls
+ *   with its own patterns. `exactTargetMatch` is the validated exact-target
+ *   attribution fact the mapper's settlement guards consume — only `true`
+ *   can establish the delivery bound (codex review round 10).
+ *   `childThreadId` is the exact interrupted Child's thread id, anchoring the
+ *   owning-Root session identity (codex review round 11).
+ * @returns {{
+ *   launched: boolean,
+ *   launchCount: number,
+ *   handleGrounded: boolean,
+ *   ownership: 'root' | 'child' | 'unidentifiable',
+ *   deliveryBoundTag: number | null,
+ *   emittedLines: { index: number, tag: number }[] | null,
+ *   completionMarker: { index: number, tag: number } | null,
+ *   postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean },
+ *   controlExitObserved: boolean,
+ *   controlExitPremature: boolean,
+ *   controlExitCode: number | null,
+ *   owningRootSessionId: string | null,
+ *   launchAtMs: number | null,
+ *   settledDeliveryAtMs: number | null,
+ *   completionBeforeDeliveryObserved: boolean,
+ *   beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null },
+ * }}
+ */
+export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, childThreadId?: string | null }} */ ({})) {
+  const lineCount = options.lineCount;
+  if (!Number.isSafeInteger(lineCount) || lineCount <= 0) {
+    throw invalidEvidenceInput('the survival-control lineCount must be a positive integer.');
+  }
+  const interaction = options.interruptInteraction;
+  if (!interaction || typeof interaction !== 'object' || typeof interaction.attempted !== 'boolean') {
+    throw invalidEvidenceInput('the survival-control interruptInteraction must be the extractInterruptInteraction result.');
+  }
+  // Codex review round 10: the validated EXACT-TARGET attribution fact — the
+  // same fact the mapper's settlement guards consume (the interrupt
+  // demonstrably targeted the observed Child). Fail closed: only a positive
+  // `true` can establish the bound; undefined/null/false leave it null.
+  if (options.exactTargetMatch !== null && options.exactTargetMatch !== undefined && typeof options.exactTargetMatch !== 'boolean') {
+    throw invalidEvidenceInput('the survival-control exactTargetMatch must be a boolean or null (the validated exact-target attribution).');
+  }
+  // Codex review round 11: the exact interrupted Child's thread id — the
+  // anchor for the owning-Root session identity (the Child rollout's parent
+  // binding). Absent/malformed ⇒ no owning Root can be resolved ⇒ the
+  // control stays unattributed (fail closed).
+  if (options.childThreadId !== null && options.childThreadId !== undefined
+    && (typeof options.childThreadId !== 'string' || options.childThreadId.length === 0 || options.childThreadId.length > 128)) {
+    throw invalidEvidenceInput('the survival-control childThreadId must be a bounded nonempty string or null (the exact interrupted Child thread id).');
+  }
+  const childThreadId = options.childThreadId ?? null;
+  if (typeof controlPath !== 'string' || controlPath.length === 0 || controlPath.length > 512 || !isAbsolute(controlPath)) {
+    throw invalidEvidenceInput('the survival-control script path must be a bounded absolute path.');
+  }
+  if (!Array.isArray(rollouts) || !rollouts.every(isEventArray)) {
+    throw invalidEvidenceInput('rollouts must be an array of parsed rollout event arrays.');
+  }
+  /** @type {{ launched: boolean, launchCount: number, handleGrounded: boolean, ownership: 'root' | 'child' | 'unidentifiable', deliveryBoundTag: number | null, emittedLines: { index: number, tag: number }[] | null, completionMarker: { index: number, tag: number } | null, postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean }, controlExitObserved: boolean, controlExitPremature: boolean, controlExitCode: number | null, owningRootSessionId: string | null, launchAtMs: number | null, settledDeliveryAtMs: number | null, completionBeforeDeliveryObserved: boolean, beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null } }} */
+  const facts = {
+    launched: false,
+    launchCount: 0,
+    handleGrounded: false,
+    ownership: 'unidentifiable',
+    deliveryBoundTag: null,
+    emittedLines: null,
+    completionMarker: null,
+    postDeliveryRead: { occurred: false, readable: false, returnedLines: false },
+    controlExitObserved: false,
+    controlExitPremature: false,
+    controlExitCode: null,
+    completionBeforeDeliveryObserved: false,
+    owningRootSessionId: null,
+    launchAtMs: null,
+    settledDeliveryAtMs: null,
+    beforeDeliveryRead: { observed: false, lastLineIndex: null, orderedBeforeInterrupt: null },
+  };
+  // PASS 1 — the ONE control launch and its grounded handle (the settled
+  // observation machinery's own grounding discipline: the launch's OWN
+  // statement-position result). More than one launch-shaped call is
+  // ambiguous and fails closed.
+  let launchCallId = null;
+  let launchAtMs = null;
+  /** @type {{ statementIndex: number, statementCount: number } | null} */
+  let launchPosition = null;
+  /** @type {any[] | null} */
+  let launchEvents = null;
+  /** @type {'identified-root' | 'identified-child' | 'unidentifiable' | null} */
+  let launchRolloutOwnership = null;
+  // Codex review round 11: the EXACT owning-Root session identity — the
+  // parent session of the interrupted Child, resolved from the CHILD
+  // rollout's own parent binding (the supported `parent_thread_id` field the
+  // linkage machinery uses). Without the exact Child thread id (or without a
+  // resolvable parent binding) no owning Root can be established and the
+  // control stays unattributed.
+  let owningRootSessionId = null;
+  if (typeof childThreadId === 'string' && childThreadId.length > 0 && childThreadId.length <= 128) {
+    for (const events of rollouts) {
+      if (!Array.isArray(events)) continue;
+      const childMeta = /** @type {any} */ ((/** @type {any[]} */ (events)).find((event) => event?.type === 'session_meta'))?.payload ?? null;
+      if (childMeta !== null && childMeta.id === childThreadId
+        && typeof childMeta.parent_thread_id === 'string' && childMeta.parent_thread_id.length > 0) {
+        owningRootSessionId = childMeta.parent_thread_id;
+        break;
+      }
+    }
+  }
+  for (const events of rollouts) {
+    if (!Array.isArray(events)) continue;
+    // The launch rollout's OWNING-SESSION identity (codex review rounds 5-6,
+    // exact binding round 11): the rollout must be the EXACT owning Root
+    // session — its session metadata `id` equals the interrupted Child's
+    // parent session id — and must carry no subagent markers. Merely LACKING
+    // parent/subagent markers identifies nothing: an unrelated top-level
+    // session hosting the control launch is outside the declared I1 Root
+    // turn, session metadata without an `id` identifies nothing, and a
+    // rollout without session metadata stays unidentifiable — all fail
+    // closed through the oracle's explicit `control-not-root-owned` reason.
+    const meta = /** @type {any} */ ((/** @type {any[]} */ (events)).find((event) => event?.type === 'session_meta'))?.payload ?? null;
+    const metaOwnsChildSession = isSubagentSessionMeta(meta);
+    const metaHasId = meta !== null && typeof meta.id === 'string' && meta.id.length > 0;
+    // A genuine top-level Root rollout carries NO parent field at all: a
+    // meta claiming any parent_thread_id (even malformed) is not the clean
+    // owning-Root shape (the round-6 malformed-parent pin).
+    const metaIsTopLevelShape = meta !== null && (meta.parent_thread_id === undefined || meta.parent_thread_id === null);
+    const metaIsOwningRoot = owningRootSessionId !== null && metaIsTopLevelShape && metaHasId && meta.id === owningRootSessionId;
+    for (const event of /** @type {any[]} */ (events)) {
+      const payload = event?.payload;
+      const statements = parseCallStatements(event);
+      if (!statements) continue;
+      for (const [statementIndex, call] of statements.entries()) {
+        // Codex review round 15: the attribution match accepts the SAME
+        // rendered shell command the fixture's directive produced (raw for
+        // shell-safe paths, canonically single-quoted otherwise) — any
+        // quoting/normalization mismatch fails closed.
+        if (call.kind !== 'exec_command'
+          || (call.value?.cmd !== controlPath && call.value?.cmd !== survivalControlShellCommand(controlPath))) continue;
+        facts.launchCount += 1;
+        if (launchCallId === null) {
+          launchCallId = payload.call_id;
+          launchPosition = { statementIndex, statementCount: statements.length };
+          launchEvents = events;
+          launchAtMs = interruptEventTimestampMs(event);
+          launchRolloutOwnership = metaOwnsChildSession ? 'identified-child'
+            : metaIsOwningRoot ? 'identified-root' : 'unidentifiable';
+        }
+      }
+    }
+  }
+  if (facts.launchCount !== 1 || launchCallId === null || launchPosition === null || launchEvents === null) return facts;
+  facts.launched = true;
+  facts.ownership = launchRolloutOwnership === 'identified-root' ? 'root'
+    : launchRolloutOwnership === 'identified-child' ? 'child' : 'unidentifiable';
+  // Codex review round 12: the bounded derivation anchors persisted beside
+  // the verdict — the verified owning-Root identity and the bound's two
+  // anchor timestamps (bound = settledDeliveryAtMs − launchAtMs).
+  facts.owningRootSessionId = owningRootSessionId;
+  facts.launchAtMs = launchAtMs;
+  const responseOutputs = new Map();
+  for (const event of launchEvents) {
+    const payload = event?.payload;
+    if (payload?.type === 'function_call_output' || payload?.type === 'custom_tool_call_output') {
+      responseOutputs.set(payload.call_id, payload.output);
+    }
+  }
+  const launchOwn = launchPosition.statementCount > 1
+    ? statementOutputAt(responseOutputs.get(launchCallId), launchPosition.statementIndex, launchPosition.statementCount)
+    : parseToolOutput(responseOutputs.get(launchCallId));
+  const controlHandleId = launchOwn?.state === 'completed' ? readHandleId(launchOwn.result?.session_id) : null;
+  if (controlHandleId === null) return facts;
+  facts.handleGrounded = true;
+
+  // PASS 2 — the launch and every linked empty-input read of the control
+  // handle, in event order: their completed output bodies carry the
+  // fixture-owned progress lines.
+  const linkedStatements = new Map([[launchCallId, launchPosition]]);
+  /** @type {Map<string, number | null>} */
+  const invocationAtMsByCallId = new Map();
+  for (const event of launchEvents) {
+    const payload = event?.payload;
+    const statements = parseCallStatements(event);
+    if (!statements) continue;
+    for (const [statementIndex, call] of statements.entries()) {
+      if (call.kind === 'write_stdin' && call.value?.session_id === controlHandleId && call.value?.chars === '') {
+        linkedStatements.set(payload.call_id, { statementIndex, statementCount: statements.length });
+        if (!invocationAtMsByCallId.has(payload.call_id)) {
+          // The CELL SUBMISSION is the read's invocation only when no awaited
+          // statement PRECEDES it (codex review round 4): a later statement's
+          // execution is bounded by its predecessors, so if such a statement
+          // straddles the interrupt, the submission time can masquerade as a
+          // pre-interrupt invocation. Its true execution time is UNKNOWN
+          // here (the cell's shared output bounds completion, never start) —
+          // leave it null so the ordering fails closed.
+          invocationAtMsByCallId.set(payload.call_id, statementIndex === 0 ? interruptEventTimestampMs(event) : null);
+        }
+      }
+    }
+  }
+  /** @type {Map<number, number>} */
+  const linesByIndex = new Map();
+  /** @type {{ callId: string, invokedAtMs: number | null, respondedAtMs: number | null, lastLineIndex: number | null, advancing: boolean, readable: boolean, exitObserved: boolean, exitCode: number | null }[]} */
+  const readEvents = [];
+  let seenMaxLineIndex = 0;
+  for (const event of launchEvents) {
+    const payload = event?.payload;
+    if (payload?.type !== 'function_call_output' && payload?.type !== 'custom_tool_call_output') continue;
+    const linked = linkedStatements.get(payload.call_id);
+    if (linked === undefined) continue;
+    const invokedAtMs = invocationAtMsByCallId.get(payload.call_id) ?? null;
+    const body = statementOutputAt(payload.output, linked.statementIndex, linked.statementCount);
+    const text = body?.state === 'completed' && typeof body.result?.output === 'string' ? body.result.output : null;
+    SURVIVAL_CONTROL_LINE_PATTERN.lastIndex = 0;
+    let parsedLines = null;
+    if (text !== null) {
+      parsedLines = [];
+      for (const match of text.matchAll(SURVIVAL_CONTROL_LINE_PATTERN)) {
+        const index = Number(match[1]);
+        const tag = Number(match[2]);
+        if (Number.isSafeInteger(index) && index >= 1 && index <= lineCount && Number.isSafeInteger(tag) && tag >= 0) {
+          parsedLines.push({ index, tag });
+        }
+      }
+    }
+    const lastLineIndex = parsedLines !== null && parsedLines.length > 0 ? Math.max(...parsedLines.map((line) => line.index)) : null;
+    // The launch's own response is an OUTPUT RECEIPT, never one of the
+    // required bounded reads — it can never qualify as the pre-delivery
+    // read, but its lines still count as previously seen for the ADVANCING
+    // requirement (a qualifying read must return a fresh line beyond
+    // everything observed before it).
+    const isLaunchResponse = payload.call_id === launchCallId;
+    if (!isLaunchResponse) {
+      readEvents.push({
+        callId: /** @type {string} */ (payload.call_id),
+        invokedAtMs,
+        // Codex review round 10: the read's OWN response event time — the
+        // qualifying pre-delivery read must complete before the interrupt
+        // request, not merely be invoked before it.
+        respondedAtMs: interruptEventTimestampMs(event),
+        lastLineIndex,
+        advancing: lastLineIndex !== null && lastLineIndex > seenMaxLineIndex,
+        // Codex review round 6: readable requires the read's OWN DECODED
+        // output text, never a merely-parseable completed JSON envelope — a
+        // failed read (`{"error": …}`, no output field) establishes nothing
+        // about what the read returned.
+        readable: text !== null,
+        // Codex review round 8: the read's own response carrying the
+        // control's exit code is the INDEPENDENT loss evidence the §16.4
+        // oracle requires for a 'lost' verdict. Codex review round 13: the
+        // OBSERVED CODE is preserved — natural-completion credit requires
+        // the designed exit code, and an abnormal code is a named rejection.
+        exitCode: body?.state === 'completed' && Number.isSafeInteger(body.result?.exit_code) ? /** @type {number} */ (/** @type {any} */ (body.result).exit_code) : null,
+        exitObserved: body?.state === 'completed' && Number.isSafeInteger(body.result?.exit_code),
+      });
+    }
+    if (lastLineIndex !== null && lastLineIndex > seenMaxLineIndex) seenMaxLineIndex = lastLineIndex;
+    if (parsedLines !== null) {
+      for (const line of parsedLines) {
+        // Each bounded read returns the ACCUMULATED output, so the same line
+        // arrives again: dedupe by index (the script emits each line exactly
+        // once). A CONFLICTING tag for the same index is contradictory
+        // evidence — fail closed with no line facts rather than guess.
+        const existing = linesByIndex.get(line.index);
+        if (existing !== undefined) {
+          if (existing !== line.tag) {
+            return { ...facts, emittedLines: null, completionMarker: null };
+          }
+          continue;
+        }
+        linesByIndex.set(line.index, line.tag);
+      }
+    }
+  }
+  const lines = [...linesByIndex.entries()]
+    .sort(([first], [second]) => first - second)
+    .map(([index, tag]) => ({ index, tag }));
+  facts.emittedLines = lines.length > 0 ? lines.map(({ index, tag }) => ({ index, tag })) : null;
+  const finalLine = lines.find((line) => line.index === lineCount);
+  facts.completionMarker = finalLine !== undefined ? { index: finalLine.index, tag: finalLine.tag } : null;
+
+  // Delivery timing comes from the EXISTING attribution machinery (same
+  // attribution as the main interrupt oracle): the request dispatch is
+  // interaction.callAtMs and the attributable ≥-COMPLETED-delivery event is
+  // interaction.settledAfterCall.atMs (§16.3 stage 4) — the interrupted
+  // Child's settled resolution, which may be an exit-code completion OR a
+  // cancellation/turn-abort marker. The request alone is never a delivery
+  // bound — the control can still be emitting after the request while the
+  // abort chain settles. The closed §16.3 contract is EXACTLY ONE delivery:
+  // any other call count leaves the bound unestablished.
+  const requestAtMs = interaction.callAtMs ?? null;
+  // Codex review round 9: the bound is established ONLY under the confirmed
+  // delivery contract — exactly one EXACT-ACCEPTED delivery (`delivered ===
+  // true`; a rejected/undelivered interrupt such as target-unknown never
+  // bounds the control) AND the confirmed pending-window predicate (the poll
+  // was outstanding at the interruption moment) — the same guards the
+  // mapper's settlement branch applies. A natural Child completion after a
+  // REJECTED interrupt is the Child's own lifecycle, never a delivery bound:
+  // the bound stays null and survival qualification stays unestablished even
+  // while control emissions continue.
+  // Codex review round 14: the FULL delivery-attribution predicate — the
+  // SAME shared guards the mapper's settlement chain applies (exactly one
+  // accepted delivery, bound ordering, not post-completion, nonterminal
+  // previous status, readable continuations), so wherever the mapper would
+  // reject settlement attribution the bound stays unestablished.
+  const settledDeliveryAtMs = interruptDeliveryAttributionGuard(interaction) === null
+    && interaction.pendingBeforeCall?.observed === true
+    && options.exactTargetMatch === true
+    ? (typeof interaction.settledAfterCall?.atMs === 'number' && Number.isFinite(interaction.settledAfterCall.atMs)
+      ? interaction.settledAfterCall.atMs
+      : null)
+    : null;
+  // The SOUND bound B = D − L (see the module comment): the control process
+  // cannot start before its launch event L, so the true tag at the settled
+  // delivery D is D − S ≤ D − L. A line whose tag strictly exceeds B was
+  // truly emitted after the control could have been killed. Buffered output
+  // makes line RECEIPT times useless as emission anchors — they are never
+  // read here.
+  if (settledDeliveryAtMs !== null && launchAtMs !== null) {
+    facts.deliveryBoundTag = settledDeliveryAtMs - launchAtMs;
+  }
+  facts.settledDeliveryAtMs = settledDeliveryAtMs;
+  // The §16.4 pre-delivery activity proof: a DISTINCT bounded read (never
+  // the launch response) INVOKED strictly before the interrupt REQUEST (the
+  // frozen §16.4 wording: the read event precedes the interrupt call event)
+  // whose freshest line ADVANCED beyond everything previously seen and is
+  // still below the line count (mid-run). Invocation times, never output
+  // receipts — and codex review round 10: the qualifying read must also
+  // FINISH before the request (its own response — the read that returned the
+  // fresh advancing line — completed strictly before the interrupt call
+  // event); a read returning afterward cannot prove the fresh line was read
+  // before delivery.
+  let unorderedReadObserved = false;
+  for (const readEvent of readEvents) {
+    if (readEvent.invokedAtMs === null || requestAtMs === null) continue;
+    if (readEvent.invokedAtMs < requestAtMs
+      && readEvent.respondedAtMs !== null && readEvent.respondedAtMs < requestAtMs
+      && readEvent.advancing && readEvent.lastLineIndex !== null && readEvent.lastLineIndex < lineCount) {
+      facts.beforeDeliveryRead = { observed: true, lastLineIndex: readEvent.lastLineIndex, orderedBeforeInterrupt: true };
+      unorderedReadObserved = false;
+      break;
+    }
+    // A read that ran but provably fails the ordering (at/after the
+    // request) yields positive knowledge that no qualifying read was
+    // observed before it.
+    unorderedReadObserved = true;
+  }
+  if (facts.beforeDeliveryRead.observed !== true) {
+    facts.beforeDeliveryRead = { observed: false, lastLineIndex: null, orderedBeforeInterrupt: unorderedReadObserved ? false : null };
+  }
+  // Codex review round 14: INDEPENDENT pre-delivery completion evidence —
+  // the read that returned the completion marker (the declared final line)
+  // must itself have COMPLETED before the interrupt request. The delivery
+  // bound B bounds lateness, never earliness: without this fact a tag at or
+  // below B proves nothing about pre-delivery emission.
+  facts.completionBeforeDeliveryObserved = requestAtMs !== null && readEvents.some((readEvent) => readEvent.respondedAtMs !== null
+    && readEvent.respondedAtMs < requestAtMs
+    && readEvent.lastLineIndex === lineCount);
+  // The post-delivery read: established by its INVOCATION event (never its
+  // output receipt — a read submitted before the interrupt but returning
+  // afterward proves nothing), the invocation must FOLLOW the confirmed
+  // settled delivery, and the read's OWN attributable response must be
+  // READABLE (observed and decoded — an invoked-but-unanswered or
+  // undecodable read establishes nothing about what it returned). `readable`
+  // holds when ANY attributable post-settlement-invoked read carries its own
+  // decoded result; invocation alone never satisfies the mandatory read.
+  const postDeliveryCandidates = readEvents.filter((readEvent) => readEvent.invokedAtMs !== null
+    && settledDeliveryAtMs !== null && readEvent.invokedAtMs > settledDeliveryAtMs);
+  facts.postDeliveryRead = {
+    occurred: postDeliveryCandidates.length > 0,
+    readable: postDeliveryCandidates.some((readEvent) => readEvent.readable === true),
+    returnedLines: postDeliveryCandidates.length > 0 && facts.deliveryBoundTag !== null
+      && lines.some((line) => line.tag > /** @type {number} */ (facts.deliveryBoundTag)),
+  };
+  // Codex review round 8: the control's own exit observed by a
+  // post-settlement read is the INDEPENDENT loss evidence the §16.4 oracle
+  // consumes — a readable response without new tags proves nothing about
+  // loss on its own. Codex review round 12: the exit is PREMATURE when the
+  // ACCUMULATED emission evidence (the maximum line index across ALL reads)
+  // shows only a prefix of the designed output at the observed exit —
+  // unified-exec reads DRAIN pending output, so an exit response may
+  // legitimately carry an empty body, and the exit response's own lines are
+  // never required.
+  const exitCandidate = postDeliveryCandidates.find((readEvent) => readEvent.exitObserved === true);
+  facts.controlExitObserved = exitCandidate !== undefined;
+  facts.controlExitPremature = exitCandidate !== undefined && seenMaxLineIndex < lineCount;
+  facts.controlExitCode = exitCandidate !== undefined ? exitCandidate.exitCode : null;
+  return facts;
 }
 
 /**
@@ -2031,6 +2702,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
  * @returns {{ status: 'supported', inconclusive: null, facts: Record<string, unknown> }
  *   | { status: 'inconclusive', inconclusive: { reason: string, detail: string, manualAdjudicationRequired?: boolean, excerpt?: { text: string, truncated: boolean } }, facts: null }}
  */
+
 export function inspectShellWaitEvidence(input) {
   if (!input || typeof input !== 'object') throw invalidEvidenceInput('the evidence input must be an object.');
   const rollouts = input.rollouts;
@@ -2113,6 +2785,30 @@ export function inspectShellWaitEvidence(input) {
     throw invalidEvidenceInput('waitPolicyComparisonFacts must be a boolean when present.');
   }
   const waitPolicyComparisonFactsEnabled = input.waitPolicyComparisonFacts === true;
+  // The byte-exact terminal/exit expectation (release-qualification Task 2):
+  // an optional validated { output, exitCode } whose bytes the linked
+  // terminal output must match EXACTLY (the legacy marker/substring check can
+  // never satisfy the exact gate). Absent → the default facts stay
+  // byte-identical. inspectCompletion reads the validated field.
+  if (input.exactExpectedTerminal !== undefined && input.exactExpectedTerminal !== null) {
+    const expectation = input.exactExpectedTerminal;
+    if (!expectation || typeof expectation !== 'object' || Array.isArray(expectation)
+      || typeof expectation.output !== 'string' || expectation.output.length === 0 || expectation.output.length > 65536
+      || !Number.isSafeInteger(expectation.exitCode) || expectation.exitCode < 0) {
+      throw invalidEvidenceInput('exactExpectedTerminal must be { output: nonempty string, exitCode: nonnegative integer }.');
+    }
+  }
+  // Codex review round 12: the validated stdout-only capture with true
+  // stream attribution — the ONLY surface the exact-byte comparison
+  // consumes. Merged rollout output never carries it.
+  if (input.observedTerminalStdout !== undefined && input.observedTerminalStdout !== null) {
+    // Codex review round 16: an EMPTY capture is valid and definitive (a
+    // process can exit without emitting the expected result); only
+    // non-strings and over-bound strings are refused.
+    if (typeof input.observedTerminalStdout !== 'string' || input.observedTerminalStdout.length > 65536) {
+      throw invalidEvidenceInput('observedTerminalStdout must be a string (bounded at 65536 chars) or null when only merged output exists.');
+    }
+  }
   if (rollouts.length === 0) return inconclusive('rollouts-unavailable', 'No rollout evidence was collected.');
   for (const events of rollouts) {
     if (events.length > MAX_EVENTS_PER_ROLLOUT) return inconclusive('rollouts-overflow', 'A rollout exceeds the observer event bound.');
@@ -2382,6 +3078,52 @@ function inspectLinkage(rollouts) {
   };
 }
 
+// The pinned interrupt `previous_status` labels that mean the interrupt
+// landed on an ALREADY-TERMINAL Child (the pinned AgentStatus enum's terminal
+// labels, including a prior 'interrupted').
+export const TERMINAL_INTERRUPT_PREVIOUS_STATUSES = new Set(['completed', 'errored', 'shutdown', 'not_found', 'interrupted']);
+
+/**
+ * The interaction-local delivery-attribution guards shared by the mapper's
+ * settlement chain and the survival reader's delivery-bound contract
+ * (codex review round 14 — ONE implementation, never diverging guard
+ * lists). Returns null when EVERY guard holds and the interaction is
+ * attributable as this Child's settlement; otherwise the failed guard's
+ * stable key. Exact-target and pending-window attribution are consumer-
+ * specific facts and stay with the callers.
+ * @param {ReturnType<typeof extractInterruptInteraction>} interaction
+ * @returns {'multiple-delivery-attempts' | 'delivery-rejected' | 'delivery-outcome-unobserved' | 'ordering-unbound' | 'post-completion' | 'previous-status-terminal' | 'unreadable-continuation' | null}
+ */
+export function interruptDeliveryAttributionGuard(interaction) {
+  if (!interaction || typeof interaction !== 'object') return 'multiple-delivery-attempts';
+  if (interaction.callCount !== 1) return 'multiple-delivery-attempts';
+  if (interaction.delivered === false) return 'delivery-rejected';
+  if (interaction.delivered !== true) return 'delivery-outcome-unobserved';
+  if (interaction.orderingBound !== true) return 'ordering-unbound';
+  if (interaction.sameRolloutCompletedBeforeCall === true
+    || (interaction.orderingBound === true && interaction.completedBeforeCall.atMs !== null)) return 'post-completion';
+  if (typeof interaction.previousStatus === 'string' && TERMINAL_INTERRUPT_PREVIOUS_STATUSES.has(interaction.previousStatus)) return 'previous-status-terminal';
+  if ((interaction.unparseableBoundResponses ?? 0) > 0) return 'unreadable-continuation';
+  return null;
+}
+
+/**
+ * The spawn markers that identify a rollout's session as a SUBAGENT/CHILD
+ * session rather than the launched Root (the identifyRootRollout P2-4
+ * criteria, shared with the survival-control ownership check so the two
+ * classifications can never drift): a non-empty `parent_thread_id` OR any
+ * `source.subagent` metadata. An absent parent field is NOT sufficient Root
+ * identification on its own (codex review round 6) — the subagent source
+ * shape alone is equally a spawned session.
+ * @param {any} payload a session_meta payload
+ * @returns {boolean}
+ */
+function isSubagentSessionMeta(payload) {
+  if (payload === null || typeof payload !== 'object') return false;
+  return (payload.parent_thread_id !== undefined && payload.parent_thread_id !== null && payload.parent_thread_id !== '')
+    || (payload.source?.subagent !== undefined && payload.source?.subagent !== null);
+}
+
 /**
  * Identify the ROOT rollout for a root-family case: the single rollout that
  * exposes the exact companion command as a supported observed call AND is the
@@ -2406,9 +3148,7 @@ function identifyRootRollout(rollouts, command) {
     : null;
   const rootThreadId = typeof meta?.payload?.id === 'string' && meta.payload.id.length > 0 ? meta.payload.id : null;
   const subagentPayload = candidates.length === 1 ? /** @type {any} */ (meta)?.payload : undefined;
-  const subagentRollout = subagentPayload !== undefined && subagentPayload !== null
-    && ((subagentPayload.parent_thread_id !== undefined && subagentPayload.parent_thread_id !== null && subagentPayload.parent_thread_id !== '')
-      || (subagentPayload.source?.subagent !== undefined && subagentPayload.source?.subagent !== null));
+  const subagentRollout = subagentPayload !== undefined && subagentPayload !== null && isSubagentSessionMeta(subagentPayload);
   /** @type {string | undefined} */
   let reason;
   if (candidates.length === 0) reason = 'no collected rollout exposes the exact companion command as a supported call';
@@ -2718,6 +3458,17 @@ function rolloutEventForCallId(events, callId, kind, preferredIndex) {
  *    plan's expected discriminator is a yielded-pending control cell, so the
  *    state must be observed before a control return is attributed to its
  *    configured default.
+ *  - `decisiveInnerNonterminality` (codex review, release-qualification
+ *    round): the INNER-vs-OUTER fact the legacy string overloads. VERIFIED
+ *    decode semantics: a direct-form response with `Process running with
+ *    session ID <id>` and NO exit code decodes as completed-state with a
+ *    LIVE HANDLE — that is the inner call reaching its clamped cap while the
+ *    worker still runs (the real M evidence); a completed response WITH an
+ *    exit code means the inner process exited (terminal); a PENDING
+ *    `Script running with cell ID` output is the OUTER code-mode cell
+ *    yielding with the inner call unresolved (never an inner-cap
+ *    measurement). Closed values: 'inner-cap-live-handle' |
+ *    'inner-process-exited' | 'outer-yield-inner-unresolved' | 'unknown'.
  *  - `decisiveInnerYieldMs`: the decisive poll's ACTUAL requested inner
  *    window from the admitted call's arguments — the comparability fact that
  *    differing inner requests already explain any contrast (unavailable ⇒
@@ -2727,11 +3478,11 @@ function rolloutEventForCallId(events, callId, kind, preferredIndex) {
  * @param {number | null} originalHandleId
  * @param {any[] | null} events the identified rollout's events (the source
  *   of the call/output event timestamps)
- * @returns {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }}
+ * @returns {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveInnerNonterminality: 'inner-cap-live-handle' | 'inner-process-exited' | 'outer-yield-inner-unresolved' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }}
  */
 function projectDecisivePollComparisonFact(calls, originalHandleId, events) {
-  /** @type {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }} */
-  const unknownFact = { decisivePollExplicitYield: 'unknown', decisiveCallSurface: 'unknown', decisiveInnerYieldMs: null, decisiveFirstReturnWallMs: null, decisiveFirstReturnState: 'unknown', decisiveFirstReturnBasis: 'unavailable' };
+  /** @type {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveInnerNonterminality: 'inner-cap-live-handle' | 'inner-process-exited' | 'outer-yield-inner-unresolved' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }} */
+  const unknownFact = { decisivePollExplicitYield: 'unknown', decisiveCallSurface: 'unknown', decisiveInnerYieldMs: null, decisiveFirstReturnWallMs: null, decisiveFirstReturnState: 'unknown', decisiveInnerNonterminality: 'unknown', decisiveFirstReturnBasis: 'unavailable' };
   if (calls === null || originalHandleId === null || !Array.isArray(events)) return unknownFact;
   for (const entry of calls) {
     if (entry?.call?.kind !== 'write_stdin') continue;
@@ -2767,6 +3518,18 @@ function projectDecisivePollComparisonFact(calls, originalHandleId, events) {
     // so a completed return must never masquerade as default expiry.
     const decisiveFirstReturnState = entry.output?.state === 'pending' ? 'yielded-pending'
       : entry.output?.state === 'completed' ? 'completed' : 'unknown';
+    // The INNER-vs-OUTER fact (codex review): the legacy state string cannot
+    // distinguish an inner call that reached its cap and returned a LIVE
+    // handle (completed state, session_id, NO exit_code) from an inner
+    // process that exited (completed state WITH exit_code) — and a pending
+    // output is the OUTER cell yielding with the inner call unresolved.
+    const decisiveInnerNonterminality = entry.output?.state === 'pending'
+      ? 'outer-yield-inner-unresolved'
+      : entry.output?.state === 'completed'
+        ? Number.isSafeInteger(entry.output.result?.exit_code) ? 'inner-process-exited'
+          : readHandleId(entry.output.result?.session_id) !== null ? 'inner-cap-live-handle'
+            : 'unknown'
+        : 'unknown';
     const callEvent = rolloutEventForCallId(events, entry.callId, 'call', entry.callIndex);
     const outputEvent = rolloutEventForCallId(events, entry.callId, 'output', entry.outputIndex);
     const callTimestampMs = callEvent === null ? null : interruptEventTimestampMs(callEvent);
@@ -2778,6 +3541,7 @@ function projectDecisivePollComparisonFact(calls, originalHandleId, events) {
       decisiveInnerYieldMs,
       decisiveFirstReturnWallMs: measurable ? outputTimestampMs - callTimestampMs : null,
       decisiveFirstReturnState,
+      decisiveInnerNonterminality,
       decisiveFirstReturnBasis: measurable ? 'rollout-event-timestamps' : (standaloneCell ? 'unavailable' : 'shared-cell'),
     };
   }
@@ -3219,6 +3983,29 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
   // its body is withheld: the marker keeps the exit status, the sentinel
   // outcome, and the output size — never the bytes.
   const terminalOutput = typeof terminalResult?.output === 'string' ? terminalResult.output : null;
+  // The byte-exact linkage verdict (release-qualification Task 2): computed
+  // ONLY when the validated expectation was supplied — the exact gate is
+  // strictly narrower than the marker/substring check above, and absent
+  // expectation keeps every default fact byte-identical.
+  // Codex review round 12: STREAM ATTRIBUTION. The pinned unified-exec
+  // serialization merges stdout/stderr chunks as they arrive into the linked
+  // terminal `result.output` — merged rollout bytes carry no attributable
+  // stream split, so exact stdout equality is UNESTABLISHED from merged
+  // output alone (never a false `extra-output`, never a strip heuristic).
+  // The comparison consumes a VALIDATED stdout-only capture
+  // (`observedTerminalStdout`) from a source with true stream attribution.
+  // Provenance note: the driver-side process capture separates only the
+  // ROOT host process's streams — the compared Companion bytes exist solely
+  // as merged rollout output, so live runs record the honest unestablished
+  // verdict.
+  const exactTerminalMatch = input.exactExpectedTerminal
+    ? evaluateExactTerminalLinkage({
+      terminalStdout: typeof input.observedTerminalStdout === 'string' ? input.observedTerminalStdout : null,
+      exitCode: processExit,
+      expectedOutput: input.exactExpectedTerminal.output,
+      expectedExitCode: input.exactExpectedTerminal.exitCode,
+    })
+    : undefined;
   const terminalStdoutExcerpt = publicResultMatched === false && processExit !== null && terminalOutput !== null
     ? {
       kind: 'terminal-stdout-mismatch',
@@ -3294,6 +4081,7 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
     expectedResultMarkers,
     alternativeResultMarkers,
     resultMarkerSetMatched,
+    ...(exactTerminalMatch !== undefined ? { exactTerminalMatch } : {}),
     terminalStdoutExcerpt,
     decisiveEnd,
     decisiveWallMs,
@@ -3309,6 +4097,8 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
  *   publicResult?: string | null,
  *   publicResultMarkers?: string[] | null,
  *   publicResultAlternativeMarkers?: string[] | null,
+ *   exactExpectedTerminal?: { output: string, exitCode: number } | null,
+ *   observedTerminalStdout?: string | null,
  *   rootQueryTurn?: { sessionId: string, setupEventCount: number } | null,
  *   requestedPollMs?: number | null,
  *   observedWallMs?: number | null,

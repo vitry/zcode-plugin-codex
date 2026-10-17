@@ -38,6 +38,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { survivalControlShellCommand } from './evidence.mjs';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
@@ -47,6 +48,80 @@ const FAKE_ZCODE_PATH = fileURLToPath(new URL('../../tests/fixtures/fake-zcode-c
 /** The fixed harmless public sentinel the fake ZCode returns as its terminal result. */
 export const PUBLIC_RESULT_SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
 const CAP_CONFIGURATION_KEY = 'background_terminal_max_timeout';
+
+/**
+ * The §16.4 declared unrelated survival control's frozen shape (release
+ * qualification Task 2): the fixture-owned bounded script emits exactly this
+ * many unique progress lines at exactly this fixed cadence and then exits 0
+ * naturally. The line format is `<prefix> <1-based line index> <monotonic
+ * emission tag>` — the tag is written by the control AT EMIT TIME on the
+ * control process's own monotonic clock, which is what makes the §16.4
+ * emission-time survival binding possible (a post-delivery read of buffered
+ * bytes can never substitute for a tag after the delivery bound).
+ */
+export const SURVIVAL_CONTROL_LINE_COUNT = 30;
+export const SURVIVAL_CONTROL_CADENCE_MS = 2000;
+export const SURVIVAL_CONTROL_LINE_PREFIX = 'zcode-survival-control';
+
+/**
+ * The §16.4 Root-turn instruction fragment for the I1 survival control
+ * (release-qualification Task 2 wiring): the control is launched ONCE through
+ * the ordinary `exec_command` seam on its OWN handle INSIDE the same declared
+ * I1 Root turn — no extra model turn, no standalone launch. The bounded
+ * before/after reads ride the same turn: one read immediately BEFORE the
+ * interrupt (the §16.4 mid-run proof, fresh progress line, index below the
+ * line count) and one read AFTER the interrupt's settlement, both reported
+ * verbatim so the emission tags can be decoded. The control is never
+ * observed with Status, never sent input, never stopped or killed, and never
+ * confused with the observed Rescue child (it shares no stop authority).
+ * @param {string} scriptPath the fixture-owned absolute script path (never
+ *   recorded; the directive text rides the host argv only)
+ * @returns {string}
+ */
+export function survivalControlPromptDirective(scriptPath) {
+  if (typeof scriptPath !== 'string' || scriptPath.length === 0 || scriptPath.length > 512
+    || hasControlCharacter(scriptPath) || !isAbsolute(scriptPath)) {
+    throw invalidFixtureInput('the survival-control directive needs a bounded absolute script path.');
+  }
+  return 'Also, inside this same turn and before anything else: launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly '
+    + `\`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
+    + 'While the spawned agent is still running and its observation is pending: first read the progress program\'s output once on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count, then deliver the exactly-one interrupt_agent call to the exact agent id. '
+    + 'After the interrupt has settled, read the progress program\'s output one final time on its own handle and include both reads verbatim in your final report. '
+    + 'The progress program is unrelated to the Rescue child: do not confuse the two handles, and do not interrupt it.';
+}
+
+/**
+ * The fixture-owned survival-control script bytes (report §16.4). The caller
+ * never supplies command bytes; the live I1 case references the path the
+ * fixture exposes. The script never touches the observed Companion handle,
+ * shares no job/guard/lease state, and ends with a natural zero exit.
+ * @returns {string}
+ */
+export function survivalControlScript() {
+  return `#!/usr/bin/env node
+// Fixture-owned survival control (qualification report §16.4): emits exactly
+// ${SURVIVAL_CONTROL_LINE_COUNT} unique progress lines at a fixed ${SURVIVAL_CONTROL_CADENCE_MS} ms cadence and then exits 0
+// naturally. Every line's tag is the control's OWN monotonic elapsed
+// milliseconds AT EMIT TIME (never the reader's timestamp), so survival can
+// be bound to emission time, not observation time.
+const LINE_COUNT = ${SURVIVAL_CONTROL_LINE_COUNT};
+const CADENCE_MS = ${SURVIVAL_CONTROL_CADENCE_MS};
+const PREFIX = ${JSON.stringify(SURVIVAL_CONTROL_LINE_PREFIX)};
+const started = process.hrtime.bigint();
+const elapsedMs = () => Number((process.hrtime.bigint() - started) / 1000000n);
+let index = 1;
+process.stdout.write(\`\${PREFIX} \${index} \${elapsedMs()}\\n\`);
+index += 1;
+const timer = setInterval(() => {
+  process.stdout.write(\`\${PREFIX} \${index} \${elapsedMs()}\\n\`);
+  index += 1;
+  if (index > LINE_COUNT) {
+    clearInterval(timer);
+    process.exitCode = 0;
+  }
+}, CADENCE_MS);
+`;
+}
 
 /** The exact installed waiting-policy paragraph this instrument is allowed to change. */
 const ORIGINAL_WAITING_PARAGRAPH = 'Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls using yield_time_ms: 60000. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue\'s named and generic Role assignments; the initial launcher yield is 30000, subsequent same-handle observations are 60000.';
@@ -233,7 +308,7 @@ async function assertPrivateEmptyOutput(output) {
 /**
  * Validate and normalize the fixture input before any filesystem side effect.
  * @param {ShellWaitFixtureInput} input
- * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
+ * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, survivalControl: boolean, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
  */
 function validateFixtureInput(input) {
   if (!input || typeof input !== 'object') throw invalidFixtureInput('the fixture input must be an object.');
@@ -252,16 +327,32 @@ function validateFixtureInput(input) {
   if (commandSkillVariant === 'candidate' && input.variant !== 'candidate') {
     throw invalidFixtureInput('commandSkillVariant "candidate" requires variant "candidate" (the root-family candidate delivery seam); a baseline fixture never edits the installed command Skills.');
   }
-  // The Task 4 config-default waiting-paragraph seam: a closed literal,
-  // meaningful only with the candidate variant (a baseline fixture never
-  // edits the installed instructions). The exec-default NUMBER never enters
-  // the fixture — it travels exclusively as the driver's host argv override.
+  // The Task 4 config-default waiting-paragraph seam: a closed literal. The
+  // §16.6 release-qualification matrix defines TWO paragraph treatments: the
+  // candidate variant applies the config-default waiting paragraph
+  // (candidate-paragraph), and the baseline variant keeps the installed
+  // canonical paragraph byte-identical while the driver applies the host
+  // config only (canonical-host-config — label B and the Root-command
+  // cases). The treatment is DERIVED from the variant; the driver owns the
+  // per-case combination gate. The exec-default NUMBER never enters the
+  // fixture — it travels exclusively as the driver's host argv override.
   const waitPolicy = input.waitPolicy;
   if (waitPolicy !== undefined && waitPolicy !== 'config-default') {
     throw invalidFixtureInput('waitPolicy must be exactly "config-default" when present.');
   }
-  if (waitPolicy === 'config-default' && input.variant !== 'candidate') {
-    throw invalidFixtureInput('waitPolicy "config-default" requires variant "candidate" (the config-default waiting-paragraph seam); a baseline fixture never edits the installed instructions.');
+  // The §16.4 I1 survival-control support: a closed boolean flag; the
+  // control's command bytes are fixture-owned (never caller-supplied). The
+  // declared control exists ONLY in the candidate-variant config-default
+  // fixture home — the same I1 home the interrupt runs against.
+  if (input.survivalControl !== undefined && typeof input.survivalControl !== 'boolean') {
+    throw invalidFixtureInput('survivalControl must be a boolean when present.');
+  }
+  const survivalControl = input.survivalControl === true;
+  if (survivalControl && waitPolicy !== 'config-default') {
+    throw invalidFixtureInput('survivalControl requires the config-default waitPolicy fixture home (the §16.4 I1 survival-control case).');
+  }
+  if (survivalControl && input.variant !== 'candidate') {
+    throw invalidFixtureInput('survivalControl is declared only for the candidate-variant fixture home (the §16.4 I1 survival-control case).');
   }
   if (input.capMs !== null && input.capMs !== undefined && (!Number.isSafeInteger(input.capMs) || input.capMs <= 0)) {
     throw invalidFixtureInput('capMs must be a positive integer or null (unraised).');
@@ -289,6 +380,7 @@ function validateFixtureInput(input) {
     variant: input.variant,
     commandSkillVariant,
     waitPolicy: waitPolicy ?? null,
+    survivalControl,
     capMs: input.capMs ?? null,
     pollMs,
     reserveStatusJob,
@@ -460,6 +552,33 @@ export async function createShellWaitFixture(input, dependencies = {}) {
     const record = await applyVariantArtifacts({ installedRoot, codexHome, prepared, installRecord, credentialsCopied });
     record.ownedCleanSourceWorktree = /** @type {any} */ (cleanSource);
 
+    // The §16.4 I1 survival-control support: the fixture OWNS the control's
+    // command bytes and writes its bounded script into the disposable fixture
+    // root BEFORE the held turn runs (disposal removes it with the home). The
+    // handle exposes the private path for the driver's held turn; the record
+    // carries only the closed facts and the script digest — never the path.
+    /** @type {string | null} */
+    let survivalControlPath = null;
+    if (prepared.survivalControl === true) {
+      survivalControlPath = join(temporary, 'survival-control.mjs');
+      const script = survivalControlScript();
+      await writeFile(survivalControlPath, script, { mode: 0o700 });
+      /** @type {Record<string, unknown>} */ (record).survivalControl = {
+        selector: 'progress-terminal',
+        script: 'survival-control.mjs',
+        scriptSha256: sha256(script),
+        lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+        cadenceMs: SURVIVAL_CONTROL_CADENCE_MS,
+        linePrefix: SURVIVAL_CONTROL_LINE_PREFIX,
+        // The DESIGN constants of the fixture-owned script — declared facts,
+        // never measured outcomes (an observed exit/line count rides the
+        // live reader's §16.4 facts, never this declaration).
+        designedExitCode: 0,
+        emissionTagClock: 'control-process-monotonic-elapsed-ms-since-start',
+        commandSource: 'fixture-owned bytes; never caller-supplied',
+      };
+    }
+
     // The isolated production setup stands in for a real user's completed
     // `$zcode:setup` installation: without the managed Role registration the
     // constant preflight is `install-required` and Root correctly stops
@@ -510,6 +629,7 @@ export async function createShellWaitFixture(input, dependencies = {}) {
       installedRoot,
       env,
       ...(statusJob === null ? {} : { statusJob, owningSessionId: /** @type {string} */ (owningSessionId) }),
+      ...(survivalControlPath === null ? {} : { survivalControlPath }),
       dispose: async () => {
         if (disposed) return;
         disposed = true;
@@ -964,12 +1084,29 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
     // delivered instructions are comparable across runs. The raw rendered
     // hashes above still differ cross-run (fixture paths/IDs) — expected, and
     // never by itself a cross-arm incompatibility. Recorded ONLY for the
-    // config-default variant so default fixture records stay byte-identical.
+    // config-default variants so default fixture records stay byte-identical.
+    // The §16.6 paragraph treatment states WHICH paragraph the hashes
+    // describe: candidate-paragraph for the candidate variant,
+    // canonical-host-config for the baseline variant — where the CANONICAL
+    // (unmodified) hashes are recorded under explicit canonical names and the
+    // config-default candidate paragraph's hash is never recorded.
     ...(prepared.waitPolicy === 'config-default' ? {
-      waitPolicy: {
+      waitPolicy: prepared.variant === 'candidate' ? {
         policy: prepared.waitPolicy,
+        paragraphTreatment: 'candidate-paragraph',
         normalizedNamedRoleSha256: sha256(normalizeFixtureInstructionText(renderedRole, [installedRoot, codexHome])),
         normalizedGenericMessageSha256: sha256(normalizeFixtureInstructionText(genericMessage, [installedRoot, codexHome])),
+      } : {
+        policy: prepared.waitPolicy,
+        paragraphTreatment: 'canonical-host-config',
+        canonicalNamedRoleSha256: sha256(normalizeFixtureInstructionText(baselineRole, [installedRoot, codexHome])),
+        canonicalGenericMessageSha256: sha256(normalizeFixtureInstructionText(baselineGenericMessage, [installedRoot, codexHome])),
+        canonicalParagraphProvenance: 'the delivered instructions are the byte-identical installed canonical waiting paragraph; the config-default candidate paragraph was not applied and its hash is never recorded here',
+        hostConfig: {
+          capConfigurationKey: CAP_CONFIGURATION_KEY,
+          capMs: prepared.capMs,
+          execDefaultTransport: 'the driver applies the outer exec default as the host argv override -c features.code_mode.default_exec_yield_time_ms=<ms>; the number is never a fixture input',
+        },
       },
     } : {}),
   };
@@ -1254,6 +1391,7 @@ export async function releaseCompletionGate(gatePath) {
  *   variant: 'baseline'|'candidate',
  *   commandSkillVariant?: 'baseline'|'candidate',
  *   waitPolicy?: string,
+ *   survivalControl?: boolean,
  *   capMs?: number | null,
  *   pollMs?: number,
  *   reserveStatusJob?: boolean,
@@ -1275,6 +1413,7 @@ export async function releaseCompletionGate(gatePath) {
  *   env: NodeJS.ProcessEnv,
  *   statusJob?: { jobId: string, status: string, queryTimeoutMs: number },
  *   owningSessionId?: string,
+ *   survivalControlPath?: string,
  *   dispose: () => Promise<void>,
  *   record: Record<string, unknown>,
  * }} ShellWaitFixtureHandle
