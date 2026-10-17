@@ -350,24 +350,34 @@ function diagnosticBudgetChars(baseFacts) {
  * Drop order: the full facts; then the `statements` array (the closed
  * `statementCount` survives — the schema's own drop-whole rule); then a fixed
  * minimal closed marker; and when even the marker does not fit, nothing (the
- * caller omits the block). The classifier never throws by construction; the
- * guard keeps an unexpected internal failure from reaching the excerpt.
+ * caller omits the block). EVERY tier carries the closed record-budget
+ * retention marker (`retention: 'full' | 'partial'` — close-out adjudication
+ * 2026-10-17): a reader can always tell whether serialization omitted facts,
+ * while `coverage`/`wholeInputConsumed` keep describing the CLASSIFICATION.
+ * The classifier never throws by construction; the guard keeps an unexpected
+ * internal failure from reaching the excerpt.
  * @param {string} raw the unknown call body (memory-only)
  * @param {number} budgetChars the serialized character budget for the shape block
  * @param {'custom-tool-cell' | 'direct-arguments'} shapeCallContext the call-type context
  * @returns {Record<string, unknown> | null}
  */
-function projectShapeFactsWithinBudget(raw, budgetChars, shapeCallContext) {
+export function projectShapeFactsWithinBudget(raw, budgetChars, shapeCallContext) {
   let facts = null;
   try {
     facts = inspectCallShape(raw, shapeCallContext);
   } catch { facts = null; }
-  const minimalMarker = { version: 1, coverage: 'over-budget', wholeInputConsumed: false };
+  // The minimal marker drops the redundant `wholeInputConsumed`
+  // ('over-budget' always means false — the classification meaning is
+  // unchanged) so the marker PLUS the retention field stays inside the
+  // tightest observed tier budget (67 serialized chars at sixteen slots).
+  const minimalMarker = { version: 1, coverage: 'over-budget', retention: 'partial' };
   if (facts === null || budgetChars < JSON.stringify(minimalMarker).length) return null;
-  if (JSON.stringify(facts).length <= budgetChars) return facts;
+  const withFullRetention = { ...facts, retention: 'full' };
+  if (JSON.stringify(withFullRetention).length <= budgetChars) return withFullRetention;
   const withoutStatements = { ...facts };
   delete withoutStatements.statements;
-  if (JSON.stringify(withoutStatements).length <= budgetChars) return withoutStatements;
+  const withPartialRetention = { ...withoutStatements, retention: 'partial' };
+  if (JSON.stringify(withPartialRetention).length <= budgetChars) return withPartialRetention;
   return minimalMarker;
 }
 

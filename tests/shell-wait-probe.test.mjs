@@ -5442,7 +5442,7 @@ if (process.env[selfTestGuard] === '1') {
     // its closed facts are projected through the existing excerpt budget
     // before record serialization. The fail-closed verdict, the cleanup and
     // every default-retention byte stay unchanged.
-    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectShellWaitEvidence, projectShapeFactsWithinBudget } = await import('../tools/shell-wait-probe/evidence.mjs');
     const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
 
     const PARENT = 'shape-parent';
@@ -5579,13 +5579,67 @@ if (process.env[selfTestGuard] === '1') {
       };
       const full = shapeAt(6);
       assert.equal(full.statements.length, 6, 'the full facts fit the budget at six slots');
+      assert.equal(full.retention, 'full', 'the full tier says serialization retained every fact (close-out P3-1)');
       const dropped = shapeAt(8);
       assert.equal(Object.hasOwn(dropped, 'statements'), false, 'statement nodes drop whole before mid-JSON truncation');
       assert.equal(dropped.statementCount, 8, 'the slot count survives the drop');
       assert.equal(dropped.coverage, 'complete', 'the classification itself completed; only the record budget dropped nodes');
+      assert.equal(dropped.retention, 'partial', 'the dropped tier says serialization omitted facts (close-out P3-1)');
       const minimal = shapeAt(16);
-      assert.deepEqual(minimal, { version: 1, coverage: 'over-budget', wholeInputConsumed: false },
-        'below the marker size only the fixed minimal closed marker survives');
+      assert.deepEqual(minimal, { version: 1, coverage: 'over-budget', retention: 'partial' },
+        'below the marker size only the fixed minimal closed marker survives — and it says serialization dropped facts');
+    });
+
+    test('the shape projection marks record-budget retention on every tier (close-out correction)', () => {
+      // Close-out P3-1: when the record budget drops facts, the retained
+      // block SAYS so — a separate closed `retention` field ('full' |
+      // 'partial') describing SERIALIZATION only; `coverage` and
+      // `wholeInputConsumed` keep describing the CLASSIFICATION. The marker
+      // is itself budgeted: every tier carries it inside the same budget,
+      // and below the minimal marker nothing projects (no unmarked partial
+      // result can exist).
+      const body = 'const r = await tools.exec_command({cmd:"x"}); text(r);';
+      const serialized = (value) => JSON.stringify(value).length;
+      // Full tier: every fact serialized and marked 'full'.
+      const full = projectShapeFactsWithinBudget(body, 100000, 'custom-tool-cell');
+      assert.equal(full.retention, 'full');
+      assert.equal(full.coverage, 'complete');
+      assert.equal(full.statements.length, 1);
+      // Dropped tier: a budget that fits the facts minus the statements
+      // array (plus the marker) but not the whole facts.
+      const dropped = projectShapeFactsWithinBudget(body, serialized(full) - 1, 'custom-tool-cell');
+      assert.equal(dropped.retention, 'partial');
+      assert.equal(Object.hasOwn(dropped, 'statements'), false);
+      assert.equal(dropped.coverage, 'complete', 'classification coverage is unchanged by serialization');
+      assert.equal(dropped.wholeInputConsumed, true, 'wholeInputConsumed is unchanged by serialization');
+      // Minimal tier: the marker is present AND rides the retention field.
+      const minimalMarker = { version: 1, coverage: 'over-budget', retention: 'partial' };
+      const minimal = projectShapeFactsWithinBudget(body, serialized(minimalMarker), 'custom-tool-cell');
+      assert.deepEqual(minimal, minimalMarker);
+      // Insufficient tier: below even the minimal marker — nothing projects.
+      assert.equal(projectShapeFactsWithinBudget(body, serialized(minimalMarker) - 1, 'custom-tool-cell'), null);
+    });
+
+    test('the persisted excerpt carries the retention marker when facts drop (close-out correction)', () => {
+      // The reviewer's eight-slot reproduction: the statements array drops,
+      // classification coverage stays 'complete', and the persisted block
+      // now carries the explicit serialization marker inside the 2048
+      // algebra.
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const body = Array.from({ length: 8 }, () => statement).join('\n');
+      const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
+        unclassifiedStructuralDiagnostic: true,
+        unclassifiedShapeDiagnostic: true,
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape', 'the fail-closed verdict is unchanged');
+      const excerpt = JSON.parse(result.inconclusive.excerpt.text);
+      assert.equal(Object.hasOwn(excerpt.shape, 'statements'), false, 'the eight-slot cell drops the statement nodes');
+      assert.equal(excerpt.shape.retention, 'partial', 'the persisted block says serialization omitted facts');
+      assert.equal(excerpt.shape.coverage, 'complete', 'classification coverage still describes the classification');
+      assert.equal(excerpt.shape.wholeInputConsumed, true);
+      assert.equal(result.inconclusive.excerpt.truncated, false);
+      assert.equal(result.inconclusive.excerpt.text.length <= 2048, true, 'the 2048 algebra holds with the marker present');
     });
 
     test('the classifier never throws for hostile inputs (the seam stays fail-closed by construction)', () => {

@@ -5234,6 +5234,27 @@ inside these bounds is dropped whole with an incomplete marker.
 }
 ```
 
+**Schema v1 amendment (close-out correction, 2026-10-17, user-commissioned two-axis review;
+adjudicated — the frozen block above is NOT rewritten).** One record-budget retention field joins
+the PROJECTED shape block, quoted field line:
+
+```jsonc
+  "retention": "full | partial",   // record-budget serialization marker: 'partial' when any fact was dropped for the excerpt budget ('statements' array or everything), 'full' when every fact was serialized — NEVER a classification verdict
+```
+
+It describes SERIALIZATION only — `coverage`/`wholeInputConsumed` keep describing CLASSIFICATION
+and are unchanged in every tier. The projector sets it on every tier and budgets it with them:
+full facts → `retention: 'full'`; the `statements`-dropped tier → `retention: 'partial'`;
+and the minimal marker becomes `{ "version": 1, "coverage": "over-budget", "retention":
+"partial" }` — the redundant `wholeInputConsumed` field is OMITTED there ('over-budget' always
+means `false`, so the classification meaning is unchanged) because the tightest observed tier
+budget (67 serialized characters at sixteen slots — 2048 − baseJson 296 − diagnosticJson 1662 −
+23 separator characters, re-derived from the projector's own formula) otherwise could not hold
+both the marker and the retention field; when even the 60-character marker does not fit, the
+block is omitted
+entirely (no unmarked partial result exists). Provenance: the evidence.mjs byte change flows
+into the observer digest automatically (designed behavior).
+
 Retains-a-count note (plan §2 anchoring): beyond booleans/enums, the ONLY new count-like facts are
 `statementCount` and the `statements` array length — both directly represent the schema-projected
 syntax tree's fixed statement-slot count, which plan §2 expressly allows ("fixed public node kinds,
@@ -5394,12 +5415,12 @@ binding-equality rule (UNCERTAINTY PRECEDES EQUALITY: any unknown-classified slo
 between the binding and the final emission, forces 'unknown' regardless of slot layout; no
 relation recovered past unclassified slots) and the whole-input coverage rule in
 `inspectCallShapeBody` :1130-1315 (the codex-round-12/13/14 EOF-truncation check `truncatedAtEnd` :1214). Evidence integration: `inspectCallShape` import :31, the
-budgeted whole-fact drop projection `projectShapeFactsWithinBudget` :360 (full facts → drop the
+budgeted whole-fact drop projection `projectShapeFactsWithinBudget` :364 (full facts → drop the
 `statements` array whole with `statementCount` retained → fixed minimal closed marker → omit), the
-shape block assembly inside the gated excerpt :466-475 after the structural diagnostic's room is
-reserved, the shape gate AND-combined with the structural gate at the evidence input boundary :2096,
-and the classifier invoked ONLY for unknown raw calls at the existing seam (:2120 custom_tool_call;
-:2140/:2155 function_call analogs — string bodies only). Driver: `--unclassified-shape-diagnostic`
+shape block assembly inside the gated excerpt :478-493 after the structural diagnostic's room is
+reserved, the shape gate AND-combined with the structural gate at the evidence input boundary :2106,
+and the classifier invoked ONLY for unknown raw calls at the existing seam (:2130 custom_tool_call;
+:2150/:2165 function_call analogs — string bodies only). Driver: `--unclassified-shape-diagnostic`
 added to the closed option set :287 with the literal-`1` gate :325 and the pair requirement
 :328 (:523 programmatic, validated before any side effect); opt-in record marker `unclassifiedShapeDiagnostic`
 :608 (the schema `version` inside the projected `shape` block is the closed version marker);
@@ -5412,14 +5433,15 @@ changes the executing digest; a two-file construction provably does not reproduc
 control pinned by test). No admission path, parser, fixture, or production surface changed; default
 retention (no gates) is byte-identical and pinned by test.
 
-**Tests and gates (final counts at this amended commit — refreshed by the round-10 redesign,
-self-review-round-3 and the codex-round-11 through -15 paragraphs below; history in the
-disposition paragraphs below).** Focused
+**Tests and gates (final counts at this correction commit — refreshed by the round-10 redesign,
+self-review-round-3, the codex-round-11 through -15 paragraphs and the close-out corrections
+below; history in the disposition paragraphs below).** Focused
 `node --test --test-name-pattern='controlled shape diagnosis' tests/shell-wait-probe.test.mjs` =
-98 tests / 5 suites / pass 98 / fail 0 (the pre-redesign count was 80, the post-redesign count
+102 tests / 5 suites / pass 102 / fail 0 (the pre-redesign count was 80, the post-redesign count
 84, the post-round-3 count 88, the post-round-11 count 90, the post-round-12 count 92, the
-post-round-13 count 94 and the post-round-14 count 96; the +2 delta over 96 is the
-codex-round-15 seam tests; the plan's pinned example verbatim; the §15.1 eight-record
+post-round-13 count 94, the post-round-14 count 96, the post-round-15 count 98 and the
+post-round-16 count 100; the +2 delta over 100 is the close-out-correction tests; the plan's
+pinned example verbatim; the §15.1 eight-record
 synthetic set with per-record divergence; record-6 fact-identity; the two-line accepted pair;
 privacy canaries over strings/nested objects/templates/comments/identifiers/property names/
 malformed directives; bounds over-budget/over-scope/argument-over-limit; unterminated string and
@@ -5434,11 +5456,12 @@ negative control; model seam at CLI parse, argv composition, programmatic and CL
 boundaries; quoted-string LF and CRLF continuations, withheld remainders after unsupported
 syntax, invalid delimiters and templates, and the full round-2-through-round-9 boundary family
 re-pinned to the canonical-exact expectations below).
-`npm run test:shell-research` = 549/549 pass, 51 suites, 0 fail/skip (pre-Task-2 baseline on this
+`npm run test:shell-research` = 553/553 pass, 51 suites, 0 fail/skip (pre-Task-2 baseline on this
 branch: 451/451 in 46 suites; the pre-redesign Task-2 count was 531, the post-redesign count 535,
 the post-round-3 count 539, the post-round-11 count 541, the post-round-12 count 543, the
-post-round-13 count 545 and the post-round-14 count 547 — the deltas are the round-10, round-3,
-round-11, round-12, round-13, round-14 and round-15 finding tests). `node --test
+post-round-13 count 545, the post-round-14 count 547, the post-round-15 count 549 and the
+post-round-16 count 551 — the deltas are the round-10, round-3, round-11 through round-16 and the
+close-out finding tests). `node --test
 tests/test-selection.test.mjs` = 6/6 (untouched — no isolation defect exists: the helper is imported
 by the existing suite, no new test entry was created). `npm run lint` and `npm run typecheck` clean;
 `node scripts/check-line-endings.mjs` = 537 tracked files verified, exit 0; `git diff --check` clean.
@@ -6123,6 +6146,35 @@ in 51 suites, 0 fail/skip; selection 6/6; lint clean; typecheck clean; LF 537 tr
 `git diff --check` clean; the 8-record fact-set equality and the 12-input parser-stage
 agreement re-verified green after the fix.
 
+**Close-out corrections (2026-10-17, user-commissioned independent two-axis review of the
+closed campaign; ONE dedicated correction commit on top of the task commits — cross-task
+findings, not amended into them).** Two P3 findings, both FIXED test-first (RED observed before
+each fix): (P3-1) the record-budget projection dropped facts without an explicit
+serialization marker — `projectShapeFactsWithinBudget` (evidence.mjs :364, now EXPORTED for the
+tier algebra) now sets the closed `retention: 'full' | 'partial'` field on EVERY tier (full
+facts → 'full'; the `statements`-dropped tier → 'partial'; the minimal marker → 'partial'),
+describing SERIALIZATION only — `coverage`/`wholeInputConsumed` keep describing the
+CLASSIFICATION and are unchanged — and the minimal marker omits the redundant
+`wholeInputConsumed` ('over-budget' always means false) so marker + retention fit the tightest
+observed tier budget (67 serialized chars at sixteen slots; marker 60 chars); below even the
+marker nothing projects. Tests: 'the shape projection marks record-budget retention on every
+tier (close-out correction)' (unit tier algebra incl. the insufficient tier), 'the persisted
+excerpt carries the retention marker when facts drop (close-out correction)' (the reviewer's
+eight-slot reproduction through the gated excerpt), and the budget-tier test re-pinned with
+retention assertions (the one disclosed re-pin). The §15.1 frozen schema record carries the
+dated v1 amendment note quoting the field line. (P3-2) §15.4's environmental attribution
+narrowed by the dated correction note appended in place: the base-worktree failure SUPPORTS
+pre-existing environmental instability but load is NOT isolated as the unique cause (machine
+state and other environmental factors not separated), CI-on-identical-production-files is NOT a
+passing CI result for this research branch, and the categorical phrases are superseded by the
+evidence-bounded reading — both local runs stay recorded FAILED and all counts/records stand.
+Gates after both fixes: focused
+`node --test --test-name-pattern='controlled shape diagnosis' tests/shell-wait-probe.test.mjs`
+= 102/102 in 5 suites (the +2 delta over the post-round-16 100 is the two close-out tests);
+`npm run test:shell-research` = 553/553 in 51 suites, 0 fail/skip; selection 6/6; lint clean;
+typecheck clean; LF 537 tracked files; `git diff --check` clean; prohibited-path diff EMPTY;
+no live run launched.
+
 **Task 2 exit statement (updated at the redesign).** Opt-in diagnosis is informative on the
 synthetic alternative set and cannot serialize private source or values (canary assertions across
 every adversarial input class);
@@ -6256,6 +6308,25 @@ branch. The failed local runs stay failed with this cause recorded — neither r
 passed, consistent with the standing rule; the same precedent (local full-suite spawn-timeout
 failure, CI green on the identical plugin source) is on record from the config-path-a campaign
 (report §14.1/§15.1 predecessor notes).
+
+**Correction (2026-10-17, user-commissioned close-out review):** the attribution conclusion
+above is narrowed to evidence-bounded inference; nothing else in the record changes. What the
+experiment ESTABLISHES: both local full-suite runs stand recorded FAILED (never relabeled — two
+DISTINCT external-process spawn timeouts of the same environmental class, ~120 s, on
+`package-install.test.mjs`/`release-contracts.test.mjs` and
+`marketplace-install.test.mjs` respectively), and the complete `npm test` on the
+plugin-identical, instrument-free base worktree (`b5cd056…`, prohibited-path diff empty so the
+test infrastructure is byte-identical) ALSO failed with a spawn timeout on a DIFFERENT failing
+member of the same class. That SUPPORTS pre-existing environmental instability on this machine.
+What it does NOT establish: load is NOT isolated as the unique cause (no load measurement
+accompanied either run), machine state and other environmental factors are NOT separated, and
+the base failure does not conclusively exclude every branch effect — it excludes only the claim
+that this branch's presence is NECESSARY for such timeouts. A green CI run on identical
+production files is likewise NOT a passing CI result for THIS research branch (different runner,
+different load, different environment). ROOT CAUSE: UNISOLATED (load vs machine state vs other
+environmental factors not separated). The three categorical phrases above — "(recorded,
+decisive)", "load-dependent run lottery", and "NOT attributable to this branch" — are superseded
+by this bounded reading; the failed-run records, counts and precedent citations stand unchanged.
 
 **S1–S7 mapping (this campaign's deltas; all prior campaign mappings in §9–§14 carry forward
 unchanged):**
