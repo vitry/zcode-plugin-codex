@@ -6398,3 +6398,109 @@ the §15 records are complete, the research instrument is qualified, production 
 §8 production gates (quantitative long discriminator + repeat, reduced re-entry, exact terminal
 linkage, native pending-observation interruption with owned settlement) remain outstanding before any
 production recommendation — research completion is not release completion.
+
+### 15.5 Task 4: model selection established, transport implemented through its gate, C0/C1 executed — adjudication `inconclusive`/`timing-borderline` (2026-10-17, live runs 2-3 of 4; ledger closes 3/4 spent, D1 unspent)
+
+**Model selection (the §15.3 blocker, resolved by discovery).** Per the user's handoff directive
+("establish approved/current selection through supported bounded read-only means; if still
+unavailable, ask the user"), the AUTHENTICATED catalog was taken read-only on 2026-10-17
+(`codex debug models` with the real CODEX_HOME; network restored; NO model turn; no config/auth
+dump): 9 entries, 7 `list`-visible — `gpt-6.1-sol` at priority **0** (the account's current default
+candidate; default reasoning level medium), `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, plus hidden `gpt-reserve`/`codex-auto-review`. This differs from the
+§15.1 offline bundled catalog (no `gpt-5.5`; `gpt-reserve` new) — the authenticated view is the
+operative one. `shell_trial_model` = **`gpt-6.1-sol`** (the discovered CURRENT selection; a user
+confirmation prompt went unanswered, and the handoff's primary path — read-only discovery of the
+current selection — resolved; the selection is recorded as REQUESTED on every run and remains
+user-overridable; effective host/Child metadata stays `null`/never-inferred as always).
+
+**Transport implementation (plan Task 4 bullets 1-3; commit chain e372579→…→`efb1fce…`, ONE amended
+task commit).** Implemented by a fresh implementer subagent and hardened through its full review
+loop: an independent self-review (2 rounds: pin-matrix gap fixed with genuine RED; tautological
+assertion replaced by an independent literal oracle) then the codex adversarial gate — **7 rounds
+(4→3→2→1→1→1 findings → approve, zero material findings)**. The gate's findings, each fixed
+test-first, materially hardened the instrument BEFORE any live run: the paragraph's yield
+continuation now continues the RETURNED CELL via the sanctioned `tools.wait` + `cell_id` +
+`yield_time_ms: 240000` instead of a second inner poll; the comparator adjudicates on a newly derived
+`decisiveFirstReturnWallMs` (rollout-event timestamps, pending yields measured like completions)
+instead of `pollWallTimesMs[0]`; requires `decisiveCallSurface = code-mode-wrapper` on both arms
+(direct-native ⇒ `different-surface`); requires identity evidence PRESENT (normalized instruction
+hashes, observer digest, codexVersion, plugin identity+version, and — round 5 — the launched
+binary's SHA-256 `provenance.codexBinarySha256`; missing ⇒ `missing-identity-evidence`, different
+⇒ `mismatched-pin`); requires affirmative structural qualification (inconclusive/handle failures ⇒
+`unqualified-arm`); matching actual inner yields (= each other and requestedPollMs ⇒ else
+`mismatched-inner-yield`); a two-sided control timing band with tolerance max(1000, 10%·controlDefault)
+(basis: D0's own measured overheads; inside-band ⇒ `timing-borderline`, below-band ⇒
+`control-returned-early`, above-band ⇒ `no-config-effect-observed`); a standalone single-statement
+decisive cell (shared cells ⇒ basis `shared-cell` ⇒ timing `null` ⇒ unknown); matching `route.actual
+=== 'named'` on both arms (⇒ else `mismatched-route`); and — round 6 — `decisiveFirstReturnState`
+(`yielded-pending`/`completed`/`unknown`): a COMPLETED control ⇒ `control-completed-without-yield`,
+and `config-effect-observed` requires an OBSERVED pending control yield WITH its verified sanctioned
+continuation. Reasons enum: 18 closed values; verdict enum: 6 closed values. Gates at `efb1fce…`:
+file-level tests 593/593 (55 suites; task-4 subset 40/40), selection 6/6, lint/typecheck/LF clean,
+prohibited-path diff EMPTY.
+
+**C0 (ledger run 2/4; the plan's control arm).** Command exactly per plan (fresh private dir; worker
+180000; poll 240000; budget 600000; `--model gpt-6.1-sol`; both diagnostic flags;
+`--wait-policy config-default --exec-default-ms 30000`). Driver exit 0; `status: executed`;
+`inconclusive: null`. Route actual=named; linkage 1 launch/1 send, handle checked; outerReturns 1;
+modelCalls 3; rootJoins 1; remainingLifetimeMs 148472; process/host exit 0; sentinel matched.
+`requestedModel: gpt-6.1-sol`; `codexBinarySha256` recorded (equals the §15.1 pin `8813367…`);
+normalized instruction hashes recorded. **waitPolicyObservation: `decisiveFirstReturnWallMs` 31007,
+state `yielded-pending`, surface `code-mode-wrapper`, innerYield 240000, explicitYield absent** — the
+model followed the paragraph exactly: the decisive poll yielded pending at ≈ the 30000 ms default
+(+1007 ms) and the model continued the SAME cell with the sanctioned explicit wait (the `wait`
+cell_id excerpt is in the retained evidence).
+
+**C1 (ledger run 3/4; the raised arm).** Same command changing ONLY `--exec-default-ms 240000`; NEW
+private dir. Driver exit 0; `status: executed`; `inconclusive: null`. Route actual=named; linkage 1/1
+handle-checked; outerReturns 0; modelCalls 2; rootJoins 3 (counted separately per plan; no gate
+hinges on it); remainingLifetimeMs 148734; process/host exit 0; sentinel matched; same
+requestedModel/binary digest; **normalized instruction hashes byte-identical to C0**
+(`f0367925…`/`e39d2941…`). **waitPolicyObservation: `decisiveFirstReturnWallMs` 148838, state
+`completed`, surface `code-mode-wrapper`, innerYield 240000, explicitYield absent** — with the raised
+default the decisive poll NEVER yielded: the Companion's work completed at ≈148.8 s inside the
+240000 ms window (real completion — a legitimate alternative ender, disclosed per plan bullet 6).
+
+**Adjudication (the exported `adjudicateWaitComparison`, run on the two retained records):**
+**`{ verdict: 'inconclusive', reason: 'timing-borderline' }`.** Trace: every identity/pin/qualification/
+surface/state/inner-yield/route/headroom gate PASSES (both arms qualified, named×named, wrapper×wrapper,
+identity complete and equal, instructions identical, model shared and explicit); the CONTROL's first
+return 31007 ms falls inside the frozen tolerance band (30000, 33000] — 1007 ms of overhead above the
+default — and the codex-round-2 semantics the gate itself demanded classify exactly this band as
+`timing-borderline`: indistinguishable from overhead, therefore inconclusive, NEVER a verdict. The
+plan's bullet-6 alternative enders are all ruled OUT on the control (yielded-pending + verified
+continuation, no early return, no completion), but the +1007 ms overshoot cannot be attributed within
+the frozen tolerance. **Label: INCONCLUSIVE (timing-borderline) with actual basis — installed-config
+effect is NOT proven by this pair.** No quantified token/re-entry/latency claim follows; rootJoins are
+counted, not interpreted; the C1 completion at 148.8 s means the raised default's own boundary was
+never reached (the work finished inside it), so even the direction of the contrast — C0 yielding at
+≈31 s vs C1 completing at ≈148.8 s without yielding, both sentinel-matched exit-0 — is recorded as
+OBSERVED BUT NOT ADJUDICATED-POSITIVE evidence, exactly the fail-closed behavior the gate demanded.
+Per plan §3: no new budget from an inconclusive result; **the ledger closes at 3/4 spent (D0, C0, C1),
+D1 unspent (cause-less), no registered label remains.**
+
+### 15.6 Task 5 refresh for the Task 4/correction commits (2026-10-17)
+
+**New commits since §15.4:** `e372579…` (close-out corrections: retention marker + narrowed
+attribution — narrow recheck CLEAN after 2 numeric P3s fixed, codex adversarial gate APPROVE),
+`efb1fce…` (task 4 transport — self-review 2 rounds CLEAN + codex gate 7 rounds to APPROVE), and the
+Task 4 execution records (this entry + plan ticks). **Refreshed gates on the final state:**
+`npm run test:shell-research` = **593/593** (55 suites; the file-level suite subsumes the classifier
+and task-4 subsets — 102 classifier-pattern and 40 task-4 tests pass inside it); selection **6/6**;
+lint/typecheck exit 0; LF 538 tracked files exit 0; `git diff --check` clean; prohibited-path diff vs
+`7fe8cbb…` **EMPTY** (production scope ZERO holds at the final state). The full routine `npm test` was
+NOT rerun for the task-4/correction commits: §15.4's environmental attribution record (as narrowed by
+the §15.4 correction note) stands for the machine-level spawn-timeout lottery, and no prohibited or
+shared-infrastructure path changed since (the prohibited-path diff above is the operative check).
+Branch final state: `docs/rescue-shell-wait-shape-diagnostic` at the Task 4 records commit; **not
+pushed — push/PR remains separate user authority.**
+
+**Campaign-final S/Q deltas (superseding §15.4's Q3 line only):** Q3's config-effect question is now
+MEASURED-AND-INCONCLUSIVE (timing-borderline) instead of unspent-blocked: the managed route carried
+both arms end-to-end with the model following the isolation paragraph, and the fail-closed instrument
+refused the positive verdict on a 1007 ms control overshoot inside its frozen tolerance. All other
+S/Q lines stand as §15.4 recorded them. Spec §8's production gates (quantitative long discriminator
+and repeat, reduced re-entry, exact terminal linkage, native pending-observation interruption with
+owned/no-collateral settlement) remain entirely outstanding; production scope remains ZERO; research
+completion is not release completion.
