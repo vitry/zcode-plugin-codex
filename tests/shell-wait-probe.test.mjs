@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13753,4 +13753,1441 @@ process.exit(result.status ?? 1);
       }
     });
   });
+
+  describe('config-default wait-policy transport (task 4)', async () => {
+    // Plan Task 4 bullet 1: `--wait-policy config-default` (this EXACT literal
+    // only) plus `--exec-default-ms <bounded positive integer, max 3600000>`,
+    // valid ONLY together and ONLY for rescue-long; the validated integer
+    // reaches the codex child as SEPARATE argv items
+    // `-c features.code_mode.default_exec_yield_time_ms=<n>` BEFORE the prompt
+    // (threaded next to the `-m` pattern). Absent → legacy behavior
+    // byte-for-byte. The number is a host-override fact only: it never
+    // reaches the fixture instructions, so the two arms' rendered
+    // instructions stay identical (bullet 2's arm-agnostic paragraph).
+    const { parseShellWaitArguments, runShellWaitCase, composeHostLaunchArguments, CODEX_EXEC_COMMON_ARGUMENTS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const baseArguments = ['--case', 'rescue-long', '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+    const baseInput = {
+      case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+      workerDurationMs: 180_000, capMs: null, pollMs: 240_000, budgetMs: 600_000,
+    };
+
+    test('--wait-policy config-default parses only together with --exec-default-ms for rescue-long and stays null when absent', () => {
+      const paired = parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', '240000']);
+      assert.equal(paired.waitPolicy, 'config-default');
+      assert.equal(paired.execDefaultMs, 240000);
+      const absent = parseShellWaitArguments(baseArguments);
+      assert.equal(absent.waitPolicy, null, 'absent pair keeps the legacy null policy');
+      assert.equal(absent.execDefaultMs, null, 'absent pair keeps the legacy null exec default');
+    });
+
+    test('the pair is refused when split, on other cases, with unknown policy values, and with out-of-bound durations', () => {
+      // One without the other.
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default']), /--exec-default-ms/i);
+      assert.throws(() => parseShellWaitArguments([...baseArguments, '--exec-default-ms', '240000']), /--wait-policy/i);
+      // Wrong cases: the transport exists for the C0/C1 rescue-long arms only.
+      for (const otherCase of ['rescue-baseline', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background', 'status-wait']) {
+        const otherBase = ['--case', otherCase, '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
+        assert.throws(
+          () => parseShellWaitArguments([...otherBase, '--wait-policy', 'config-default', '--exec-default-ms', '240000']),
+          /rescue-long/i,
+          `case ${otherCase} must be refused`,
+        );
+      }
+      // Unknown policy values: the closed literal gate.
+      for (const badPolicy of ['raised', '1', 'CONFIG-DEFAULT', 'config-default ', '']) {
+        assert.throws(
+          () => parseShellWaitArguments([...baseArguments, '--wait-policy', badPolicy, '--exec-default-ms', '240000']),
+          /config-default/i,
+          `policy ${JSON.stringify(badPolicy)} must be refused`,
+        );
+      }
+      // Duration bounds: malformed, non-positive, and over-limit values.
+      for (const badMs of ['0', '-5', 'abc', '1.5', '', '240000 ', '3600001']) {
+        assert.throws(
+          () => parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', badMs]),
+          /positive integer/i,
+          `exec default ${JSON.stringify(badMs)} must be refused`,
+        );
+      }
+      // The documented maximum stays allowed.
+      assert.equal(parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default', '--exec-default-ms', '3600000']).execDefaultMs, 3_600_000);
+    });
+
+    test('an invalid programmatic combination fails before any side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-policy-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureCreated = 0;
+      const refusingCreateFixture = async () => { fixtureCreated += 1; throw new Error('fixture must not be created'); };
+      const negatives = [
+        { waitPolicy: 'config-default' },
+        { execDefaultMs: 240000 },
+        { waitPolicy: 'raised', execDefaultMs: 240000 },
+        { waitPolicy: 'config-default', execDefaultMs: 0 },
+        { waitPolicy: 'config-default', execDefaultMs: -5 },
+        { waitPolicy: 'config-default', execDefaultMs: '240000' },
+        { waitPolicy: 'config-default', execDefaultMs: 1.5 },
+        { waitPolicy: 'config-default', execDefaultMs: Number.NaN },
+        { waitPolicy: 'config-default', execDefaultMs: 3_600_001 },
+        { ...baseInput, case: 'rescue-noise', waitPolicy: 'config-default', execDefaultMs: 240000 },
+      ];
+      for (const negative of negatives) {
+        await assert.rejects(
+          runShellWaitCase({ ...baseInput, output: root, ...negative }, { createFixture: refusingCreateFixture }),
+          /Invalid shell wait case input/i,
+          `negative ${JSON.stringify(negative.execDefaultMs ?? null)}/${String(negative.waitPolicy ?? null)} (case ${negative.case ?? baseInput.case}) must be refused`,
+        );
+      }
+      assert.equal(fixtureCreated, 0, 'validation must fail before fixture creation');
+    });
+
+    test('composeHostLaunchArguments threads the override as separate -c argv items before the workspace and prompt', () => {
+      const withModelAndOverride = composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'test-model-placeholder', 240000);
+      assert.deepEqual(
+        withModelAndOverride,
+        [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', 'test-model-placeholder', '-c', 'features.code_mode.default_exec_yield_time_ms=240000', '-C', '/live/workspace', 'PROMPT'],
+        'the override rides its own -c key/value argv items next to the -m pattern, before the prompt',
+      );
+      const overrideOnly = composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, 30000);
+      assert.deepEqual(overrideOnly, [...CODEX_EXEC_COMMON_ARGUMENTS, '-c', 'features.code_mode.default_exec_yield_time_ms=30000', '-C', '/live/workspace', 'PROMPT']);
+      const legacy = composeHostLaunchArguments(['PROMPT'], '/live/workspace');
+      assert.deepEqual(legacy, [...CODEX_EXEC_COMMON_ARGUMENTS, '-C', '/live/workspace', 'PROMPT'], 'no override without the pair (legacy argv byte-for-byte)');
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, null), legacy);
+      assert.deepEqual(composeHostLaunchArguments(['PROMPT'], '/live/workspace', 'test-model-placeholder'), [...CODEX_EXEC_COMMON_ARGUMENTS, '-m', 'test-model-placeholder', '-C', '/live/workspace', 'PROMPT']);
+      for (const bad of [0, -5, 1.5, Number.NaN, '240000', 3_600_001]) {
+        assert.throws(() => composeHostLaunchArguments(['PROMPT'], '/live/workspace', null, bad), /positive integer/i);
+      }
+    });
+
+    test('the record carries the closed wait-policy block, the fixture input carries only the policy label, and the exec-default number never reaches the fixture', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-policy-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const capturedFixtureInputs = [];
+      const bareFixture = {
+        workspace: '/private/tmp/policy-ws', codexHome: '/private/tmp/policy-home',
+        installedRoot: '/private/tmp/policy-installed', env: { HOME: '/private/tmp/policy-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const control = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async (fixtureInput) => { capturedFixtureInputs.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      const raised = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async (fixtureInput) => { capturedFixtureInputs.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(control.provenance.waitPolicy.policy, 'config-default');
+      assert.equal(control.provenance.waitPolicy.execDefaultMs, 30000);
+      assert.equal(control.provenance.waitPolicy.instructions, null, 'a fixture without instruction provenance records null, never a guess');
+      assert.equal(raised.provenance.waitPolicy.execDefaultMs, 240000);
+      // Arm identity (plan Task 4 bullet 2): the ONLY difference between the
+      // arms is the exec-default number reaching the host argv, so the fixture
+      // inputs — and therefore the rendered instructions — are identical.
+      assert.deepEqual(capturedFixtureInputs[1], capturedFixtureInputs[0]);
+      assert.equal(capturedFixtureInputs[0].waitPolicy, 'config-default');
+      assert.equal(Object.hasOwn(capturedFixtureInputs[0], 'execDefaultMs'), false, 'the exec-default number must never reach the fixture');
+      // The fixture's path-normalized instruction hashes project into the record.
+      const provenanceFixture = {
+        ...bareFixture,
+        record: { ...bareFixture.record, waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'a'.repeat(64), normalizedGenericMessageSha256: 'b'.repeat(64) } },
+      };
+      const withInstructions = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => provenanceFixture, executeLiveCase: executor },
+      );
+      assert.deepEqual(withInstructions.provenance.waitPolicy.instructions, provenanceFixture.record.waitPolicy);
+      // Legacy: absent pair → no record key and no fixture-input key.
+      const legacyCaptured = [];
+      const plain = await runShellWaitCase(
+        { ...baseInput, output: root },
+        { createFixture: async (fixtureInput) => { legacyCaptured.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(plain.provenance, 'waitPolicy'), false, 'legacy records gain no waitPolicy key');
+      assert.equal(Object.hasOwn(legacyCaptured[0], 'waitPolicy'), false, 'the legacy fixture input gains no waitPolicy key');
+    });
+
+    test('the driver CLI refuses a split pair or malformed exec default with exit one before any launch', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const negatives = [
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--exec-default-ms', '240000'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'raised', '--exec-default-ms', '240000'],
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '3600001'],
+        ['--case', 'rescue-noise', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '240000'],
+      ];
+      for (const negative of negatives) {
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
+        assert.match(result.stderr, /Invalid shell wait case input/);
+      }
+    });
+
+    test('the wait-policy record persists the launched executable digest; legacy records do not (codex gate round 5)', async (t) => {
+      // `--version` output reduces to major.minor.patch, so plugin/sourceSha/
+      // codexVersion pins never establish NATIVE EXECUTABLE equality: the
+      // wait-policy record must carry the launched binary's SHA-256 (null
+      // with an honest error when hashing fails). Legacy records stay
+      // byte-for-byte unchanged (disclosed: no digest added there — the
+      // pinned legacy provenance schema must not grow).
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-binary-digest-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = {
+        workspace: '/private/tmp/digest-ws', codexHome: '/private/tmp/digest-home',
+        installedRoot: '/private/tmp/digest-installed', env: { HOME: '/private/tmp/digest-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const createFixture = async () => fixture;
+      const expectedDigest = createHash('sha256').update(await readFile(process.execPath)).digest('hex');
+      const waitPolicyRecord_ = await runShellWaitCase(
+        { ...baseInput, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture, executeLiveCase: executor },
+      );
+      assert.equal(waitPolicyRecord_.provenance.codexBinarySha256, expectedDigest,
+        'the wait-policy record must carry the launched binary SHA-256');
+      assert.equal(waitPolicyRecord_.provenance.codexBinarySha256Error, null);
+      // A hash failure is recorded honestly: an unreadable binary hashes to
+      // null with the failure reason — never a fabricated digest.
+      const blocked = join(root, 'blocked-codex');
+      await writeFile(blocked, 'not executable', { mode: 0o600 });
+      await chmod(blocked, 0o000);
+      let failureRecord;
+      try {
+        failureRecord = await runShellWaitCase(
+          { ...baseInput, codexBinary: blocked, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+          { createFixture, executeLiveCase: executor },
+        );
+      } finally {
+        await chmod(blocked, 0o600);
+      }
+      assert.equal(failureRecord.provenance.codexBinarySha256, null);
+      assert.equal(typeof failureRecord.provenance.codexBinarySha256Error, 'string');
+      assert.match(failureRecord.provenance.codexBinarySha256Error, /blocked-codex|EACCES|permission/i);
+      // Legacy records gain no digest key.
+      const legacy = await runShellWaitCase(
+        { ...baseInput, output: root },
+        { createFixture, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(legacy.provenance, 'codexBinarySha256'), false);
+      assert.equal(Object.hasOwn(legacy.provenance, 'codexBinarySha256Error'), false);
+    });
+  });
+
+  describe('config-default waiting paragraph variant (task 4)', async () => {
+    // Plan Task 4 bullet 2: an isolated named/generic waiting-paragraph
+    // variant applied BEFORE setup/Role rendering. Both arms get identical
+    // instructions (initial launch up to 30000; empty original-handle inner
+    // poll 240000; NO explicit exec pragma/yield on the decisive outer cell;
+    // if it yields, continue that SAME cell with an explicit outer wait of
+    // 240000, not a second inner poll). No original command/preparation/
+    // binding/placement/result change; NO edits to the Root-owned
+    // Review/Adversarial/Status Skills. Artifact hashes and a path-normalized
+    // instruction comparison are recorded; differing fixture paths/IDs are
+    // expected cross-run and must not read as cross-arm incompatibility.
+    const { createShellWaitFixture, configDefaultWaitingParagraph, normalizeFixtureInstructionText } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+    const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+    const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
+
+    async function fakeInstallPlugin({ codexHome, cleanSource }) {
+      const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      await mkdir(join(installedRoot, 'agents'), { recursive: true });
+      await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+      for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+        await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+        await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+      }
+      await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+      return { pluginVersion: '0.1.0' };
+    }
+
+    async function fakeBuildSnapshot({ output, sourceSha }) {
+      await mkdir(join(output, '.agents', 'plugins'), { recursive: true });
+      await writeFile(join(output, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+    }
+
+    function fastDependencies() {
+      return {
+        buildSnapshot: fakeBuildSnapshot, installPlugin: fakeInstallPlugin,
+        runSetup: async (context) => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: context.capMs === null ? null : true }),
+      };
+    }
+
+    async function createFastFixture(t, overrides = {}, dependencies = fastDependencies()) {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-config-default-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot,
+        sourceSha: repositorySha,
+        codexBinary: process.execPath,
+        output,
+        variant: 'candidate',
+        capMs: null,
+        pollMs: 240_000,
+        waitPolicy: 'config-default',
+        ...overrides,
+      }, dependencies);
+      t.after(() => fixture.dispose());
+      return fixture;
+    }
+
+    test('waitPolicy validation refuses unknown values and the baseline pairing before any side effect', async () => {
+      // validateFixtureInput runs before any filesystem side effect, so these
+      // rejections prove the fail-closed boundary (no fixture root is created).
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: join(tmpdir(), 'config-default-never-created'), variant: 'candidate', waitPolicy: 'raised',
+        }),
+        /waitPolicy must be exactly "config-default"/i,
+      );
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: join(tmpdir(), 'config-default-never-created'), variant: 'baseline', waitPolicy: 'config-default',
+        }),
+        /requires variant "candidate"/i,
+      );
+      assert.equal(await stat(join(tmpdir(), 'config-default-never-created')).then(() => true, () => false), false,
+        'the refused input must not have created any directory');
+    });
+
+    test('a config-default fixture changes only the waiting paragraph to the isolated variant and records hashes and normalized instructions', async (t) => {
+      const fixture = await createFastFixture(t);
+      const { installedRoot, codexHome } = fixture;
+      const template = await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+      const skill = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+      for (const [label, source, modified] of [['named Role template', realTemplate, template], ['generic assignment skill', realSkill, skill]]) {
+        const originalLines = source.split('\n');
+        const modifiedLines = modified.split('\n');
+        assert.equal(modifiedLines.length, originalLines.length, `${label} must not add or remove lines`);
+        const changed = originalLines.flatMap((line, index) => line === modifiedLines[index] ? [] : [index]);
+        assert.deepEqual(changed.length, 1, `${label} must change exactly one line`);
+        assert.match(originalLines[changed[0]], /subsequent same-handle observations are 60000/, `${label} must change only the waiting-policy paragraph`);
+        // The four plan clauses, in the delivered text:
+        assert.match(modifiedLines[changed[0]], /up to 30000 ms/u, `${label} must keep the fixed initial launch window`);
+        assert.match(modifiedLines[changed[0]], /requesting a single observation window of 240000 ms/u, `${label} must request the 240000 inner poll`);
+        assert.match(modifiedLines[changed[0]], /emit no directive line and no other explicit yield override/u, `${label} must forbid a pragma on the decisive outer cell`);
+        // The yield continuation continues the RETURNED CELL with the
+        // sanctioned outer-wait primitive (tools.wait for its cell id) and
+        // forbids a second write_stdin poll while the cell is pending —
+        // another empty-input write_stdin would be a second inner poll
+        // against a pending cell (codex gate round 1, finding 1).
+        assert.match(modifiedLines[changed[0]], /continue that SAME returned cell with one explicit outer wait/u, `${label} must continue the returned cell`);
+        assert.match(modifiedLines[changed[0]], /call tools\.wait exactly once for that cell/u, `${label} must use the sanctioned outer-wait primitive`);
+        assert.match(modifiedLines[changed[0]], /cell_id: the cell identifier the yielded observation returned and yield_time_ms: 240000/u, `${label} must bind the wait to the returned cell id`);
+        assert.match(modifiedLines[changed[0]], /issue no further write_stdin for the original handle until that cell resolves/u, `${label} must forbid a second poll while the cell is pending`);
+        assert.doesNotMatch(modifiedLines[changed[0]], /immediately before the next empty-input write_stdin call/u, `${label} must not instruct a second write_stdin poll`);
+        assert.doesNotMatch(modifiedLines[changed[0]], /every subsequent same-handle observation requests the/u, `${label} must not be the directive-led candidate paragraph`);
+        // Authority, fixed command, and initial/choice assignment literals are preserved byte-for-byte.
+        for (const preserved of [
+          'invoke-prepared rescue',
+          'invoke-status rescue',
+          'invoke-choice rescue resume',
+          'invoke-choice rescue fresh',
+          'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.',
+          'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.',
+          'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.',
+        ]) {
+          assert.equal(modifiedLines.filter((line) => line.includes(preserved)).length, originalLines.filter((line) => line.includes(preserved)).length, `${label} must preserve ${preserved}`);
+        }
+      }
+      assert.doesNotMatch(template, /background_terminal_max_timeout/u, 'no cap configuration may enter the Role template');
+      // Artifact hashes ride the existing appliedArtifacts pipeline.
+      assert.equal(fixture.record.appliedArtifacts.length, 2);
+      for (const artifact of fixture.record.appliedArtifacts) {
+        assert.notEqual(artifact.beforeSha256, artifact.afterSha256);
+        assert.match(artifact.afterSha256, /^[a-f0-9]{64}$/);
+      }
+      // The closed waitPolicy provenance block with the path-normalized hashes.
+      assert.equal(fixture.record.waitPolicy.policy, 'config-default');
+      assert.match(fixture.record.waitPolicy.normalizedNamedRoleSha256, /^[a-f0-9]{64}$/);
+      assert.match(fixture.record.waitPolicy.normalizedGenericMessageSha256, /^[a-f0-9]{64}$/);
+      const rendered = renderManagedRescueRole({ template, pluginRoot: installedRoot });
+      assert.equal(
+        fixture.record.waitPolicy.normalizedNamedRoleSha256,
+        createHash('sha256').update(normalizeFixtureInstructionText(rendered, [installedRoot, codexHome]), 'utf8').digest('hex'),
+        'the normalized hash must describe the rendered role under exactly the fixture-private-root normalization',
+      );
+      // The Root-owned command Skills stay untouched.
+      assert.equal(fixture.record.commandSkillVariants.variant, 'baseline');
+      assert.deepEqual(fixture.record.commandSkillVariants.differences, []);
+      for (const commandSkill of ['review', 'adversarial-review', 'status']) {
+        assert.equal(
+          await readFile(join(installedRoot, 'skills', commandSkill, 'SKILL.md'), 'utf8'),
+          await readFile(join(repositoryRoot, 'skills', commandSkill, 'SKILL.md'), 'utf8'),
+          `the ${commandSkill} command Skill must stay byte-identical`,
+        );
+      }
+    });
+
+    test('the config-default paragraph is applied before setup renders the managed Role', async (t) => {
+      const setupCalls = [];
+      await createFastFixture(t, {}, {
+        ...fastDependencies(),
+        runSetup: async (context) => {
+          setupCalls.push(context);
+          const template = await readFile(join(context.installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+          assert.match(template, /emit no directive line and no other explicit yield override/u,
+            'the config-default waiting paragraph must be applied before setup renders the Role');
+          return { sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: null };
+        },
+      });
+      assert.equal(setupCalls.length, 1, 'the setup step must run exactly once, after variant application');
+    });
+
+    test('the paragraph is arm-agnostic: identical for both arms and stable across differing private paths', () => {
+      // The exec-default numbers (30000 for C0, 240000 for C1) parameterize
+      // only the host argv override — never the paragraph (pinned at the
+      // driver boundary). The delivered text depends only on the shared poll
+      // window, so both arms render byte-identical instructions.
+      // Independent literal oracle (review finding 3; continuation corrected
+      // per codex gate round 1 finding 1): the EXACT expected paragraph is
+      // transcribed verbatim here, so any construction change can actually
+      // fail this assertion — f(x)-compared-to-f(x) could not. The yield
+      // continuation is the evidence pipeline's sanctioned outer-wait
+      // primitive (`tools.wait` for the RETURNED cell id) — never a second
+      // write_stdin poll while the yielded cell is pending.
+      const paragraph = configDefaultWaitingParagraph(240_000);
+      assert.equal(paragraph, 'Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls requesting a single observation window of 240000 ms: pass yield_time_ms: 240000 on that same empty-input call, and emit no directive line and no other explicit yield override for that observation. If that observation yields back a pending cell while the command is still running, continue that SAME returned cell with one explicit outer wait: call tools.wait exactly once for that cell, passing exactly cell_id: the cell identifier the yielded observation returned and yield_time_ms: 240000, and issue no further write_stdin for the original handle until that cell resolves. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue\'s named and generic Role assignments; the initial launcher yield is 30000, a yielded cell continues through the wait call for its returned cell identifier with the explicit 240000 ms outer wait, and no second write_stdin observation is issued while a cell is pending.');
+      assert.doesNotMatch(paragraph, /default_exec_yield_time_ms/u, 'the host override key must never enter the instructions');
+      assert.equal(paragraph.includes('30000'), true);
+      assert.equal(paragraph.includes('240000'), true);
+      // Path normalization: two rendered roles differing ONLY in their
+      // fixture-private roots normalize to identical hashes.
+      const rendered = (installedRoot) => renderManagedRescueRole({
+        template: realTemplate.replace(ORIGINAL_WAITING_PARAGRAPH, paragraph),
+        pluginRoot: installedRoot,
+      });
+      const runA = '/private/tmp/run-a-AAAA';
+      const runB = '/private/tmp/run-b-BBBB';
+      const installedA = join(runA, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      const installedB = join(runB, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      const textA = rendered(installedA);
+      const textB = rendered(installedB);
+      assert.notEqual(textA, textB, 'premise: raw rendered text differs across runs');
+      const hashA = createHash('sha256').update(normalizeFixtureInstructionText(textA, [installedA, runA]), 'utf8').digest('hex');
+      const hashB = createHash('sha256').update(normalizeFixtureInstructionText(textB, [installedB, runB]), 'utf8').digest('hex');
+      assert.equal(hashA, hashB, 'path-normalized instruction hashes must be identical across runs');
+    });
+  });
+
+  describe('wait-comparison adjudication helper (task 4)', async () => {
+    // Plan Task 4 bullet 3's comparison regressions, pinned as a small PURE
+    // closed-enum pair adjudicator the root runs AFTER C0/C1 on the persisted
+    // records. Missing/null evidence maps to explicit unknowns — never zero —
+    // and legacy structural/terminal completion is NEVER a config-effect
+    // gate: a legacy-success record yields no positive config verdict.
+    // Codex gate round 1: the decisive timing is the pipeline-derived FIRST
+    // RETURN of the decisive outer cell (yield or completion), the decisive
+    // call's SURFACE must be an admitted code-mode wrapper, and required
+    // identity evidence must be PRESENT on both arms before any equality
+    // comparison (absent-absent nulls never match).
+    const { WAIT_COMPARISON_VERDICTS, adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
+
+    const INSTRUCTION_HASHES = { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) };
+    const ABSENT_WRAPPER_OBSERVATION = {
+      decisivePollExplicitYield: 'absent',
+      decisiveCallSurface: 'code-mode-wrapper',
+      decisiveInnerYieldMs: 240000,
+      decisiveFirstReturnWallMs: 28000,
+      decisiveFirstReturnState: 'yielded-pending',
+      decisiveFirstReturnBasis: 'rollout-event-timestamps',
+    };
+    /** A fully comparable control-arm record; overrides deepen per test. */
+    const waitPolicyRecord = (overrides = {}) => ({
+      status: 'executed',
+      inconclusive: null,
+      provenance: {
+        sourceSha: 'a'.repeat(40),
+        codexVersion: '0.163.0',
+        plugin: { identity: 'zcode@vitry', version: '0.1.0' },
+        requestedCapMs: null,
+        requestedPollMs: 240_000,
+        requestedWorkerDurationMs: 180_000,
+        requestedBudgetMs: 600_000,
+        observer: { revision: 'working-tree-uncommitted', digest: 'd'.repeat(64) },
+        codexBinarySha256: 'c'.repeat(64),
+        requestedModel: 'authorized-test-model',
+        waitPolicy: {
+          policy: 'config-default',
+          execDefaultMs: 30000,
+          instructions: INSTRUCTION_HASHES,
+        },
+      },
+      route: { requested: 'rescue-foreground', actual: 'named' },
+      linkage: { childLinkageChecked: true, originalHandleChecked: true },
+      observations: { outerReturns: 1, pollWallTimesMs: [28000], remainingLifetimeMs: 120000 },
+      result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      waitPolicyObservation: ABSENT_WRAPPER_OBSERVATION,
+      ...overrides,
+    });
+    const raisedArm = (overrides = {}) => waitPolicyRecord({
+      provenance: {
+        ...waitPolicyRecord().provenance,
+        waitPolicy: { policy: 'config-default', execDefaultMs: 240000, instructions: INSTRUCTION_HASHES },
+      },
+      observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 60000 },
+      waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed', decisiveFirstReturnWallMs: 150000 },
+      ...overrides,
+    });
+    const verdictOf = (control, raised) => adjudicateWaitComparison(control, raised);
+
+    test('the verdict and reason sets are closed, frozen enums', () => {
+      assert.deepEqual(WAIT_COMPARISON_VERDICTS, [
+        'config-effect-observed', 'no-config-effect-observed', 'inconclusive', 'unknown', 'no-causal-comparison', 'different-surface',
+      ]);
+      assert.equal(Object.isFrozen(WAIT_COMPARISON_VERDICTS), true);
+      const seen = new Set();
+      for (const control of [waitPolicyRecord(), null]) {
+        for (const raised of [raisedArm(), null]) {
+          const { verdict } = verdictOf(control, raised);
+          seen.add(verdict);
+        }
+      }
+      for (const mutation of [
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisivePollExplicitYield: 'present' } }),
+        (record) => ({ ...record, observations: { outerReturns: null, pollWallTimesMs: null, remainingLifetimeMs: null } }),
+      ]) {
+        seen.add(verdictOf(mutation(waitPolicyRecord()), raisedArm()).verdict);
+        seen.add(verdictOf(waitPolicyRecord(), mutation(raisedArm())).verdict);
+      }
+      seen.add(verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: 'unknown' } }), raisedArm()).verdict);
+      seen.add(verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, sourceSha: 'b'.repeat(40) } })).verdict);
+      // Type-level guard only: this loop can never fail against the enum it
+      // reads; the REAL enum evidence is the exact per-verdict pins elsewhere
+      // in this describe (each expected { verdict, reason } asserted literally).
+      for (const verdict of seen) assert.equal(WAIT_COMPARISON_VERDICTS.includes(verdict), true, `verdict ${verdict} must be a closed value`);
+    });
+
+    test('the comparable pair adjudicates the expected discriminator on the first-return timing', () => {
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm()), { verdict: 'config-effect-observed', reason: null },
+        'C0 returning around the short window while C1 holds beyond it is the observed effect');
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({
+          observations: { outerReturns: 1, pollWallTimesMs: [null], remainingLifetimeMs: 120000 },
+          waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 28000 },
+        })),
+        { verdict: 'no-config-effect-observed', reason: null },
+        'a raised arm whose first return also lands within the short window shows no observed effect',
+      );
+      // Boundary semantics: the first return must be STRICTLY beyond the
+      // control default PLUS the timing tolerance (codex gate round 2,
+      // finding 3) to count as "held"; a first return inside the tolerance
+      // band (controlDefault, controlDefault + tolerance] is timing-
+      // borderline — inconclusive, never a verdict. With controlDefault
+      // 30000 the band ends at 33000.
+      assert.equal(verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30000 } }), raisedArm()).verdict, 'config-effect-observed');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30000 } })).verdict, 'no-config-effect-observed');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 30001 } })).reason, 'timing-borderline');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 33000 } })).reason, 'timing-borderline');
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 33001 } })).verdict, 'config-effect-observed');
+    });
+
+    test('timing overhead around the control deadline is classified, never silently accepted (codex gate round 2, finding 3)', () => {
+      // Basis: the first return is measured between two rollout records, so
+      // it carries scheduling/transport/append overhead on top of the
+      // configured timeout. The tolerance is 10% of the control default with
+      // a 1000 ms floor — D0's own measured lags (observation detected at
+      // 32436 ms against a 30000 ms requested yield) bound the real overhead
+      // under 10%, which stays an order of magnitude below the intended C1
+      // separation (240000 vs 30000).
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // Exactly at the deadline: decisive.
+      assert.deepEqual(verdictOf(controlAt(30000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null });
+      // The reviewer's exact case: 30001 vs 150000 is INSIDE the 3000 ms
+      // band — inconclusive, not a silent no-effect verdict.
+      assert.deepEqual(verdictOf(controlAt(30001), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
+      // The whole band is borderline.
+      assert.deepEqual(verdictOf(controlAt(31000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
+      assert.deepEqual(verdictOf(controlAt(33000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
+      // Decisively beyond the band: the control default did not govern.
+      assert.deepEqual(verdictOf(controlAt(33001), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null });
+      assert.deepEqual(verdictOf(controlAt(45000), raisedAt(150000)), { verdict: 'no-config-effect-observed', reason: null });
+      // A raised first return inside the band is borderline too; decisively
+      // within the short window is no effect.
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(31000)), { verdict: 'inconclusive', reason: 'timing-borderline' });
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(30000)), { verdict: 'no-config-effect-observed', reason: null });
+    });
+
+    test('a control first return materially below the default is an alternative ender (codex gate round 3, finding 1)', () => {
+      // The control band is TWO-SIDED: default expiry means |firstReturn −
+      // controlDefault| ≤ tolerance. A return MATERIALLY BELOW the band
+      // (controlDefault − tolerance) is an alternative ender — explicit
+      // yield/preemption, input, transport/resource limits, or real
+      // completion (plan Task 4 bullet 6) — and the closed fact set does not
+      // identify WHICH: the verdict is inconclusive either way, never a
+      // positive config effect.
+      const controlAt = (ms) => waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      const raisedAt = (ms) => raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: ms } });
+      // The reviewer's verbatim reproduction: 1000 ms vs 150000 ms at
+      // defaults 30000/240000 — the 1000 ms control return is an early
+      // preemption, not a 30000 ms default expiry.
+      assert.deepEqual(verdictOf(controlAt(1000), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+      // The lower band edge is 27000 ms; everything strictly below is early.
+      assert.deepEqual(verdictOf(controlAt(26999), raisedAt(150000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+      // Exactly at the lower edge the return is still IN the band (decisive).
+      assert.deepEqual(verdictOf(controlAt(27000), raisedAt(150000)), { verdict: 'config-effect-observed', reason: null });
+      // An early RAISED return is the same alternative-ender family.
+      assert.deepEqual(verdictOf(controlAt(28000), raisedAt(1000)), { verdict: 'inconclusive', reason: 'control-returned-early' });
+    });
+
+    test('a COMPLETED control cell never counts as default expiry (codex gate round 6)', () => {
+      // The plan's expected discriminator is precisely "C0 PENDING around the
+      // short outer window versus C1 holding beyond it". A control whose
+      // decisive inner poll COMPLETED (e.g. empty output + live handle, with
+      // a later poll reaching the sentinel — zero outer yields) is an inner
+      // or transport return masquerading as outer-default expiry: eventual
+      // terminal success does not establish that causal link.
+      const completedControl = waitPolicyRecord({
+        waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed' },
+      });
+      assert.deepEqual(verdictOf(completedControl, raisedArm()), { verdict: 'inconclusive', reason: 'control-completed-without-yield' });
+      assert.deepEqual(verdictOf(completedControl, raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'completed', decisiveFirstReturnWallMs: 150000 } })),
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield' },
+        'the reviewer\'s completed-live-handle reproduction verbatim');
+      // A yielded-pending control whose continuation was never verified
+      // cannot attribute its return either.
+      const unverifiedContinuation = waitPolicyRecord({
+        observations: { ...waitPolicyRecord().observations, outerReturns: 0 },
+      });
+      assert.deepEqual(verdictOf(unverifiedContinuation, raisedArm()), { verdict: 'unknown', reason: 'missing-evidence' });
+      // Unknown states stay in the unknown family — both arms.
+      const unknownState = { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown' };
+      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownState }), raisedArm()), { verdict: 'unknown', reason: 'missing-evidence' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnState: 'unknown', decisiveFirstReturnWallMs: 150000 } })),
+        { verdict: 'unknown', reason: 'missing-evidence' });
+      // The expected pair: a yielded-pending control WITH the verified
+      // continuation against a holding raised arm proceeds.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('a legacy-success record without the wait-policy marker is never a positive config verdict', () => {
+      // Structural/terminal completion is NOT a config-effect gate: the
+      // helper demands the waitPolicy marker and never derives a positive
+      // from completion fields alone.
+      const legacy = {
+        status: 'executed',
+        provenance: { sourceSha: 'a'.repeat(40), codexVersion: '0.163.0', requestedModel: 'authorized-test-model' },
+        route: { requested: 'rescue-foreground', actual: 'named' },
+        linkage: { childLinkageChecked: true },
+        observations: { outerReturns: 0, pollWallTimesMs: [28000], remainingLifetimeMs: 120000 },
+        result: { processExit: 0, hostExit: 0, publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      };
+      assert.deepEqual(verdictOf(legacy, raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), legacy), { verdict: 'no-causal-comparison', reason: 'missing-wait-policy-marker' });
+      // A marker without the validated number is no marker either.
+      const numberless = waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { policy: 'config-default' } } });
+      assert.equal(verdictOf(numberless, raisedArm()).verdict, 'no-causal-comparison');
+      assert.equal(verdictOf(numberless, raisedArm()).reason, 'missing-wait-policy-marker');
+    });
+
+    test('the manipulated variable must be a real contrast: identical or reversed exec defaults cannot compare', () => {
+      assert.deepEqual(verdictOf(waitPolicyRecord(), waitPolicyRecord({
+        waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveFirstReturnWallMs: 150000 },
+        observations: { outerReturns: 0, pollWallTimesMs: [150000], remainingLifetimeMs: 60000 },
+      })),
+        { verdict: 'no-causal-comparison', reason: 'identical-exec-default' });
+      assert.deepEqual(verdictOf(raisedArm(), waitPolicyRecord()),
+        { verdict: 'no-causal-comparison', reason: 'reversed-exec-default-order' },
+        'the control arm must carry the SHORTER exec default');
+    });
+
+    test('silent-default or mismatched model selections never compare', () => {
+      const withoutModel = (record) => {
+        const provenance = { ...record.provenance };
+        delete provenance.requestedModel;
+        return { ...record, provenance };
+      };
+      assert.deepEqual(verdictOf(withoutModel(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutModel(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-or-invalid-model-selection' });
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, requestedModel: 'other-test-model' } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-model-selection' },
+      );
+    });
+
+    test('missing required identity evidence never matches as null-equals-null (codex gate round 1, finding 4)', () => {
+      // Identity evidence (normalized instruction hashes, observer digest,
+      // codex version, plugin identity+version) must be PRESENT on both arms
+      // before any equality comparison; absent-absent nulls cannot match.
+      const removals = [
+        ['instructions', (record) => ({ ...record, provenance: { ...record.provenance, waitPolicy: { ...record.provenance.waitPolicy, instructions: undefined } } })],
+        ['observer', (record) => ({ ...record, provenance: { ...record.provenance, observer: undefined } })],
+        ['codexVersion', (record) => ({ ...record, provenance: { ...record.provenance, codexVersion: undefined } })],
+        ['plugin', (record) => ({ ...record, provenance: { ...record.provenance, plugin: { identity: 'zcode@vitry' } } })],
+        ['emptyDigest', (record) => ({ ...record, provenance: { ...record.provenance, observer: { revision: 'working-tree-uncommitted', digest: '' } } })],
+      ];
+      for (const [name, remove] of removals) {
+        const controlOnly = verdictOf(remove(waitPolicyRecord()), raisedArm());
+        const raisedOnly = verdictOf(waitPolicyRecord(), remove(raisedArm()));
+        const both = verdictOf(remove(waitPolicyRecord()), remove(raisedArm()));
+        const expected = { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' };
+        assert.deepEqual(controlOnly, expected, `${name} missing on the control arm must refuse the comparison`);
+        assert.deepEqual(raisedOnly, expected, `${name} missing on the raised arm must refuse the comparison`);
+        assert.deepEqual(both, expected, `${name} missing on BOTH arms must never match as null-equals-null`);
+      }
+    });
+
+    test('the launched native executable digest is required identity evidence (codex gate round 5)', () => {
+      // The driver reduces `--version` output to major.minor.patch and pins
+      // no binary digest, so DIFFERENT same-version binaries pass every
+      // version/plugin pin. The executable's SHA-256 is therefore required
+      // identity (missing ⇒ missing-identity-evidence) and a pin
+      // (present-but-different ⇒ mismatched-pin).
+      const withoutDigest = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: undefined } });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
+      assert.deepEqual(verdictOf(withoutDigest(waitPolicyRecord()), withoutDigest(raisedArm())), { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' });
+      // Different same-version binaries never compare.
+      const differentBinary = (record) => ({ ...record, provenance: { ...record.provenance, codexBinarySha256: 'f'.repeat(64) } });
+      assert.deepEqual(verdictOf(differentBinary(waitPolicyRecord()), raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-pin' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), differentBinary(raisedArm())), { verdict: 'no-causal-comparison', reason: 'mismatched-pin' });
+      // Equal digests proceed.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('mismatched executable, version, plugin, cap, poll, or worker pins block the causal comparison', () => {
+      const mismatches = [
+        (record) => ({ ...record, provenance: { ...record.provenance, sourceSha: 'b'.repeat(40) } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, codexVersion: '0.162.1' } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, plugin: { identity: 'zcode@vitry', version: '0.0.9' } } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedCapMs: 3_600_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedPollMs: 3_600_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedWorkerDurationMs: 130_000 } }),
+        // Plan Task 4 pins the WHOLE instrument context, not just the Child
+        // inputs: a differing observation budget or executing-observer
+        // revision is exactly as disqualifying as a differing executable.
+        (record) => ({ ...record, provenance: { ...record.provenance, requestedBudgetMs: 360_000 } }),
+        (record) => ({ ...record, provenance: { ...record.provenance, observer: { revision: 'working-tree-uncommitted', digest: 'e'.repeat(64) } } }),
+      ];
+      for (const [index, mismatch] of mismatches.entries()) {
+        const asControl = verdictOf(mismatch(waitPolicyRecord()), raisedArm());
+        const asRaised = verdictOf(waitPolicyRecord(), mismatch(raisedArm()));
+        assert.deepEqual(asControl, { verdict: 'no-causal-comparison', reason: 'mismatched-pin' }, `control-side pin mismatch ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'no-causal-comparison', reason: 'mismatched-pin' }, `raised-side pin mismatch ${index}`);
+      }
+      // Rendered-instruction identity uses the PATH-NORMALIZED hashes: raw
+      // rendered hashes differ cross-run, so they are deliberately not pins.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+      const differingInstructions = { ...INSTRUCTION_HASHES, normalizedNamedRoleSha256: 'x'.repeat(64) };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ provenance: { ...raisedArm().provenance, waitPolicy: { ...raisedArm().provenance.waitPolicy, instructions: differingInstructions } } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-instruction-variant' },
+      );
+      // A present-vs-absent instruction projection is missing identity
+      // evidence (not a mere mismatch): neither arm may lack the hashes.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, waitPolicy: { ...waitPolicyRecord().provenance.waitPolicy, instructions: null } } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'missing-identity-evidence' },
+      );
+    });
+
+    test('the planned arms must have used the SAME named route (codex gate round 3, finding 2)', () => {
+      // The plan's route.requested is rescue-foreground → named; changing the
+      // Role/instruction-delivery path alongside the configured default
+      // destroys the causal attribution (instruction-hash equality does not
+      // prove the same variant was USED). Both arms must be 'named';
+      // differing or non-named routes refuse the comparison.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: 'generic' } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+        'named control versus generic raised changes the delivery path',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: 'generic' } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+      );
+      for (const routeActual of ['unknown', null, 'review-wait']) {
+        assert.deepEqual(
+          verdictOf(waitPolicyRecord({ route: { requested: 'rescue-foreground', actual: routeActual } }), raisedArm()),
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+          `route actual ${String(routeActual)} is not the planned named route`,
+        );
+        assert.deepEqual(
+          verdictOf(waitPolicyRecord(), raisedArm({ route: { requested: 'rescue-foreground', actual: routeActual } })),
+          { verdict: 'no-causal-comparison', reason: 'mismatched-route' },
+        );
+      }
+      // named versus named proceeds (pinned beside the refusal for contrast).
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('evidence outside the managed code-mode Child surface is a different surface', () => {
+      // Route mismatches are refusals of their own (above); this test covers
+      // the remaining surface fact: an UNCHECKED child linkage on either arm.
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: false } })),
+        { verdict: 'different-surface', reason: null },
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ linkage: { childLinkageChecked: null } })),
+        { verdict: 'different-surface', reason: null },
+      );
+    });
+
+    test('a direct-native decisive call is a different surface; an unestablished surface stays unknown (codex gate round 1, finding 3)', () => {
+      // Named/generic routing plus checked linkage establish DELEGATION, not
+      // code-mode execution: a decisive poll observed as a direct native
+      // call can never attribute its timing to a code-mode default.
+      const directNative = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'direct-native' };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: directNative }), raisedArm()),
+        { verdict: 'different-surface', reason: null },
+        'a direct-native control arm is a different surface',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: directNative })),
+        { verdict: 'different-surface', reason: null },
+        'a direct-native raised arm is a different surface',
+      );
+      const unknownSurface = { ...ABSENT_WRAPPER_OBSERVATION, decisiveCallSurface: 'unknown' };
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: unknownSurface }), raisedArm()),
+        { verdict: 'unknown', reason: 'missing-evidence' },
+        'an unestablished decisive surface is missing evidence, never code mode',
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: null }), raisedArm()),
+        { verdict: 'unknown', reason: 'missing-evidence' },
+      );
+    });
+
+    test('a structurally unqualified arm never yields a positive effect verdict (codex gate round 2, finding 1)', () => {
+      // The reviewer's reproduction: a second original-handle poll while the
+      // first cell was pending makes the observer report an observation-
+      // discipline failure (completion unqualified, originalHandleChecked
+      // false) while the terminal sentinel booleans stay true. Affirmative
+      // structural qualification is required on BOTH arms before any effect
+      // verdict — a protocol violation is never positive causal evidence.
+      const unqualified = waitPolicyRecord({
+        inconclusive: { reason: 'completion cannot be qualified: the original-handle observation discipline did not hold.' },
+        linkage: { childLinkageChecked: true, originalHandleChecked: false },
+        result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      });
+      assert.deepEqual(verdictOf(unqualified, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      const unqualifiedRaised = raisedArm({
+        inconclusive: { reason: 'completion cannot be qualified: the original-handle observation discipline did not hold.' },
+        linkage: { childLinkageChecked: true, originalHandleChecked: false },
+        result: { publicResultMatchedSentinel: true, terminalStdoutChecked: true },
+      });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      // Both arms unqualified (with a real contrast) refuse identically.
+      assert.deepEqual(verdictOf(unqualified, unqualifiedRaised), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+      // The sentinels alone never restore comparability.
+      assert.notEqual(verdictOf(unqualified, raisedArm()).verdict, 'config-effect-observed');
+      // A null-checked handle (unknown) is equally unqualified.
+      const unchecked = waitPolicyRecord({ linkage: { childLinkageChecked: true, originalHandleChecked: null } });
+      assert.deepEqual(verdictOf(unchecked, raisedArm()), { verdict: 'inconclusive', reason: 'unqualified-arm' });
+    });
+
+    test('differing or unverifiable actual inner yields refuse the comparison (codex gate round 2, finding 2)', () => {
+      // The reviewer's reproduction: control actual yield 1000 ms against
+      // raised 240000 ms — differing inner requests already explain any
+      // contrast, so the pair must refuse before any causal verdict.
+      const controlFastPoll = waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } });
+      assert.deepEqual(verdictOf(controlFastPoll, raisedArm()), { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: 1000 } })),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+      // An unverifiable actual yield (absent from the admitted arguments) is
+      // a refusal, never assumed equal.
+      assert.deepEqual(verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisiveInnerYieldMs: null } }), raisedArm()),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' });
+      assert.deepEqual(verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: null })),
+        { verdict: 'unknown', reason: 'missing-evidence' });
+      // The actual yield must ALSO match the intended observation window.
+      assert.deepEqual(
+        verdictOf(
+          waitPolicyRecord({ provenance: { ...waitPolicyRecord().provenance, requestedPollMs: 3_600_000 } }),
+          raisedArm({ provenance: { ...raisedArm().provenance, requestedPollMs: 3_600_000 } }),
+        ),
+        { verdict: 'no-causal-comparison', reason: 'mismatched-inner-yield' },
+        'actual 240000 against an intended 3600000 window is not the compared trial',
+      );
+      // Equal actual yields matching the intended window proceed.
+      assert.equal(verdictOf(waitPolicyRecord(), raisedArm()).verdict, 'config-effect-observed');
+    });
+
+    test('an explicit pragma on either decisive cell makes default-causality inconclusive', () => {
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } }), raisedArm()),
+        { verdict: 'inconclusive', reason: 'explicit-pragma' },
+      );
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ waitPolicyObservation: { ...ABSENT_WRAPPER_OBSERVATION, decisivePollExplicitYield: 'present' } })),
+        { verdict: 'inconclusive', reason: 'explicit-pragma' },
+      );
+    });
+
+    test('missing or null first-return timings and counts map to unknown, never zero', () => {
+      const unknownEvidence = [
+        (record) => ({ ...record, waitPolicyObservation: null }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisivePollExplicitYield: 'unknown' } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: null } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: '28000' } }),
+        (record) => ({ ...record, waitPolicyObservation: { ...record.waitPolicyObservation, decisiveFirstReturnWallMs: Number.NaN } }),
+        (record) => ({ ...record, observations: { ...record.observations, remainingLifetimeMs: null } }),
+        (record) => ({ ...record, observations: { ...record.observations, outerReturns: null } }),
+        (record) => ({ ...record, observations: null }),
+      ];
+      for (const [index, unknown] of unknownEvidence.entries()) {
+        const asControl = verdictOf(unknown(waitPolicyRecord()), raisedArm());
+        const asRaised = verdictOf(waitPolicyRecord(), unknown(raisedArm()));
+        assert.deepEqual(asControl, { verdict: 'unknown', reason: 'missing-evidence' }, `control-side missing evidence ${index}`);
+        assert.deepEqual(asRaised, { verdict: 'unknown', reason: 'missing-evidence' }, `raised-side missing evidence ${index}`);
+      }
+    });
+
+    test('early completion, unknown output, or thin headroom stays inconclusive', () => {
+      const early = [
+        (record) => ({ ...record, result: { ...record.result, publicResultMatchedSentinel: false } }),
+        (record) => ({ ...record, result: { ...record.result, terminalStdoutChecked: null } }),
+        (record) => ({ ...record, result: null }),
+      ];
+      for (const [index, earlyMutation] of early.entries()) {
+        assert.deepEqual(verdictOf(earlyMutation(waitPolicyRecord()), raisedArm()), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal' }, `control-side early/unknown terminal ${index}`);
+        assert.deepEqual(verdictOf(waitPolicyRecord(), earlyMutation(raisedArm())), { verdict: 'inconclusive', reason: 'early-or-unknown-terminal' }, `raised-side early/unknown terminal ${index}`);
+      }
+      assert.deepEqual(
+        verdictOf(waitPolicyRecord(), raisedArm({ observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 59999 } })),
+        { verdict: 'inconclusive', reason: 'insufficient-headroom' },
+        'below 60000 ms remaining the short-window contrast cannot be interpreted',
+      );
+      // The control's verified single continuation is part of the expected
+      // C0 shape (round 6): a zero-continuation control is missing evidence
+      // before headroom is even reached (asserted in the round-6 test).
+      assert.equal(verdictOf(waitPolicyRecord({ observations: { outerReturns: 1, pollWallTimesMs: [28000], remainingLifetimeMs: 59999 } }), raisedArm()).reason, 'insufficient-headroom');
+      assert.equal(
+        verdictOf(waitPolicyRecord(), raisedArm({ observations: { outerReturns: 0, pollWallTimesMs: [null], remainingLifetimeMs: 60000 } })).verdict,
+        'config-effect-observed',
+        'exactly 60000 ms is the documented minimum interpretable headroom',
+      );
+    });
+
+    test('non-object inputs fail closed without throwing', () => {
+      for (const hostile of [undefined, null, 42, 'record', []]) {
+        assert.equal(verdictOf(hostile, raisedArm()).verdict, 'no-causal-comparison');
+        assert.equal(verdictOf(waitPolicyRecord(), hostile).verdict, 'no-causal-comparison');
+      }
+    });
+  });
+
+  describe('wait-policy comparison evidence and record marker (task 4)', async () => {
+    // The comparison facts' provenance chain: the evidence layer derives the
+    // closed decisive-poll facts (directive state, admitted code-mode wrapper
+    // vs direct native surface, and the FIRST RETURN duration from rollout
+    // event timestamps — measured for pending yields as well as completed
+    // observations) ONLY under the explicit gate; the live-facts mapping
+    // carries them ONLY for waitPolicy runs; and the record persists them
+    // ONLY for waitPolicy records (fail-closed on every boundary; legacy
+    // bytes unchanged everywhere).
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts, runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { adjudicateWaitComparison } = await import('../tools/shell-wait-probe/wait-comparison.mjs');
+
+    const PARENT = 'wp'; const CHILD = 'wp-c'; const AGENT_PATH = '/root/wp1'; const HANDLE = 92;
+    const LAUNCHER = 'node "/i/l.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    // Realistic RolloutLine ISO timestamps: t0 is the launch, and every later
+    // event is dated by an additive offset in milliseconds.
+    const T0 = '2026-10-17T03:00:00.000Z';
+    const at = (offsetMs) => new Date(Date.parse(T0) + offsetMs).toISOString();
+    /** The bounded input_text output pair of a completed host response. */
+    const completed = (result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+    /** The NATIVE PENDING code-mode string body of a YIELDED poll (cell id only). */
+    const yielded = (cellId) => `Script running with cell ID ${cellId}\nOutput:\n`;
+
+    /**
+     * A code-mode (custom_tool_call wrapper) Rescue sequence. Poll shape:
+     * 'yielded' emits a pending output at `pollReturnMs` and continues the
+     * returned cell through the sanctioned `tools.wait` outer wait (whose
+     * completion resolves the cell — pollWallTimesMs then records null for
+     * the yielded poll, exactly the expected C0 shape); 'completed' lets the
+     * poll run to its own completion at `pollReturnMs`.
+     * @param {{ poll: 'yielded' | 'completed', pollReturnMs: number, directive?: string, direct?: boolean }} options
+     */
+    function rescueSequence({ poll, pollReturnMs, directive = '', direct = false, innerYieldMs = 240000, shared = false, liveHandleFirstPoll = false }) {
+      const meta = (id, extra) => ({ type: 'session_meta', payload: { id, ...extra } });
+      const childMeta = meta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+      const fnCall = (name, callId, args) => ({ type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) } });
+      const wrapped = (kind, callId, value, prefix = '') => ({
+        type: 'response_item', timestamp: at(0),
+        payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `${prefix}const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n` },
+      });
+      // The sanctioned linked outer-continuation shape: the `wait` call is
+      // admitted only in the INLINE wrapper form (WRAPPER_PATTERN admits
+      // exec_command/write_stdin; INLINE_WRAPPER_PATTERN adds wait).
+      const inlineWait = (callId, value) => ({
+        type: 'response_item', timestamp: at(0),
+        payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `text(await tools.wait(${JSON.stringify(value)}));\n` },
+      });
+      const out = (callId, output, offsetMs) => ({ type: 'response_item', timestamp: at(offsetMs), payload: { type: 'custom_tool_call_output', call_id: callId, output } });
+      const started = () => ({ type: 'event_msg', timestamp: at(0), payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD, agent_path: AGENT_PATH } } });
+      const call = direct ? fnCall : wrapped;
+      const output = (callId, output_, offsetMs) => direct
+        ? { type: 'response_item', timestamp: at(offsetMs), payload: { type: 'function_call_output', call_id: callId, output: output_ } }
+        : out(callId, output_, offsetMs);
+      const pollArgument = innerYieldMs === null
+        ? { session_id: HANDLE, chars: '' }
+        : { session_id: HANDLE, chars: '', yield_time_ms: innerYieldMs };
+      // The reviewer's round-4 shared cell: the SANCTIONED v5 preparation
+      // write and the empty-input poll share ONE admitted cell (blank line
+      // separated), whose output resolves BOTH statements — the cell's
+      // measured duration then includes the preparation time.
+      const envelope = {
+        version: 5, source: 'explicit',
+        task: 'Perform shell-wait-probe-fixture-task. Run exactly `npm test` as the safe deterministic fixture action.',
+        options: { hostPlacement: 'foreground', companionExecution: 'foreground', foregroundAdapter: 'shell', resume: 'fresh' },
+        continuationTarget: null,
+      };
+      const sharedCellInput = `text(await tools.write_stdin({session_id:${HANDLE},chars:JSON.stringify(${JSON.stringify(envelope)})+"\\n",max_output_tokens:1000}));\n\n${directive}const r = await tools.write_stdin(${JSON.stringify(pollArgument)}); text(JSON.stringify(r))\n`;
+      const sharedCellOutput = [
+        { type: 'input_text', text: 'Script completed\n' },
+        { type: 'input_text', text: JSON.stringify({ output: '', session_id: HANDLE }) },
+        { type: 'input_text', text: JSON.stringify({ output: SENTINEL, exit_code: 0 }) },
+      ];
+      const childEvents = [
+        call('exec_command', 'l1', { cmd: LAUNCHER }),
+        output('l1', completed({ output: '', session_id: HANDLE }), 1000),
+        ...(shared ? [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', sharedCellOutput, pollReturnMs),
+        ] : poll === 'yielded' ? [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', yielded('2'), pollReturnMs),
+          inlineWait('w1', { cell_id: '2', yield_time_ms: 240000 }),
+          output('w1', completed({ output: SENTINEL, exit_code: 0 }), pollReturnMs + 92000),
+        ] : liveHandleFirstPoll ? [
+          // The reviewer's round-6 C0: the first inner poll COMPLETES with
+          // empty output and the live handle; a second poll reaches the
+          // sentinel — zero outer yields.
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', completed({ output: '', session_id: HANDLE }), pollReturnMs),
+          call('write_stdin', 'p2', pollArgument),
+          output('p2', completed({ output: SENTINEL, exit_code: 0 }), 150000),
+        ] : [
+          call('write_stdin', 'p1', pollArgument),
+          output('p1', completed({ output: SENTINEL, exit_code: 0 }), pollReturnMs),
+        ]),
+      ];
+      childEvents[2].payload.input = shared
+        ? sharedCellInput
+        : (typeof childEvents[2].payload.input === 'string' ? `${directive}const r = await tools.write_stdin(${JSON.stringify(pollArgument)}); text(JSON.stringify(r))\n` : childEvents[2].payload.input);
+      return [
+        [meta(PARENT), { type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name: 'spawn_agent', call_id: 's1', arguments: JSON.stringify({ task_name: 't1', agent_type: 'zcode-rescue' }) } }, started(), { type: 'response_item', timestamp: at(0), payload: { type: 'function_call', name: 'wait_agent', call_id: 'w0', arguments: JSON.stringify({ timeout_ms: 600000 }) } }],
+        [childMeta, ...childEvents],
+      ];
+    }
+    const evidenceFor = (rollouts, overrides = {}) => inspectShellWaitEvidence({
+      rollouts, zcodeCalls: [{ method: 'session/send' }], command: LAUNCHER,
+      publicResult: SENTINEL, redactions: [], ...overrides,
+    });
+
+    test('the gated evidence facts observe the decisive poll: directive, admitted surface, and first-return timing', () => {
+      const absent = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(absent.status, 'supported', 'the admitted-cell evidence stays supported');
+      assert.deepEqual(absent.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 150000,
+        decisiveFirstReturnState: 'completed',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      });
+      const present = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, directive: '// @exec: {"yield_time_ms": 60000}\n' }), { waitPolicyComparisonFacts: true });
+      assert.equal(present.status, 'supported', 'a directive-led poll stays admitted (the existing grammar accepts the directive)');
+      assert.equal(present.facts.waitPolicyComparisonFact.decisivePollExplicitYield, 'present');
+      // The EXPECTED yielded-C0 shape: a pending (yielded) output at ~28 s
+      // whose duration is measured from the rollout event timestamps.
+      const yieldedC0 = evidenceFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(yieldedC0.status, 'supported');
+      assert.deepEqual(yieldedC0.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 28000,
+        decisiveFirstReturnState: 'yielded-pending',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      });
+      // A direct-native sequence (plain function_call cells) is derived from
+      // the EXISTING admitted-wrapper classification — no new inference.
+      const direct = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, direct: true }), { waitPolicyComparisonFacts: true });
+      assert.equal(direct.status, 'supported');
+      assert.equal(direct.facts.waitPolicyComparisonFact.decisiveCallSurface, 'direct-native');
+      // No original-handle empty poll → every fact stays unknown, never absent.
+      const noPollRollouts = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      noPollRollouts[1] = noPollRollouts[1].filter((event) => event?.payload?.call_id !== 'p1');
+      const unknown = evidenceFor(noPollRollouts, { waitPolicyComparisonFacts: true });
+      assert.deepEqual(unknown.facts.waitPolicyComparisonFact, {
+        decisivePollExplicitYield: 'unknown',
+        decisiveCallSurface: 'unknown',
+        decisiveInnerYieldMs: null,
+        decisiveFirstReturnWallMs: null,
+        decisiveFirstReturnState: 'unknown',
+        decisiveFirstReturnBasis: 'unavailable',
+      });
+    });
+
+    test('the decisive poll ACTUAL inner yield is projected from the admitted arguments (codex gate round 2, finding 2)', () => {
+      // The reviewer's reproduction: a control poll with an ACTUAL 1000 ms
+      // yield — the fact must expose it from the admitted call's arguments.
+      const fastPoll = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, innerYieldMs: 1000 }), { waitPolicyComparisonFacts: true });
+      assert.equal(fastPoll.status, 'supported');
+      assert.equal(fastPoll.facts.waitPolicyComparisonFact.decisiveInnerYieldMs, 1000);
+      // No yield argument at all → null (unavailable), never assumed.
+      const noYield = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, innerYieldMs: null }), { waitPolicyComparisonFacts: true });
+      assert.equal(noYield.status, 'supported');
+      assert.equal(noYield.facts.waitPolicyComparisonFact.decisiveInnerYieldMs, null);
+    });
+
+    test('the decisive first-return STATE is persisted, and a completed live-handle control never reads as default expiry (codex gate round 6)', async (t) => {
+      // The reviewer's reproduction: a qualified C0 whose first inner poll
+      // COMPLETED at 28000 ms with empty output and a live handle, followed
+      // by another poll reaching the sentinel — zero outer yields, null
+      // inconclusive. The pending/complete distinction is essential: an
+      // inner or transport return can masquerade as outer-default expiry.
+      const liveHandle = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000, liveHandleFirstPoll: true }), { waitPolicyComparisonFacts: true });
+      assert.equal(liveHandle.status, 'supported');
+      assert.equal(liveHandle.facts.waitPolicyComparisonFact.decisiveFirstReturnState, 'completed');
+      assert.equal(liveHandle.facts.waitPolicyComparisonFact.decisiveFirstReturnWallMs, 28000);
+      // End to end: the completed-live-handle control versus a holding
+      // raised arm is inconclusive — NEVER a positive config effect.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-state-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 27500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const recordFor = async (sequence, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+          evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          sequence, []) },
+      );
+      const completedControl = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000, liveHandleFirstPoll: true }), 30000);
+      const holdingRaised = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), 240000);
+      // Premise: the qualified completed control reads exactly as the
+      // reviewer described — null inconclusive, sentinels true, zero yields.
+      assert.equal(completedControl.inconclusive, null);
+      assert.equal(completedControl.result.publicResultMatchedSentinel, true);
+      assert.equal(completedControl.linkage.originalHandleChecked, true);
+      assert.equal(completedControl.waitPolicyObservation.decisiveFirstReturnState, 'completed');
+      assert.equal(completedControl.observations.outerReturns, 0);
+      assert.deepEqual(
+        adjudicateWaitComparison(completedControl, holdingRaised),
+        { verdict: 'inconclusive', reason: 'control-completed-without-yield' },
+        'eventual terminal success does not establish the outer-default causal link',
+      );
+      // The EXPECTED discriminator keeps working: a yielded-pending control
+      // with the verified continuation against a holding raised arm.
+      const pendingControl = await recordFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), 30000);
+      assert.equal(pendingControl.waitPolicyObservation.decisiveFirstReturnState, 'yielded-pending');
+      assert.deepEqual(
+        adjudicateWaitComparison(pendingControl, holdingRaised),
+        { verdict: 'config-effect-observed', reason: null },
+      );
+    });
+
+    test('without the gate the facts carry no waitPolicyComparisonFact key at all', () => {
+      const facts = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }));
+      assert.equal(facts.status, 'supported');
+      assert.equal(Object.hasOwn(facts.facts, 'waitPolicyComparisonFact'), false);
+      // A non-boolean gate value is refused fail-closed at the evidence
+      // boundary (the same convention as the other optional evidence inputs).
+      assert.throws(() => evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: 'yes' }),
+        /waitPolicyComparisonFacts must be a boolean when present/i);
+    });
+
+    test('the live-facts mapping and the persisted record carry the comparison facts only for waitPolicy runs', async (t) => {
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+      };
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+      };
+      const mapped = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), [],
+      );
+      assert.deepEqual(mapped.waitPolicyObservation, {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 240000,
+        decisiveFirstReturnWallMs: 28000,
+        decisiveFirstReturnState: 'yielded-pending',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      }, 'the pipeline-derived comparison facts reach the live facts');
+      const legacyMapped = mapShellWaitLiveFacts(mappingInput, held, evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture, rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), []);
+      assert.equal(Object.hasOwn(legacyMapped, 'waitPolicyObservation'), false, 'legacy live facts gain no marker');
+      // Record boundary: executor-provided facts persist only with the pair.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-marker-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const markerFacts = { inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] }, waitPolicyObservation: { decisivePollExplicitYield: 'present' } };
+      const record = await runShellWaitCase({ ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 }, {
+        createFixture: async () => ({ ...mappingFixture, dispose: async () => {} }),
+        executeLiveCase: async () => markerFacts,
+      });
+      assert.deepEqual(record.waitPolicyObservation, { decisivePollExplicitYield: 'present' }, 'the waitPolicy record carries the pragma marker');
+      const legacyRecord = await runShellWaitCase({ ...mappingInput, codexBinary: process.execPath, output: root }, {
+        createFixture: async () => ({ ...mappingFixture, dispose: async () => {} }),
+        executeLiveCase: async () => markerFacts,
+      });
+      assert.equal(Object.hasOwn(legacyRecord, 'waitPolicyObservation'), false, 'a legacy record drops the fail-closed marker entirely');
+    });
+
+    test('the pipeline-derived yielded-C0 versus completed-C1 pair adjudicates the effect (codex gate round 1, finding 2)', async (t) => {
+      // End-to-end over REALISTIC evidence shapes: C0's poll YIELDS at 28 s
+      // (pending output, wait continuation — pollWallTimesMs records null for
+      // the yielded poll) and C1's poll completes at 150 s. The decisive
+      // timing is the pipeline-derived FIRST RETURN, never the inner-poll
+      // wall-time array the yielded path deliberately leaves null.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-yield-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        // Plan Task 4: the shared explicit model selection is a comparability
+        // PREREQUISITE — the pipeline records carry it identically on both arms.
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        // The held turn's measured monotonic timeline grounds the record's
+        // remaining-lifetime fact (150 s at the decisive poll start).
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 29500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const liveFactsFor = (sequence, execDefaultMs) => mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+        evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        sequence, [],
+      );
+      const controlSequence = rescueSequence({ poll: 'yielded', pollReturnMs: 28000 });
+      const raisedSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      const recordFor = async (liveFacts, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => liveFacts },
+      );
+      const controlRecord = await recordFor(liveFactsFor(controlSequence, 30000), 30000);
+      const raisedRecord = await recordFor(liveFactsFor(raisedSequence, 240000), 240000);
+      assert.equal(controlRecord.waitPolicyObservation.decisiveFirstReturnWallMs, 28000);
+      assert.equal(raisedRecord.waitPolicyObservation.decisiveFirstReturnWallMs, 150000);
+      assert.deepEqual(
+        adjudicateWaitComparison(controlRecord, raisedRecord),
+        { verdict: 'config-effect-observed', reason: null },
+        'the yielded control return (28 s) versus the held raised return (150 s) is the observed effect',
+      );
+      // A raised arm whose first return also lands within the short window
+      // shows no observed effect — same pipeline shapes.
+      const earlyRaisedRecord = await recordFor(liveFactsFor(rescueSequence({ poll: 'yielded', pollReturnMs: 28000 }), 240000), 240000);
+      assert.deepEqual(
+        adjudicateWaitComparison(controlRecord, earlyRaisedRecord),
+        { verdict: 'no-config-effect-observed', reason: null },
+      );
+    });
+
+    test('a pipeline-derived direct-native decisive call is a different surface end to end (codex gate round 1, finding 3)', async (t) => {
+      // Plain function_call cells (direct native exec_command/write_stdin)
+      // satisfy routing/linkage but are NOT code mode: their timing can never
+      // be attributed to a code-mode default.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-direct-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        // Plan Task 4: the shared explicit model selection is a comparability
+        // PREREQUISITE — the pipeline records carry it identically on both arms.
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+      };
+      const directSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000, direct: true });
+      const liveFacts = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(directSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        directSequence, [],
+      );
+      assert.equal(liveFacts.waitPolicyObservation.decisiveCallSurface, 'direct-native');
+      const record = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => liveFacts },
+      );
+      const wrapperSequence = rescueSequence({ poll: 'completed', pollReturnMs: 150000 });
+      const wrapperRecord = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts({ ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 240000 }, held, evidenceFor(wrapperSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture, wrapperSequence, []) },
+      );
+      assert.deepEqual(
+        adjudicateWaitComparison(record, wrapperRecord),
+        { verdict: 'different-surface', reason: null },
+        'a direct-native decisive call never compares against a code-mode wrapper arm',
+      );
+    });
+
+    test('a shared preparation+poll raised cell is missing evidence, never observed (codex gate round 4)', async (t) => {
+      // The reviewer's reproduction: a 60000 ms SHARED raised cell (59000 ms
+      // preparation + 1000 ms polling) against a standalone 28000 ms control
+      // produced qualified arms with null inconclusive and
+      // config-effect-observed — preparation time masquerading as longer
+      // shell observation. With the standalone requirement the shared arm's
+      // first return is unavailable, so the pair is unknown.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-shared-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, observationDetectedAtElapsedMs: 59500, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      const recordFor = async (sequence, execDefaultMs) => runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs }, held,
+          evidenceFor(sequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          sequence, []) },
+      );
+      const sharedRaised = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 60000, shared: true }), 240000);
+      const standaloneControl = await recordFor(rescueSequence({ poll: 'completed', pollReturnMs: 28000 }), 30000);
+      // Premise: both arms are pipeline-qualified with true sentinels.
+      assert.equal(sharedRaised.inconclusive, null);
+      assert.equal(sharedRaised.result.publicResultMatchedSentinel, true);
+      assert.equal(sharedRaised.linkage.originalHandleChecked, true);
+      assert.equal(sharedRaised.waitPolicyObservation.decisiveFirstReturnBasis, 'shared-cell');
+      assert.deepEqual(
+        adjudicateWaitComparison(standaloneControl, sharedRaised),
+        { verdict: 'unknown', reason: 'missing-evidence' },
+        'preparation time must never masquerade as longer shell observation',
+      );
+    });
+
+    test('a pipeline-shaped overlapping-poll arm refuses before any effect verdict (codex gate round 2, finding 1)', async (t) => {
+      // The reviewer's reproduction, end to end over REALISTIC pipeline
+      // shapes: a second original-handle poll issued while the first cell is
+      // pending makes the observer report the observation-discipline failure
+      // (inconclusive reason + originalHandleChecked false) while the
+      // terminal sentinel booleans stay true. The comparator must refuse.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-wp-overlap-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const mappingInput = {
+        case: 'rescue-long', codexBinary: '/bin/x', sourceSha: 'a'.repeat(40), output: '/o',
+        workerDurationMs: 180000, capMs: null, pollMs: 240000, budgetMs: 600000,
+        model: 'authorized-test-model',
+      };
+      const mappingFixture = {
+        workspace: '/private/tmp/wp-ws', codexHome: '/private/tmp/wp-home', installedRoot: '/private/tmp/wp-installed', env: { HOME: '/private/tmp/wp-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 240000, appliedArtifacts: [], pluginVersion: '0.1.0',
+          waitPolicy: { policy: 'config-default', normalizedNamedRoleSha256: 'n'.repeat(64), normalizedGenericMessageSha256: 'g'.repeat(64) } },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, errors: [] },
+        timeline: { clock: 'monotonic', launchedAtElapsedMs: 0, pollStartedAtElapsedMs: 30000, holdDeadlineElapsedMs: 180000, endedAtElapsedMs: 170000 },
+      };
+      // OVERLAP: poll p1 yields, then p2 polls the SAME handle BEFORE the
+      // pending cell resolves (no wait continuation between them).
+      const overlapSequence = (() => {
+        const base = rescueSequence({ poll: 'yielded', pollReturnMs: 28000 });
+        const childEvents = base[1];
+        const wrapped = (callId, value) => ({
+          type: 'response_item', timestamp: at(28000),
+          payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify(value)}); text(JSON.stringify(r))\n` },
+        });
+        const output = (callId, output_, offsetMs) => ({ type: 'response_item', timestamp: at(offsetMs), payload: { type: 'custom_tool_call_output', call_id: callId, output: output_ } });
+        // Replace the wait continuation with the second same-handle poll.
+        const waitIndex = childEvents.findIndex((event) => event?.payload?.call_id === 'w1');
+        childEvents.splice(waitIndex, 2,
+          wrapped('p2', { session_id: HANDLE, chars: '', yield_time_ms: 240000 }),
+          output('p2', completed({ output: SENTINEL, exit_code: 0 }), 150000));
+        return base;
+      })();
+      const overlapFacts = mapShellWaitLiveFacts(
+        { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 30000 }, held,
+        evidenceFor(overlapSequence, { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+        overlapSequence, [],
+      );
+      // Premise: the observer flagged the discipline failure, the terminal
+      // booleans stayed true, and the first-return timing exists.
+      assert.equal(overlapFacts.inconclusive === null, false, 'the pipeline must report the discipline failure');
+      assert.equal(overlapFacts.linkage.originalHandleChecked, false);
+      assert.equal(overlapFacts.hostResult.sentinelMatched, true);
+      assert.equal(overlapFacts.hostResult.terminalStdoutChecked, true);
+      const overlapRecord = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 30000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => overlapFacts },
+      );
+      const cleanRaised = await runShellWaitCase(
+        { ...mappingInput, codexBinary: process.execPath, output: root, waitPolicy: 'config-default', execDefaultMs: 240000 },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => mapShellWaitLiveFacts(
+          { ...mappingInput, waitPolicy: 'config-default', execDefaultMs: 240000 }, held,
+          evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), { waitPolicyComparisonFacts: true }), '0.163.0', null, mappingFixture,
+          rescueSequence({ poll: 'completed', pollReturnMs: 150000 }), []) },
+      );
+      assert.deepEqual(
+        adjudicateWaitComparison(overlapRecord, cleanRaised),
+        { verdict: 'inconclusive', reason: 'unqualified-arm' },
+        'an observation-discipline violation is never positive causal evidence, whatever the sentinels read',
+      );
+    });
+  });
+
 }

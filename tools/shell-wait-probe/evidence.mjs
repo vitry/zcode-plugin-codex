@@ -2104,6 +2104,15 @@ export function inspectShellWaitEvidence(input) {
     throw invalidEvidenceInput('unclassifiedShapeDiagnostic must be a boolean when present.');
   }
   const shapeDiagnosticEnabled = diagnosticEnabled && unclassifiedShapeDiagnostic === true;
+  // The Task 4 comparison gate (plan Task 4 bullet 3): an explicitly enabled
+  // boolean adds the closed decisive-poll comparison facts to the IN-MEMORY
+  // facts (the driver persists them only for waitPolicy records). The
+  // absent/false default projects nothing, so default retention and every
+  // pinned excerpt byte stay identical.
+  if (input.waitPolicyComparisonFacts !== undefined && input.waitPolicyComparisonFacts !== null && typeof input.waitPolicyComparisonFacts !== 'boolean') {
+    throw invalidEvidenceInput('waitPolicyComparisonFacts must be a boolean when present.');
+  }
+  const waitPolicyComparisonFactsEnabled = input.waitPolicyComparisonFacts === true;
   if (rollouts.length === 0) return inconclusive('rollouts-unavailable', 'No rollout evidence was collected.');
   for (const events of rollouts) {
     if (events.length > MAX_EVENTS_PER_ROLLOUT) return inconclusive('rollouts-overflow', 'A rollout exceeds the observer event bound.');
@@ -2246,12 +2255,22 @@ export function inspectShellWaitEvidence(input) {
   };
   const observations = inspectObservations(linkage, calls, input, sequence, mode, rootIdentification, rootQueryEvents);
   const completion = inspectCompletion(linkage, companion, handle, sequence, observations, input, mode, rootIdentification);
+  const waitPolicyComparisonFact = waitPolicyComparisonFactsEnabled
+    ? projectDecisivePollComparisonFact(
+        calls,
+        sequence?.originalHandleId ?? null,
+        mode === 'root' ? (rootQueryEvents ?? rootIdentification?.rootEvents ?? null) : (linkage.childEvents ?? null),
+      )
+    : null;
 
   return {
     status: 'supported',
     inconclusive: null,
     facts: {
       linkage: mode === 'root' && rootIdentification !== null ? rootIdentification.facts : linkage.facts, companion, handle, observations, completion,
+      // The Task 4 comparison gate: present ONLY under the explicit boolean
+      // (see the gate validation above); default facts stay byte-identical.
+      ...(waitPolicyComparisonFact !== null ? { waitPolicyComparisonFact } : {}),
       collection: {
         rolloutCount: rollouts.length,
         childToolCallCount: calls?.length ?? null,
@@ -2647,6 +2666,122 @@ function parseStatementOutputs(output, count) {
   }
   if (results.length !== count) return [];
   return results;
+}
+
+/** @param {any[]} events @param {string} callId @param {'call' | 'output'} kind @param {number | null} preferredIndex */
+function rolloutEventForCallId(events, callId, kind, preferredIndex) {
+  const wantedTypes = kind === 'call'
+    ? ['custom_tool_call', 'function_call']
+    : ['custom_tool_call_output', 'function_call_output'];
+  const preferred = typeof preferredIndex === 'number' && Number.isFinite(preferredIndex) ? Math.floor(preferredIndex) : -1;
+  let fallback = null;
+  for (const [index, event] of events.entries()) {
+    const payload = event?.payload;
+    if (payload?.call_id !== callId || !wantedTypes.includes(payload?.type)) continue;
+    if (index === preferred) return event;
+    if (fallback === null) fallback = event;
+  }
+  return fallback;
+}
+
+/**
+ * The Task 4 closed decisive-poll comparison facts (plan Task 4 bullet 3),
+ * ALL derived from the EXISTING admitted-call classification (no new
+ * inference), for the FIRST original-handle empty-input poll:
+ *  - `decisivePollExplicitYield`: the `// @exec:` pragma state. That pragma
+ *    is exactly the outer-yield override whose presence makes the C0/C1
+ *    default-causality comparison inconclusive, so absence must be OBSERVED
+ *    on an admitted poll — never inferred, and any unestablishable state
+ *    stays 'unknown' (never a clean absence). Any non-null parsed directive
+ *    counts as 'present' (a pragma attempt on the decisive cell is a
+ *    conservative inconclusive either way).
+ *  - `decisiveCallSurface`: the admitted call FORM — 'code-mode-wrapper' for
+ *    a custom_tool_call wrapper cell, 'direct-native' for a plain
+ *    function_call (delegation routing never establishes code-mode
+ *    execution), 'unknown' when unestablishable.
+ *  - `decisiveFirstReturnWallMs`: the decisive outer cell's FIRST RETURN —
+ *    the output event's rollout timestamp minus the call event's timestamp —
+ *    measured for PENDING yields exactly like completed observations (the
+ *    yield's pending output is the model-visible first return). This is the
+ *    separately attributable duration the post-run comparison needs: the
+ *    inner-poll wall-time array deliberately records null for a yielded poll
+ *    resolved through its outer wait. Unmeasurable (missing/invalid event
+ *    timestamps) stays null with basis 'unavailable' — never zero, never
+ *    guessed. The attribution requires a STANDALONE single-statement cell:
+ *    a multi-statement cell containing the decisive poll (e.g. the
+ *    sanctioned preparation write sharing the poll's cell) contributes its
+ *    preceding statements' time to the measurement, so its timing stays null
+ *    with basis 'shared-cell' (codex gate round 4) — the comparison
+ *    adjudicator treats it as missing evidence, never observed.
+ *  - `decisiveFirstReturnState`: whether the decisive poll's own parsed
+ *    output was a PENDING yield or a completion (codex gate round 6) — the
+ *    plan's expected discriminator is a yielded-pending control cell, so the
+ *    state must be observed before a control return is attributed to its
+ *    configured default.
+ *  - `decisiveInnerYieldMs`: the decisive poll's ACTUAL requested inner
+ *    window from the admitted call's arguments — the comparability fact that
+ *    differing inner requests already explain any contrast (unavailable ⇒
+ *    null).
+ * Runs only under the explicit `waitPolicyComparisonFacts` gate.
+ * @param {ReturnType<typeof collectCalls> | null} calls
+ * @param {number | null} originalHandleId
+ * @param {any[] | null} events the identified rollout's events (the source
+ *   of the call/output event timestamps)
+ * @returns {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }}
+ */
+function projectDecisivePollComparisonFact(calls, originalHandleId, events) {
+  /** @type {{ decisivePollExplicitYield: 'absent' | 'present' | 'unknown', decisiveCallSurface: 'code-mode-wrapper' | 'direct-native' | 'unknown', decisiveInnerYieldMs: number | null, decisiveFirstReturnWallMs: number | null, decisiveFirstReturnState: 'yielded-pending' | 'completed' | 'unknown', decisiveFirstReturnBasis: 'rollout-event-timestamps' | 'unavailable' | 'shared-cell' }} */
+  const unknownFact = { decisivePollExplicitYield: 'unknown', decisiveCallSurface: 'unknown', decisiveInnerYieldMs: null, decisiveFirstReturnWallMs: null, decisiveFirstReturnState: 'unknown', decisiveFirstReturnBasis: 'unavailable' };
+  if (calls === null || originalHandleId === null || !Array.isArray(events)) return unknownFact;
+  for (const entry of calls) {
+    if (entry?.call?.kind !== 'write_stdin') continue;
+    if (readHandleId(entry.call.value?.session_id) !== originalHandleId) continue;
+    // The sanctioned one-shot preparation frame is not a poll; only an
+    // empty-input observation can be the decisive cell.
+    if (entry.call.value?.chars !== '') continue;
+    const decisiveCallSurface = entry.call.wrapped === true ? 'code-mode-wrapper'
+      : entry.call.wrapped === false ? 'direct-native' : 'unknown';
+    // The decisive call's ACTUAL requested inner window (codex gate round 2,
+    // finding 2): read from the admitted call's already-validated arguments
+    // (`yield_time_ms` is a sanctioned write_stdin protocol field carried as
+    // a numeric literal by the parser). Unavailable (absent or non-numeric)
+    // stays null — the comparison refuses rather than assume equality.
+    const rawInnerYield = entry.call.value?.yield_time_ms;
+    const decisiveInnerYieldMs = typeof rawInnerYield === 'number' && Number.isSafeInteger(rawInnerYield) && rawInnerYield > 0 ? rawInnerYield : null;
+    // STANDALONE requirement (codex gate round 4): the cell-duration
+    // projection measures the WHOLE admitted cell, so a multi-statement cell
+    // containing the decisive poll (e.g. the sanctioned preparation write
+    // sharing the poll's cell) attributes its PRECEDING statements' time to
+    // the shell observation. Causal qualification requires the decisive poll
+    // to occupy a STANDALONE single-statement cell (the canonical grammar
+    // already rejects trailing content, so a shared cell is exactly the
+    // non-canonical case this instrument must not causally qualify): a
+    // shared cell keeps its per-statement facts but records the timing as
+    // unavailable with the closed 'shared-cell' basis — the comparison
+    // adjudicator treats it as missing evidence (unknown), never observed.
+    const standaloneCell = entry.statementCount === 1;
+    // The decisive first return's STATE (codex gate round 6): whether the
+    // decisive poll's own parsed output was a PENDING yield or a completion —
+    // read from the existing observation classification, no new inference.
+    // The plan's expected discriminator is a yielded-pending control cell,
+    // so a completed return must never masquerade as default expiry.
+    const decisiveFirstReturnState = entry.output?.state === 'pending' ? 'yielded-pending'
+      : entry.output?.state === 'completed' ? 'completed' : 'unknown';
+    const callEvent = rolloutEventForCallId(events, entry.callId, 'call', entry.callIndex);
+    const outputEvent = rolloutEventForCallId(events, entry.callId, 'output', entry.outputIndex);
+    const callTimestampMs = callEvent === null ? null : interruptEventTimestampMs(callEvent);
+    const outputTimestampMs = outputEvent === null ? null : interruptEventTimestampMs(outputEvent);
+    const measurable = standaloneCell && callTimestampMs !== null && outputTimestampMs !== null && outputTimestampMs >= callTimestampMs;
+    return {
+      decisivePollExplicitYield: entry.call.directive !== null && entry.call.directive !== undefined ? 'present' : 'absent',
+      decisiveCallSurface,
+      decisiveInnerYieldMs,
+      decisiveFirstReturnWallMs: measurable ? outputTimestampMs - callTimestampMs : null,
+      decisiveFirstReturnState,
+      decisiveFirstReturnBasis: measurable ? 'rollout-event-timestamps' : (standaloneCell ? 'unavailable' : 'shared-cell'),
+    };
+  }
+  return unknownFact;
 }
 
 /**
@@ -3181,6 +3316,7 @@ function inspectCompletion(linkage, companion, /** @type {any} */ handle, /** @t
  *   workerStillAliveAfterObservation?: boolean | null,
  *   unclassifiedStructuralDiagnostic?: boolean | null,
  *   unclassifiedShapeDiagnostic?: boolean | null,
+ *   waitPolicyComparisonFacts?: boolean | null,
  *   redactions?: string[],
  * }} ShellWaitEvidenceInput
  */

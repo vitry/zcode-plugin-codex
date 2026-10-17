@@ -63,6 +63,50 @@ function candidateWaitingParagraph(pollYieldMs) {
 }
 
 /**
+ * The Task 4 config-default waiting paragraph (plan Task 4 bullet 2): the
+ * isolated named/generic variant for the C0/C1 arms. The delivered
+ * instructions are ARM-AGNOSTIC — the ONLY difference between the arms is the
+ * driver's `--exec-default-ms` number reaching the host `-c` argv override
+ * (it never enters the fixture), so this paragraph never mentions the host
+ * override and depends only on the shared poll window. The clauses:
+ * the fixed initial launch window (30000), the empty original-handle inner
+ * poll (pollYieldMs), NO explicit exec pragma/yield on the decisive outer
+ * cell, and — when that cell YIELDS back a pending cell — continuing the
+ * RETURNED CELL with the observer pipeline's sanctioned outer-wait primitive
+ * (`tools.wait` exactly once for the returned cell identifier with
+ * pollYieldMs), never a second write_stdin observation while the cell is
+ * pending (a second empty-input poll would overlap the pending cell and
+ * destroy the comparison). Every authority, fixed command, initial and
+ * choice assignment literal, and terminal rule stays byte-identical (only
+ * the waiting paragraph changes).
+ * @param {number} pollYieldMs
+ */
+export function configDefaultWaitingParagraph(pollYieldMs) {
+  const requested = String(pollYieldMs);
+  return 'Observe only the original running process handle. Start the constant command once with the longest initial exec_command yield, up to 30000 ms. If it returns a live process handle, observe only that handle with empty-input write_stdin calls requesting a single observation window of ' + requested + ' ms: pass yield_time_ms: ' + requested + ' on that same empty-input call, and emit no directive line and no other explicit yield override for that observation. If that observation yields back a pending cell while the command is still running, continue that SAME returned cell with one explicit outer wait: call tools.wait exactly once for that cell, passing exactly cell_id: the cell identifier the yielded observation returned and yield_time_ms: ' + requested + ', and issue no further write_stdin for the original handle until that cell resolves. Send no characters, do not start another process, and do not replace terminal observation with Status polling or sleep. This applies identically to Rescue\'s named and generic Role assignments; the initial launcher yield is 30000, a yielded cell continues through the wait call for its returned cell identifier with the explicit ' + requested + ' ms outer wait, and no second write_stdin observation is issued while a cell is pending.';
+}
+
+/**
+ * Replace every fixture-private absolute root with a fixed positional marker
+ * so instruction hashes become comparable ACROSS runs: differing fixture
+ * paths/IDs are expected cross-run (plan Task 4 bullet 2) and must never read
+ * as cross-arm incompatibility. Roots are replaced longest-first so a prefix
+ * path can never shadow its own descendant.
+ * @param {string} text @param {readonly unknown[]} privateRoots
+ */
+export function normalizeFixtureInstructionText(text, privateRoots) {
+  if (typeof text !== 'string') throw invalidFixtureInput('the instruction text must be a string.');
+  const roots = (Array.isArray(privateRoots) ? privateRoots : [])
+    .filter((root) => typeof root === 'string' && root.length > 0)
+    .sort((first, second) => second.length - first.length);
+  let normalized = text;
+  for (const [index, root] of roots.entries()) {
+    normalized = normalized.split(/** @type {string} */ (root)).join(`<fixture-private-${index}>`);
+  }
+  return normalized;
+}
+
+/**
  * The exact installed waiting-policy paragraph shared by the canonical
  * Review/Adversarial Review/Status command Skills (verified against the
  * repository Skills at the fixture's source SHA; each file must contain it
@@ -189,7 +233,7 @@ async function assertPrivateEmptyOutput(output) {
 /**
  * Validate and normalize the fixture input before any filesystem side effect.
  * @param {ShellWaitFixtureInput} input
- * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
+ * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
  */
 function validateFixtureInput(input) {
   if (!input || typeof input !== 'object') throw invalidFixtureInput('the fixture input must be an object.');
@@ -207,6 +251,17 @@ function validateFixtureInput(input) {
   }
   if (commandSkillVariant === 'candidate' && input.variant !== 'candidate') {
     throw invalidFixtureInput('commandSkillVariant "candidate" requires variant "candidate" (the root-family candidate delivery seam); a baseline fixture never edits the installed command Skills.');
+  }
+  // The Task 4 config-default waiting-paragraph seam: a closed literal,
+  // meaningful only with the candidate variant (a baseline fixture never
+  // edits the installed instructions). The exec-default NUMBER never enters
+  // the fixture — it travels exclusively as the driver's host argv override.
+  const waitPolicy = input.waitPolicy;
+  if (waitPolicy !== undefined && waitPolicy !== 'config-default') {
+    throw invalidFixtureInput('waitPolicy must be exactly "config-default" when present.');
+  }
+  if (waitPolicy === 'config-default' && input.variant !== 'candidate') {
+    throw invalidFixtureInput('waitPolicy "config-default" requires variant "candidate" (the config-default waiting-paragraph seam); a baseline fixture never edits the installed instructions.');
   }
   if (input.capMs !== null && input.capMs !== undefined && (!Number.isSafeInteger(input.capMs) || input.capMs <= 0)) {
     throw invalidFixtureInput('capMs must be a positive integer or null (unraised).');
@@ -233,6 +288,7 @@ function validateFixtureInput(input) {
     output: /** @type {string} */ (input.output),
     variant: input.variant,
     commandSkillVariant,
+    waitPolicy: waitPolicy ?? null,
     capMs: input.capMs ?? null,
     pollMs,
     reserveStatusJob,
@@ -815,7 +871,13 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
     if (occurrences !== 1) {
       throw new Error(`The installed artifact must contain exactly one waiting-policy paragraph to change (found ${String(occurrences)}).`);
     }
-    return source.replace(ORIGINAL_WAITING_PARAGRAPH, candidateWaitingParagraph(prepared.pollMs));
+    // The Task 4 config-default seam swaps the SAME single waiting-policy
+    // paragraph for the isolated config-default variant; every other byte of
+    // the artifact is preserved. Only the paragraph text differs.
+    const replacement = prepared.waitPolicy === 'config-default'
+      ? configDefaultWaitingParagraph(prepared.pollMs)
+      : candidateWaitingParagraph(prepared.pollMs);
+    return source.replace(ORIGINAL_WAITING_PARAGRAPH, replacement);
   };
 
   const templateApplied = await applyTo(templatePath, 'named-role-template', 'named Role template', prepared.variant === 'candidate' ? candidateTransform : (source) => source);
@@ -897,6 +959,19 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
     baselineNamedRoleSha256: sha256(baselineRole),
     genericMessageSha256: sha256(genericMessage),
     baselineGenericMessageSha256: sha256(baselineGenericMessage),
+    // The Task 4 config-default seam: the PATH-NORMALIZED instruction hashes
+    // (fixture-private roots replaced with fixed markers) so the two arms'
+    // delivered instructions are comparable across runs. The raw rendered
+    // hashes above still differ cross-run (fixture paths/IDs) — expected, and
+    // never by itself a cross-arm incompatibility. Recorded ONLY for the
+    // config-default variant so default fixture records stay byte-identical.
+    ...(prepared.waitPolicy === 'config-default' ? {
+      waitPolicy: {
+        policy: prepared.waitPolicy,
+        normalizedNamedRoleSha256: sha256(normalizeFixtureInstructionText(renderedRole, [installedRoot, codexHome])),
+        normalizedGenericMessageSha256: sha256(normalizeFixtureInstructionText(genericMessage, [installedRoot, codexHome])),
+      },
+    } : {}),
   };
 }
 
@@ -1178,6 +1253,7 @@ export async function releaseCompletionGate(gatePath) {
  *   output: string,
  *   variant: 'baseline'|'candidate',
  *   commandSkillVariant?: 'baseline'|'candidate',
+ *   waitPolicy?: string,
  *   capMs?: number | null,
  *   pollMs?: number,
  *   reserveStatusJob?: boolean,
