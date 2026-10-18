@@ -16708,6 +16708,30 @@ process.exit(result.status ?? 1);
       assert.match(directive, /before the interrupt|first read/i, 'a bounded read is required before the interrupt');
       assert.match(directive, /after the interrupt|one final time/i, 'a bounded read is required after the interrupt');
       assert.match(directive, /verbatim/i, 'the reads are reported verbatim for emission-tag decoding');
+      // The F cause-directed sequencing registration (report §17.11, preregistered
+      // BEFORE the F launch): the directive must require, explicitly IN ORDER,
+      // (1) the child's long empty-input write_stdin observation (the registered
+      // 3600000 window) with its pending acknowledgment, (2) the §16.4
+      // pre-delivery progress-program read (fresh mid-run line below the line
+      // count), (3) the exactly-one interrupt_agent call carrying the EXACT
+      // full agent id copied from the spawn acknowledgement — the ordering the
+      // I0/I1 records showed missing (both interrupts landed before any
+      // attributable child poll, with unclassified 23-char targets).
+      assert.match(directive, /strictly in (this )?order/iu, 'the three interrupt-flow steps are declared ordered');
+      assert.match(directive, /empty-input write_stdin[^.]*3600000/u, 'step 1 requires the child long empty-input write_stdin at the registered 3600000 window');
+      assert.match(directive, /pending acknowledgment/iu, 'step 1 requires observing the pending acknowledgment');
+      assert.match(directive, /fresh progress line[^.]*below the (program's )?line count/iu, 'step 2 keeps the §16.4 pre-delivery read with a fresh mid-run line below the line count');
+      assert.match(directive, /EXACT full agent id/iu, 'step 3 requires the EXACT full agent id');
+      assert.match(directive, /copied from the spawn acknowledgement/iu, 'step 3 anchors the target to the spawn acknowledgement');
+      const step1At = directive.indexOf('STEP 1');
+      const step2At = directive.indexOf('STEP 2');
+      const step3At = directive.indexOf('STEP 3');
+      assert.notEqual(step1At, -1, 'step 1 is present');
+      assert.notEqual(step2At, -1, 'step 2 is present');
+      assert.notEqual(step3At, -1, 'step 3 is present');
+      assert.ok(step1At < step2At && step2At < step3At, 'the poll-establishment, pre-delivery read and interrupt steps appear strictly in order');
+      const interruptClauseAt = directive.indexOf('interrupt_agent');
+      assert.ok(step1At < interruptClauseAt && step2At < interruptClauseAt, 'the interrupt delivery is textually sequenced AFTER establishing the pending poll and the pre-delivery read');
       assert.throws(() => survivalControlPromptDirective('relative/path.mjs'), /absolute/i);
       assert.throws(() => survivalControlPromptDirective(''), /absolute/i);
     });

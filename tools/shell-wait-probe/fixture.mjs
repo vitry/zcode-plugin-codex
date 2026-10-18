@@ -65,12 +65,18 @@ export const SURVIVAL_CONTROL_LINE_PREFIX = 'zcode-survival-control';
 
 /**
  * The §16.4 Root-turn instruction fragment for the I1 survival control
- * (release-qualification Task 2 wiring): the control is launched ONCE through
- * the ordinary `exec_command` seam on its OWN handle INSIDE the same declared
- * I1 Root turn — no extra model turn, no standalone launch. The bounded
- * before/after reads ride the same turn: one read immediately BEFORE the
- * interrupt (the §16.4 mid-run proof, fresh progress line, index below the
- * line count) and one read AFTER the interrupt's settlement, both reported
+ * (release-qualification Task 2 wiring; F-registered sequencing per report
+ * §17.11): the control is launched ONCE through the ordinary `exec_command`
+ * seam on its OWN handle INSIDE the same declared I1 Root turn — no extra
+ * model turn, no standalone launch. The interrupt flow is declared as THREE
+ * strictly ordered steps — (1) deliver the child's long empty-input
+ * write_stdin observation (the registered 3600000 window) and observe its
+ * pending acknowledgment, (2) the bounded §16.4 pre-delivery read of the
+ * control (fresh mid-run line below the line count), (3) the exactly-one
+ * interrupt_agent delivery carrying the EXACT full agent id copied from the
+ * spawn acknowledgement — because both Task 4 records measured the Root
+ * interrupting before any attributable child poll existed, with unclassified
+ * target spellings. The bounded after-read rides the same turn, reported
  * verbatim so the emission tags can be decoded. The control is never
  * observed with Status, never sent input, never stopped or killed, and never
  * confused with the observed Rescue child (it shares no stop authority).
@@ -85,7 +91,10 @@ export function survivalControlPromptDirective(scriptPath) {
   }
   return 'Also, inside this same turn and before anything else: launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly '
     + `\`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
-    + 'While the spawned agent is still running and its observation is pending: first read the progress program\'s output once on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count, then deliver the exactly-one interrupt_agent call to the exact agent id. '
+    + 'Then perform these three interrupt-flow steps strictly in this order, and never skip ahead: '
+    + 'STEP 1: deliver the child\'s long empty-input write_stdin (the registered 3600000 window) and observe its pending acknowledgment — the child\'s long observation must be open and pending before any later step. '
+    + 'STEP 2: read the progress program\'s output once on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count — the bounded read required before the interrupt. '
+    + 'STEP 3: only then deliver the exactly-one interrupt_agent call carrying the EXACT full agent id copied from the spawn acknowledgement — never a shortened, paraphrased, or guessed target. '
     + 'After the interrupt has settled, read the progress program\'s output one final time on its own handle and include both reads verbatim in your final report. '
     + 'The progress program is unrelated to the Rescue child: do not confuse the two handles, and do not interrupt it.';
 }

@@ -87,6 +87,22 @@ Maximum **13 logical cases** (12 initial labels plus one shared F), NOT a claim 
 > and F additionally requires root approval, not sought). **6 of the 13 logical cases consumed;
 > 7 remain.**
 
+> **F registration (2026-10-18, BEFORE the F launch; root adjudication approved).** F is APPROVED as
+> the plan's ONE shared successor against the established Task 4 cause: on BOTH I0/I1 the Root
+> delivered `interrupt_agent` BEFORE any attributable pending child poll existed (zero completed
+> polls, zero joins, Root resolved immediately after the interrupt) AND the target was a 23-char
+> unclassified value (≠ the 36-char spawn-acknowledgement id) ⇒ `exactTargetMatch: null`,
+> `delivery-target-unmatched`, `orderingBound: false`. ONE named change: amend the fixture's
+> survival-control directive block (rescue-interrupt flow only) to require, explicitly IN ORDER:
+> (1) deliver the child's long empty-input `write_stdin` (the registered 3600000 window) and observe
+> its pending acknowledgment; (2) read the progress program once on its own handle (the §16.4
+> pre-delivery read, fresh mid-run line below the line count); (3) then deliver the exactly-one
+> `interrupt_agent` call carrying the EXACT full agent id copied from the spawn acknowledgement.
+> No other case's instruction changes. The exact launch command (I1's registered flags, fresh
+> mktemp output, `--source-sha` = the commit carrying this registration) is preregistered in report
+> §17.11 BEFORE the launch. ONE launch; zero retries; if the shape repeats, F is spent and Gate D
+> stays blocked with the measured blocker.
+
 M/L/R/B use an initial harmless hold of 420000 ms and a 1200000-ms experiment budget. Candidate inner/outer/continuation request is 3600000 ms; only the inner cap differs between M (omitted) and L/R (3600000). If M proves a different current default, size L/R/B once BEFORE their first launch using `max(420000, ceil(M)+90000)`, with budget `max(1200000, hold+600000)`; preserve matching group duration by reporting an unmatched original M as a calibration, not pretending it is a controlled effect comparison. A further resized M calibration consumes F; no free restarted group. Missing M or insufficient measured headroom leaves cap propagation not-proven; natural completion evidence remains useful but cannot promote the gate.
 
 I0/I1 keep the long-case hold/cap/outer config matched; only the requested empty inner/continuation window changes (60000 for the baseline, 3600000 for I1). Delivery must occur while the original observation is demonstrably pending and before natural completion. N/BG and Root cases start at existing case durations/budgets unless the registered target requires more headroom; choose/freeze those values before first launch, no live resizing to chase success. ST keeps its explicit query deadline separate from observation windows.

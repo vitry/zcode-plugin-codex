@@ -7394,3 +7394,52 @@ reasons exactly `['alias-unresolved', 'pending-window-unconfirmed', 'delivery-ta
   nothing was borrowed across labels. Raw records remain fixture-owned disposable /tmp state; only
   the bounded redacted typed facts above are retained. Production dirs, user configuration and the
   Codex source were READ-ONLY throughout Task 4.
+
+### 17.11 F preregistration (2026-10-18; WRITTEN BEFORE THE F LAUNCH — root-approved cause-directed follow-up, one launch)
+
+**F is APPROVED by the root adjudication as the plan's ONE shared successor (§3: one concrete
+cause-directed follow-up across this entire plan, not one retry per failed case). This subsection is
+written BEFORE the launch.**
+
+**Established cause (from BOTH Task 4 records + §17.10.5):** the Root turn delivered `interrupt_agent`
+BEFORE any attributable pending child poll existed — zero completed original-handle polls
+(`pollWallTimesMs: []` on both records), zero Root joins, the Root resolving immediately after the
+interrupt (elapsed 51332 ms / 57222 ms) — the missed-pending-window shape §16.5 excludes from latency
+baselines — AND the interrupt target was a 23-character UNCLASSIFIED value (≠ the 36-character
+spawn-acknowledgement id carried in `linkage.childThreadId`), giving `exactTargetMatch: null` and the
+oracle's `delivery-target-unmatched`. Attribution additionally requires at least one attributable
+child poll (the evidence reader's child-observation binding fails closed when the child recorded no
+empty-input poll of its original handle), so the missing poll alone unbinds the ordering.
+
+**One named change (preregistered, scoped to the registered rescue-interrupt flow only):** the
+registered rescue-interrupt sequencing directive does not explicitly require establishing the child's
+long observation before interrupting (the fixture's survival-control directive sequences only the
+survival-control read). Amend that directive block to require, explicitly IN ORDER: (1) deliver the
+child's long empty-input `write_stdin` (the registered 3600000 window) and observe its pending
+acknowledgment; (2) read the progress program once on its own handle (the existing §16.4 pre-delivery
+read, fresh mid-run line below the line count); (3) then deliver the exactly-one `interrupt_agent`
+call carrying the EXACT full agent id copied from the spawn acknowledgement. No other case's
+instruction changes; the driver's rescue-interrupt case prompt stays byte-identical (the sequencing
+rides the survival-control directive block, which only survival-control runs receive).
+
+**F implemented command (exact bytes to execute after commit 1; `shell_plugin_sha` = the HEAD commit
+this preregistration ships in, stamped concretely at launch):**
+
+```bash
+shell_codex_binary=/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+shell_case_output=$(mktemp -d /tmp/shell-wait-release-f.XXXXXX)
+ZCODE_SHELL_WAIT_E2E=1 CODEX_BINARY="$shell_codex_binary" \
+  node tools/shell-wait-probe/driver.mjs --case rescue-interrupt \
+  --survival-control-selector progress-terminal --poll-ms 3600000 \
+  --codex "$shell_codex_binary" --source-sha "$shell_plugin_sha" \
+  --output "$shell_case_output" --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --budget-ms 1200000 --cap-ms 3600000 \
+  --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1
+```
+
+I1's registered flags exactly; ONE launch; zero retries; no other label. Adjudication will repeat
+§17.10.2's four-outcome discipline (the §16.5 60000-ms bound, `evaluateSurvivalControl`,
+`evaluateNativeInterruptionSettlement`, `evaluateChildSettlementLayers`). If the shape repeats — the
+Root still interrupts before a pending poll — F is spent, Gate D stays blocked with the measured
+blocker, and no further launch follows.
