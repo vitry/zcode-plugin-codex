@@ -8779,6 +8779,122 @@ process.exit(result.status ?? 1);
       assert.equal(postMarkerBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000);
     });
 
+    test('the cleanup boundary and cancellation timestamp persist through BOTH projections for offline attribution (overall review fix 3)', async (t) => {
+      // Codex overall review P2 fix 3: for interruption runs that initiate
+      // cleanup, `cleanup.cleanupBoundaryAtMs` DECIDES whether a cancellation
+      // receives native-settlement credit — but the mapper dropped it and
+      // buildCaseRecord never saved it, so after fixture disposal the
+      // retained record could not independently re-verify or reproduce the
+      // attribution. Both projections now carry the boundary and the
+      // cancellation timestamp (schema-additive: each key rides ONLY when its
+      // fact exists — legacy records stay byte-identical), so offline
+      // adjudication reproduces the verdict from the persisted facts alone.
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const mapWith = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      const budgetPreBoundary = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+        timeline: null,
+      };
+      // (a)+(c) The typed projection carries both facts…
+      const facts = mapWith(budgetPreBoundary);
+      assert.equal(facts.interrupt.cleanupBoundaryAtMs, Date.parse('2026-10-06T00:01:00.000Z'), 'the typed facts carry the recorded cleanup boundary');
+      assert.equal(facts.interrupt.cancelledAtMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the typed facts carry the cancellation timestamp');
+      // …and the RETAINED record mirrors them (the projections agree).
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-boundary-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = {
+        workspace: '/private/tmp/i3-ws', codexHome: '/private/tmp/i3-home',
+        installedRoot: '/private/tmp/i3-installed', env: { HOME: '/private/tmp/i3-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persistCase = { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root };
+      const persisted = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.cleanupBoundaryAtMs, facts.interrupt.cleanupBoundaryAtMs, 'the record mirrors the typed cleanup boundary');
+      assert.equal(persisted.interrupt.cancelledAtMs, facts.interrupt.cancelledAtMs, 'the record mirrors the typed cancellation timestamp');
+      // OFFLINE RE-ADJUDICATION: the persisted boundary vs the persisted
+      // cancellation timestamp through the SAME strictly-before comparison
+      // reproduces the persisted verdict — independently of the disposed
+      // fixture and the raw rollouts.
+      const offlineCredited = /** @type {number} */ (persisted.interrupt.cancelledAtMs) < /** @type {number} */ (persisted.interrupt.cleanupBoundaryAtMs);
+      assert.equal(offlineCredited, true, 'the persisted marker precedes the persisted boundary');
+      assert.equal(persisted.interrupt.settled === true && persisted.interrupt.settledBasis === 'native-cancellation-settlement-after-delivery', offlineCredited,
+        'the offline comparison reproduces the credited verdict');
+      assert.equal(persisted.interrupt.deliveryToSettlementMs, 5_000);
+      // The unattributed side reproduces too: a marker AT the persisted
+      // boundary maps to settled null / the cleanup basis, and the persisted
+      // facts alone show why (the comparison fails).
+      const atBoundaryFacts = mapWith({ ...budgetPreBoundary, cleanup: { ...budgetPreBoundary.cleanup, cleanupBoundaryAtMs: Date.parse('2026-10-06T00:00:12.000Z') } });
+      const persistedAtBoundary = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => atBoundaryFacts },
+      );
+      assert.equal(/** @type {number} */ (persistedAtBoundary.interrupt.cancelledAtMs) < /** @type {number} */ (persistedAtBoundary.interrupt.cleanupBoundaryAtMs), false);
+      assert.equal(persistedAtBoundary.interrupt.settled, null);
+      assert.equal(persistedAtBoundary.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(persistedAtBoundary.interrupt.settled === true, /** @type {number} */ (persistedAtBoundary.interrupt.cancelledAtMs) < /** @type {number} */ (persistedAtBoundary.interrupt.cleanupBoundaryAtMs),
+        'the offline comparison reproduces the unattributed verdict');
+      // (b) Legacy/no-cleanup projections gain NO key: a run with no cleanup
+      // boundary and no cancellation marker keeps the pinned schema in BOTH
+      // projections.
+      const completedRollouts = markerRollouts.map((events, rolloutIndex) => rolloutIndex === 1
+        ? events.map((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'function_call_output'
+          ? fnOutput('poll-1', completedOutputBody({ output: 'done', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:12.000Z')
+          : event)
+        : events);
+      const noCleanupNoMarkerFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, completedRollouts, [], 'node launcher',
+      );
+      assert.equal(Object.hasOwn(noCleanupNoMarkerFacts.interrupt, 'cleanupBoundaryAtMs'), false, 'a run with no cleanup boundary gains no key');
+      assert.equal(Object.hasOwn(noCleanupNoMarkerFacts.interrupt, 'cancelledAtMs'), false, 'a run with no cancellation marker gains no key');
+      const legacyPersisted = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => noCleanupNoMarkerFacts },
+      );
+      assert.equal(Object.hasOwn(legacyPersisted.interrupt, 'cleanupBoundaryAtMs'), false, 'the legacy record gains no boundary key');
+      assert.equal(Object.hasOwn(legacyPersisted.interrupt, 'cancelledAtMs'), false, 'the legacy record gains no cancellation-timestamp key');
+      // A NO-CLEANUP run WITH a genuine cancellation carries the timestamp
+      // but still no boundary key — exactly the evidence its credit rests on.
+      const nativeNoCleanupFacts = mapWith({
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      });
+      assert.equal(Object.hasOwn(nativeNoCleanupFacts.interrupt, 'cleanupBoundaryAtMs'), false);
+      assert.equal(nativeNoCleanupFacts.interrupt.cancelledAtMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      assert.equal(nativeNoCleanupFacts.interrupt.settled, true, 'the no-cleanup native credit is unchanged');
+    });
+
     test('cancellation settlement requires the CONFIRMED pending window (codex review round 8)', () => {
       // Interrupt at 00:00:07, the poll STARTS at 00:00:09 (AFTER the
       // interrupt), cancellation at 00:00:12: the poll did not exist when the

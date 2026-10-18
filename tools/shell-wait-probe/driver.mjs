@@ -1006,6 +1006,12 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       deliveryToSettlementMs: liveFacts.interrupt?.deliveryToSettlementMs ?? null,
       timingBasis: liveFacts.interrupt?.timingBasis ?? null,
       missingPrerequisite: liveFacts.interrupt?.missingPrerequisite ?? null,
+      // Codex overall review fix 3: the cleanup boundary and cancellation
+      // timestamp behind the settlement attribution persist ONLY when the
+      // live facts carried them — legacy records stay byte-identical — so
+      // the boundary-vs-marker comparison is re-verifiable offline.
+      ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
+      ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
     },
     // The §16.4 I1 survival-control provenance: the record carries the closed
     // selector ONLY when it was requested, the projected §16.4 whitelist
@@ -3468,6 +3474,16 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       + '(investigated owning-session surface: interrupt_agent (V2, enabled by the live features.multi_agent_v2 configuration) '
       + 'and legacy send_input {interrupt:true} (V1); the app-server turn/interrupt RPC is not reachable from the exec session process)'
       + (held?.budgetExpired === true ? '; the probe budget expired before delivery (budget cleanup is never native interruption)' : '');
+  // Codex overall review fix 3: the cleanup boundary and the cancellation
+  // timestamp behind the settlement attribution persist through BOTH
+  // projections (the typed live facts and the retained record) so offline
+  // adjudication can independently re-verify the verdict after fixture
+  // disposal. Schema-additive: each key rides ONLY when its fact exists —
+  // legacy records stay byte-identical.
+  const interruptCleanupBoundaryAtMs = typeof held?.cleanup?.cleanupBoundaryAtMs === 'number' && Number.isFinite(held.cleanup.cleanupBoundaryAtMs)
+    ? held.cleanup.cleanupBoundaryAtMs
+    : null;
+  const interruptCancelledAtMs = interruptInteraction.cancelledAfterCall.atMs;
   const interruptFacts = {
     requested: input.case === 'rescue-interrupt',
     attempted: interruptInteraction.attempted,
@@ -3489,6 +3505,8 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     deliveryToSettlementMs: interruptDeliveryToSettlementMs,
     timingBasis: interruptTimingBasis,
     missingPrerequisite: interruptMissingPrerequisite,
+    ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
+    ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
   };
   if (rolloutsFailureReason !== null) {
     inconclusive = { reason: `rollouts-unavailable: rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
@@ -3832,7 +3850,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, cleanupBoundaryAtMs?: number, cancelledAtMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,
