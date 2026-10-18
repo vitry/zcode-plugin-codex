@@ -7842,3 +7842,241 @@ observations and RV does not.
   remain fixture-owned disposable /tmp state; only the bounded redacted typed facts above are
   retained. Production dirs, user configuration and the Codex source were READ-ONLY throughout
   Task 5.
+
+## 18. 2026-10-18 release-qualification final verification and scoped adoption decision (Task 6)
+
+Task 6 of the 2026-10-18 plan, executed 2026-10-18 in worktree
+`.worktrees/rescue-shell-wait-release-qualification` (branch `docs/rescue-shell-wait-release-qualification`)
+at HEAD `57c68a3802c328b27a6064e4b9098cbf213dc316`. OFFLINE throughout: zero model turns, zero host
+launches, zero label consumption; every gate re-run on the exact final bytes. This section is ADDITIVE —
+§1–§17 stand byte-unchanged.
+
+### 18.1 Final pins (re-verified 2026-10-18 at Task 6; nothing trusted forward)
+
+- **Plugin worktree**: HEAD `57c68a3802c328b27a6064e4b9098cbf213dc316`. Commit lineage from the merged
+  base `5effa1704eed2a646bb326bd5e1b2cf36a2a764b` (PR #69): `7456633` (Task 1 docs) → `d82a4c5`
+  (Task 2 research seams) → `e6f0839` (Task 3 docs; the I0/I1 driving commit) → `2658570` (Task 4
+  docs) → `013642e` (F preregistration + amended directive) → `22f1a6d` (F outcome docs) → `080832e`
+  (post-F directive correction) → `57c68a3` (Task 5 docs). Each live sub-part's records carry its own
+  driving commit as `provenance.sourceSha` (§17.1 `d82a4c5…`; §17.10 `e6f0839…`; §17.12 `013642e…`;
+  §17.14 `080832e…`), `sourcesChangedDuringRun: false` everywhere.
+- **Binary**: `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+  `codex --version` = `codex-cli 0.163.0`, SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — re-verified unchanged at Task 6;
+  no auto-update ever crossed a version boundary during the campaign.
+- **Codex source** `/Users/zhangzikai/Workspace/Codes/github/codex`: HEAD
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --short` empty — re-verified unchanged at
+  Task 6. As always, NO source/binary mapping is implied.
+- **Model**: `gpt-6.1-sol` was REQUESTED on every live run through the validated `--model` seam; the
+  effective host/Child model metadata stayed `null`/never-inferred on every record (the model contract).
+  Catalog-side renumbering drift was recorded honestly during the campaign (priority 0 at §15.5/§16.1 →
+  1 at §17.1/§17.10 → 0 at the Task 5 pin), always the same 9-entry/7-visible entry set and the same
+  rank-1 model — a catalog renumber, never a selection change.
+- **Observer digest**: `5f4bb770ec8992f2b435d8a49f3a97b8c18fed29648b81c5d2bec3c9da19a94b` (the v3
+  digest binding evidence.mjs ⊥ shape-diagnostic.mjs ⊥ release-qualification.mjs ⊥ driver.mjs
+  module-init bytes) — IDENTICAL on all twelve live records; both diagnostic flags on every run.
+- **The twelve record directories** (fixture-owned disposable /tmp raw state, one per spent label):
+  M `/tmp/shell-wait-release-m.pbZqdv/` (rescue-long.record.json, `executedAt` 2026-10-18T07:27:05.087Z);
+  L `/tmp/shell-wait-release-l.4xFVtN/` (rescue-long.record.json, 07:43:30.521Z); R
+  `/tmp/shell-wait-release-r.gEyH64/` (rescue-repeat.record.json, 07:59:16.696Z); B
+  `/tmp/shell-wait-release-b.76XOTO/` (rescue-baseline.record.json, 08:08:09.848Z); I0
+  `/tmp/shell-wait-release-i0.mTALuD/` (rescue-interrupt.record.json, 08:48:34.410Z); I1
+  `/tmp/shell-wait-release-i1.r6Bbrs/` (rescue-interrupt.record.json, 09:03:41.812Z); F
+  `/tmp/shell-wait-release-f.FjHtB4/` (rescue-interrupt.record.json, 09:36:22.462Z); N
+  `/tmp/shell-wait-release-n.SWBEXr/` (rescue-noise.record.json); BG
+  `/tmp/shell-wait-release-bg.L4bvXN/` (background.record.json); RV
+  `/tmp/shell-wait-release-rv.JWlxV1/` (review-wait.record.json); AR
+  `/tmp/shell-wait-release-ar.I0vZCO/` (adversarial-review-wait.record.json); ST
+  `/tmp/shell-wait-release-st.Ms76RA/` (status-wait.record.json). No launch wall-clock exists in any
+  record (only the driver's run-end composition stamps above).
+- **Instruction pins**: candidate config-default paragraph normalized hashes `2ea76cf0…`/`5800e3ab…`
+  byte-identical across L/R/I1/F/N/BG (I0 is the same candidate @60000: `6114d403…`/`492a59b4…`;
+  M the same candidate @3600000); B/RV/AR/ST carried the byte-identical CANONICAL paragraph
+  (`canonicalNamedRoleSha256` `38075655…`, `canonicalGenericMessageSha256` `b4081f7f…`,
+  `commandSkillVariants` before==after, `differences: []`). Survival-control script (I1) SHA-256
+  `aa8b0a6c3733e8ad0719897e31425c6cb8325b3662b47bea2fd9305d02da3e3c` (30 lines @2000 ms); the post-F
+  corrected design (60 lines, control-clock readiness ≈ 80 s floor) is registered for the record at
+  §16.4 with NO further launch.
+- **Gate predicates (the measured values)**: M = 300004 ms (nonterminal original-handle poll, reason
+  null, §17.2); L discriminators: decisive-poll-start remaining 388336 ≥ M+30000 = 330004 (headroom
+  +88332), attributable natural observation 388400 > 300004 (§17.3); R independently: 388313 ≥ 330004
+  (headroom +88309), 388400 > 300004, settings identical to L across all 16 compared fields (§17.4);
+  B cadence: 7 inner observations vs candidate 1 each (L and R), `reduced` on both comparisons, root
+  joins 7 vs 1 recorded count-only (§17.6). Interrupt predicates (all three interrupt runs): exact
+  target, bound ordering and a confirmed pending window — NOT established on any run (I0/I1: delivered
+  pre-poll with unclassified 23-char targets, `exactTargetMatch: null`, `orderingBound: false`; F: the
+  child poll-start WAS observed at 72069 ms but the delivery itself is unobservable, `attempted: null`);
+  responsiveness bound = attributable settlement within 60000 ms of delivery (§16.5) — never applicable,
+  `deliveryToSettlementMs: null` everywhere.
+
+### 18.2 Final ledger — all 13 logical cases (plan §3; zero retries anywhere)
+
+| Label | Status | One-line outcome |
+| --- | --- | --- |
+| M | SPENT | Unraised inner cap measured from a NONTERMINAL original poll: **M = 300004 ms**, reason null; sizing rule left the registered group intact (§17.2) |
+| L | SPENT | Raised arm discriminates: remaining 388336 ≥ 330004, observation 388400 > M; exact terminal linkage honestly unestablished (§17.3) |
+| R | SPENT | Fresh repeat discriminates independently: 388313 ≥ 330004, 388400 > M, settings identical; linkage unestablished (§17.4) |
+| B | SPENT (conditional: no comparable retained control) | Canonical 60000 instruction baseline at matched cap/exec-default/worker/budget/model: 7 observations vs candidate 1 → cadence `reduced` on both arms; joins 7 vs 1 count-only (§17.6) |
+| I0 | SPENT (conditional: no measured native baseline existed, §16.5) | Interrupt delivered BEFORE any attributable pending poll (zero polls/joins, unclassified 23-char target) — NO latency baseline obtained (§17.10.1) |
+| I1 | SPENT | Same pre-poll shape; survival control POSITIVELY active at delivery (pre-delivery read line 13/30 ordered before the call) but no-collateral NOT qualified (`delivery-bound-unestablished`); every Gate D layer not established (§17.10.2) |
+| F | SPENT (the ONE root-approved cause-directed successor, §17.11) | THIRD shape: child poll-start OBSERVED at 72069 ms, but an 80-byte unclassified script cell failed evidence collection closed — delivery unobservable (`attempted: null`); spent, no further launch (§17.12) |
+| N | SPENT | Noise compatible, single run: 4096-byte stderr + terminal progress caused NO extra re-entry (1 observation / 0 continuations), natural completion ~98.4 s; terminal bytes unestablished; sidecar opportunity existed and went unused — latency NOT MEASURABLE (§17.14.1) |
+| BG | SPENT | Explicit `--background` NOT PROVEN: fail-closed on a 243-byte unclassified `exec_command` cell; Root acknowledgement recorded as acknowledgement ONLY; zero joins NOT verifiably established (null); budget-cleanup kept a cleanup fact (§17.14.2) |
+| RV | SPENT (conditional: no matching retained evidence) | Review NOT qualified: the §13.7-traced no-send early exit reconfirmed at this pin under the candidate transport (launch 1 / send 0 / zero polls, host exit 0 at 16167 ms) — a production-scope question, untouched (§17.14.3) |
+| AR | SPENT (conditional: same grounds) | Adversarial Review compatible, single run: launch 1 / send 1, two canonical 60000-window polls on the original handle, natural completion, rendered-markers basis passed (§17.14.3) |
+| ST | SPENT (conditional: same grounds) | Status compatible, single run: owned same-session launch/query, exact job id both sides, explicit 240000-ms deadline separate from the 3600000 window, wait ended inside the deadline with NO cancel/stop call (§17.14.3) |
+| G | NOT SPENT (preserved unavailable) | Generic route structurally unreachable at the current pins (`dffa0deb` schema + production preflight); never forced, no fallback exercised (§17.14.4) |
+
+**12 of the 13 logical cases consumed; 1 remains (G's preserved unavailable label).** Old campaign
+quotas remain closed; nothing was borrowed across labels; every driver exited 0 with empty stderr.
+
+### 18.3 Final gates on the exact changed source (all executed 2026-10-18 at HEAD `57c68a3…`; every count verbatim)
+
+| Gate command | Result |
+| --- | --- |
+| `npm run test:shell-research` | **688 tests / 61 suites / 688 pass / 0 fail / 0 skipped, exit 0** |
+| `node --test tests/test-selection.test.mjs` | **6/6 pass / 0 fail / 0 skipped, exit 0** |
+| `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | **417/417 pass / 0 fail / 0 skipped, exit 0** |
+| `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | **126/126 pass / 0 fail / 0 skipped, exit 0** |
+| `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | **213/213 pass / 0 fail / 0 skipped, exit 0** |
+| `npm run lint` | exit 0, no findings |
+| `npm run typecheck` | exit 0 |
+| `node scripts/check-line-endings.mjs` | `LF line endings verified in 540 tracked files.`, exit 0 |
+| `git diff --check` | exit 0, no output |
+| `git diff 5effa1704eed2a646bb326bd5e1b2cf36a2a764b --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/` | **EMPTY** (exit 0, no output) — the prohibited production-path diff is empty at the final HEAD |
+| **`npm test`, pass 1 — the working tree itself** | **FAILED, exit 1 — recorded, not retried:** routine suite **3397 tests / 3393 pass / 1 fail / 3 skipped**, and the `&&` short-circuit meant `tests/integration/marketplace-snapshot-build.mjs` never ran. The ONE failure is `isolated Codex marketplace lists and installs the eight-skill snapshot` (`tests/integration/marketplace-install.test.mjs:130`) with `Error: Marketplace source tree must be clean, including tracked and untracked files.` (`verifyCleanExactSource`, `scripts/build-marketplace-snapshot.mjs:215`) — the worktree's three PRE-EXISTING unowned untracked scratch files (`findings.md`, `progress.md`, `task_plan.md`) trip the clean-source check. The 3 skips are the documented opt-in-gated authenticated E2E tests (`codex-skills-unqualified` ×2 — `ZCODE_CODEX_SKILLS_E2E=1`/`ZCODE_CODEX_RESCUE_E2E=1`; `real-zcode-unqualified` — `ZCODE_REAL_E2E=1`), the standing design, not new omissions. The scratch files were NOT staged, deleted or stashed. |
+| **`npm test`, pass 2 — first verification copy (TWO environment artifacts of the copy itself; recorded, causes established)** | **FAILED, exit 1:** **3397 tests / 3392 pass / 2 fail / 3 skipped**. Both failures were caused by the copy construction, not the source bytes: (a) the hooks test `owned parent turns receive one task-free launcher descriptor from this plugin instance only` (`tests/hooks.test.mjs:459`) asserts the descriptor context matches NO identifier fragment including `/task/i` — and this copy's own absolute path (`/tmp/task6-clean-verify/src/skills/rescue/launcher.mjs`, the descriptor legitimately carries the launcher path) contains the substring `task`, so the guard tripped; (b) the same marketplace clean-source error fired again because the `node_modules` SYMLINK is not matched by `.gitignore`'s directory-only rule `node_modules/` (the clone's `git status --untracked-files=all` showed `?? node_modules`). The same hooks test PASSED in pass 1 — confirming the path artifact, not a content defect. |
+| **`npm test`, pass 3 — corrected verification copy: THE GATE RESULT on the final implementation bytes** | **PASS, exit 0, on the exact bytes of HEAD `57c68a3…`:** routine suite (`node tools/run-test-suite.mjs routine`) **3397 tests / 3394 pass / 0 fail / 3 skipped** — the same three documented opt-in-gated authenticated E2E skips as pass 1 — and the previously short-circuited second command `node --test tests/integration/marketplace-snapshot-build.mjs` then ran: **2 tests / 2 pass / 0 fail / 0 skipped**. Combined `npm test`: **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled, exit 0.** The pass-2 hooks failure passed here (confirming the path artifact), and both marketplace tests passed against the clean exact source. |
+
+The pass-1 working-tree interference is exactly the unowned-dirt case the plan's Task 6 anticipates;
+passes 2 and 3 are the plan's clean exact verification copy, each pass a NAMED experiment with its
+established cause and one named change — nothing was hidden: pass 3 differs from pass 2 only by (i) a
+copy path containing none of the test suite's guarded identifier substrings (`task`, `job`, `prompt`,
+`owner`, `session_id`, `turn_id`) and (ii) `node_modules` COPIED as a real directory instead of
+symlinked (the plan allows either; the copy satisfies the directory-only ignore rule, so the
+clean-source check sees the intended state). The copy is a fresh `git clone` detached at the exact
+final HEAD `57c68a3802c328b27a6064e4b9098cbf213dc316` with a completely clean
+`git status --porcelain=v1 --untracked-files=all`, proven byte-exact against the worktree by
+identical `git archive HEAD` SHA-256 digests
+(`ea13e24f24af0d1774e2a432498397ebc1ff1dfbd2acfd11c2d15894ac635643` on both sides). A bare
+`git archive` export was considered per the plan text and rejected as unfit for this suite: the
+export carries no `.git`, and the routine suite's marketplace integration tests clone/verify the
+source repository itself, so an export would have failed on the copy method, not on the source. The
+clone preserves `.git` and the exact bytes, so the gate runs on an exact copy of the selected
+changes. All three passes stand recorded above; the gate verdict is pass 3's.
+Line-endings growth from the drafting baseline (538 → 540 files) is Task 1/Task 2's added research
+and test files. No gate was waived.
+
+### 18.4 Spec mapping — S1–S7 and Q1–Q6 final statuses
+
+Labels used: `observed` = installed-observed on this campaign's records; `fixture-tested` = offline
+regressions/oracles on the final bytes; `source-confirmed` = pinned-source read; `not-proven` = honestly
+unestablished (never zero/success).
+
+| Spec item | Final status | Basis |
+| --- | --- | --- |
+| S1 preparation/binding authority, exact atomic binding | **observed — Gate A scoped to 7 of 12 records** | Gate A PASS on the records whose facts support it (M/L/R/B/I0/I1/N): actual route `named`, one mapped launch + one mapped send, `originalHandleChecked: true`, `launcherDescriptorPublished`/`sessionEstablished` in-record (§17.7 for M/L/R/B; §17.10, §17.14.1 for I0/I1/N); F/BG fail-closed NON-adjudicable for Gate A (`route.actual: null`, linkage/launch/send/handle facts all null — §17.12, §17.14.2; no claim in either direction); RV/AR/ST are root-family (`mode: "root"` — the route-`named`/launch/send/handle conjuncts are not applicable to that surface; RV carried launch 1 / send 0 — §17.14.3); production binding/preparation contract suites green on the final bytes (§18.3) |
+| S2 one Companion, original handle, empty-input polls, no second inner poll while pending | **observed** | NO second inner poll while one is pending: zero overlapping polls, `pendingInnerAtEnd: false`, `chars: ""` on every poll; M ran two SEQUENTIAL polls `[300000, 85100]` (cap-bounded, then the terminal observation) — disclosed as such, never claimed as one (§17.2; §17.3–17.4, §17.14.1) |
+| S3 byte-for-byte terminal public stdout, exit/error/choice semantics | **SPLIT — contract-tested; exact-bytes NOT PROVEN** | Result/choice/error/queue contracts green (§18.3); exact terminal byte/exit linkage unestablished on EVERY record (`stdout-stream-attribution-unavailable`, merged streams; §17.8 item 1); legacy sentinel facts retained legacy-scope only |
+| S4 placement matrix; Review enqueue-only; Status observation-only | **MIXED — offline PASS; explicit `--background` live NOT PROVEN** | Placement/queue regressions 243/243 (§17.14.6); BG fail-closed on an unclassified cell (§17.14.2); ST kept the query deadline separate with NO cancellation; RV untouched (no-send early exit is production scope) |
+| S5 interruption/loss/timeouts/100-hour ceiling; unrelated work survives | **NOT PROVEN (interruption); contracts preserved** | Gate D BLOCKED at every layer (§18.5); `nativeInterruptionClaimed: false` everywhere — budget cleanup never labelled interruption; no ceiling/detector change (prohibited diff EMPTY); reconciliation/loss/ceiling suites green (§18.3) |
+| S6 named/generic parity, no fallback weakening | **named observed; generic source-confirmed UNAVAILABLE** | Route `named` on every record; generic structurally unreachable (schema exposes `agent_type` in every preflight-ready state, §17.14.4); G never forced; named/generic paragraph parity fixture-tested |
+| S7 production isolation, no config/cache/source changes | **verified** | Prohibited-path diff EMPTY at `57c68a3` (§18.3); production dirs/user config/Codex source read-only throughout; fixtures temporary, disposed, zero cleanup errors on all twelve records |
+| Q1 which installed path launches the Child; which config layers reach it | **observed + source-confirmed (mechanism); child-side runtime propagation behavioral only** | Named managed route every record; config-clone path cited at `dffa0deb` (§16.2); cap key `capVerified` + exec-default argv override in-record; §17.8 item 2's boundary stands — no runtime probe observed the child-side effective cap |
+| Q2 can the Child receive the longer observation (named + generic) | **named observed; generic not-proven/unavailable** | L/R single observations of 388400 ms inside a 3600000 window with `capVerified` (§17.3–17.4); generic structurally unreachable (§17.14.4) |
+| Q3 reduced re-entry, discriminator, fresh repeat | **measured reduced + discriminated; repeat `inconclusive` fail-closed** | 1 vs 7 re-entries, `reduced` on both arms (§17.6); L and R each discriminate with headrooms +88332/+88309 (§17.3–17.5); the exported repeat verdict stays `inconclusive` solely on exact-terminal linkage |
+| Q4 noise; native interruption; sidecar | **noise observed compatible; interruption NOT PROVEN; sidecar not measurable** | N: no extra re-entry, no early end (§17.14.1); I0/I1/F never produced an attributable delivery (§17.10–17.12); no Status intent occurred, the one between-polls opportunity went unused — lack of opportunity, never zero |
+| Q5 Root-owned Review / Adversarial Review / Status eligibility | **AR + ST observed compatible (single runs); RV NOT qualified** | §17.14.3: canonical paragraphs verified in-record, host-config transport; RV's no-send early exit reconfirmed (not a shell-waiting failure; production untouched) |
+| Q6 smallest supported deployment change and surfaces | **answered as the scoped decision below** | The paragraph half is a per-Role template artifact; the numeric outer-default half is host-global host config with NO supported Role-scoped override, reaching every code-mode consumer (§17.14.5) |
+
+### 18.5 Gate A–E final statuses
+
+- **Gate A (actual route / authority): PASS — scoped to the records whose facts support it
+  (M/L/R/B/I0/I1/N; 7 of 12).** On those records: actual route `named`, distinct child/parent thread
+  linkage, exactly one mapped launch/send, `originalHandleChecked: true`, zero foreign-handle/overlapping
+  polls, private preparation through the sanctioned launcher path, current ownership in-record
+  (§17.7 for M/L/R/B; §17.10, §17.14.1 for I0/I1/N). **F and BG are fail-closed NON-ADJUDICABLE for
+  Gate A**: their evidence collection did not complete, so `route.actual: null` and the
+  linkage/launch/send/handle facts are all null (§17.12, §17.14.2) — no Gate A claim is made for them
+  in either direction. **RV/AR/ST are the root family** (`mode: "root"`): Gate A's rescue-Child
+  route-`named`/launch-send/handle conjuncts are not applicable to that surface (RV carried launch 1 /
+  send 0), and those commands' standing rests on §17.14.3's own per-command bases, never on Gate A's
+  Child-route clause.
+- **Gate B (long discriminator / repeat): NOT FULLY PASSED — fail-closed `inconclusive`.** Every
+  discriminator clause passed per arm (M nonterminal-measured; L and R each ≥ M+30000 remaining with
+  attributable natural observations beyond M, on proven-identical settings), but the exact-terminal
+  linkage clause is UNESTABLISHED on every record (merged-stream limitation), so the exported repeat
+  verdict is `inconclusive` and the gate's no-unknown-evidence clause fails closed (§17.5, §17.7,
+  §17.8 item 1).
+- **Gate C (reduced intervention): PASS on the measured counts** — comparable canonical 60000 baseline
+  B under matched cap/exec-default/worker/budget/model; fewer measured observation re-entries under the
+  candidate (1 vs 7, oracle `reduced` both arms); Root joins counted separately; no token or
+  whole-job-zero claim (§17.6–17.7).
+- **Gate D (native responsiveness / settlement): BLOCKED at every layer.** I0/I1 delivered native
+  interrupts BEFORE any attributable pending child poll existed, with unclassified 23-char targets
+  (`exactTargetMatch: null`, `orderingBound: false`); the ONE approved successor F changed the turn
+  shape (child poll-start observed at 72069 ms) but its evidence collection failed closed on an 80-byte
+  unclassified script cell, leaving delivery unobservable (`attempted: null`) and no-collateral
+  unqualified (`control-not-root-owned`); delivery attribution, turn/cell/poll settlement, Companion
+  settlement, durable job/guard obligations and no-collateral survival are ALL unestablished (§17.10,
+  §17.12). The registered directive was corrected for the record at `080832e` (§16.4 revision) with NO
+  further launch — the interrupt budget (I1 + F) is spent and Gate D's remaining path needs a new
+  established cause outside this plan's single-F allowance.
+- **Gate E (preserved behavior / eligibility): MIXED.** Controlled negatives and ceilings preserved
+  offline (243/243 placement/queue set; full suites §18.3); N compatible (noise); AR compatible;
+  ST compatible (single runs each); RV NOT qualified (known no-send early exit — production scope);
+  BG NOT PROVEN (fail-closed unclassified cell); exact terminal bytes unestablished EVERYWHERE; generic
+  route structurally unreachable (G preserved, never forced). The unqualified surfaces cannot be hidden
+  behind a blanket recommendation (§17.14.5).
+
+### 18.6 Scoped adoption decision: **do-not-adopt-yet**
+
+**The candidate long-wait policy is NOT adopted — not into any production default, user configuration,
+canonical Skill, Role template or marketplace snapshot — by this branch, this report, or the research
+PR merge.** Human adoption and a separately authorized production change remain required for anything
+to change; no production default was changed by executing this plan.
+
+The three measured blockers, named precisely:
+
+1. **Gate D is mandatory for an affirmative managed-Rescue recommendation and is BLOCKED at every
+   layer.** Native interruption could not be attributed on any of the three interrupt runs: the
+   unknown-call/unclassified-cell fail-closed retention design (23-char suppressed targets on I0/I1;
+   the 80-byte unclassified script cell on F) leaves delivery observability — and therefore
+   responsiveness, settlement and no-collateral qualification — unestablishable on this evidence path.
+2. **Gate B's exact-output clause is unproven.** The pinned unified-exec serialization merges
+   stdout/stderr, so exact terminal byte/exit linkage is unestablished on every record and the repeat
+   verdict is `inconclusive` fail-closed — regardless of the passed discriminators.
+3. **RV (Review) is unqualified and blocks a BROAD shared-default deployment.** The numeric
+   outer-default half of the candidate is host-global host config with no supported Role-scoped
+   override: raising it reaches Root-owned Review (whose no-send early exit is a production-scope
+   question, untouched here) and every other code-mode consumer. Only the waiting-PARAGRAPH half is
+   isolable (a per-Role template artifact with explicit per-call windows), and even that surface
+   inherits blockers 1–2 for the managed-Rescue recommendation itself.
+
+Smallest scoped next actions (each a bounded follow-up requiring its own authorization — NOT a new
+generic feasibility campaign, and nothing here implies the research PR merge enables production):
+
+- **Native-interruption delivery observability**: close the unknown-call/unclassified-cell evidence
+  gap (a bounded structural admission for the observed cell shapes, preserving the privacy/retention
+  design) so a future authorized interrupt run can establish exact delivery attribution — the one gap
+  that blocked every Gate D layer.
+- **An exact-output stream-attribution seam**: an attributable stdout-only capture (or equivalent
+  supported mechanism) so Gate B's exact-terminal linkage clause can be measured instead of failing
+  closed on merged streams.
+- **The Review no-send cause as a separate production scope**: RV's early exit predates this campaign,
+  is not a shell-waiting failure, and needs separate implementation authority — it is recorded, not
+  fixed here.
+
+If and only if those produce the missing evidence under fresh authorization, the decision can be
+revisited per surface (the §17.14.5 blast-radius matrix is the scope map); nothing in this report
+lowers any §8 gate or carries a blanket family inference.
+
+### 18.7 Raw-data note
+
+All twelve raw record directories remain fixture-owned disposable /tmp state; nothing was copied into
+the repository. Only bounded, redacted, typed decisive facts are persisted in §16–§18: unclassified
+target bytes and unclassified cell contents are WITHHELD by the pinned scrubber (structural
+fingerprints and SHA-256 digests retained instead), and every retention omission is explicitly marked
+(`suppressed: true`, `content withheld`). No private preparation, credential, auth or user
+configuration data was persisted anywhere; production directories, user configuration and the Codex
+source were read-only throughout the entire campaign.
