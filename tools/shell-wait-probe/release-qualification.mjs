@@ -330,19 +330,27 @@ export function evaluateExactTerminalLinkage(input) {
  * Build the exact production-rendered expectation for the rescue fixture
  * result: the REAL production renderer is the single source of truth — the
  * returned framing is the renderer's own output for the succeeded terminal
- * view (result line plus the Resumability Indicator when the job carries a
- * definite resumable fact), never a transcription.
+ * view (result line plus the Resumability Indicator and its conditional
+ * resume hint), never a transcription. Codex round-4 review fix: the
+ * indicator line is part of the rendered view whenever the indicator is
+ * definite, so an expectation WITHOUT it is PARTIAL — it false-rejects valid
+ * output as extra-output and false-accepts framing-less output. An
+ * UNESTABLISHED resumability fact (null/undefined — the indicator is derived
+ * at projection time from the durable record, the viewing turn's permission
+ * mode and binding-currency evidence, and is never persisted) therefore
+ * derives NO expectation: the caller leaves the exact equality unestablished
+ * instead of comparing against a partial framing.
  * @param {{ result: string, resumable?: boolean | null }} input
- * @returns {{ output: string, exitCode: number }}
+ * @returns {{ output: string, exitCode: number } | null} null when the
+ *   resumability fact is unestablished
  */
 export function exactRescueRenderedExpectation(input) {
   if (!input || typeof input !== 'object' || typeof input.result !== 'string' || input.result.length === 0
     || input.result.length > 4096 || input.resumable !== undefined && input.resumable !== null && typeof input.resumable !== 'boolean') {
     throw invalidQualificationInput('the rescue expectation needs a bounded nonempty result string and an optional boolean resumable fact.');
   }
-  const view = input.resumable === true || input.resumable === false
-    ? { result: input.result, job: { resumable: input.resumable } }
-    : { result: input.result };
+  if (input.resumable !== true && input.resumable !== false) return null;
+  const view = { result: input.result, job: { resumable: input.resumable } };
   return { output: renderOutput(view), exitCode: 0 };
 }
 

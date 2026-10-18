@@ -50,6 +50,23 @@ export const PUBLIC_RESULT_SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
 const CAP_CONFIGURATION_KEY = 'background_terminal_max_timeout';
 
 /**
+ * The fixture's DECLARED resumability fact for its successful Rescue result
+ * view (codex round-4 review fix). Verified production shape (READ-ONLY
+ * trace): the succeeded terminal view renders `Resumable: yes/no` whenever
+ * the job view carries the projection-derived indicator
+ * (`scripts/lib/render.mjs` renderOutput:34-38, plus the resume hint for a
+ * true indicator), and `terminalResultJob` (`scripts/zcode-companion.mjs`
+ * :2492-2495) supplies that indicator from `resumableJobIndicator`
+ * (`scripts/lib/job-control.mjs`:1009-1029 — accepted session + the viewing
+ * turn's permission snapshot match + binding currency): definite for the
+ * live single-turn succeeded run, where the same caller turn projects the
+ * view. The exact-terminal expectation is derived from THIS declared fact —
+ * an unestablished fact derives no expectation at all, never a partial
+ * framing-less one.
+ */
+export const PUBLIC_RESULT_RESUMABLE = true;
+
+/**
  * The §16.4 declared unrelated survival control's frozen shape (release
  * qualification Task 2; extended by the post-F codex review fix, report §16.4
  * dated revision 2026-10-18): the fixture-owned bounded script emits exactly

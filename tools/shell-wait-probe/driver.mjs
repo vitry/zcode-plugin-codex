@@ -23,7 +23,7 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promis
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
+import { PUBLIC_RESULT_RESUMABLE, PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
@@ -1304,6 +1304,20 @@ export async function runHeldHostTurn(input) {
       }
     } catch (error) { cleanup.errors.push(error); }
   };
+  // Codex round-4 review fix: the boundary records the EARLIEST termination
+  // initiation across every site — including the process runner's own timeout
+  // path, which kills the child from inside runProcess BEFORE the held turn's
+  // 50-ms budget poll notices expiry and long before the wrapper's cleanup
+  // sequence runs. Launch contexts receive this recorder through the budget
+  // context (`recordCleanupBoundary`) so a runner-side kill stamps the
+  // boundary at its initiation; min-semantics keep the earliest initiation
+  // when several sites record.
+  const recordTerminationInitiation = () => {
+    const initiatedAtMs = Date.now();
+    if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
+      cleanup.cleanupBoundaryAtMs = initiatedAtMs;
+    }
+  };
   // Codex overall review fix 2: EVERY controlled-process termination path —
   // early exits, Status-deadline ends, failures and budget expiry alike —
   // records the SAME wall-clock cleanup boundary at its INITIATION, before
@@ -1315,7 +1329,7 @@ export async function runHeldHostTurn(input) {
   // marker at/after it is the kill's resolution — on every path, not only
   // budget expiry.
   const runTerminationCleanup = async () => {
-    if (cleanup.cleanupBoundaryAtMs === null) cleanup.cleanupBoundaryAtMs = Date.now();
+    recordTerminationInitiation();
     await safeReleaseGate();
     await safeTerminateExactProcess();
     await safeTerminateCodex();
@@ -1332,13 +1346,16 @@ export async function runHeldHostTurn(input) {
     // (or a signal that is already aborted by then) must win the boundary
     // race, never be missed. The launch closure receives the SHARED
     // experiment cancellation signal and the REMAINING deadline so both
-    // Status turns (and their rollout loading) run on one budget.
+    // Status turns (and their rollout loading) run on one budget — and the
+    // termination-initiation recorder (round-4 review fix) so a runner-side
+    // timeout kill stamps the cleanup boundary at its own initiation.
     const budgetOutcome = new Promise((resolve) => {
       budgetController.signal.addEventListener('abort', () => resolve({ kind: 'budget' }), { once: true });
     });
     control = await input.launch({
       signal: budgetController.signal,
       remainingMs: () => Math.max(0, Math.round(budgetDeadlineMs - now())),
+      recordCleanupBoundary: recordTerminationInitiation,
     });
     timeline.launchedAtElapsedMs = Math.round(now() - startMs);
     /** @type {Promise<{ kind: 'result', value: { code: number | null, stdout: string, stderr: string } } | { kind: 'error', error: unknown }>} */
@@ -1717,7 +1734,7 @@ export async function runHeldHostTurn(input) {
 
 /**
  * @typedef {{
- *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
+ *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number, recordCleanupBoundary?: () => void }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
  *   gatePath: string,
  *   gateReachedPath?: string,
  *   processPath?: string,
@@ -2232,9 +2249,13 @@ export function shellWaitEvidenceRequest(request) {
   if (!spec) throw invalidCaseInput(`unknown shell wait case: ${String(request.case)}`);
   // Codex review round 8: the byte-exact terminal expectation is DERIVED
   // OFFLINE from the deterministic production renderer plus the case's
-  // DECLARED harmless output profile — rescue-family cases declare exactly
-  // one output fact (the fixture's declared public result) and no
-  // resumability fact, so none is invented. The derivation inputs are case
+  // DECLARED harmless output profile — rescue-family cases declare the
+  // fixture's public result AND its resumability fact (round-4 review fix:
+  // the rendered terminal view carries the Resumability Indicator, so the
+  // derived expectation is COMPLETE; an unestablished fact would derive no
+  // expectation at all, leaving the exact equality unestablished — never a
+  // partial framing-less expectation that false-rejects valid output or
+  // false-accepts framing-less output). The derivation inputs are case
   // constants computed once here, so the default live executor threads the
   // expectation through THIS validated seam and every real policy run
   // carries the exact-byte check in its evidence facts; no free-text
@@ -2245,7 +2266,7 @@ export function shellWaitEvidenceRequest(request) {
   const exactExpectedTerminal = request.exactExpectedTerminal !== undefined && request.exactExpectedTerminal !== null
     ? request.exactExpectedTerminal
     : spec.family === 'rescue'
-      ? exactRescueRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL })
+      ? exactRescueRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE })
       : null;
   if (exactExpectedTerminal !== null
     && (!exactExpectedTerminal || typeof exactExpectedTerminal !== 'object'
@@ -2751,6 +2772,21 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         // The turn's timeout is the REMAINING experiment deadline on the
         // shared clock, never a fresh full budgetMs.
         const remaining = remainingDeadlineMs !== null ? remainingDeadlineMs() : input.budgetMs;
+        // Codex round-4 review fix: the runner enforces its OWN timeout inside
+        // runProcess and terminates the child from there — potentially BEFORE
+        // the held turn's 50-ms budget poll notices expiry, and always before
+        // the wrapper's cleanup sequence would stamp the boundary. This
+        // watcher owns the same deadline: it records the cleanup boundary at
+        // the runner's termination initiation and THEN aborts the turn, so
+        // the runner's abort path performs the kill with the boundary already
+        // recorded (min-semantics keep the earliest initiation). The watcher
+        // is registered BEFORE the runner spawns, so at one expiry it fires
+        // first (Node timers with one expiry run in insertion order); the
+        // runner's internal timeout stays as the same-bound backstop.
+        const runnerDeadlineTimer = setTimeout(() => {
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          controller.abort();
+        }, Math.max(0, remaining));
         // composeHostLaunchArguments supplies the common exec argv EXACTLY
         // once: the status-wait resume turn passes ONLY the `resume
         // <SESSION_ID> <PROMPT>` subcommand tokens (renderExecResumeLaunch),
@@ -2759,7 +2795,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         return /** @type {Promise<{ code: number | null, stdout: string, stderr: string }>} */ (runProcess(
           closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace, input.model ?? null, input.execDefaultMs ?? null), { env: runEnv })),
           { cwd: fixture.workspace, env: runEnv, timeoutMs: remaining > 0 ? remaining : 1, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal },
-        ));
+        ).finally(() => clearTimeout(runnerDeadlineTimer)));
       };
       if (input.case !== 'status-wait') {
         const result = runTurn([casePrompt]);

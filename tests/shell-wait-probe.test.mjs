@@ -8315,7 +8315,7 @@ process.exit(result.status ?? 1);
 
   describe('native interrupt interaction recording and Root Status-observation cancellation (R4)', async () => {
     const { extractInterruptInteraction } = await import('../tools/shell-wait-probe/evidence.mjs');
-    const { mapShellWaitLiveFacts, runShellWaitCase, SHELL_WAIT_CASE_SPECS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { mapShellWaitLiveFacts, runShellWaitCase, runHeldHostTurn, SHELL_WAIT_CASE_SPECS } = await import('../tools/shell-wait-probe/driver.mjs');
 
     // Exact pending Child identity: a UUID-shaped agent id (the shape the V2
     // spawn acknowledgement carries), plus a foreign id for wrong-target cases.
@@ -8893,6 +8893,79 @@ process.exit(result.status ?? 1);
       assert.equal(Object.hasOwn(nativeNoCleanupFacts.interrupt, 'cleanupBoundaryAtMs'), false);
       assert.equal(nativeNoCleanupFacts.interrupt.cancelledAtMs, Date.parse('2026-10-06T00:00:12.000Z'));
       assert.equal(nativeNoCleanupFacts.interrupt.settled, true, 'the no-cleanup native credit is unchanged');
+    });
+
+    test('the runner-side timeout kill records the cleanup boundary at its initiation (round-4 review fix)', async () => {
+      // Codex round-4 review fix: runProcess enforces its OWN timeout and
+      // terminates the child from inside the runner — potentially BEFORE the
+      // held turn's 50-ms budget poll notices expiry and long before the
+      // wrapper's cleanup sequence runs. That kill is a termination
+      // INITIATION and must record the boundary first: a cancellation marker
+      // written as the child dies (after the runner kill, before the wrapper
+      // cleanup) is the kill's resolution — unattributed — never native
+      // settlement credited against the later wrapper boundary. The launch
+      // budget context therefore supplies recordCleanupBoundary, and the
+      // wrapper's own stamp keeps min-semantics (the earliest initiation
+      // wins).
+      const RUNNER_NONCE = 'f'.repeat(64);
+      let killAtMs = null;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          // The simulated runner: its internal timeout initiates the kill at
+          // ~30 ms — recording the boundary through the supplied recorder —
+          // while the runner promise (and the wrapper's cleanup) settle much
+          // later (~220 ms).
+          setTimeout(() => {
+            killAtMs = Date.now();
+            if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          }, 30);
+          const result = new Promise((resolve) => setTimeout(() => resolve({ code: 0, stdout: '', stderr: '' }), 220));
+          return { result, terminate: async () => {} };
+        },
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => ({ pid: 66210, ppid: 88, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66210, ppid: 88, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        terminateProcessIdentity: async () => {},
+        waitForProcessExit: async () => {},
+        releaseGate: async () => {},
+        sleep: async () => {},
+        now: (() => { let value = 0; return () => (value += 30_000); })(),
+        holdMs: 5_000,
+        budgetMs: 3_600_000,
+      });
+      assert.ok(killAtMs !== null, 'premise: the runner-side kill initiated');
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the runner-side kill recorded the boundary');
+      // Min-semantics: the EARLIEST initiation stands even though the wrapper
+      // cleanup ran later.
+      assert.ok(/** @type {number} */ (held.cleanup.cleanupBoundaryAtMs) <= killAtMs + 5,
+        'the boundary is the runner kill initiation, never the later wrapper cleanup');
+      // A cancellation marker written AFTER the kill (as the child dies) but
+      // BEFORE the wrapper cleanup is AT/AFTER the recorded boundary: the
+      // marker branch must refuse native credit.
+      const markerAtMs = killAtMs + 5;
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, new Date(markerAtMs - 5_000).toISOString()),
+        interruptSuccess('int-1', 'running', new Date(markerAtMs - 4_800).toISOString()),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, new Date(markerAtMs - 12_000).toISOString()),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), new Date(markerAtMs - 11_000).toISOString()),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, new Date(markerAtMs - 10_000).toISOString()),
+        fnOutput('poll-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ], new Date(markerAtMs).toISOString()),
+      ]];
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'a marker at/after the runner-kill boundary is the kill\'s resolution, never native settlement');
+      assert.equal(facts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null);
     });
 
     test('cancellation settlement requires the CONFIRMED pending window (codex review round 8)', () => {
@@ -16417,17 +16490,20 @@ process.exit(result.status ?? 1);
       assert.equal(Object.hasOwn(unobserved.facts.completion, 'exactTerminalMatch'), false);
     });
 
-    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8)', () => {
+    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8)', async () => {
       // The derivation is OFFLINE and case-constant: the deterministic
       // production renderer (renderOutput, via exactRescueRenderedExpectation
       // — the same independent source these tests use) applied to the case's
       // DECLARED harmless output profile. The rescue case profile declares
-      // exactly one output fact — the fixture's declared public result — and
-      // no resumability fact, so none is invented. No caller supplies the
-      // expectation: the live default executor gets it through the SAME
-      // validated seam, so every real policy run carries the exact-byte
-      // check in its evidence facts.
-      const derived = exactRescueRenderedExpectation({ result: SENTINEL });
+      // the fixture's public result AND its resumability fact (round-4
+      // review fix: the rendered terminal view carries the Resumability
+      // Indicator, so the expectation is COMPLETE — an unestablished fact
+      // would derive no expectation at all, never a partial framing-less
+      // one). No caller supplies the expectation: the live default executor
+      // gets it through the SAME validated seam, so every real policy run
+      // carries the exact-byte check in its evidence facts.
+      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const derived = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
       for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
         const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
         assert.deepEqual(request.exactExpectedTerminal, derived, `${label} carries the derived exact-byte expectation`);
@@ -16452,6 +16528,50 @@ process.exit(result.status ?? 1);
       // UNESTABLISHED (the derived expectation still threads and the fact
       // still projects; a capture with stream attribution would establish it).
       assert.deepEqual(evidence.facts.completion.exactTerminalMatch, { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 });
+    });
+
+    test('the wired rescue expectation carries the COMPLETE production framing and needs the declared Resumability Indicator (round-4 review fix)', async () => {
+      // Verified production shape (READ-ONLY trace): renderOutput's succeeded
+      // terminal view renders `Resumable: yes/no` whenever the job view
+      // carries the projection-derived indicator (scripts/lib/render.mjs
+      // :34-38, plus the resume hint for a true indicator), and
+      // terminalResultJob (scripts/zcode-companion.mjs:2492-2495) supplies
+      // that indicator from resumableJobIndicator (scripts/lib/job-control.mjs
+      // :1009-1029 — accepted session + same-turn permission snapshot +
+      // binding currency, definite for the live single-turn succeeded run).
+      // An expectation WITHOUT the line is PARTIAL: it false-rejects valid
+      // output as extra-output and false-accepts framing-less output. The
+      // fixture therefore DECLARES the resumability fact, the wiring derives
+      // the COMPLETE expectation from it, and an UNESTABLISHED fact derives
+      // NO expectation at all — never a partial framing-less one.
+      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
+      assert.equal(PUBLIC_RESULT_RESUMABLE, true, 'the fixture declares the resumability fact of its successful rescue result view');
+      const { renderOutput } = await import('../scripts/lib/render.mjs');
+      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
+      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: PUBLIC_RESULT_RESUMABLE } }),
+        'the complete expectation IS the production render with the indicator line');
+      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the framing includes the rendered Resumable line');
+      // The live wiring derives the SAME complete expectation from the
+      // declared fact.
+      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+      assert.deepEqual(request.exactExpectedTerminal, complete, 'the wired derivation carries the complete framing');
+      // (a) An attributable capture carrying sentinel + the correct Resumable
+      // line (+ hint) MATCHES — previously rejected as extra-output against
+      // the partial framing-less expectation.
+      const matched = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      // (b) A capture MISSING the required framing is rejected — never
+      // accepted (previously the partial expectation byte-matched it).
+      const framingless = inspectShellWaitEvidence(evidenceInput(`${SENTINEL}\n`, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: `${SENTINEL}\n` }));
+      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'framing-less output never satisfies the exact gate');
+      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'output-truncated');
+      // (c) An UNESTABLISHED resumability fact derives NO expectation — the
+      // exact equality stays unestablished (no verdict key), never a partial
+      // expectation and never a false rejection.
+      assert.equal(exactRescueRenderedExpectation({ result: SENTINEL, resumable: null }), null);
+      assert.equal(exactRescueRenderedExpectation({ result: SENTINEL }), null);
+      const unestablished = inspectShellWaitEvidence(evidenceInput(complete.output));
+      assert.equal(Object.hasOwn(unestablished.facts.completion, 'exactTerminalMatch'), false, 'no threaded expectation leaves the equality unestablished');
     });
 
     test('exact stdout equality needs STREAM ATTRIBUTION; merged-only output is unestablished (codex review round 12)', () => {
