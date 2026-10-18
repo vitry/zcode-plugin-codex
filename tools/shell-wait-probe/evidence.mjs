@@ -2319,7 +2319,7 @@ const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
 /**
  * @param {unknown[]} rollouts
  * @param {string} controlPath
- * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, childThreadId?: string | null }} options
+ * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null }} options
  *   `lineCount` is the declared §16.4 line count (the fixture-owned design
  *   constant; the final line IS the completion marker). `interruptInteraction`
  *   is the ONE interrupt interaction attributed by the EXISTING extractor —
@@ -2349,7 +2349,7 @@ const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
  *   beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null },
  * }}
  */
-export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, childThreadId?: string | null }} */ ({})) {
+export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null }} */ ({})) {
   const lineCount = options.lineCount;
   if (!Number.isSafeInteger(lineCount) || lineCount <= 0) {
     throw invalidEvidenceInput('the survival-control lineCount must be a positive integer.');
@@ -2364,6 +2364,19 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   // `true` can establish the bound; undefined/null/false leave it null.
   if (options.exactTargetMatch !== null && options.exactTargetMatch !== undefined && typeof options.exactTargetMatch !== 'boolean') {
     throw invalidEvidenceInput('the survival-control exactTargetMatch must be a boolean or null (the validated exact-target attribution).');
+  }
+  // Codex round-6 review fix: the CLEANUP-AWARE settlement attribution,
+  // computed ONCE in the mapper from the recorded cleanup boundary (single
+  // source of truth — the reader never duplicates the boundary math). True
+  // means the settled delivery's resolution is the cleanup-generated
+  // cancellation marker (at/after the recorded cleanup boundary, or a
+  // cleanup kill demonstrably initiated without a comparable boundary): the
+  // delivery bound stays unestablished (fail closed), even when qualifying
+  // control reads and later emissions would otherwise qualify. Undefined or
+  // null (direct offline callers without held-run facts) keeps the existing
+  // semantics.
+  if (options.settledDeliveryCleanupGenerated !== null && options.settledDeliveryCleanupGenerated !== undefined && typeof options.settledDeliveryCleanupGenerated !== 'boolean') {
+    throw invalidEvidenceInput('the survival-control settledDeliveryCleanupGenerated must be a boolean or null (the cleanup-aware settlement attribution).');
   }
   // Codex review round 11: the exact interrupted Child's thread id — the
   // anchor for the owning-Root session identity (the Child rollout's parent
@@ -2625,9 +2638,15 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   // accepted delivery, bound ordering, not post-completion, nonterminal
   // previous status, readable continuations), so wherever the mapper would
   // reject settlement attribution the bound stays unestablished.
+  // Codex round-6 review fix: the cleanup-aware attribution excludes the
+  // bound exactly like the mapper's settlement branch — a settled delivery
+  // whose resolution is the cleanup-generated cancellation never anchors the
+  // bound (`settledDeliveryCleanupGenerated !== true` keeps the pre-fix
+  // semantics for direct offline callers without held-run facts).
   const settledDeliveryAtMs = interruptDeliveryAttributionGuard(interaction) === null
     && interaction.pendingBeforeCall?.observed === true
     && options.exactTargetMatch === true
+    && options.settledDeliveryCleanupGenerated !== true
     ? (typeof interaction.settledAfterCall?.atMs === 'number' && Number.isFinite(interaction.settledAfterCall.atMs)
       ? interaction.settledAfterCall.atMs
       : null)

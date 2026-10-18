@@ -17525,10 +17525,15 @@ process.exit(result.status ?? 1);
         { type: 'input_text', text: 'killed\n' },
       ]);
       const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      // Codex round-6 review-fix note: the held run models a NO-cleanup natural
+      // completion (no boundary, no termination flags) — a demonstrated
+      // cleanup kill without a recorded boundary fails the marker attribution
+      // closed under the overall-review fix-2 contract, and this test's intent
+      // is the unbounded native-cancellation settlement.
       const held = {
         endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
         result: { code: 0, stdout: '', stderr: '' },
-        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
         timeline: null,
       };
       const readerFacts = extractSurvivalControlFacts(nativeTerminated, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(nativeTerminated), exactTargetMatch: true, childThreadId: CHILD_THREAD });
@@ -17605,6 +17610,85 @@ process.exit(result.status ?? 1);
       // The DELIVERED positive case keeps its bound and qualification.
       const deliveredFacts = extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.equal(deliveredFacts.deliveryBoundTag, 4_500, 'the delivered case still anchors the settled-delivery bound');
+    });
+
+    test('the survival reader consumes the cleanup-aware settlement attribution option (round-6 review fix)', () => {
+      // Codex round-6 review fix: the reader's delivery-bound contract must
+      // incorporate the SAME cleanup-boundary attribution the mapper applies.
+      // The attribution rides the options as a typed boolean computed ONCE in
+      // the mapper (single source of truth — no duplicated boundary math): a
+      // settled delivery whose resolution is the cleanup-generated
+      // cancellation leaves the bound unestablished; option false/absent
+      // (settlement strictly before the boundary, or no cleanup kill) keeps
+      // the existing semantics.
+      const options = (over = {}) => ({ lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD, ...over });
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options()).deliveryBoundTag, 4_500, 'premise: the settled delivery anchors the bound');
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: true })).deliveryBoundTag, null,
+        'a cleanup-generated settlement never grounds the survival delivery bound');
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: false })).deliveryBoundTag, 4_500,
+        'a settlement strictly before the boundary (or no cleanup kill) keeps the bound');
+      assert.throws(() => extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: 'yes' })), /settledDeliveryCleanupGenerated/i,
+        'the cleanup-aware attribution is a closed boolean-or-null input');
+    });
+
+    test('a cleanup-generated cancellation never grounds the survival delivery bound (round-6 review fix)', () => {
+      // Codex round-6 review fix: the reader consumed the RAW settledAfterCall
+      // timestamp as the delivery bound even when the mapper's cleanup
+      // attribution rejected that marker as native settlement — with
+      // qualifying control reads and later emissions the run then qualified
+      // no-collateral although the completed delivery was unattributed. The
+      // mapper now passes its own cleanup-aware attribution (the same
+      // cancellationPrecedesCleanupBoundary comparison) into the reader: the
+      // bound stays unestablished for cleanup-generated resolutions (fail
+      // closed). A settlement strictly BEFORE the boundary, and runs with NO
+      // cleanup kill, keep the bound and qualify.
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const heldBase = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const heldWithBoundary = (cleanupBoundaryAtMs) => ({ ...heldBase, cleanup: { ...heldBase.cleanup, cleanupBoundaryAtMs } });
+      const mapSurvival = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, nativeCancelledRollouts(), [], LAUNCHER,
+      );
+      // The qualifying shape: the child's settlement is the pinned NATIVE
+      // CANCELLATION framing at 5500; the control reads 12 lines before the
+      // interrupt and 13 lines after the marker-anchored delivery bound —
+      // every survival precondition except the delivery attribution holds.
+      function nativeCancelledRollouts() {
+        return i1Rollouts().map((events, rolloutIndex) => rolloutIndex === 0
+          ? events.map((event) => event?.payload?.call_id === 'rescue-poll-2' && event.payload.type === 'custom_tool_call_output'
+            ? at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output: [
+              { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+              { type: 'input_text', text: 'killed\n' },
+            ] })
+            : event)
+          : events);
+      }
+      // (a) The recorded cleanup boundary is AT the marker: the settled
+      // resolution is cleanup-generated — the bound stays unestablished and
+      // the verdict fails closed, however qualifying the reads/emissions are.
+      const atBoundaryFacts = mapSurvival(heldWithBoundary(BASE_MS + 5_500));
+      assert.equal(atBoundaryFacts.survivalControl.noCollateralQualified, false, 'a cleanup-generated settlement never qualifies no-collateral');
+      assert.equal(atBoundaryFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // (b) The boundary strictly AFTER the marker: the settlement precedes
+      // the cleanup — genuine native settlement keeps the bound and qualifies.
+      const beforeBoundaryFacts = mapSurvival(heldWithBoundary(BASE_MS + 6_000));
+      assert.equal(beforeBoundaryFacts.survivalControl.noCollateralQualified, true, 'a settlement strictly before the recorded boundary keeps the bound and qualifies');
+      // (c) NO cleanup kill at all (no boundary, no termination flags, budget
+      // not expired): the existing bound semantics stand.
+      const noCleanupHeld = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const noCleanupFacts = mapSurvival(noCleanupHeld);
+      assert.equal(noCleanupFacts.survivalControl.noCollateralQualified, true, 'a run with no cleanup kill keeps the existing bound semantics');
     });
 
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {

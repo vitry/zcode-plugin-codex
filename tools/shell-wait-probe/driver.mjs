@@ -3284,6 +3284,23 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   const interruptExactTargetMatch = interruptInteraction.target.value !== null && evidenceChildThreadId !== null
     ? interruptInteraction.target.value === evidenceChildThreadId
     : null;
+  // Codex round-6 review fix: the survival delivery bound consumes the SAME
+  // cleanup-aware settlement attribution the mapper's settlement branch
+  // applies. The settled delivery is CLEANUP-GENERATED exactly when its
+  // resolution is the CANCELLATION marker the cleanup-boundary attribution
+  // rejected (at/after the recorded cleanup boundary, or a cleanup kill
+  // demonstrably initiated without a comparable boundary) — the reader then
+  // leaves the bound unestablished (fail closed), even when qualifying
+  // control reads and later emissions would otherwise qualify. Single source
+  // of truth: the decision rides THIS mapper's own
+  // cancellationPrecedesCleanupBoundary comparison (the same helper the
+  // settlement branch below consumes) and is passed to the reader as a typed
+  // option — no duplicated boundary math. A settlement anchored to an
+  // exit-code completion, strictly before the boundary, or in a run with no
+  // cleanup kill keeps the existing bound semantics.
+  const settledDeliveryCleanupGenerated = interruptInteraction.cancelledAfterCall.atMs !== null
+    && interruptInteraction.settledAfterCall.atMs === interruptInteraction.cancelledAfterCall.atMs
+    && !cancellationPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held);
   // The §16.4 survival-control verdict (release-qualification review round):
   // decoded from the SAME collected rollouts through the evidence reader —
   // the control's grounded handle, its bounded pre/post-delivery reads, and
@@ -3296,7 +3313,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     && input.survivalControlSelector === SURVIVAL_CONTROL_SELECTOR_VALUE
     && /** @type {any} */ (fixture)?.survivalControlPath != null
     && Array.isArray(rollouts) && rollouts.length > 0
-    ? extractSurvivalControlFacts(rollouts, /** @type {any} */ (fixture).survivalControlPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction, exactTargetMatch: interruptExactTargetMatch, childThreadId: interruptChildThreadId })
+    ? extractSurvivalControlFacts(rollouts, /** @type {any} */ (fixture).survivalControlPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction, exactTargetMatch: interruptExactTargetMatch, settledDeliveryCleanupGenerated, childThreadId: interruptChildThreadId })
     : null;
   // Codex review round 12: the BOUNDED, WHITELISTED oracle inputs persist
   // beside the versioned verdict (offline re-adjudication of the recorded
