@@ -17691,6 +17691,89 @@ process.exit(result.status ?? 1);
       assert.equal(noCleanupFacts.survivalControl.noCollateralQualified, true, 'a run with no cleanup kill keeps the existing bound semantics');
     });
 
+    test('cancellation settlement binds to the observation identity pending at delivery (round-7 review fix)', () => {
+      // Codex round-7 review fix: a cancellation marker that merely FOLLOWS the
+      // interrupt is not automatically its settlement. Poll A yields a pending
+      // cell before the interrupt and never resolves; the child then starts a
+      // NEW poll B on the same handle; B is cancelled. B's cancellation
+      // resolves an observation that did not exist at delivery, so identity
+      // binding (the observation binding's per-poll callId — the same identity
+      // field the pending-window machinery uses) must refuse it: settled
+      // stays null with the fail-closed basis, no latency, and the survival
+      // bound stays ungrounded. A cancellation of the SAME poll, and of an
+      // ACCEPTED CONTINUATION of its pending cell, stays credited.
+      const interruptTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const childLaunch = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+      ];
+      const pendingYield = at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: 'Script running with cell ID cell-a\nWall time 0.1 seconds\nOutput:\n' });
+      // (a) A LATER, DIFFERENT poll (B, started after the interrupt) cancelled:
+      // never the delivered interrupt's settlement. The parent turn rides the
+      // standard i1 shape (grounded control launch + qualifying reads) so the
+      // survival wiring is fully established except the delivery attribution.
+      const laterPollCancelled = [[
+        ...childLaunch,
+        pendingYield,
+        wrappedRead('poll-b', 7, 5_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const laterInteraction = interactionFor(laterPollCancelled);
+      assert.equal(laterInteraction.pendingBeforeCall.observed, true, 'premise: poll A was pending at delivery');
+      assert.equal(laterInteraction.cancelledAfterCall.atMs, null, "a later poll's cancellation never settles the delivery");
+      assert.equal(laterInteraction.settledAfterCall.atMs, null);
+      const laterFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, laterPollCancelled, [], LAUNCHER,
+      );
+      assert.equal(laterFacts.interrupt.settled, null, 'the misattributed cancellation never reports native settlement');
+      assert.equal(laterFacts.interrupt.deliveryToSettlementMs, null, 'no delivery-to-settlement latency from a foreign observation');
+      assert.equal(laterFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded (fail closed)');
+      assert.equal(laterFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      const laterReaderFacts = extractSurvivalControlFacts(laterPollCancelled, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: laterInteraction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(laterReaderFacts.deliveryBoundTag, null, 'the reader consumes the identity-bound interaction: no bound');
+      // (i) The SAME poll's cancellation stays credited (its single response
+      // is the marker; the pending window comes from the outstanding interval).
+      const samePollCancelled = [[
+        ...childLaunch,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-a', output: terminatedMarker }),
+      ], interruptTurnEvents];
+      const samePollInteraction = interactionFor(samePollCancelled);
+      assert.equal(samePollInteraction.pendingBeforeCall.observed, true);
+      assert.equal(samePollInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the pending observation\'s own cancellation stays credited');
+      // (ii) A cancelled SAME-HANDLE RE-ENTRY issued BEFORE the delivery (the
+      // child's re-entry on the same handle while the observation was still
+      // outstanding) stays credited — the established same-handle continuation
+      // semantics.
+      const continuationCancelled = [[
+        ...childLaunch,
+        pendingYield,
+        wrappedRead('poll-b', 7, 4_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ], interruptTurnEvents];
+      const continuationInteraction = interactionFor(continuationCancelled);
+      assert.equal(continuationInteraction.pendingBeforeCall.observed, true);
+      assert.equal(continuationInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'a cancelled accepted continuation of the pending observation stays credited');
+    });
+
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
       // A MULTI-statement cell: statement 0 is the original-handle poll,
       // statement 1 an unrelated await. The poll's own result IS present in

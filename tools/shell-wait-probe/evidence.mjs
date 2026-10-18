@@ -1395,7 +1395,7 @@ function ownStatementResult(output, statementIndex, statementCount) {
  * of being guessed from unbound events.
  * @param {unknown} rollouts
  * @param {{ childThreadId?: unknown, command?: unknown } | null} [options]
- * @returns {{ childRolloutIndex: number, originalHandleId: number, attributableCallIds: Set<string>, attributableStatements: Map<string, { statementIndex: number, statementCount: number }>, pollIntervals: { callId: string, callIndex: number, responseIndex: number | null, callAtMs: number | null, responseAtMs: number | null }[] } | null}
+ * @returns {{ childRolloutIndex: number, originalHandleId: number, attributableCallIds: Set<string>, attributableStatements: Map<string, { statementIndex: number, statementCount: number }>, pollIntervals: { callId: string, callIndex: number, responseIndex: number | null, callAtMs: number | null, responseAtMs: number | null }[], pendingCellChains: Map<string, { pollCallId: string, continuationCallIds: Set<string> }> } | null}
  */
 function deriveChildObservationBinding(rollouts, options) {
   try {
@@ -1463,6 +1463,12 @@ function deriveChildObservationBinding(rollouts, options) {
     const pollCells = new Set();
     /** @type {Map<string, { callId: string, callIndex: number, responseIndex: number | null, callAtMs: number | null, responseAtMs: number | null }>} */
     const intervalByPendingCell = new Map();
+    // Codex round-7 review fix: each pending POLL CELL's observation chain —
+    // the poll that opened it plus every accepted same-cell continuation. The
+    // settlement attribution consumes these chains as the IDENTITY set a
+    // cancellation marker must resolve to settle the delivered interrupt.
+    /** @type {Map<string, { pollCallId: string, continuationCallIds: Set<string> }>} */
+    const pendingCellChains = new Map();
     for (const entry of calls) {
       if (entry.call.kind !== 'write_stdin') continue;
       if (parsePreparationFrame(entry.call.value?.chars) !== null) preparationStatements.add(`${entry.callId}#${entry.statementIndex ?? 0}`);
@@ -1583,6 +1589,15 @@ function deriveChildObservationBinding(rollouts, options) {
           statementIndex: /** @type {number} */ (entry.statementIndex ?? 0),
           statementCount: /** @type {number} */ (entry.statementCount ?? 1),
         });
+        // Codex round-7 review fix: the accepted continuation joins its pending
+        // cell's observation chain — the identity set that decides which
+        // cancellation resolutions can settle the delivered interrupt (the
+        // pending cell's own poll plus these same-cell continuations).
+        const chainCellId = /** @type {string} */ (entry.call.value?.cell_id);
+        const chain = pendingCellChains.get(chainCellId)
+          ?? { pollCallId: intervalByPendingCell.get(chainCellId)?.callId ?? '', continuationCallIds: new Set() };
+        chain.continuationCallIds.add(entry.callId);
+        pendingCellChains.set(chainCellId, chain);
       }
       // P2-2 round-13 fix: record the yielded window's CLOSING response — the
       // FIRST accepted continuation completion that resolves the poll's cell
@@ -1612,7 +1627,7 @@ function deriveChildObservationBinding(rollouts, options) {
       }
     }
     if (attributableCallIds.size === 0) return null;
-    return { childRolloutIndex: childIndices[0], originalHandleId, attributableCallIds, attributableStatements, pollIntervals };
+    return { childRolloutIndex: childIndices[0], originalHandleId, attributableCallIds, attributableStatements, pollIntervals, pendingCellChains };
   } catch { return null; }
 }
 
@@ -1669,7 +1684,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // pending observation at the interrupt call. Only exit-code completions and
   // the PINNED native cancellation markers (round 6) remain settlement
   // evidence.
-  /** @type {{ kind: 'pending' | 'completed-exit' | 'completed-running' | 'cancelled' | 'explicit-terminate' | 'unparseable', rolloutIndex: number, index: number, atMs: number | null }[]} */
+  /** @type {{ kind: 'pending' | 'completed-exit' | 'completed-running' | 'cancelled' | 'explicit-terminate' | 'unparseable', rolloutIndex: number, index: number, atMs: number | null, callId: string | null }[]} */
   const boundObservations = [];
   /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
   const completedOutputs = [];
@@ -1692,7 +1707,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // UNKNOWN evidence (the round-26 rule: it can never resolve anything) — its
   // event time may precede the true abort-chain settlement, so it never
   // anchors the bound.
-  /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
+  /** @type {{ kind: 'cancelled' | 'completed-exit', rolloutIndex: number, index: number, atMs: number | null, callId: string | null }[]} */
   const settlementOutputs = [];
   /** @type {number | null} */
   let lastCallDelivered = null;
@@ -1754,21 +1769,26 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
               linkedStatement?.statementCount ?? 1,
             );
             if (explicitTerminateStatements.has(explicitTerminateKey)) {
-              boundObservations.push({ kind: 'explicit-terminate', rolloutIndex, index, atMs });
+              boundObservations.push({ kind: 'explicit-terminate', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             } else if (statementCancelAttributed) {
-              boundObservations.push({ kind: 'cancelled', rolloutIndex, index, atMs });
-              settlementOutputs.push({ rolloutIndex, index, atMs });
+              // Codex round-7 review fix: the marker carries its RESOLUTION
+              // IDENTITY — the call id of the poll/continuation it resolves —
+              // so the settlement attribution can require it to resolve the
+              // observation pending at delivery (or an accepted continuation
+              // of that same observation), never a later, different poll.
+              boundObservations.push({ kind: 'cancelled', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
+              settlementOutputs.push({ kind: 'cancelled', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             } else {
-              boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs });
+              boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             }
           } else if (parsed?.state === 'pending') {
-            boundObservations.push({ kind: 'pending', rolloutIndex, index, atMs });
+            boundObservations.push({ kind: 'pending', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
           } else if (parsed?.state === 'completed') {
             const kind = Number.isSafeInteger(parsed.result?.exit_code) ? 'completed-exit' : 'completed-running';
-            boundObservations.push({ kind, rolloutIndex, index, atMs });
+            boundObservations.push({ kind, rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             if (kind === 'completed-exit') {
               completedOutputs.push({ rolloutIndex, index, atMs });
-              settlementOutputs.push({ rolloutIndex, index, atMs });
+              settlementOutputs.push({ kind: 'completed-exit', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             }
             // A completed JSON body WITHOUT an exit code is never settlement
             // (codex review round 6): a live handle (session_id) is a re-poll
@@ -1783,7 +1803,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
             // timing (codex review round 5): the survival bound anchors ONLY
             // to a decoded resolution, and an undecodable one leaves it
             // unestablished (fail closed).
-            boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs });
+            boundObservations.push({ kind: 'unparseable', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
           }
         }
         // Resolve the LAST interrupt call's own output by call id. A wrapped
@@ -1977,6 +1997,13 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   let explicitTerminateAfterCallMs = null;
   /** @type {{ observed: boolean, at: string | null, atMs: number | null }} */
   const pendingBeforeCall = { observed: false, at: null, atMs: null };
+  // Codex round-7 review fix: the per-poll IDENTITY of the observation(s)
+  // that were pending at delivery — the call ids of the pending observations
+  // (and outstanding poll intervals) that established `pendingBeforeCall`.
+  // A cancellation marker may settle the delivered interrupt only when it
+  // resolves one of these identities or an accepted continuation of the same
+  // observation.
+  const pendingObservationCallIds = new Set();
   /** @type {{ at: string | null, atMs: number | null }} */
   const completedBeforeCall = { at: null, atMs: null };
   /** @type {number | null} */
@@ -2028,6 +2055,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         if (resolvedBeforeBounds || resolutionOverlapsBounds) continue;
         if (!resolvedThroughBounds) continue;
         pendingBeforeCall.observed = true;
+        if (pending.callId !== null) pendingObservationCallIds.add(pending.callId);
         if (pendingBeforeCall.atMs === null || (pending.atMs !== null && pending.atMs > pendingBeforeCall.atMs)) {
           pendingBeforeCall.atMs = pending.atMs;
           pendingBeforeCall.at = pending.atMs !== null ? new Date(pending.atMs).toISOString() : null;
@@ -2066,6 +2094,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       if (resolvedBeforeCallKnown) continue;
       if (resolvedAfterInterrupt) {
         pendingBeforeCall.observed = true;
+        if (pending.callId !== null) pendingObservationCallIds.add(pending.callId);
         if (pendingBeforeCall.atMs === null || (pending.atMs !== null && pending.atMs > pendingBeforeCall.atMs)) {
           pendingBeforeCall.atMs = pending.atMs;
           pendingBeforeCall.at = pending.atMs !== null ? new Date(pending.atMs).toISOString() : null;
@@ -2077,6 +2106,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           || (resolved.atMs !== null && pending.atMs !== null && resolved.atMs >= pending.atMs)));
       if (resolutionUnestablished) continue;
       pendingBeforeCall.observed = true;
+      if (pending.callId !== null) pendingObservationCallIds.add(pending.callId);
       if (pendingBeforeCall.atMs === null || (pending.atMs !== null && pending.atMs > pendingBeforeCall.atMs)) {
         pendingBeforeCall.atMs = pending.atMs;
         pendingBeforeCall.at = pending.atMs !== null ? new Date(pending.atMs).toISOString() : null;
@@ -2118,6 +2148,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           // untimed closing response or one inside the bounds stays unproven.
           if (interval.responseAtMs !== null && lastCall.notAfterMs !== null && interval.responseAtMs >= lastCall.notAfterMs) {
             pendingBeforeCall.observed = true;
+            if (interval.callId !== null) pendingObservationCallIds.add(interval.callId);
             if (pendingBeforeCall.atMs === null || (interval.callAtMs !== null && interval.callAtMs > pendingBeforeCall.atMs)) {
               pendingBeforeCall.atMs = interval.callAtMs;
               pendingBeforeCall.at = interval.callAtMs !== null ? new Date(interval.callAtMs).toISOString() : null;
@@ -2127,6 +2158,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         }
         // Genuinely outstanding: no closing response — the interval spans the bounds.
         pendingBeforeCall.observed = true;
+        if (interval.callId !== null) pendingObservationCallIds.add(interval.callId);
         if (pendingBeforeCall.atMs === null || (interval.callAtMs !== null && interval.callAtMs > pendingBeforeCall.atMs)) {
           pendingBeforeCall.atMs = interval.callAtMs;
           pendingBeforeCall.at = interval.callAtMs !== null ? new Date(interval.callAtMs).toISOString() : null;
@@ -2160,9 +2192,30 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       const responseArrivedStampedBefore = interval.responseAtMs !== null && lastCall.atMs !== null && interval.responseAtMs <= lastCall.atMs;
       if (responseArrivedBeforeCall || responseArrivedStampedBefore) continue;
       pendingBeforeCall.observed = true;
+      if (interval.callId !== null) pendingObservationCallIds.add(interval.callId);
       if (pendingBeforeCall.atMs === null || (interval.callAtMs !== null && interval.callAtMs > pendingBeforeCall.atMs)) {
         pendingBeforeCall.atMs = interval.callAtMs;
         pendingBeforeCall.at = interval.callAtMs !== null ? new Date(interval.callAtMs).toISOString() : null;
+      }
+    }
+    // Codex round-7 review fix: the IDENTITY set a cancellation marker must
+    // resolve to settle the delivered interrupt — the poll/cell observations
+    // that were pending at delivery, every accepted same-cell continuation of
+    // those observations, AND the child's same-handle re-entry polls issued
+    // at/before the delivery (the established same-handle continuation
+    // semantics: a re-entry issued while the observation was still
+    // outstanding continues it). A poll/cell issued AFTER the delivery is a
+    // new observation: its cancellation never settles the delivery.
+    const eligibleCancellationCallIds = new Set(pendingObservationCallIds);
+    for (const chain of binding?.pendingCellChains?.values() ?? []) {
+      if (!pendingObservationCallIds.has(chain.pollCallId)) continue;
+      for (const continuationCallId of chain.continuationCallIds) eligibleCancellationCallIds.add(continuationCallId);
+    }
+    if (lastCall?.atMs !== null) {
+      for (const interval of binding?.pollIntervals ?? []) {
+        if (interval.callAtMs !== null && interval.callAtMs <= /** @type {number} */ (lastCall.atMs)) {
+          eligibleCancellationCallIds.add(interval.callId);
+        }
       }
     }
     for (const completed of completedOutputs) {
@@ -2195,7 +2248,14 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     // the pinned host's NATIVE cancellation framings with NO exit code, so
     // the exit-only loop above cannot see it. Unknown JSON bodies and
     // undecodable responses never enter settlementOutputs (fail closed).
+    // Codex round-7 review fix: a CANCELLED resolution settles the delivered
+    // interrupt only when it resolves the observation identity pending at
+    // delivery (or an accepted continuation of it) — a later, different
+    // poll/cell's marker is skipped here so neither the turn-settlement bound
+    // nor the survival delivery bound can anchor to it.
     for (const settled of settlementOutputs) {
+      if (settled.kind === 'cancelled' && pendingObservationCallIds.size > 0
+        && (settled.callId === null || !eligibleCancellationCallIds.has(settled.callId))) continue;
       if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
         if (settled.atMs !== null && lastCall.notAfterMs !== null && settled.atMs >= lastCall.notAfterMs) {
           if (settledAfterCallMs === null || (settled.atMs !== null && settled.atMs < settledAfterCallMs)) settledAfterCallMs = settled.atMs;
@@ -2213,8 +2273,13 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     // alone, so the mapper can project the §16.3 stage-4 cancellation
     // settlement separately from the exit-code terminal. The survival bound
     // keeps consuming settledAfterCall (which spans both resolutions).
+    // Codex round-7 review fix: the SAME observation-identity binding — a
+    // cancellation that resolves a later, different poll/cell never enters
+    // the delivery's cancellation timing.
     for (const cancelled of boundObservations) {
       if (cancelled.kind !== 'cancelled') continue;
+      if (pendingObservationCallIds.size > 0
+        && (cancelled.callId === null || !eligibleCancellationCallIds.has(cancelled.callId))) continue;
       if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
         if (cancelled.atMs !== null && lastCall.notAfterMs !== null && cancelled.atMs >= lastCall.notAfterMs) {
           if (cancelledAfterCallMs === null || (cancelled.atMs !== null && cancelled.atMs < cancelledAfterCallMs)) cancelledAfterCallMs = cancelled.atMs;
