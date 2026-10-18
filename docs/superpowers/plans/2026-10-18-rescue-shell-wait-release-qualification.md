@@ -75,17 +75,18 @@ Every actual model-turn trial, including diagnostics and failed starts, consumes
 
 Maximum **13 logical cases** (12 initial labels plus one shared F), NOT a claim of at most 13 CLI launches/model turns; normally fewer through justified reuse/unavailable routes. Each case's finite launch/turn sequence must be registered before launch, including ST's two turns and any declared control work. These are NOT instructions to spend all labels. Register reused evidence/pins or unspent prerequisite causes BEFORE skipping a case. Old campaign quotas never reset. B, I0, Root and generic labels cannot be borrowed as retries for L/R/I1. F requires a specific established cause and one named change, preregistered before launch; repeating model behavior until it disappears is forbidden.
 
-> **Ledger status (2026-10-18, after Task 4; report §17.10.6):** spent **M, L, R**, the conditional
+> **Ledger status (2026-10-18, after Task 4 + the approved F; report §17.13):** spent **M, L, R**, the conditional
 > **B** (B's trigger: no retained control is comparable — C0/C1 §15.5 differ in exec-default,
 > worker, poll and paragraph revision and carry no cap; D0 §15.3 has no model/cap/exec-default), the
-> conditional **I0** (I0's trigger: no measured native-interrupt baseline exists — §16.5) and
-> **I1**. I0/I1 both executed their registered commands cleanly (driver exit 0 each) but neither
-> produced an attributable pending-window delivery (unclassified 23-char interrupt targets, zero
-> attributable polls/joins): Gate D stays BLOCKED at every layer (report §17.10.3).
-> NOT spent: N, BG, RV, AR, ST, G (Task 5) and **F** (no cause — zero driver/validation failures
-> across I0/I1; the recorded causes are model-turn shapes on cleanly executed registered commands,
-> and F additionally requires root approval, not sought). **6 of the 13 logical cases consumed;
-> 7 remain.**
+> conditional **I0** (I0's trigger: no measured native-interrupt baseline exists — §16.5),
+> **I1**, and **F** (the ONE root-approved cause-directed follow-up, §17.11 registration →
+> §17.12 outcome). I0/I1/F all executed their registered commands cleanly (driver exit 0 each) but
+> none produced an attributable pending-window interrupt delivery: I0/I1 interrupted before any
+> attributable child poll with unclassified 23-char targets; F's amended-directive run observed the
+> child's poll (poll-start 72069 ms) but its evidence inspection failed closed on an 80-byte
+> unclassified script cell, leaving the delivery unobservable. **Gate D stays BLOCKED at every
+> layer** (report §17.12). NOT spent: N, BG, RV, AR, ST, G (Task 5). **7 of the 13 logical cases
+> consumed; 6 remain.**
 
 > **F registration (2026-10-18, BEFORE the F launch; root adjudication approved).** F is APPROVED as
 > the plan's ONE shared successor against the established Task 4 cause: on BOTH I0/I1 the Root
@@ -102,6 +103,15 @@ Maximum **13 logical cases** (12 initial labels plus one shared F), NOT a claim 
 > mktemp output, `--source-sha` = the commit carrying this registration) is preregistered in report
 > §17.11 BEFORE the launch. ONE launch; zero retries; if the shape repeats, F is spent and Gate D
 > stays blocked with the measured blocker.
+> **F OUTCOME (spent 2026-10-18; report §17.12):** the launch executed exactly as registered
+> (driver exit 0) and produced a THIRD shape — the child's poll-start WAS observed (72069 ms, the
+> first interrupt run where the child's poll existed), but the post-run evidence inspection failed
+> closed on an 80-byte unclassified script cell (`unclassified-script-cell`, content withheld), so
+> the interrupt delivery is UNOBSERVABLE (`attempted: null`) and every Gate D layer stays
+> unestablished; the survival control ran to its designed natural completion (30/30 lines) but
+> no-collateral is not qualified (`control-not-root-owned` — ownership unresolvable without the
+> child thread id). F is SPENT; Gate D remains BLOCKED with the measured blocker recorded; no
+> further launch follows.
 
 M/L/R/B use an initial harmless hold of 420000 ms and a 1200000-ms experiment budget. Candidate inner/outer/continuation request is 3600000 ms; only the inner cap differs between M (omitted) and L/R (3600000). If M proves a different current default, size L/R/B once BEFORE their first launch using `max(420000, ceil(M)+90000)`, with budget `max(1200000, hold+600000)`; preserve matching group duration by reporting an unmatched original M as a calibration, not pretending it is a controlled effect comparison. A further resized M calibration consumes F; no free restarted group. Missing M or insufficient measured headroom leaves cap propagation not-proven; natural completion evidence remains useful but cannot promote the gate.
 

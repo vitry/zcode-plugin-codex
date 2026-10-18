@@ -7443,3 +7443,88 @@ I1's registered flags exactly; ONE launch; zero retries; no other label. Adjudic
 `evaluateNativeInterruptionSettlement`, `evaluateChildSettlementLayers`). If the shape repeats — the
 Root still interrupts before a pending poll — F is spent, Gate D stays blocked with the measured
 blocker, and no further launch follows.
+
+### 17.12 F execution and outcome (2026-10-18; the ONE approved F launch — spent)
+
+**F ran ONCE, exactly per §17.11's preregistered command** (`--source-sha` stamped to commit 1
+`013642e107a3cd055bef62514e79788502a0780b`, the commit carrying the amended directive and this
+preregistration): record `/tmp/shell-wait-release-f.FjHtB4/rescue-interrupt.record.json`,
+`executedAt` (the driver's run-end composition stamp) `2026-10-18T09:36:22.462Z`, driver exit 0,
+stderr EMPTY, `status: executed`, zero retries. Provenance: every registered setting matches
+(cap 3600000 `capVerified: true`, poll 3600000, worker 420000, budget 1200000, model `gpt-6.1-sol`,
+candidate paragraph with normalized hashes `2ea76cf0…`/`5800e3ab…` byte-identical to I1/L/R,
+config-default + exec-default 3600000, both diagnostics, observer digest `5f4bb770…`,
+`sourcesChangedDuringRun: false`), zero cleanup errors, fixture disposed,
+`nativeInterruptionClaimed: false`.
+
+**The amended directive CHANGED the turn shape — a THIRD shape, distinct from I0 and I1.** For the
+FIRST time in any interrupt run, the child's poll-start watch OBSERVED the child's long empty-input
+original-handle poll: held timeline `pollStartedAtElapsedMs: 72069` (launch detected 40248, Root
+acknowledgement 93125, hold deadline 460248, ended 460255 — the full hold ran). But the POST-RUN
+evidence inspection FAILED CLOSED on the unknown-call rule (preserved by design): the record exports
+`inconclusive: { reason: "unsupported-call-shape: A collected tool call does not match a supported
+shape (direct call, simple wrapper, or linked outer continuation); the case needs manual
+adjudication." }` — an 80-byte, 2-line cell classified `unclassified-script-cell` (structural facts
+verbatim: line 1 prefix `"text("`, `braceDepthEnd: 0`, `endsWithSemicolon: true`, `tools: []`,
+`wholeBodyStatementMatch: false`, `directivePresent: false`, `parserStage: "wrapper"`,
+`wholeInputConsumed: false`; SHA-256 `0ff5d9233c28e90646a49b22aba365690cd3ef5f1eeeda4f88513e4db8bee7d6`;
+raw content WITHHELD by the pinned scrubber). With the evidence collection incomplete, the record
+carries `route.actual: null`, `linkage` all null (the child thread id unestablishable), and
+`interrupt.attempted: null` with the explicit investigated reason: "the owning-session interrupt
+delivery could not be observed in this run: the evidence collection did not complete (rollouts
+unavailable or the held observation failed before evidence collection)".
+
+**The FOUR SEPARATE outcomes (fail-closed; oracle v1):**
+
+- **(a) Native turn/cell/poll settlement — NOT ESTABLISHED, and the delivery itself UNOBSERVABLE:**
+  `attempted: null` — this run cannot claim the interrupt was even attempted, let alone delivered,
+  targeted, or ordered. `evaluateNativeInterruptionSettlement` → **`qualified: false`**, reasons
+  exactly `['delivery-not-established', 'delivery-dispatch-unestablished', 'alias-unresolved',
+  'terminal-state-unestablished', 'pending-window-unconfirmed', 'delivery-target-unmatched',
+  'turn-settlement-unobserved', 'companion-outcome-unobserved', 'durable-obligations-unobserved',
+  'collateral-control-not-qualified', 'terminal-winner-unobserved']`; all five layer flags false;
+  `terminalWinner: null`.
+- **(b) Exact attached Companion settlement — NOT ESTABLISHED:** `evaluateChildSettlementLayers` →
+  remoteTerminal/localProcessReaping/durableObligations all `unestablished`,
+  `settlementEstablished: false`; `child.settlement` observed false; the cleanup-side
+  `processTermination` facts (`verifiedTerminated: false`) remain cleanup facts, never settlement.
+- **(c) Existing lifecycle/reconciler durable job/guard settlement — RECORDED, NOT ESTABLISHED:**
+  `durableObligations: null`; no stop cause is claimable (no attributable interrupt exists in the
+  record); no production lifecycle read was projected.
+- **(d) Unrelated survival control — ran to its DESIGNED natural completion, but no-collateral NOT
+  QUALIFIED (`evaluateSurvivalControl` reason `control-not-root-owned`).** All 30 declared lines were
+  emitted and read (indices 1→30, emission tags 1→58047, strictly monotonic at the designed ~2000-ms
+  cadence) and the completion marker was OBSERVED (line 30, tag 58047, designed exit 0 by
+  construction). But the verdict is fail-closed: `ownership: "unidentifiable"`
+  (`owningRootSessionId: null` — the owning-Root identity resolves ONLY through the interrupted
+  child's parent binding, and the child thread id is unestablishable this run),
+  `deliveryBoundTag: null`, `beforeDeliveryRead: { observed: false }` (no §16.4 pre-delivery read is
+  decodable from this run's evidence), `postDeliveryRead: { occurred: false }`,
+  `activityAtDelivery: "unknown"`, `postDelivery: "unknown"`.
+
+**Latency comparison:** no attributable delivery exists, so NO delivery-to-settlement latency is
+measurable and the §16.5 60000-ms bound is not applicable to this run. What IS positively measured:
+the child reached its long poll (poll-start 72069 ms elapsed) — the preregistered sequencing change
+correlates with the child's observation existing — but the pending window AT DELIVERY remains
+unestablishable because the delivery itself is unobservable. Responsiveness stays NOT ESTABLISHED
+fail-closed.
+
+**Gate D final status: BLOCKED at every layer** (delivery attribution, turn/cell/poll settlement,
+Companion settlement, durable job/guard obligations, no-collateral survival). **F is SPENT** (one
+launch, per the root adjudication's rule: record verbatim, no further launch). The measured blocker,
+verbatim from the typed record: the amended-directive run produced an 80-byte unclassified script
+cell the evidence reader cannot admit (the unknown-call fail-closed rule), so the run's evidence
+collection did not complete and no interrupt attribution exists; whether the Root interrupted at all
+is UNKNOWN — recorded as unknown, never guessed in either direction. Gate D's remaining path needs a
+NEW established cause and would exceed this plan's single-F allowance; it is out of scope here.
+
+### 17.13 Ledger accounting after F (plan §3)
+
+- Labels SPENT: **M, L, R, B** (Task 3), **I0, I1** (Task 4) and **F** (the ONE approved
+  cause-directed follow-up; §17.11 registration → §17.12 outcome). Zero retries anywhere; every
+  driver exited 0 with empty stderr.
+- Labels NOT SPENT: **N, BG, RV, AR, ST, G** (Task 5 prerequisites/decisions pending).
+- Ledger total: **7 of the 13 logical cases consumed; 6 remain.** Old campaign quotas remain closed;
+  nothing was borrowed across labels. Raw records remain fixture-owned disposable /tmp state; only
+  the bounded redacted typed facts above are retained. Production dirs, user configuration and the
+  Codex source were READ-ONLY throughout.
