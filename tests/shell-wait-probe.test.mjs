@@ -6708,6 +6708,9 @@ process.exit(result.status ?? 1);
       assert.match(failure?.message, /rollout parse failed/);
       assert.ok(failure?.heldTurn, 'the thrown failure must carry the structured held-turn record');
       assert.equal(failure.heldTurn.cleanup.verifiedProcessTerminated, false);
+      // Codex overall review fix 2: the failure termination path records the
+      // same wall-clock cleanup boundary at its initiation.
+      assert.equal(typeof failure.heldTurn.cleanup.cleanupBoundaryAtMs, 'number', 'the failure cleanup records its wall-clock initiation boundary');
       assert.equal(failure.heldTurn.cleanup.errors.length, 1, 'the failed termination must be among the recorded cleanup errors');
       assert.match(String(failure.heldTurn.cleanup.errors[0]), /remains live/);
     });
@@ -6779,6 +6782,10 @@ process.exit(result.status ?? 1);
       assert.equal(held.budgetExpired, false);
       assert.equal(held.cleanup.label, 'observation');
       assert.equal(held.cleanup.nativeInterruptionClaimed, false);
+      // Codex overall review fix 2: a natural completion initiates NO
+      // termination, so no cleanup boundary is recorded — the marker branch
+      // keeps full native-settlement credit for such runs.
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null, 'a no-kill natural completion records no cleanup boundary');
       assert.equal(held.processAliveWhileHeld, true);
     });
 
@@ -6911,6 +6918,11 @@ process.exit(result.status ?? 1);
       });
       assert.equal(held.endedBeforeGate, true);
       assert.equal(held.cleanup.label, 'early-exit');
+      // Codex overall review fix 2: the early-exit termination path records
+      // the same wall-clock cleanup boundary at its initiation (the marker
+      // attribution branch consults it on EVERY termination path).
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the early-exit cleanup records its wall-clock initiation boundary');
+      assert.ok(Number.isFinite(held.cleanup.cleanupBoundaryAtMs) && held.cleanup.cleanupBoundaryAtMs > 0, 'the early-exit cleanup boundary is a real epoch-ms timestamp');
       assert.deepEqual(events, ['gate-released', 'exact-process-terminated', 'codex-terminated']);
       const before = pollIterations;
       await new Promise((resolve) => setTimeout(resolve, 60));
@@ -8576,10 +8588,13 @@ process.exit(result.status ?? 1);
       // Genuinely native cancellation: the SAME marker run WITHOUT budget
       // expiry keeps full credit — the boundary is the cleanup, not the
       // marker (an observation settled natively resolves the held wait
-      // before the deadline, so budgetExpired never fires).
+      // before the deadline, so budgetExpired never fires and NO termination
+      // is initiated: no boundary, no kill flags — a demonstrated kill
+      // without a recorded boundary fails closed under the overall-review
+      // fix-2 contract).
       const factsNative = mapShellWaitLiveFacts(
         { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
-        { ...heldExpired, budgetExpired: false, cleanup: { ...heldExpired.cleanup, label: 'observation' } },
+        { ...heldExpired, budgetExpired: false, cleanup: { ...heldExpired.cleanup, label: 'observation', verifiedProcessTerminated: false, codexTerminated: false } },
         interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
         null, null, interruptMappingFixture, rollouts, [], 'node launcher',
       );
@@ -8663,6 +8678,105 @@ process.exit(result.status ?? 1);
       const invalidBoundaryFacts = mapWith(heldWithBoundary(Number.NaN));
       assert.equal(invalidBoundaryFacts.interrupt.settled, null);
       assert.equal(invalidBoundaryFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+    });
+
+    test('the cleanup boundary binds EVERY termination path, not only budget expiry (overall review fix 2)', () => {
+      // Codex overall review P2 fix 2: a run that ends EARLY or FAILS before
+      // its budget expires still terminates the controlled processes — and a
+      // cancellation marker produced by THAT cleanup passed the attribution
+      // branch solely because `budgetExpired` was false, wrongly recording
+      // native settlement and latency. The driver now records the same
+      // wall-clock cleanup boundary on EVERY termination path (early exit,
+      // Status-deadline end, failure, budget expiry), and the marker branch
+      // consults it whenever a cleanup kill was INITIATED: a marker at/after
+      // any initiated boundary is the kill's resolution (unattributed), a
+      // marker strictly before it is genuine settlement, a kill demonstrably
+      // initiated without a recorded boundary fails closed, and a run with NO
+      // cleanup kill keeps full credit unchanged.
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const mapWith = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      // (a) EARLY-EXIT run whose cleanup kill initiated BEFORE the marker
+      // (boundary 00:00:11 < marker 00:00:12): the marker is the kill's
+      // resolution — unattributed, no latency — never native settlement.
+      const earlyExitWithBoundary = {
+        endedBeforeGate: true, budgetExpired: false, processAliveWhileHeld: null, result: { code: 1, stdout: '', stderr: '' },
+        cleanup: { label: 'early-exit', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:00:11.000Z') },
+        timeline: null,
+      };
+      const earlyExitFacts = mapWith(earlyExitWithBoundary);
+      assert.equal(earlyExitFacts.interrupt.settled, null, 'a marker produced by the early-exit cleanup kill is never native settlement');
+      assert.equal(earlyExitFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(earlyExitFacts.interrupt.deliveryToSettlementMs, null, 'the non-budget cleanup kill records no delivery-to-settlement latency either');
+      // (a2) FAIL-CLOSED: a cleanup kill demonstrably initiated (termination
+      // flags) but its boundary unrecorded (older records) — unattributed.
+      const earlyExitNoBoundary = {
+        ...earlyExitWithBoundary,
+        cleanup: { label: 'early-exit', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+      };
+      const noBoundaryEarlyExitFacts = mapWith(earlyExitNoBoundary);
+      assert.equal(noBoundaryEarlyExitFacts.interrupt.settled, null, 'a demonstrated kill without a recorded boundary never credits settlement');
+      assert.equal(noBoundaryEarlyExitFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      const failureNoBoundary = {
+        ...earlyExitNoBoundary,
+        endedBeforeGate: false,
+        cleanup: { label: 'failure', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+      };
+      const failureNoBoundaryFacts = mapWith(failureNoBoundary);
+      assert.equal(failureNoBoundaryFacts.interrupt.settled, null, 'a demonstrated host termination without a boundary fails closed on the failure path too');
+      // (b) A genuinely native cancellation in a run with NO cleanup kill
+      // (no boundary, no termination flags, budget not expired) keeps full
+      // credit unchanged.
+      const noCleanupRun = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const noCleanupFacts = mapWith(noCleanupRun);
+      assert.equal(noCleanupFacts.interrupt.settled, true, 'a run with no cleanup kill keeps native settlement credit');
+      assert.equal(noCleanupFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(noCleanupFacts.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12');
+      // (c) The budget-expiry boundary refinement (previous fix) stays green:
+      // a marker STRICTLY BEFORE the recorded budget-cleanup boundary is still
+      // credited.
+      const budgetPreBoundary = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+        timeline: null,
+      };
+      const budgetPreBoundaryFacts = mapWith(budgetPreBoundary);
+      assert.equal(budgetPreBoundaryFacts.interrupt.settled, true, 'the pre-boundary budget-cleanup credit (previous fix) is unchanged');
+      assert.equal(budgetPreBoundaryFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(budgetPreBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000);
+      // And a marker AT/AFTER a non-budget termination boundary behaves like
+      // the budget one: an early-exit boundary AFTER the marker (kill after
+      // settlement) is a genuine pre-cleanup settlement.
+      const earlyExitPostMarkerBoundary = {
+        ...earlyExitWithBoundary,
+        cleanup: { ...earlyExitWithBoundary.cleanup, cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+      };
+      const postMarkerBoundaryFacts = mapWith(earlyExitPostMarkerBoundary);
+      assert.equal(postMarkerBoundaryFacts.interrupt.settled, true, 'an early-exit kill initiated after the marker preserves the genuine settlement');
+      assert.equal(postMarkerBoundaryFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(postMarkerBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000);
     });
 
     test('cancellation settlement requires the CONFIRMED pending window (codex review round 8)', () => {
