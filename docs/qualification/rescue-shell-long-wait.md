@@ -7562,3 +7562,283 @@ NEW established cause and would exceed this plan's single-F allowance; it is out
   nothing was borrowed across labels. Raw records remain fixture-owned disposable /tmp state; only
   the bounded redacted typed facts above are retained. Production dirs, user configuration and the
   Codex source were READ-ONLY throughout.
+
+## 17.14 2026-10-18 release-qualification Task 5 continuation: component compatibility and Gate E blast radius (N, BG, RV, AR, ST; G recheck — five live launches, zero retries)
+
+**Provenance (re-verified before EACH of the five launches).** Binary
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+`codex-cli 0.163.0`, SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`
+(identical on all five pre-launch checks and in every record's `codexBinarySha256`); plugin HEAD
+`080832e485563ca7c1c63ada370775d7d77fe250` (= every record's `sourceSha`; `sourcesChangedDuringRun:
+false` everywhere); Codex source `dffa0deb69268ed4ac31578794c9ea897b336ae3` clean (read-only);
+model `gpt-6.1-sol` re-confirmed through the read-only authenticated catalog (`priority 0`,
+`visibility "list"`) — the catalog re-renumbered again during the account resets (0 at
+§15.5/§16.1 → 1 recorded at §17.1/§17.8/§17.10 → 0 at this Task 5 pin; same 9-entry/7-visible
+entry set, same rank-1 model). Shared flags on every launch:
+`--wait-policy config-default --exec-default-ms 3600000 --cap-ms 3600000` + both diagnostic flags;
+observer digest `5f4bb770…` on all five records (unchanged from F); candidate-paragraph cases carry
+the normalized instruction hashes `2ea76cf0…`/`5800e3ab…` byte-identical to L/R/I1/F. Every driver
+exited 0 with `status: "executed"`; zero validation errors; every fixture disposed with zero cleanup
+errors; `nativeInterruptionClaimed: false` everywhere.
+
+### 17.14.1 N adjudication (rescue-noise, candidate paragraph; record `/tmp/shell-wait-release-n.SWBEXr/rescue-noise.record.json`)
+
+Registered command: `--case rescue-noise --worker-duration-ms 130000 --poll-ms 3600000 --budget-ms
+360000 --cap-ms 3600000` + shared flags; fresh mktemp output; the §16.6 frozen durations verified
+against `shellWaitCaseDefaults` (130000/3600000/360000) and passed explicitly. `inconclusive: null`.
+
+- **Original handle**: `route.actual: "named"`; `mode: "rescue"`, child `01a14ec6-3572-7df2-842d-ca9d454add41`,
+  parent `01a14ec5-b564-7cf1-8950-e0c18631c7ec`, launch 1 / send 1, `originalHandleChecked: true`.
+  The record's two child tool calls are the launcher `exec_command` and ONE empty-input
+  `write_stdin {session_id: 88144, chars: "", yield_time_ms: 3600000}` on that same handle — no
+  foreign-handle poll, no characters sent.
+- **Exact terminal bytes: honestly UNESTABLISHED** — `exactTerminalMatch {matched: null, reason:
+  "stdout-stream-attribution-unavailable"}`, the same merged-stream limit as L/R/B/M (§17.8 item 1).
+  Legacy-scope positives retained separately: `publicResultMatchedSentinel: true`, process/host exit 0,
+  child settlement OBSERVED (`basis: "exact-launch-handle-linked-completed-exit-code-output"`,
+  `remoteTerminal: true`, `localProcessReaping: "natural-exit-observed"`).
+- **No extra re-entry attributable to ordinary output**: the case's noise seam
+  (`FAKE_ZCODE_STDERR_BYTES 4096`, `FAKE_ZCODE_SESSION_PROGRESS terminal`) produced cadence
+  counts identical to the candidate core: ONE inner observation (`pollWallTimesMs: [98400]`,
+  decisive first return 98442 ms, state `completed`, surface `code-mode-wrapper`, explicit yield
+  absent, requested window 3600000), ZERO outer continuations, `modelCalls: 2`, `pendingInnerAtEnd:
+  false` — the child completed naturally ~98.4 s into the single long poll. Ordinary output did not
+  end the observation early and did not cause any additional observation re-entry (L/R carried the
+  same 1-observation shape).
+- **Explicit preemption/input distinguished from noise**: `interrupt.requested/attempted: false`,
+  `callCount: 0`; the single poll carried `chars: ""`. No preemption or input event exists in the
+  record — the only output-side variable was the case's defined noise, and it is the run's ONLY
+  difference from L's shape (same paragraph hashes, same policy/hosts).
+- **Sidecar/Status intents**: the child issued NO Status call (`childToolCallCount: 2`, both
+  excerpts above) — there is no trimmed no-argument Status intent to preserve in this run and no
+  sidecar mutation to adjudicate. The one between-polls opportunity EXISTED (the single 98.4-s
+  poll interval) and was not exercised: sidecar response latency is NOT MEASURABLE from this run
+  (lack of opportunity — recorded, never zero). No parallel poll ran, no polling loop was hidden,
+  and Status was never used as terminal observation.
+- Recorded without interpretation: `rootJoins: 3` (L/R carried 1; §17.8 item 4's rule stands —
+  counts only, mechanism not established); fixture `setupAttempts: 2` (session established on the
+  second attempt, declared internal fixture work under this label); hold ran to the gate
+  (`endedBeforeGate: false`, cleanup label `child-settlement-observed`, gate released).
+
+**N verdict: executed cleanly; noise compatibility POSITIVE on this single run** (no extra
+re-entry, no early observation end, natural settlement inside the long window), with exact terminal
+bytes and sidecar latency explicitly unestablished.
+
+### 17.14.2 BG adjudication (background, candidate paragraph; record `/tmp/shell-wait-release-bg.L4bvXN/background.record.json`)
+
+Registered command: `--case background --worker-duration-ms 120000 --poll-ms 3600000 --budget-ms
+300000 --cap-ms 3600000` + shared flags; the §16.6 frozen durations verified against
+`shellWaitCaseDefaults` (120000/3600000/300000) and passed explicitly. Driver exit 0, but the
+exported record is **`inconclusive`** — the evidence collection failed closed.
+
+- **Root's acknowledgement is recorded as acknowledgement ONLY, never business completion**: the
+  explicit `--background` Root acknowledged at elapsed 39611 ms; the background flow then kept the
+  held turn open for the Child-side settlement watch for the ENTIRE remaining budget (ended
+  300037 ms at the budget deadline) — the acknowledgement did NOT end the turn early, did NOT kill
+  the worker early, and did NOT open the worker completion gate (`endedBeforeGate: false`; the
+  gate released only at cleanup).
+- **Zero Root joins: NOT verifiably established** — `rootJoins: null` (unestablished, never zero):
+  the evidence collection did not complete, so no joins count is claimable in either direction.
+- **Child-side terminal observation/settlement: NOT OBSERVED** — `route.actual: null`, linkage all
+  null, `child.settlement.observed: false`, `settlementDetectedAtElapsedMs: null`, every
+  observation field null/`"unknown"`. The fail-closed cause (verbatim): `unsupported-call-shape: A
+  collected tool call does not match a supported shape (direct call, simple wrapper, or linked
+  outer continuation); the case needs manual adjudication.` — ONE 243-byte, 2-line `exec_command`
+  cell classified `unclassified-script-cell` (line-1 prefix `const-r-await`, shape head
+  `bound-await`, `sha256 391293d6a3b608fc2a674ba045e1edbb8b4c9196db3a351ba1abbd5d72e55c43`,
+  content withheld by the pinned scrubber).
+- **Cleanup separation preserved**: the end was `budget-cleanup` with `codexTerminated: true` — a
+  cleanup kill, never native cancellation, never converted into a settlement fact; zero cleanup
+  errors, fixture disposed.
+
+**BG verdict: explicit-background placement compatibility NOT PROVEN on this run.** The one
+registered launch is spent; the unclassified-cell family (§13.6's adjudicated retention limit) is
+the recorded blocker — no retry, no parser expansion. Per the plan's rule, NO blanket family
+inference is drawn from BG: the small foreground/no-flag and complex no-flag detached placement
+semantics are carried by the offline controlled regressions (§17.14.6), not by BG.
+
+### 17.14.3 RV / AR / ST: per-surface determination, runs and outcomes
+
+**Strict retained-evidence determination (made BEFORE the launches).** The proposed adoption's
+blast radius on these surfaces is the numeric outer default (3600000) in HOST effective config
+applied alongside canonical command paragraphs (`canonical-host-config`). Examined retained
+evidence per surface: the §13.7-era qualified adversarial-review-wait and status-wait runs were on
+binary 0.162.1 under the §13–14-era directive-led (`// @exec` pragma) observation mechanisms
+(§17.6's characterization), NOT the candidate host-config transport (config-default policy label +
+host argv `-c features.code_mode.default_exec_yield_time_ms` + fixture-home cap key) — pragma-era
+evidence on a different pin is not host-config evidence; §9.4's R5 runs (0.161.0) are older and
+`not-proven`; §15 contains NO Root-command live runs at all (C0/C1 were Child-side
+rescue-baseline-family runs at exec-default 30000/240000). §16.6 itself classifies the
+canonical-paragraph+host-config combination as NEW (Task 2) — by construction no retained run
+combines it (the same ground on which B was spent). **Therefore RV, AR and ST each lacked
+genuinely matching retained evidence and each conditional label was spent by ONE launch** (no
+surface skipped, none doubled).
+
+All three records: `fixtureVariant: "baseline"`, paragraph treatment `canonical-host-config` with
+`canonicalParagraphProvenance` ("the delivered instructions are the byte-identical installed
+canonical waiting paragraph; the config-default candidate paragraph was not applied and its hash is
+never recorded here"), `commandSkillVariants.variant: "baseline"` with before==after hashes on all
+three command skills and `differences: []` — **canonical command paragraphs verified in-record**;
+cap key `background_terminal_max_timeout` = 3600000 `capVerified: true`; exec-default 3600000 via
+the host argv override; canonical named-role-template and generic-skill artifacts before==after.
+
+- **RV — `review-wait`** (`/tmp/shell-wait-release-rv.JWlxV1/review-wait.record.json`):
+  `inconclusive` — "the host ended before the held completion boundary; the pending-observation
+  claim is inconclusive for this run." Flow facts: `mode: "root"`, rootThreadId
+  `01a14ecf-1ba3-7f73-b3b0-32b340cbb50d`, `companionLaunchCount: 1`, `companionSendCount: 0`, zero
+  polls (`pollWallTimesMs: []`), `modelCalls: 1`, host exit 0 at elapsed 16167 ms, cleanup label
+  `early-exit`. This is the §13.7-traced command-side NO-SEND EARLY EXIT shape (the command reached
+  its own terminal without ever sending the review turn, so the gate-held observation never
+  existed): per the plan it is NOT a shell-waiting failure and NOT authority to edit production.
+  The candidate host-config transport itself applied without any host error (exit 0, zero cleanup
+  errors). **RV verdict: not qualified — no pending observation existed to qualify; the known
+  early-exit cause is reconfirmed at this pin under the candidate policy.**
+- **AR — `adversarial-review-wait`** (`/tmp/shell-wait-release-ar.I0vZCO/adversarial-review-wait.record.json`):
+  `inconclusive: null` — a clean end-to-end Root-side compatibility observation under the candidate
+  transport: launch 1 / send 1 on the original handle (`originalHandleChecked: true`), TWO
+  canonical-paragraph 60000-window observations on that handle (`pollWallTimesMs: [60000, 36600]`,
+  both `write_stdin {chars: "", yield_time_ms: 60000}` on session 39717; decisive first return
+  60012 ms, state `completed`, surface `code-mode-wrapper`, explicit yield absent,
+  `inner-cap-live-handle`), `processExit: 0`, host exit 0, rendered-findings-document marker check
+  passed (`resultCheck: "command-rendered-result-markers"` — the §13.7-corrected narrower basis),
+  natural completion (ended 148664 ms, `endedBeforeGate: false`, cleanup label `observation`),
+  NO termination (`codexTerminated: false`), zero cleanup errors. Single run; no repeat claimed.
+  **AR verdict: compatible on this single current-pin run under the candidate policy.**
+- **ST — `status-wait`** (`/tmp/shell-wait-release-st.Ms76RA/status-wait.record.json`):
+  `inconclusive: null` — the owned SAME-SESSION launch/query path executed cleanly: the turn-1
+  `$zcode:review --background` acknowledgement reserved job
+  `3f9b8381f98d73ff8334801e6c0c2beee1639075b6edc5f1b0cf065da04165eb` (single distinct id, both
+  extraction sides), the turn-2 Status query ran in the SAME session
+  (`launchSessionId == querySessionId == 01a14ed3-9349-78c2-92c4-88446ada492f`) against the exact
+  same id (`validation.valid: true`), carrying the explicit `--status-query-timeout-ms 240000`
+  deadline as a separate driver-level fact (distinct from the 3600000 observation window;
+  `requestedStatusQueryTimeoutMs: 240000` in-record). The query observed with two canonical
+  60000-window polls on the original handle (session 25519), and the flow completed naturally
+  (`processExit: 0`, host exit 0, rendered-markers basis passed, ended 163601 ms, no termination,
+  zero cleanup errors) — the wait ENDED inside its deadline WITHOUT any cancel/stop call, and the
+  job's lifecycle was never touched by the probe. **ST verdict: compatible on this single
+  current-pin run**; the documented unsupported native Status-cancellation limit stands separately
+  stated (unchanged from §13.7 — no supported native interaction owns a Root session's own running
+  observation; nothing was invented).
+
+**Per-command boundaries kept: no old pragma-based Root observation is claimed to qualify the new
+shared default, and AR/ST's single-run observations are not family-wide proofs.**
+
+### 17.14.4 G recheck (label G — NOT SPENT; read-only, no launch)
+
+The §13.8 structural unreachability cause RE-VERIFIES at the current pins, unchanged:
+
+- Pinned source `dffa0deb` (clean, read-only): `create_spawn_agent_tool_v2`
+  (`core/src/tools/handlers/multi_agents_spec.rs`) still removes `agent_type` from the tool
+  properties iff `!options.expose_agent_type`; BOTH the V2 and V1 spawn-agent registrations
+  (`core/src/tools/spec_plan.rs:1466` and `:1554`) still set
+  `expose_agent_type: !turn_context.config.agent_roles.is_empty()` — the schema exposes
+  `agent_type` exactly when at least one agent Role is configured.
+- Production preflight (repository text, read-only): `scripts/lib/managed-agent-role.mjs` admits
+  `status: 'ready'` only with the managed Rescue Role registered — and that registration IS an
+  `agent_roles` entry; `skills/rescue/SKILL.md` L126–148 mandates named when the schema exposes
+  `agent_type` and permits the generic route only on a proven pre-child `agent_type` FIELD
+  rejection (a Role-VALUE rejection fails closed).
+
+Restated at the current pin: every route-decision-capable host state (preflight `ready`) has at
+least one agent Role configured — the managed Rescue Role itself — so the V2 schema exposes
+`agent_type` and named is mandated; the exposing-free state (empty `agent_roles`) fails preflight
+before any preparation exists. A generic observation would require a genuinely changed host/form;
+none is observed. **G stays UNSPENT with the structural reason preserved; nothing was forced, no
+fallback was exercised.**
+
+### 17.14.5 Gate E component statuses and the deployment blast-radius matrix
+
+Gate E ("unchanged controlled negatives and ceilings plus declared noise/placement/sidecar/
+per-command evidence; unqualified surfaces explicitly excluded") — component statuses:
+
+| Gate E component | Status at this pin | Basis |
+| --- | --- | --- |
+| Controlled negatives and ceilings (unchanged contracts) | PRESERVED (offline) | Placement/queue set 243/243 + full shell-research 688/688 (§17.14.6); zero production edits |
+| Noise (ordinary output vs observation) | POSITIVE, single run (N) | 4096-byte stderr + terminal progress caused NO extra re-entry (1 inner observation, 0 outer continuations) and no early observation end; exact terminal bytes stay unestablished (merged streams) |
+| Explicit `--background` placement | NOT QUALIFIED (BG) | Root acknowledgement ≠ completion (acknowledgement-only at 39611 ms; gate held to the 300000-ms budget); Root joins unestablished (null, not zero); Child-side settlement unobserved — evidence failed closed on a 243-byte unclassified `exec_command` cell; budget-cleanup termination kept a cleanup fact |
+| Broader placement matrix (small foreground/no-flag; complex no-flag detached) | OFFLINE ONLY | Controlled regressions (`args` placement-flag exclusivity/default attached foreground; `rescue-runner-entry` foreground-placement+detached-evidence admission; `background-worker` detached; `job-control` queue) all green — NOT asserted live from BG |
+| Status sidecar | STRUCTURAL + unused opportunity (N) | No Child Status intent occurred; the single between-polls opportunity was not exercised; sidecar latency NOT MEASURABLE (lack of opportunity, recorded — never zero); structural sidecar policy unchanged in the shell-research suites |
+| Per-command compatibility under the host-config transport | RV not qualified; AR and ST compatible, single run each | §17.14.3 — canonical paragraphs verified in-record; RV's no-send early exit reconfirmed (not a shell-waiting failure); AR end-to-end natural completion; ST same-session owned query with the deadline separate and no cancellation |
+| Generic route | STRUCTURALLY UNREACHABLE (G unspent) | §17.14.4 restatement at `dffa0deb` |
+| Native interruption/settlement | BLOCKED (unchanged from §17.12) | Gate D remains blocked at every layer; Task 5 ran no interrupt launch |
+
+**Deployment blast-radius matrix (the numeric outer default lives in HOST effective config, not the
+Role whitelist; no fictional Role-scoped numeric override exists):**
+
+| Surface | Current-pin standing under a proposed shared-default adoption |
+| --- | --- |
+| Managed Rescue foreground observation cadence (M/L/R/B core) | Measured (Gates A/C pass; Gate B fail-closed inconclusive on exact terminal bytes; §17.7) |
+| Noise compatibility | Qualified by N (single run; terminal bytes unestablished) |
+| Explicit `--background` placement | NOT qualified (BG fail-closed) |
+| Root-owned Adversarial Review | Retained-evidence match REJECTED (pragma-era, 0.162.1); qualified by the AR run (single run, canonical paragraph, host-config transport) |
+| Root-owned Status | Retained-evidence match REJECTED (same grounds); qualified by the ST run (single run; native cancellation remains a stated limit) |
+| Root-owned Review | NOT qualified (RV: known no-send early exit — no held observation existed; cause reconfirmed, production untouched) |
+| Generic route | Structurally unreachable; excluded (G preserved) |
+| Exact terminal-byte linkage | Unestablished on EVERY record (merged-stream limit) |
+| Native interruption/settlement | Gate D BLOCKED (§17.12) |
+
+Per the plan's Task 5 exit rule: these compatibility negatives do not erase the positive core
+measurements (N, AR, ST, and the Task 3 cadence result), but the unqualified affected surfaces —
+explicit background placement, Review's undemonstrable held observation, native
+interruption/settlement, exact terminal linkage, and the unreachable generic route — CANNOT be
+hidden behind a blanket production recommendation. The narrower isolable surface through supported
+configuration: the waiting-PARAGRAPH half of the candidate is a per-Role template artifact
+(deployable scoped to the managed Rescue Role, with its explicit per-call windows), while the
+numeric outer-default half is host-global host config with NO supported Role-scoped override — any
+deployment requiring the raised host default reaches Root-owned Review/Adversarial Review/Status
+and every other code-mode consumer, of which AR and ST carry current-pin compatibility
+observations and RV does not.
+
+### 17.14.6 Controlled regressions after the live trials (offline; zero launches)
+
+- Placement/queue controlled set (the plan's "small foreground/no-flag and complex no-flag
+  detached semantics through existing controlled placement/queue regressions"; the named candidate
+  files `tests/rescue-placement-semantics-parity.test.mjs`/`tests/rescue-queue.test.mjs` do not
+  exist — the actual placement/queue suites were located and used):
+  `node --test tests/args.test.mjs tests/rescue-runner-entry.test.mjs tests/background-worker.test.mjs
+  tests/job-control.test.mjs` → **243/243 pass, 0 fail, 0 skipped, exit 0**.
+- Full `npm run test:shell-research` → **688/688 across 61 suites, 0 fail, 0 skipped, exit 0**
+  (identical to the Task 4 post-trial rerun, §17.10.4).
+
+### 17.14.7 Anomalies (verbatim facts, no interpretation beyond the typed record)
+
+1. BG (record `background.record.json`): `unsupported-call-shape: A collected tool call does not
+   match a supported shape (direct call, simple wrapper, or linked outer continuation); the case
+   needs manual adjudication.` — ONE `exec_command` cell, `unclassified-script-cell`, 243 input
+   bytes, 2 lines, line-1 prefix `const-r-await`, shape head `bound-await`,
+   `sha256 391293d6a3b608fc2a674ba045e1edbb8b4c9196db3a351ba1abbd5d72e55c43`, raw content withheld
+   by the pinned scrubber. Same retention-design family as §13.6/§17.12; no parser expansion.
+2. AR (record `adversarial-review-wait.record.json`): ONE `pre-launch-diagnostic` excerpt with
+   `{"suppressed":"unclassified command content withheld","length":172}` — retained as a
+   suppressed diagnostic only; it did NOT fail the evidence collection (`inconclusive: null`).
+3. All five runs: fixture `isolatedSetup.setupAttempts: 2` (session established on the second
+   attempt; `roleStatus: "ready"`, `capVerified: true`, zero cleanup errors, fixture disposed on
+   every path). Declared internal fixture work under each spent label.
+4. RV (record `review-wait.record.json`): `inconclusive` — "the host ended before the held
+   completion boundary; the pending-observation claim is inconclusive for this run" — the
+   §13.7-traced no-send early-exit shape (launch 1 / send 0 / zero polls, host exit 0 at
+   16167 ms), with the cleanup-side `held.processTermination.codexTerminated: true` at the
+   early exit — a cleanup kill, never native cancellation or settlement (the parallel of
+   item 5; §17.14.3's "no termination" claims are scoped to AR/ST, whose records carry
+   `codexTerminated: false`).
+5. BG `held.processTermination.codexTerminated: true` at the budget deadline — a cleanup fact,
+   never native cancellation or settlement.
+6. N `rootJoins: 3` vs L/R's 1 — recorded as a count only (§17.8 item 4's no-mechanism rule).
+7. ST `held.timeline.launchedAtElapsedMs: 16013` — the two-turn case's held-turn clock (turn 2);
+   the one declared case consumed both turns per §3.
+
+### 17.14.8 Ledger accounting after Task 5 (plan §3)
+
+- Labels SPENT: **M, L, R, B** (Task 3), **I0, I1** (Task 4), **F** (§17.11→§17.12) and now
+  **N, BG** (unconditional Task 5 launches) and the conditional **RV, AR, ST** (each spent: no
+  genuinely matching retained evidence under the candidate host-config policy — §17.14.3's strict
+  determination). FIVE launches this sub-part, one per spent label, zero retries, zero extra
+  diagnostic turns; every driver exited 0.
+- Labels NOT SPENT: **G only** — preserved unavailable, the §13.8 structural cause restated at the
+  current pins (§17.14.4); never forced.
+- Ledger total: **12 of the 13 logical cases consumed; 1 remains (G's preserved unavailable
+  label).** Old campaign quotas remain closed; nothing was borrowed across labels. Raw records
+  remain fixture-owned disposable /tmp state; only the bounded redacted typed facts above are
+  retained. Production dirs, user configuration and the Codex source were READ-ONLY throughout
+  Task 5.
