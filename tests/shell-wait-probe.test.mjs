@@ -15798,7 +15798,7 @@ process.exit(result.status ?? 1);
             selector: 'progress-terminal',
             script: 'survival-control.mjs',
             scriptSha256: 'e'.repeat(64),
-            lineCount: 30,
+            lineCount: 60,
             cadenceMs: 2000,
             linePrefix: 'zcode-survival-control',
             designedExitCode: 0,
@@ -15859,10 +15859,10 @@ process.exit(result.status ?? 1);
     // Report §16.6/§16.4: the baseline+policy fixture combination keeps the
     // CANONICAL waiting paragraph and records canonical provenance (never the
     // candidate paragraph's hash), and the I1 survival control is a
-    // fixture-owned bounded script (30 unique tagged lines at a fixed 2000 ms
+    // fixture-owned bounded script (60 unique tagged lines at a fixed 2000 ms
     // cadence, natural exit 0) whose bytes and closed facts are recorded
     // without any private path.
-    const { createShellWaitFixture, normalizeFixtureInstructionText } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { createShellWaitFixture, normalizeFixtureInstructionText, SURVIVAL_CONTROL_LINE_COUNT } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
     const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
@@ -15952,7 +15952,7 @@ process.exit(result.status ?? 1);
       assert.match(scriptBytes, /zcode-survival-control/u, 'the fixture-owned script must carry the declared line prefix');
       const block = fixture.record.survivalControl;
       assert.equal(block.selector, 'progress-terminal');
-      assert.equal(block.lineCount, 30);
+      assert.equal(block.lineCount, 60, 'the extended design: 60 lines at 2000 ms (~120 s) covers the observed 57.6–72.1 s poll starts (report §16.4 revision)');
       assert.equal(block.cadenceMs, 2000);
       assert.equal(block.linePrefix, 'zcode-survival-control');
       assert.equal(block.designedExitCode, 0, 'the exit code is a DESIGN constant of the fixture-owned script, never a measured outcome');
@@ -16007,7 +16007,7 @@ process.exit(result.status ?? 1);
       // the measured window the script can never have produced MORE lines
       // than its schedule allows (+ a small scheduling tolerance), and two
       // lines are guaranteed short of absurd multi-second stalls.
-      const maximumBySchedule = Math.min(30, Math.floor(elapsedMs / 2000) + 2);
+      const maximumBySchedule = Math.min(SURVIVAL_CONTROL_LINE_COUNT, Math.floor(elapsedMs / 2000) + 2);
       assert.ok(lines.length >= 2 && lines.length <= maximumBySchedule,
         `the observed line count must be consistent with the 2000 ms cadence over ${String(elapsedMs)} ms (got ${String(lines.length)}, allowed max ${String(maximumBySchedule)})`);
       lines.forEach((line, lineIndex) => {
@@ -16696,8 +16696,8 @@ process.exit(result.status ?? 1);
     /** The ONE interrupt interaction attributed by the SAME machinery as the main interrupt oracle. */
     const interactionFor = (rollouts) => extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER });
 
-    test('the fixture prompt directive launches the fixture-owned control on its own handle inside the same Root turn', () => {
-      assert.equal(SURVIVAL_CONTROL_LINE_COUNT, 30);
+    test('the fixture prompt directive coordinates interrupt readiness through the control clock, never through the child handle (post-F codex review fix)', () => {
+      assert.equal(SURVIVAL_CONTROL_LINE_COUNT, 60, 'the extended control design: 60 lines at the fixed 2000-ms cadence (~120 s), covering the observed 57.6–72.1 s poll starts with coordination margin');
       const directive = survivalControlPromptDirective(CONTROL_PATH);
       assert.match(directive, /exec_command/u, 'the control is launched through the ordinary exec_command seam');
       assert.match(directive, new RegExp(`${CONTROL_PATH.replaceAll('/', '/')}|${escapeRegExp(CONTROL_PATH)}`), 'the directive names the fixture-owned script path');
@@ -16708,30 +16708,58 @@ process.exit(result.status ?? 1);
       assert.match(directive, /before the interrupt|first read/i, 'a bounded read is required before the interrupt');
       assert.match(directive, /after the interrupt|one final time/i, 'a bounded read is required after the interrupt');
       assert.match(directive, /verbatim/i, 'the reads are reported verbatim for emission-tag decoding');
-      // The F cause-directed sequencing registration (report §17.11, preregistered
-      // BEFORE the F launch): the directive must require, explicitly IN ORDER,
-      // (1) the child's long empty-input write_stdin observation (the registered
-      // 3600000 window) with its pending acknowledgment, (2) the §16.4
-      // pre-delivery progress-program read (fresh mid-run line below the line
-      // count), (3) the exactly-one interrupt_agent call carrying the EXACT
-      // full agent id copied from the spawn acknowledgement — the ordering the
-      // I0/I1 records showed missing (both interrupts landed before any
-      // attributable child poll, with unclassified 23-char targets).
-      assert.match(directive, /strictly in (this )?order/iu, 'the three interrupt-flow steps are declared ordered');
-      assert.match(directive, /empty-input write_stdin[^.]*3600000/u, 'step 1 requires the child long empty-input write_stdin at the registered 3600000 window');
-      assert.match(directive, /pending acknowledgment/iu, 'step 1 requires observing the pending acknowledgment');
-      assert.match(directive, /fresh progress line[^.]*below the (program's )?line count/iu, 'step 2 keeps the §16.4 pre-delivery read with a fresh mid-run line below the line count');
-      assert.match(directive, /EXACT full agent id/iu, 'step 3 requires the EXACT full agent id');
-      assert.match(directive, /copied from the spawn acknowledgement/iu, 'step 3 anchors the target to the spawn acknowledgement');
+      // Codex review fix (post-F, findings 1+2): Root's tools CANNOT operate
+      // the CHILD's session handles or pending cells, so the former STEP 1
+      // (Root delivers and observes the child's write_stdin) was
+      // architecturally impossible and is GONE. The child's long poll stays
+      // child-owned — driven by the child's own registered candidate
+      // paragraph — and the directive never mentions the registered
+      // 3600000 child window at all.
+      assert.doesNotMatch(directive, /3600000/u, 'the child-owned 3600000 poll window never enters the Root directive');
+      assert.doesNotMatch(directive, /deliver the child/iu, 'Root is never asked to deliver the child\'s observation');
+      assert.doesNotMatch(directive, /child's (?:long )?empty-input/u, 'no clause instructs Root to drive the child\'s empty-input write_stdin');
+      // The F-cause ordering (interrupt only after preparation) is KEPT, but
+      // re-grounded entirely in Root's OWN supported tools as five strictly
+      // ordered steps (A)-(E).
+      assert.match(directive, /strictly in this order/iu, 'the five interrupt-flow steps are declared strictly ordered');
+      // (A) spawn the Rescue child exactly as before and retain the EXACT
+      // full agent id from the spawn acknowledgement.
+      assert.match(directive, /spawn the Rescue child/u, 'step A keeps the ordinary child spawn');
+      assert.match(directive, /EXACT full agent id/u, 'step A retains the exact full agent id');
+      assert.match(directive, /spawn acknowledgement/u, 'the interrupt target anchors to the spawn acknowledgement');
+      // (B) the control launches IMMEDIATELY AFTER the child launch so its
+      // lifetime covers the delivery coordination (review finding 2).
+      assert.match(directive, /immediately after the child launch/iu, 'the control launch is ordered after the child launch');
+      // (C) readiness coordination through the control clock: bounded
+      // fresh-line reads until the readiness floor (index >= 40, ~80 s after
+      // control start in the extended design) — an observer-coordination
+      // approximation of the child's poll-start window, never a claim of
+      // observing the child's poll.
+      assert.match(directive, /readiness/iu, 'a named readiness-coordination step exists');
+      assert.match(directive, /yield_time_ms 1000/u, 'every control read is bounded at yield_time_ms 1000');
+      assert.match(directive, /fresh progress line/u, 'each readiness read requires a fresh line');
+      assert.match(directive, /index is at least 40/u, 'the readiness floor is line index 40 in the extended 60-line design');
+      assert.match(directive, /approximately 80 seconds/iu, 'the floor is stated as ~80 s after the control start');
+      assert.match(directive, /observer-coordination approximation/iu, 'the floor is recorded as an observer-coordination approximation');
+      assert.match(directive, /NOT an observation of the child's poll|never a claim of observing the child's poll/iu, 'the floor never claims to observe the child poll');
+      // (D) the §16.4 pre-delivery read stays: one more fresh mid-run read
+      // ordered before the interrupt.
+      assert.match(directive, /below the (?:program's )?line count/iu, 'step D keeps the fresh mid-run line below the line count');
+      // (E) the exactly-one interrupt carries the EXACT full agent id copied
+      // from the spawn acknowledgement — never shortened or guessed.
+      assert.match(directive, /exactly-one interrupt_agent/u, 'step E is the exactly-one interrupt delivery');
+      assert.match(directive, /never a shortened, paraphrased, or guessed target/u, 'the target is never shortened, paraphrased, or guessed');
+      // Strict (A)-(E) textual ordering: spawn, control launch, readiness
+      // floor, pre-delivery read, interrupt.
       const step1At = directive.indexOf('STEP 1');
       const step2At = directive.indexOf('STEP 2');
       const step3At = directive.indexOf('STEP 3');
-      assert.notEqual(step1At, -1, 'step 1 is present');
-      assert.notEqual(step2At, -1, 'step 2 is present');
-      assert.notEqual(step3At, -1, 'step 3 is present');
-      assert.ok(step1At < step2At && step2At < step3At, 'the poll-establishment, pre-delivery read and interrupt steps appear strictly in order');
+      const step4At = directive.indexOf('STEP 4');
+      const step5At = directive.indexOf('STEP 5');
+      assert.ok(step1At !== -1 && step2At !== -1 && step3At !== -1 && step4At !== -1 && step5At !== -1, 'all five steps are present');
+      assert.ok(step1At < step2At && step2At < step3At && step3At < step4At && step4At < step5At, 'the five steps appear strictly in order');
       const interruptClauseAt = directive.indexOf('interrupt_agent');
-      assert.ok(step1At < interruptClauseAt && step2At < interruptClauseAt, 'the interrupt delivery is textually sequenced AFTER establishing the pending poll and the pre-delivery read');
+      assert.ok(step3At < interruptClauseAt && step4At < interruptClauseAt, 'the interrupt delivery is textually sequenced AFTER the readiness floor and the pre-delivery read');
       assert.throws(() => survivalControlPromptDirective('relative/path.mjs'), /absolute/i);
       assert.throws(() => survivalControlPromptDirective(''), /absolute/i);
     });
@@ -16749,7 +16777,7 @@ process.exit(result.status ?? 1);
       // have been killed.
       assert.equal(facts.deliveryBoundTag, 5_500 - 1_000, 'deliveryBoundTag = settled-delivery event time − launch event time');
       assert.deepEqual(facts.emittedLines, Array.from({ length: 13 }, (_, index) => ({ index: index + 1, tag: index * 400 })));
-      assert.deepEqual(facts.completionMarker, null, 'the 30th line never appeared: no completion marker');
+      assert.deepEqual(facts.completionMarker, null, 'the declared final line never appeared: no completion marker');
       assert.deepEqual(facts.beforeDeliveryRead, { observed: true, lastLineIndex: 12, orderedBeforeInterrupt: true });
       assert.deepEqual(facts.postDeliveryRead, { occurred: true, readable: true, returnedLines: true }, 'line 13 carries tag 4800 > 4500: the post-SETTLEMENT read collected the newest emission');
     });
@@ -16866,15 +16894,15 @@ process.exit(result.status ?? 1);
       assert.deepEqual(exitedFacts.postDeliveryRead, { occurred: true, readable: true, returnedLines: false });
       assert.equal(exitedFacts.controlExitObserved, true, 'the post-settlement read observed the control exit');
       // Round 11: the exit was observed while only lines 1..12 existed —
-      // BEFORE the designed line-30 completion: a PREMATURE/mid-run exit.
+      // BEFORE the designed final-line completion: a PREMATURE/mid-run exit.
       assert.equal(exitedFacts.controlExitPremature, true);
       const runningFacts = extractSurvivalControlFacts(i1Rollouts({ postReadLineCount: 12 }), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts({ postReadLineCount: 12 })), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.deepEqual(runningFacts.postDeliveryRead, { occurred: true, readable: true, returnedLines: false });
       assert.equal(runningFacts.controlExitObserved, false, 'a readable read without an exit establishes no loss');
-      // The DESIGNED completion read returns all 30 lines with the exit —
-      // NOT premature.
-      const designedExit = i1Rollouts({ postReadLineCount: 30 }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
-        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(30), exit_code: 0 }) }] })
+      // The DESIGNED completion read returns all declared lines (60 in the
+      // extended design) with the exit — NOT premature.
+      const designedExit = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] })
         : event));
       const designedFacts = extractSurvivalControlFacts(designedExit, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(designedExit), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.equal(designedFacts.controlExitObserved, true);
@@ -17313,17 +17341,17 @@ process.exit(result.status ?? 1);
       const mismatchFacts = extractSurvivalControlFacts(mismatchRollouts, spacedPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(mismatchRollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.equal(mismatchFacts.launched, false, 'a non-canonical quoting form never attributes');
       // Round 14: pre-delivery completion evidence — the read that returned
-      // the completion marker (line 30) must itself have COMPLETED before
-      // the interrupt request.
-      const earlyCompletionRead = i1Rollouts({ postReadLineCount: 30 }).map((events) => events.map((event) => {
+      // the completion marker (the declared final line, 60 in the extended
+      // design) must itself have COMPLETED before the interrupt request.
+      const earlyCompletionRead = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => {
         if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call') return at(3_000, event.payload);
-        if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output') return at(3_500, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(30), exit_code: 0 }) }] });
+        if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output') return at(3_500, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] });
         return event;
       }));
       const earlyFacts = extractSurvivalControlFacts(earlyCompletionRead, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(earlyCompletionRead), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.equal(earlyFacts.completionBeforeDeliveryObserved, true, 'the marker-returning read completed before the request');
-      const lateCompletionRead = i1Rollouts({ postReadLineCount: 30 }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
-        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(30), exit_code: 0 }) }] })
+      const lateCompletionRead = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] })
         : event));
       const lateFacts = extractSurvivalControlFacts(lateCompletionRead, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(lateCompletionRead), exactTargetMatch: true, childThreadId: CHILD_THREAD });
       assert.equal(lateFacts.completionBeforeDeliveryObserved, false, 'a marker returned after the request is not pre-delivery evidence');

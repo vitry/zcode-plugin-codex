@@ -112,6 +112,12 @@ Maximum **13 logical cases** (12 initial labels plus one shared F), NOT a claim 
 > no-collateral is not qualified (`control-not-root-owned` — ownership unresolvable without the
 > child thread id). F is SPENT; Gate D remains BLOCKED with the measured blocker recorded; no
 > further launch follows.
+> **Post-F directive correction (2026-10-18, research-only; report §16.4 dated revision):** the
+> registered directive was corrected per the codex review — the impossible Root-delivered child
+> `write_stdin` step removed (Root can never operate the Child's handles) and readiness coordinated
+> through the control clock (launch-after-child, readiness floor ≈ 80 s) with the control extended
+> to 60 lines @ 2000 ms (~120 s); no additional label spent (I1 + F remain the only interrupt
+> launches; Gate D precisely blocked).
 
 M/L/R/B use an initial harmless hold of 420000 ms and a 1200000-ms experiment budget. Candidate inner/outer/continuation request is 3600000 ms; only the inner cap differs between M (omitted) and L/R (3600000). If M proves a different current default, size L/R/B once BEFORE their first launch using `max(420000, ceil(M)+90000)`, with budget `max(1200000, hold+600000)`; preserve matching group duration by reporting an unmatched original M as a calibration, not pretending it is a controlled effect comparison. A further resized M calibration consumes F; no free restarted group. Missing M or insufficient measured headroom leaves cap propagation not-proven; natural completion evidence remains useful but cannot promote the gate.
 

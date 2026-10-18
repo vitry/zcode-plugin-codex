@@ -6793,6 +6793,40 @@ last line was emitted before delivery and which died during delivery is REJECTED
 post-delivery read returns its buffered bytes; (c) a completion whose marker emission time cannot be
 established after the delivery bound keeps survival NOT qualified.
 
+**Readiness-coordination revision (2026-10-18, post-F codex review fix — research-only correction
+for the record; NO new interrupt launch follows).** The F-registered sequencing (§17.11) asked Root
+to deliver and observe the CHILD's long empty-input `write_stdin` as its first step. That step was
+architecturally impossible and is removed: process handles and pending cells belong to the Child's
+session, and Root's tools cannot operate on them. The child's long poll stays CHILD-OWNED, driven by
+the child's own registered candidate paragraph (byte-identical, unchanged). The registered
+rescue-interrupt flow is corrected to five strictly ordered steps, all through Root's OWN supported
+tools: (A) spawn the Rescue child exactly as before and retain the spawn acknowledgement's EXACT
+full agent id; (B) IMMEDIATELY AFTER the child launch, launch the bounded control ONCE on its OWN
+`exec_command` handle (never the child's handle, never Status, never stop/kill) so its designed
+lifetime covers the delivery coordination; (C) readiness coordination through the control clock —
+bounded empty-input reads (`yield_time_ms` 1000), each requiring a fresh line, until a line whose
+index is at least **40** (the readiness floor ≈ 80 seconds after control start at the 2000-ms
+cadence) is observed; (D) the §16.4 pre-delivery read (one more fresh mid-run read ordered before
+the interrupt); (E) the exactly-one `interrupt_agent` call carrying the EXACT full agent id from the
+spawn acknowledgement — never shortened, paraphrased, or guessed. The control design extends from 30
+lines (~60 s) to **60 lines at the same fixed 2000-ms cadence (~120 s designed lifetime; designed
+exit code 0, tag semantics and the lineCount-driven premature/abnormal-exit classification
+unchanged)**, sized to cover the recorded child poll-start latency (R 57623 ms, L 68044 ms, F 72069
+ms elapsed — roughly 57.6–72.1 s) with coordination margin; the declared fixture script digest
+changes accordingly for any FUTURE registered run (no live run is re-registered — §16.7's recorded
+digests remain the historical record of the runs they registered). The readiness floor is an
+**OBSERVER-COORDINATION APPROXIMATION** of the child's poll-start window, recorded as such — it is
+NOT a claim of observing the child's poll (which Root cannot observe except through the recorded
+host timeline, and never drives). All prior prohibitions stand: the control is unrelated to the
+Rescue child (do not confuse the two handles, do not interrupt it), never Status-observed, never
+sent input, never stopped or killed; the after-settlement read is still reported verbatim. This
+correction follows the two P2 codex review findings on the post-F range (Root cannot satisfy a
+child-handle prerequisite; a control whose lifetime can expire before preparation completes
+guarantees the §16.4 pre-delivery read sees a completed control). **No new interrupt launch
+follows:** I1 and F are the only interrupt launches and both are spent (§17.13); Gate D remains
+precisely BLOCKED with the measured §17.12 blocker; the registered case is corrected for the record
+only.
+
 ### 16.5 Preregistered responsiveness oracle (before any I1 launch)
 
 **No applicable measured native-interrupt baseline exists.** Every prior interrupt-bearing run ended

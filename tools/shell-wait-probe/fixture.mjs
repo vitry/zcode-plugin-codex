@@ -51,35 +51,48 @@ const CAP_CONFIGURATION_KEY = 'background_terminal_max_timeout';
 
 /**
  * The §16.4 declared unrelated survival control's frozen shape (release
- * qualification Task 2): the fixture-owned bounded script emits exactly this
- * many unique progress lines at exactly this fixed cadence and then exits 0
- * naturally. The line format is `<prefix> <1-based line index> <monotonic
- * emission tag>` — the tag is written by the control AT EMIT TIME on the
- * control process's own monotonic clock, which is what makes the §16.4
- * emission-time survival binding possible (a post-delivery read of buffered
- * bytes can never substitute for a tag after the delivery bound).
+ * qualification Task 2; extended by the post-F codex review fix, report §16.4
+ * dated revision 2026-10-18): the fixture-owned bounded script emits exactly
+ * this many unique progress lines at exactly this fixed cadence and then
+ * exits 0 naturally. The line format is `<prefix> <1-based line index>
+ * <monotonic emission tag>` — the tag is written by the control AT EMIT TIME
+ * on the control process's own monotonic clock, which is what makes the
+ * §16.4 emission-time survival binding possible (a post-delivery read of
+ * buffered bytes can never substitute for a tag after the delivery bound).
+ * The count is sized so the control's designed lifetime (~120 s at the fixed
+ * cadence) covers the observed child poll-start latency (recorded poll starts
+ * 57.6–72.1 s) plus the delivery-coordination margin; the premature/abnormal
+ * exit classification stays lineCount-driven. Designed exit code stays 0.
  */
-export const SURVIVAL_CONTROL_LINE_COUNT = 30;
+export const SURVIVAL_CONTROL_LINE_COUNT = 60;
 export const SURVIVAL_CONTROL_CADENCE_MS = 2000;
 export const SURVIVAL_CONTROL_LINE_PREFIX = 'zcode-survival-control';
 
 /**
  * The §16.4 Root-turn instruction fragment for the I1 survival control
- * (release-qualification Task 2 wiring; F-registered sequencing per report
- * §17.11): the control is launched ONCE through the ordinary `exec_command`
- * seam on its OWN handle INSIDE the same declared I1 Root turn — no extra
- * model turn, no standalone launch. The interrupt flow is declared as THREE
- * strictly ordered steps — (1) deliver the child's long empty-input
- * write_stdin observation (the registered 3600000 window) and observe its
- * pending acknowledgment, (2) the bounded §16.4 pre-delivery read of the
- * control (fresh mid-run line below the line count), (3) the exactly-one
- * interrupt_agent delivery carrying the EXACT full agent id copied from the
- * spawn acknowledgement — because both Task 4 records measured the Root
- * interrupting before any attributable child poll existed, with unclassified
- * target spellings. The bounded after-read rides the same turn, reported
- * verbatim so the emission tags can be decoded. The control is never
- * observed with Status, never sent input, never stopped or killed, and never
- * confused with the observed Rescue child (it shares no stop authority).
+ * (release-qualification Task 2 wiring; corrected by the post-F codex review
+ * fix, report §16.4 dated revision 2026-10-18). The control is launched ONCE
+ * through the ordinary `exec_command` seam on its OWN handle inside the same
+ * declared I1 Root turn — no extra model turn, no standalone launch. The
+ * registered interrupt flow is declared as FIVE strictly ordered steps, all
+ * through Root's OWN supported tools (Root's tools can never operate the
+ * CHILD's session handles or pending cells, so the child's long poll stays
+ * CHILD-OWNED, driven by the child's own registered candidate paragraph):
+ * (1) spawn the Rescue child as usual and retain the spawn acknowledgement's
+ * EXACT full agent id; (2) IMMEDIATELY AFTER the child launch, launch the
+ * control on its own handle so its designed lifetime covers delivery; (3)
+ * readiness coordination through the control clock — bounded empty-input
+ * reads, each requiring a fresh line, until a line whose index is at least
+ * the readiness floor (40, ~80 s after control start in the extended design)
+ * is observed — an observer-coordination approximation of the child's
+ * poll-start window, recorded as such, never a claim of observing the child's
+ * poll; (4) the bounded §16.4 pre-delivery read (fresh mid-run line below the
+ * line count) ordered before the interrupt; (5) the exactly-one
+ * `interrupt_agent` delivery carrying the EXACT full agent id copied from the
+ * spawn acknowledgement. The bounded after-read rides the same turn, reported
+ * verbatim so the emission tags can be decoded. The control is never observed
+ * with Status, never sent input, never stopped or killed, and never confused
+ * with the observed Rescue child (it shares no stop authority).
  * @param {string} scriptPath the fixture-owned absolute script path (never
  *   recorded; the directive text rides the host argv only)
  * @returns {string}
@@ -89,13 +102,13 @@ export function survivalControlPromptDirective(scriptPath) {
     || hasControlCharacter(scriptPath) || !isAbsolute(scriptPath)) {
     throw invalidFixtureInput('the survival-control directive needs a bounded absolute script path.');
   }
-  return 'Also, inside this same turn and before anything else: launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly '
-    + `\`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
-    + 'Then perform these three interrupt-flow steps strictly in this order, and never skip ahead: '
-    + 'STEP 1: deliver the child\'s long empty-input write_stdin (the registered 3600000 window) and observe its pending acknowledgment — the child\'s long observation must be open and pending before any later step. '
-    + 'STEP 2: read the progress program\'s output once on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count — the bounded read required before the interrupt. '
-    + 'STEP 3: only then deliver the exactly-one interrupt_agent call carrying the EXACT full agent id copied from the spawn acknowledgement — never a shortened, paraphrased, or guessed target. '
-    + 'After the interrupt has settled, read the progress program\'s output one final time on its own handle and include both reads verbatim in your final report. '
+  return 'Also, inside this same turn: perform the following five steps strictly in this order, and never skip ahead. '
+    + 'STEP 1: spawn the Rescue child exactly as this turn\'s Rescue instructions otherwise require, and copy the EXACT full agent id from its spawn acknowledgement — that id is retained verbatim as the only permitted interrupt target. '
+    + `STEP 2: immediately after the child launch, launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly \`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
+    + 'STEP 3: coordinate readiness through the control clock: read the progress program\'s output on its own handle with bounded empty-input write_stdin calls (each yield_time_ms 1000), every read requiring a fresh progress line beyond everything previously read, and repeat until one read returns a line whose index is at least 40 — the readiness floor, approximately 80 seconds after the control\'s start at the declared 2000-ms cadence. The floor is an observer-coordination approximation of the child\'s own poll-start window, recorded as such: it is NOT an observation of the child\'s poll, which stays child-owned and is never driven from this turn. '
+    + 'STEP 4: read the progress program\'s output once more on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count — the bounded §16.4 pre-delivery read, ordered before the interrupt. '
+    + 'STEP 5: only then deliver the exactly-one interrupt_agent call carrying the EXACT full agent id copied from the spawn acknowledgement — never a shortened, paraphrased, or guessed target. '
+    + 'After the interrupt has settled, read the progress program\'s output one final time on its own handle and include every control read verbatim in your final report. '
     + 'The progress program is unrelated to the Rescue child: do not confuse the two handles, and do not interrupt it.';
 }
 
