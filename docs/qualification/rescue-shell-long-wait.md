@@ -6907,3 +6907,239 @@ sequence (§16.3), survival control (§16.4), responsiveness oracle (§16.5) and
 (§16.6) are frozen BEFORE any live launch; the matrix's NEW (Task 2) surface list is the authoritative
 implementation input for Task 2. Everything in §16 is offline evidence: no claim in it qualifies any
 live behavior, and every §8 production gate remains outstanding.
+
+## 17. 2026-10-18 release-qualification live execution (Task 3)
+
+Four registered live labels executed and adjudicated: **M** (record `executedAt` — the driver's
+run-end composition stamp — 2026-10-18T07:27:05.087Z), **L** (`executedAt` 07:43:30.521Z), **R**
+(`executedAt` 07:59:16.696Z) and the conditional **B** (`executedAt` 08:08:09.848Z); no launch
+wall-clock is recorded in any record. M and L were
+launched by the cancelled predecessor under this same §3 registration and finished cleanly; this
+continuation verified their provenance offline, launched R and B (one launch each, zero retries),
+and adjudicated all four OFFLINE with the frozen
+`tools/shell-wait-probe/release-qualification.mjs` (`RELEASE_QUALIFICATION_VERSION = 1`) reading ONLY
+the persisted typed record facts. No record was edited, no label was re-spun, no production path or
+user configuration was touched, and the driving worktree's tracked bytes were unchanged by execution.
+
+### 17.1 Provenance (re-verified 2026-10-18; binary re-verified immediately before EACH of the R and B launches)
+
+- Worktree `.worktrees/rescue-shell-wait-release-qualification` HEAD
+  `d82a4c52bd6a1cfd034b142f3fce1810ef3da931` (Task 2's committed seam surface); every record's
+  `provenance.sourceSha` equals it, and `sourcesChangedDuringRun: false` held on all four runs.
+- Binary pin: `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+  `codex-cli 0.163.0`, SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — re-verified (version +
+  digest) immediately before the R launch and again before the B launch; identical in all four
+  records' `provenance.codexBinarySha256`. No auto-update, no cross-version boundary.
+- Codex source checkout `/Users/zhangzikai/Workspace/Codes/github/codex`: HEAD
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --short` empty (clean); read-only, no
+  source/binary mapping implied.
+- `shell_trial_model = gpt-6.1-sol` RE-ESTABLISHED through the same supported read-only authenticated
+  bounded discovery §16.1 used (`codex debug models`, real `CODEX_HOME`, network available, NO model
+  turn, no label consumed): 9 entries, 7 `list`-visible — the SAME entry set as §16.1/§15.5 — with
+  `gpt-6.1-sol` present, list-visible, and still the top-ranked (lowest-priority-number) candidate.
+  Catalog-number drift recorded honestly: §16.1 recorded numeric priority 0 for `gpt-6.1-sol`
+  (terra 6, luna 7); today's catalog reads 1 (terra 8, luna 9) — a catalog-side renumber, not a
+  selection change. Effective host/Child model metadata stays `null`/never-inferred; the selection
+  stays REQUESTED via the validated `--model gpt-6.1-sol` seam.
+- Observer digest IDENTICAL on all four records:
+  `5f4bb770ec8992f2b435d8a49f3a97b8c18fed29648b81c5d2bec3c9da19a94b` (the v3 digest binding
+  evidence.mjs ⊥ shape-diagnostic.mjs ⊥ release-qualification.mjs ⊥ driver.mjs module-init bytes).
+  Both diagnostic flags (`--unclassified-structural-diagnostic 1`,
+  `--unclassified-shape-diagnostic 1`) on every run per the §16.7 registration.
+- Shape shared by every run: route requested `rescue-foreground`, actual `named`;
+  `isolatedSetup.setupAttempts: 2` (setup retried once, then `roleStatus: ready` — the same shape D0
+  recorded); zero cleanup errors, fixture disposed, `cleanupComplete: true`;
+  `processTermination` never needed (`verifiedTerminated: false`, `codexTerminated: false` — every
+  Child settled NATURALLY before cleanup); `status: executed`, `inconclusive: null`, driver exit 0
+  on all four.
+- Raw records (fixture-owned, disposable /tmp; only bounded redacted typed facts are retained in
+  this section): M `/tmp/shell-wait-release-m.pbZqdv/rescue-long.record.json`, L
+  `/tmp/shell-wait-release-l.4xFVtN/rescue-long.record.json`, R
+  `/tmp/shell-wait-release-r.gEyH64/rescue-repeat.record.json`, B
+  `/tmp/shell-wait-release-b.76XOTO/rescue-baseline.record.json`.
+
+### 17.2 M adjudication (offline; oracle v1)
+
+- Grounding (all typed record facts): attributable (`originalHandleChecked: true`),
+  `decisiveInnerNonterminality: 'inner-cap-live-handle'`, `decisiveFirstReturnWallMs` 300004 <
+  requested window 3600000 (window NOT expired), `interruptAttempted: false`,
+  `decisivePollExplicitYield: 'absent'`, `decisiveCallSurface: 'code-mode-wrapper'`.
+- `deriveMeasuredInnerCapMs` → **`measuredCapMs: 300004`, `reason: null`** (v1). Poll walls
+  `[300000, 85100]` (cap-bounded nonterminal poll, then a terminal observation after the natural
+  completion), poll started elapsed 68044, remaining lifetime at poll start 387908
+  (`hold-deadline-at-poll-start`), `pendingInnerAtEnd: false`, `outerReturns: 0`, `modelCalls: 3`,
+  `rootJoins: 1`, Child settled naturally (`exact-launch-handle-linked-completed-exit-code-output`),
+  exit 0.
+- Sizing rule (`max(420000, ceil(M)+90000)` / `max(1200000, hold+600000)`): hold 420000, budget
+  1200000 — BOTH stay at the registered group values, so M remains a controlled member of the
+  matched group, NOT a resized calibration; L/R/B ran at the registered 420000/1200000.
+
+### 17.3 L adjudication (offline; oracle v1)
+
+- Provenance verified field-by-field against the registered L settings: case `rescue-long`, cap
+  3600000 (`requestedCapMs` 3600000, `capVerified: true`), `--wait-policy config-default`,
+  `--exec-default-ms 3600000`, model `gpt-6.1-sol`, worker 420000, poll 3600000, budget 1200000,
+  candidate paragraph (normalized hashes `2ea76cf0…`/`5800e3ab…`), both diagnostics `1`, binary/
+  source pins per §17.1. All match.
+- M-derivation from L's record: `measuredCapMs: null`, reason `'first-return-not-nonterminal'` —
+  correct fail-closed behavior for the RAISED arm (the inner call completed naturally, it did not
+  hit a cap).
+- Gate-B discriminators: decisive-poll-start remaining lifetime **388336 ms ≥ M+30000 = 330004**
+  (`evaluateDecisivePollHeadroom`: qualified, headroom **+88332**); attributable original-handle
+  natural observation **388400 ms > 300004** (`classifyLongObservation`: `beyond-reference`).
+- Exact terminal linkage: **unestablished** (`evaluateExactTerminalLinkage` → `matched: null`,
+  reason `'stdout-stream-attribution-unavailable'` — the pinned unified-exec serialization merges
+  stdout/stderr, so no attributable stdout-only capture exists; expected at this pin, recorded as
+  unknown, never zero).
+- Cleanliness: exactly ONE poll (`pollWallTimesMs [388400]`, started elapsed 68569), no
+  pending/overlapping poll, `pendingInnerAtEnd: false`, no interrupt (`requested`/`attempted`
+  false, `callCount: 0`), `outerReturns: 0`, `modelCalls: 2`, `rootJoins: 1`, Child settled
+  naturally with exit code and output basis, exit 0, `inconclusive: null`.
+
+### 17.4 R execution and adjudication (offline; oracle v1)
+
+- R launched ONCE per the registered command (`--case rescue-repeat`, L's exact settings including
+  `--cap-ms 3600000`, fresh Child/fixture/output `/tmp/shell-wait-release-r.gEyH64`); driver exit 0,
+  `status: executed`, `inconclusive: null`.
+- Provenance identical to L across every compared registered field (16 fields: source/binary pins,
+  cap/poll/worker/budget/model, policy, exec-default, paragraph treatment, normalized instruction
+  hashes, fixture variant, both diagnostics) — `settingsIdentical: true`. The raw rendered-role
+  digest differs per run (`6e9bdba4…` vs L `6cfa254d…` vs M `0e696f08…`): the rendered template
+  embeds each fresh fixture-home's paths, which the NORMALIZED identity hashes strip — the
+  normalized hashes are byte-identical across M/L/R, so instruction identity holds.
+- M-derivation from R's record: `null` / `'first-return-not-nonterminal'` (raised arm, correct).
+- Gate-B discriminators: decisive-poll-start remaining lifetime **388313 ms ≥ 330004** (qualified,
+  headroom **+88309**); attributable original-handle natural observation **388400 ms > 300004**
+  (`beyond-reference`). ONE poll (started elapsed 57623), no interrupt, `pendingInnerAtEnd: false`,
+  `outerReturns: 0`, `modelCalls: 2`, `rootJoins: 1`, natural Child settlement, exit 0. Exact
+  terminal linkage: unestablished (same `'stdout-stream-attribution-unavailable'`).
+
+### 17.5 Repeat qualification (evaluateRepeatQualification, oracle v1)
+
+`evaluateRepeatQualification({ measuredCapMs: 300004, settingsIdentical: true, leader: L-facts,
+repeat: R-facts })` → **verdict `'inconclusive'`**, reasons exactly
+`['leader:terminal-linkage-unestablished', 'repeat:terminal-linkage-unestablished']`. Reading:
+
+- EVERY discriminator clause of Gate B passes on EACH arm independently: L and R each have
+  decisive-poll-start remaining lifetime ≥ M+30000 (headrooms +88332 / +88309) AND an attributable
+  original-handle natural observation beyond M (388400 both), on settings proven identical.
+- The verdict is NOT `'repeat-qualified'` ONLY because exact terminal byte/exit linkage is
+  unestablished on both arms (the merged-stream limitation above). It is equally NOT
+  `'repeat-not-qualified'`: no arm failed, no setting changed, no observation was late or too short.
+- Per the plan's fail-closed rule (§3: unknown stays unknown, never success), **Gate B is recorded
+  NOT FULLY PASSED** — the discriminator half is measured-positive, the exact-linkage half is
+  honestly unestablished at this pin.
+
+### 17.6 B decision, execution and cadence comparison (Gate C)
+
+**No retained control is comparable — B ran.** Checked before launch, per plan Task 3's
+reuse-first rule: C0/C1 (§15.5) used the config-default transport at `--exec-default-ms 30000` /
+`240000` with worker 180000, poll 240000, budget 600000, the PRE-Task-2 paragraph revision
+(normalized hashes `f0367925…`/`e39d2941…` vs today's candidate `2ea76cf0…`/`5800e3ab…`) and NO
+cap — the intervention variable itself (host defaults) differs, so they cannot serve as the
+cap-matched canonical 60000 baseline. D0 (§15.3) ran the older default path with NO model pin, NO
+cap, NO exec-default, worker 130000, budget 360000. The §13–14-era observation mechanisms were
+directive-led (`// @exec` pragma) shapes. §16.6 itself classifies B's
+canonical-paragraph+host-config combination as NEW (Task 2) — by construction no retained run
+combines it. B therefore spent its conditional label.
+
+- Command: `--case rescue-baseline --worker-duration-ms 420000 --poll-ms 60000 --budget-ms 1200000
+  --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000` + model + both
+  diagnostics; fresh output `/tmp/shell-wait-release-b.76XOTO`; driver exit 0, `status: executed`,
+  `inconclusive: null`.
+- Instruction provenance: `fixtureVariant: 'baseline'`, paragraph treatment
+  `canonical-host-config` — the delivered instructions are the byte-identical installed canonical
+  waiting paragraph (appliedArtifacts before==after on both artifacts; `canonicalNamedRoleSha256`
+  `38075655…`, `canonicalGenericMessageSha256` `b4081f7f…`; the candidate paragraph's hash is
+  NOT recorded, per the record's own provenance note), while the host config matches L/R exactly
+  (cap key `background_terminal_max_timeout` = 3600000 with `capVerified: true`; exec-default
+  3600000 via the host argv override). The sole intended intervention variable is the waiting
+  instruction/inner request (60000), not cap, model, policy or host defaults.
+- B observations: polls `[60000, 60000, 60000, 60000, 60000, 60000, 14000]` — SEVEN inner
+  observations, six hitting the requested 60000 window with a live handle (decisive first return
+  60007, surface `code-mode-wrapper`, explicit yield absent) and a final 14000-ms poll during which
+  the Child completed; `modelCalls: 8` (launch + 7 polls), `outerReturns: 0`, `pendingInnerAtEnd:
+  false`, remaining lifetime at first-poll start 387821, natural Child settlement, exit 0.
+- Cadence counts (`summarizeObservationCadence`, oracle v1; inner = recorded empty-input polls,
+  outer = recorded kind-`wait` same-cell continuations; Root joins and preparation counted
+  SEPARATELY; `preparationWrites` is not projected into the record and stays `null` — unestablished,
+  never zero):
+
+| Arm | innerObservations | outerContinuations | totalObservationReEntry | rootJoins |
+| --- | --- | --- | --- | --- |
+| M (context) | 2 | 0 | 2 | 1 |
+| L (candidate) | 1 | 0 | 1 | 1 |
+| R (candidate) | 1 | 0 | 1 | 1 |
+| B (baseline) | 7 | 0 | 7 | 7 |
+
+  `compareObservationCadence` (oracle v1): L vs B → **`reduced`**; R vs B → **`reduced`**
+  (M vs B → `reduced`, context). Single-pair observations each — the plan's no-statistical-campaign
+  rule stands, and NO token or percent claim is made (no token measurements exist; no whole-job-zero
+  claim is made).
+- Separate placement fact, recorded not interpreted: B's identified parent rollout carries **7
+  `wait_agent` joins** where M/L/R carry 1. The record retains only the count (no per-join
+  timestamps), so the mechanism (e.g. the canonical paragraph's Root-side re-entry) is NOT
+  established from this evidence.
+
+### 17.7 Gate A/B/C statuses (plan §3 definitions)
+
+- **Gate A (actual route / authority): PASS** on each of the M/L/R/B records individually —
+  actual route `named`; exact managed Child linkage checked (`mode: 'rescue'`, distinct
+  child/parent thread ids per record); exactly one mapped launch and one mapped send
+  (`companionLaunchCount: 1`, `companionSendCount: 1`); original-handle attribution verified
+  (`originalHandleChecked: true` — zero foreign-handle polls, zero overlapping inner polls per the
+  mapper's conjunction); private preparation through the sanctioned launcher path
+  (`launcherDescriptorPublished: true`, `sessionEstablished: true`); current ownership/linkage
+  carried in-record.
+- **Gate B (long discriminator / repeat): NOT FULLY PASSED — split, recorded honestly.**
+  Measured M = 300004 ms from a NONTERMINAL original poll (oracle v1, reason null) ✓; EACH of L and
+  R independently discriminates (remaining ≥ M+30000 with headrooms +88332/+88309; attributable
+  original-handle natural observations 388400 ms beyond M; settings identical; fresh Child/fixture)
+  ✓; exact terminal linkage for each: **unestablished** (`stdout-stream-attribution-unavailable`
+  on both — and on M and B), so the exported repeat verdict is `'inconclusive'` and the gate's
+  no-unknown-evidence clause FAILS CLOSED. Nothing here is restated as a pass.
+- **Gate C (reduced intervention): PASS on the measured counts** — a comparable legacy 60000
+  instruction baseline (B) was executed under matched cap/exec-default/worker/budget/model with the
+  canonical paragraph, and the candidate shows fewer measured observation re-entries (1 vs 7,
+  oracle verdict `reduced` on both L and R); Root joins counted separately; no token claim made.
+- Gates D (native interruption/settlement) and E (preserved behavior/eligibility) are OUT OF TASK 3
+  SCOPE and remain fully outstanding (Tasks 4–5). No production adoption follows from any §17
+  result alone.
+
+### 17.8 Explicit not-proven items
+
+1. **Exact terminal byte/exit linkage** is unestablished on ALL FOUR records (merged-stream
+   attribution unavailable at this pin). The legacy facts (`publicResultMatchedSentinel: true`,
+   exit 0, natural settlement with output basis) are retained as legacy-scope evidence only and
+   CANNOT satisfy the exact-bytes gate. This single unknown is what keeps Gate B and the exported
+   repeat verdict from `qualified`.
+2. **Cap propagation is evidenced behaviorally, not mechanically observed at runtime.** `capVerified`
+   proves the fixture-home config key was written and re-read; §16.2 cites the config-clone path;
+   the 388400-ms single observations are the discriminator evidence — but no runtime probe observed
+   the child-side effective cap value, and the plan's rule stands: a configured cap marker alone is
+   not propagation proof.
+3. **Durable obligations layer**: `settlementLayers.durableObligations: null` on all four records —
+   job/guard settlement is NOT established by these runs (Task 4/5 scope).
+4. **Root-join mechanism** (7 in B vs 1 in M/L/R): observed counts only; mechanism not established.
+5. **Preparation-write cadence**: not projected into the records — unestablished (`null`), never
+   zero.
+6. **Model catalog numbers** drifted (§16.1 priority 0 → today 1 for `gpt-6.1-sol`, same entry set
+   and rank) — recorded as catalog-side renumber; no selection change claimed.
+7. **No statistical claim**: each arm is one observation; the plan forbids statistical campaigns and
+   this section makes none.
+
+### 17.9 Ledger accounting (plan §3)
+
+- Labels SPENT: **M, L, R** and the conditional **B** (conditional trigger: no comparable retained
+  control — §17.6). M and L were launched by the cancelled predecessor under this registration;
+  their labels were consumed at their launches; this continuation performed ZERO additional
+  launches for them.
+- Labels NOT SPENT: I0, I1, N, BG, RV, AR, ST, G (Tasks 4–5 prerequisites/decisions pending) and
+  **F** (NOT spent — no driver error, no validation error, no failed start, no established cause
+  across M/L/R/B; zero retries were made).
+- Ledger total: **4 of the 13 logical cases consumed; 9 remain**. Old campaign quotas remain closed;
+  nothing was borrowed across labels.
+- Raw records remain fixture-owned disposable /tmp state; only the bounded redacted typed facts
+  above are retained. Production dirs, user configuration and the Codex source were READ-ONLY
+  throughout.
