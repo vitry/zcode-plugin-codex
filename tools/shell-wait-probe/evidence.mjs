@@ -1314,8 +1314,16 @@ function isNativeCancellationResponse(output) {
  * whole-cell header may reflect a termination that hit a LATER statement:
  * the statement's OWN result being present proves the statement finished
  * before the termination (never its cancellation), and an unresolved
- * statement is attributable only as the cell's LAST unresolved statement —
- * anything else stays unattributed (fail closed).
+ * statement is attributable only as the cell's LAST unresolved statement.
+ * Codex round-5 review fix: crediting the last statement additionally
+ * requires POSITIVE evidence that every PRECEDING statement completed — a
+ * cell terminated during an earlier statement (e.g. an unrelated await that
+ * was itself the termination target) never executed the final statement, so
+ * the whole-cell header is that earlier statement's cancellation. The
+ * supported multi-statement cell prints one JSON result per completed
+ * statement IN ORDER, so the terminated response must carry at least the
+ * attributed statement's index in completed results; anything less stays
+ * unattributed (fail closed).
  * @param {unknown} output the raw cell response
  * @param {number} statementIndex the attributed statement's position
  * @param {number} statementCount the cell's statement total
@@ -1331,7 +1339,30 @@ function wholeCellTerminationCancelsStatement(output, statementIndex, statementC
   const results = parseStatementOutputs(output, statementCount);
   if (results[statementIndex]?.state === 'completed') return false;
   if (statementCount === 1) return true;
-  return statementIndex === statementCount - 1;
+  if (statementIndex !== statementCount - 1) return false;
+  return completedStatementResultCount(output) >= statementIndex;
+}
+
+/**
+ * Count the COMPLETED statement results a cell response carries, in order —
+ * the same per-item JSON admission rule `parseStatementOutputs` applies. The
+ * supported multi-statement cell prints one result per completed statement in
+ * order, so this count is the positive predecessor-completion evidence the
+ * whole-cell cancellation attribution consumes (codex round-5 review fix).
+ * @param {unknown} output
+ * @returns {number}
+ */
+function completedStatementResultCount(output) {
+  if (!Array.isArray(output)) return 0;
+  let completed = 0;
+  for (const item of output) {
+    if (item?.type !== 'input_text' || typeof item.text !== 'string' || item.text.length > 65536) continue;
+    try {
+      const result = JSON.parse(item.text);
+      if (result && typeof result === 'object' && !Array.isArray(result)) completed += 1;
+    } catch { /* bounded header text */ }
+  }
+  return completed;
 }
 
 /**

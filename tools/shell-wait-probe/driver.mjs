@@ -1227,22 +1227,6 @@ export async function runHeldHostTurn(input) {
   let holdDeadlineMs = null;
   const budgetController = new AbortController();
   let budgetExpired = false;
-  // The budget is polled against the injectable clock: in production this is
-  // the monotonic performance.now(), and instrument tests can drive it
-  // deterministically instead of waiting real wall-clock time.
-  const budgetTimer = setInterval(() => {
-    if (now() < budgetDeadlineMs) return;
-    budgetExpired = true;
-    budgetController.abort();
-    clearInterval(budgetTimer);
-  }, 50);
-  /** @param {number} ms */
-  const abortableSleep = async (ms) => new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    budgetController.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('held turn aborted')); }, { once: true });
-  });
-  try {
-
   /** @type {HeldTurnRecord['cleanup']} */
   const cleanup = {
     label: 'observation',
@@ -1259,6 +1243,42 @@ export async function runHeldHostTurn(input) {
     // interrupt interaction's cancellation/settlement facts carry.
     cleanupBoundaryAtMs: null,
   };
+  // Codex round-4/round-5 review fixes: the boundary records the EARLIEST
+  // termination initiation across every site — the wrapper's cleanup
+  // sequence, the process runner's own timeout path (through the launch
+  // budget context's `recordCleanupBoundary`), and the shared-budget abort
+  // source itself (this function scope, so the budget timer below can stamp
+  // BEFORE the abort whose forwarded kills follow). Min-semantics keep the
+  // earliest initiation when several sites record.
+  const recordTerminationInitiation = () => {
+    const initiatedAtMs = Date.now();
+    if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
+      cleanup.cleanupBoundaryAtMs = initiatedAtMs;
+    }
+  };
+  // The budget is polled against the injectable clock: in production this is
+  // the monotonic performance.now(), and instrument tests can drive it
+  // deterministically instead of waiting real wall-clock time.
+  const budgetTimer = setInterval(() => {
+    if (now() < budgetDeadlineMs) return;
+    budgetExpired = true;
+    // Codex round-5 review fix: the shared-budget abort is FORWARDED to the
+    // turn controller and to every runner listening on this signal, and the
+    // forwarded aborts initiate their kills immediately — potentially long
+    // before the wrapper's cleanup sequence reaches its own stamp. Record the
+    // boundary at the abort SOURCE, before aborting (the same
+    // min-semantics path), so any kill the abort triggers is already bounded.
+    recordTerminationInitiation();
+    budgetController.abort();
+    clearInterval(budgetTimer);
+  }, 50);
+  /** @param {number} ms */
+  const abortableSleep = async (ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    budgetController.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('held turn aborted')); }, { once: true });
+  });
+  try {
+
   /** @type {{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }} */
   let control;
   /** @type {unknown} */
@@ -1303,20 +1323,6 @@ export async function runHeldHostTurn(input) {
         cleanup.verifiedProcessTerminated = true;
       }
     } catch (error) { cleanup.errors.push(error); }
-  };
-  // Codex round-4 review fix: the boundary records the EARLIEST termination
-  // initiation across every site — including the process runner's own timeout
-  // path, which kills the child from inside runProcess BEFORE the held turn's
-  // 50-ms budget poll notices expiry and long before the wrapper's cleanup
-  // sequence runs. Launch contexts receive this recorder through the budget
-  // context (`recordCleanupBoundary`) so a runner-side kill stamps the
-  // boundary at its initiation; min-semantics keep the earliest initiation
-  // when several sites record.
-  const recordTerminationInitiation = () => {
-    const initiatedAtMs = Date.now();
-    if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
-      cleanup.cleanupBoundaryAtMs = initiatedAtMs;
-    }
   };
   // Codex overall review fix 2: EVERY controlled-process termination path —
   // early exits, Status-deadline ends, failures and budget expiry alike —
@@ -2767,8 +2773,16 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         const controller = new AbortController();
         controllers.push(controller);
         // The turn shares the experiment cancellation: a budget abort
-        // propagates to the turn immediately.
-        if (budgetSignal !== null) budgetSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        // propagates to the turn immediately. Codex round-5 review fix: the
+        // forwarded abort is itself a termination initiation (the runner's
+        // abort path kills the child), so the boundary is recorded BEFORE
+        // forwarding — even when the abort beats this turn's deadline timer
+        // (min-semantics; the budget source stamps first, this keeps the
+        // listener self-contained for every shared-signal abort).
+        if (budgetSignal !== null) budgetSignal.addEventListener('abort', () => {
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          controller.abort();
+        }, { once: true });
         // The turn's timeout is the REMAINING experiment deadline on the
         // shared clock, never a fresh full budgetMs.
         const remaining = remainingDeadlineMs !== null ? remainingDeadlineMs() : input.budgetMs;

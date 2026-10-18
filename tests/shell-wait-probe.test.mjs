@@ -8968,6 +8968,79 @@ process.exit(result.status ?? 1);
       assert.equal(facts.interrupt.deliveryToSettlementMs, null);
     });
 
+    test('the shared-budget abort records the boundary before the forwarded abort can kill (round-5 review fix)', async () => {
+      // Codex round-5 review fix: when the shared budget expires, the abort
+      // is FORWARDED to the turn controller (and to every runner listening on
+      // the shared signal) — and runProcess's abort path initiates the kill
+      // immediately, potentially long before the wrapper's cleanup sequence
+      // reaches its own stamp. The boundary must be recorded at the abort
+      // source BEFORE forwarding (the same min-semantics path): a marker
+      // written in the gap — after the forwarded kill, before the wrapper
+      // cleanup — is at/after the boundary and stays unattributed.
+      const RUNNER_NONCE = '1'.repeat(64);
+      let forwardedKillAtMs = null;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          // The runner shares the budget signal: a forwarded abort initiates
+          // the kill (runProcess's abort path); the runner never settles on
+          // its own — the budget ends the turn.
+          budgetContext?.signal?.addEventListener('abort', () => {
+            if (forwardedKillAtMs === null) forwardedKillAtMs = Date.now();
+          }, { once: true });
+          return { result: new Promise(() => {}), terminate: async () => {} };
+        },
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => {
+          // The wrapper reaches its cleanup sequencing LATER (a slow identity
+          // capture): the gap between the forwarded kill and the wrapper stamp.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          return { pid: 66211, ppid: 89, nonce: RUNNER_NONCE, startIdentity: 'start-a' };
+        },
+        readProcessIdentity: async () => ({ pid: 66211, ppid: 89, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        terminateProcessIdentity: async () => {},
+        waitForProcessExit: async () => {},
+        releaseGate: async () => {},
+        sleep: async () => {},
+        now: (() => { let value = 0; return () => (value += 200_000); })(),
+        holdMs: 5_000,
+        budgetMs: 120_000,
+      });
+      assert.ok(forwardedKillAtMs !== null, 'premise: the shared-budget abort forwarded and killed');
+      assert.equal(held.budgetExpired, true);
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the budget abort recorded the boundary');
+      // The boundary is stamped at the abort source — BEFORE the forwarding
+      // kill — so the kill is already bounded (min-semantics keep any earlier
+      // initiation).
+      assert.ok(/** @type {number} */ (held.cleanup.cleanupBoundaryAtMs) <= forwardedKillAtMs + 2,
+        'the boundary precedes the forwarded-abort kill initiation');
+      // A cancellation marker written in the gap (after the forwarded kill,
+      // before the wrapper cleanup) is AT/AFTER the boundary: unattributed.
+      const markerAtMs = forwardedKillAtMs + 5;
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, new Date(markerAtMs - 5_000).toISOString()),
+        interruptSuccess('int-1', 'running', new Date(markerAtMs - 4_800).toISOString()),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, new Date(markerAtMs - 12_000).toISOString()),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), new Date(markerAtMs - 11_000).toISOString()),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, new Date(markerAtMs - 10_000).toISOString()),
+        fnOutput('poll-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ], new Date(markerAtMs).toISOString()),
+      ]];
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'a marker in the abort-to-cleanup gap is the forwarded kill\'s resolution, never native settlement');
+      assert.equal(facts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null);
+    });
+
     test('cancellation settlement requires the CONFIRMED pending window (codex review round 8)', () => {
       // Interrupt at 00:00:07, the poll STARTS at 00:00:09 (AFTER the
       // interrupt), cancellation at 00:00:12: the poll did not exist when the
@@ -12443,8 +12516,8 @@ process.exit(result.status ?? 1);
       assert.match(driverSource, /the experiment budget expired before the Status query turn/u,
         'the executor refuses to resume the query turn after budget expiry');
       assert.match(driverSource, /timeoutMs: .*?remaining/u, 'every turn runs on the REMAINING experiment deadline, never a fresh full budget');
-      assert.match(driverSource, /budgetSignal\.addEventListener\('abort', \(\) => controller\.abort\(\)/u,
-        'the turn controllers share the experiment cancellation signal');
+      assert.match(driverSource, /budgetSignal\.addEventListener\('abort', \(\) => \{\s*if \(typeof budgetContext\?\.recordCleanupBoundary === 'function'\) budgetContext\.recordCleanupBoundary\(\);\s*controller\.abort\(\);/u,
+        'the turn controllers share the experiment cancellation signal, recording the cleanup boundary BEFORE the forwarded abort initiates any kill (round-5 review fix)');
     });
   });
 
@@ -17638,6 +17711,54 @@ process.exit(result.status ?? 1);
       ]];
       const stillPendingInteraction = interactionFor(stillPending);
       assert.equal(stillPendingInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the genuinely pending single-statement poll keeps its cancellation timing');
+    });
+
+    test('a whole-cell termination during an EARLIER statement never credits the unexecuted final wait (round-5 review fix)', () => {
+      // Cell shape [unrelated await, wait-on-pending]: the round-14
+      // last-statement rule credited the FINAL statement's cancellation
+      // whenever its own result was absent — but a termination that hit the
+      // EARLIER await means the final wait never executed, and the whole-cell
+      // header is that await's cancellation. Crediting the last statement
+      // additionally requires POSITIVE evidence the preceding statements
+      // completed: the supported cell prints one JSON result per completed
+      // statement IN ORDER, so the terminated response must carry them.
+      const terminatedHeader = { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' };
+      const awaitThenWaitCell = 'const r = await tools.exec_command({ cmd: "sleep 30" }); text(JSON.stringify(r))\nconst r = await tools.write_stdin({ session_id: 7, chars: "", yield_time_ms: 60000 }); text(JSON.stringify(r))\n';
+      const childEvents = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('rescue-poll', 7, 300),
+        output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+        at(4_000, { type: 'custom_tool_call', name: 'exec', call_id: 'await-then-wait', input: awaitThenWaitCell }),
+      ];
+      const interruptTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      // (a) Terminated during the FIRST await — the terminated response
+      // carries NO predecessor results: the unexecuted final wait is never
+      // the cancellation and no settlement timing is recorded (fail closed;
+      // the pending window's close is equally unestablishable in this shape).
+      const duringAwait = [[
+        ...childEvents,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'await-then-wait', output: [terminatedHeader] }),
+      ], interruptTurnEvents];
+      const duringAwaitInteraction = interactionFor(duringAwait);
+      assert.equal(duringAwaitInteraction.cancelledAfterCall.atMs, null, 'no predecessor results: the unexecuted final wait is never the cancellation');
+      assert.equal(duringAwaitInteraction.settledAfterCall.atMs, null, 'settlement timing stays unestablished without the executed statement');
+      // (b) Terminated during the FINAL wait — the predecessor's completed
+      // result IS present in the terminated response (the supported cell
+      // prints statement results in order): the last statement's cancellation
+      // stays credited (the round-14 companion semantics).
+      const duringWait = [[
+        ...childEvents,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'await-then-wait', output: [terminatedHeader, { type: 'input_text', text: JSON.stringify({ output: 'slept', exit_code: 0 }) }] }),
+      ], interruptTurnEvents];
+      const duringWaitInteraction = interactionFor(duringWait);
+      assert.equal(duringWaitInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'a completed predecessor proves the final statement ran: its cancellation is credited');
+      assert.equal(duringWaitInteraction.settledAfterCall.atMs, BASE_MS + 5_500);
     });
 
     test('the qualifying pre-delivery read must FINISH before the interrupt request (codex review round 10)', () => {
