@@ -740,6 +740,16 @@ export function evaluateChildSettlementLayers(input) {
 }
 
 /**
+ * The §16.5 frozen responsiveness bound (round-8 review fix): Gate D's
+ * native turn/cell/poll settlement is RESPONSIVE only when the attributable
+ * settlement evidence is observed within 60000 ms of the delivered
+ * interaction's attributable timestamp (report §16.5, "Preregistered
+ * responsiveness oracle" — the bound is frozen before any I1 launch; no
+ * production timeout is changed by enforcing it here).
+ */
+export const RESPONSIVENESS_BOUND_MS = 60_000;
+
+/**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
  * already-adjudicated layer facts. Every mandated rejection fails closed:
  * wrong target, unresolved alias, terminal-before-interrupt, delivery
@@ -763,6 +773,7 @@ export function evaluateChildSettlementLayers(input) {
  *     pendingWindowConfirmed: boolean | null,
  *   },
  *   turnSettled: boolean | null,
+ *   deliveryToSettlementMs?: number | null,
  *   companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null,
  *   durableObligations: 'settled' | 'unresolved' | null,
  *   cleanupKill: boolean,
@@ -782,6 +793,14 @@ export function evaluateChildSettlementLayers(input) {
 export function evaluateNativeInterruptionSettlement(input) {
   if (!input || typeof input !== 'object') throw invalidQualificationInput('the settlement input must be an object.');
   if (!input.delivery || typeof input.delivery !== 'object') throw invalidQualificationInput('the delivery facts must be an object.');
+  // Codex round-8 review fix: the measured delivery-to-settlement latency is
+  // a REQUIRED responsiveness input — eventual settlement is
+  // indistinguishable from responsive settlement without it. Unknown/null
+  // stays unestablished (never a pass); a finite value must sit within the
+  // frozen §16.5 bound.
+  if (input.deliveryToSettlementMs !== null && input.deliveryToSettlementMs !== undefined && !Number.isSafeInteger(input.deliveryToSettlementMs)) {
+    throw invalidQualificationInput('the deliveryToSettlementMs must be a safe integer or null (the measured delivery-to-settlement latency).');
+  }
   /** @type {string[]} */
   const reasons = [];
   const delivery = input.delivery;
@@ -800,6 +819,13 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (delivery.exactTargetMatch !== true) reasons.push('delivery-target-unmatched');
   const turnSettled = input.turnSettled === true;
   if (!turnSettled) reasons.push('turn-settlement-unobserved');
+  // Codex round-8 review fix: the responsiveness conjunct — the measured
+  // delivery-to-settlement latency must be established AND within the frozen
+  // §16.5 bound before the settlement layer can count as responsive.
+  const deliveryToSettlementMs = input.deliveryToSettlementMs ?? null;
+  const settlementResponsive = deliveryToSettlementMs !== null && deliveryToSettlementMs <= RESPONSIVENESS_BOUND_MS;
+  if (deliveryToSettlementMs === null) reasons.push('settlement-latency-unestablished');
+  else if (!settlementResponsive) reasons.push('settlement-latency-over-bound');
   const companionSettled = input.companionOutcome === 'ceased' || input.companionOutcome === 'terminal-result';
   if (input.companionOutcome === 'survived-unsettled') reasons.push('companion-still-live-unsettled');
   else if (!companionSettled) reasons.push('companion-outcome-unobserved');
@@ -847,7 +873,7 @@ export function evaluateNativeInterruptionSettlement(input) {
         'terminal-before-interrupt', 'terminal-state-unestablished', 'previous-status-snapshot-only',
         'unreadable-continuation', 'pending-window-unconfirmed', 'delivery-target-unmatched',
       ].includes(reason)),
-      turnSettlement: turnSettled,
+      turnSettlement: turnSettled && settlementResponsive,
       companion: companionSettled,
       durableObligations: durableSettled,
       noCollateral,

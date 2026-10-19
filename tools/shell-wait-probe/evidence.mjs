@@ -1395,7 +1395,7 @@ function ownStatementResult(output, statementIndex, statementCount) {
  * of being guessed from unbound events.
  * @param {unknown} rollouts
  * @param {{ childThreadId?: unknown, command?: unknown } | null} [options]
- * @returns {{ childRolloutIndex: number, originalHandleId: number, attributableCallIds: Set<string>, attributableStatements: Map<string, { statementIndex: number, statementCount: number }>, pollIntervals: { callId: string, callIndex: number, responseIndex: number | null, callAtMs: number | null, responseAtMs: number | null }[], pendingCellChains: Map<string, { pollCallId: string, continuationCallIds: Set<string> }> } | null}
+ * @returns {{ childRolloutIndex: number, originalHandleId: number, attributableCallIds: Set<string>, attributableStatements: Map<string, { statementIndex: number, statementCount: number }>, pollIntervals: { callId: string, callIndex: number, responseIndex: number | null, callAtMs: number | null, responseAtMs: number | null }[], pendingCellChains: Map<string, { pollCallId: string, continuationCallIds: Set<string> }>, pollObservedCell: Map<string, string> } | null}
  */
 function deriveChildObservationBinding(rollouts, options) {
   try {
@@ -1469,6 +1469,14 @@ function deriveChildObservationBinding(rollouts, options) {
     // cancellation marker must resolve to settle the delivered interrupt.
     /** @type {Map<string, { pollCallId: string, continuationCallIds: Set<string> }>} */
     const pendingCellChains = new Map();
+    // Codex round-8 review fix: each same-handle poll is tagged with the
+    // pending cell it was OBSERVING at issue, so an explicit terminate of
+    // that cell covers the poll's resolution too (the poll's terminated
+    // marker belongs to the explicit ender, never to native cancellation).
+    /** @type {Map<string, string>} */
+    const pollObservedCell = new Map();
+    /** @type {string | null} */
+    let outstandingCell = null;
     for (const entry of calls) {
       if (entry.call.kind !== 'write_stdin') continue;
       if (parsePreparationFrame(entry.call.value?.chars) !== null) preparationStatements.add(`${entry.callId}#${entry.statementIndex ?? 0}`);
@@ -1527,6 +1535,9 @@ function deriveChildObservationBinding(rollouts, options) {
         statementIndex: /** @type {number} */ (entry.statementIndex ?? 0),
         statementCount: /** @type {number} */ (entry.statementCount ?? 1),
       });
+      // Codex round-8 review fix: tag the pending cell this poll was
+      // OBSERVING at issue (the outstanding same-handle cell, if any).
+      if (outstandingCell !== null) pollObservedCell.set(entry.callId, outstandingCell);
       // P2-1 round-13 fix: the interval's RESPONSE boundary is the moment the
       // poll's pending window ENDS — a completed exit-code or still-running
       // response that settles/advances the poll. The poll's own YIELD header
@@ -1574,6 +1585,9 @@ function deriveChildObservationBinding(rollouts, options) {
       if (output?.state === 'pending' && typeof output.cellId === 'string') {
         pollCells.add(output.cellId);
         intervalByPendingCell.set(output.cellId, interval);
+        outstandingCell = output.cellId;
+      } else if (output?.state === 'completed') {
+        outstandingCell = null;
       }
     }
     for (const entry of calls) {
@@ -1627,7 +1641,7 @@ function deriveChildObservationBinding(rollouts, options) {
       }
     }
     if (attributableCallIds.size === 0) return null;
-    return { childRolloutIndex: childIndices[0], originalHandleId, attributableCallIds, attributableStatements, pollIntervals, pendingCellChains };
+    return { childRolloutIndex: childIndices[0], originalHandleId, attributableCallIds, attributableStatements, pollIntervals, pendingCellChains, pollObservedCell };
   } catch { return null; }
 }
 
@@ -1694,6 +1708,16 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // that call's OWN alternate-ender action, never interrupt_agent settlement.
   /** @type {Set<string>} */
   const explicitTerminateStatements = new Set();
+  // Codex round-8 review fix: an explicit `wait({cell_id, terminate: true})`
+  // stops the whole CELL — the outstanding normal wait's termination-framing
+  // response belongs to the explicit ender too, never to native cancellation.
+  // The affected CELL ids are recorded here and expanded (through the round-7
+  // chain identity) into every call id whose resolution the explicit stop
+  // covers.
+  /** @type {Set<string>} */
+  const explicitTerminateCellIds = new Set();
+  /** @type {Set<string>} */
+  const explicitTerminateAffectedCallIds = new Set();
   // Turn-SETTLEMENT resolutions (codex review rounds 5-6): the bound Child's
   // post-call response that resolves its interrupted observation — an
   // exit-code completion, or one of the pinned host's NATIVE cancellation
@@ -1763,12 +1787,18 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
             // when the statement is unresolved and is the cell's last
             // unresolved statement; a finished poll cancelled during an
             // unrelated later statement stays unestablished (fail closed).
-            const statementCancelAttributed = wholeCellTerminationCancelsStatement(
+            // Codex round-8 review fix: an EXPLICIT terminate covers its whole
+            // affected cell/observation chain — a marker on any covered call
+            // (the outstanding normal wait's response included) is the
+            // explicit ender's resolution, never native cancellation.
+            const explicitEnder = explicitTerminateStatements.has(explicitTerminateKey)
+              || (typeof payload.call_id === 'string' && explicitTerminateAffectedCallIds.has(payload.call_id));
+            const statementCancelAttributed = !explicitEnder && wholeCellTerminationCancelsStatement(
               payload.output,
               linkedStatement?.statementIndex ?? 0,
               linkedStatement?.statementCount ?? 1,
             );
-            if (explicitTerminateStatements.has(explicitTerminateKey)) {
+            if (explicitEnder) {
               boundObservations.push({ kind: 'explicit-terminate', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
             } else if (statementCancelAttributed) {
               // Codex round-7 review fix: the marker carries its RESOLUTION
@@ -1881,11 +1911,31 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') continue;
       // Codex review round 10: an EXPLICIT wait termination — its marker
       // response is that call's own stop, never native settlement.
+      // Codex round-8 review fix: the explicit stop targets a CELL — record
+      // the terminated cell and mark its whole observation coverage (the
+      // round-7 chain: the poll that opened the cell plus the accepted
+      // continuations, and every same-handle poll observing that cell at
+      // issue) so the OUTSTANDING normal wait's termination-framing response
+      // is the explicit ender's resolution too, never native cancellation.
+      // The call event precedes the affected responses in rollout order, so
+      // the marks are in place before those markers are classified.
       if (payload.type === 'function_call' && /(?:^|\.)wait$/u.test(typeof payload.name === 'string' ? payload.name : '')) {
         try {
           const waitArgs = typeof payload.arguments === 'string' && payload.arguments.length <= 4096 ? JSON.parse(payload.arguments) : null;
           if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true) {
             explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
+            const terminatedCellId = waitArgs.cell_id;
+            if (typeof terminatedCellId === 'string' && !explicitTerminateCellIds.has(terminatedCellId)) {
+              explicitTerminateCellIds.add(terminatedCellId);
+              const terminatedChain = binding?.pendingCellChains?.get(terminatedCellId);
+              if (terminatedChain) {
+                explicitTerminateAffectedCallIds.add(terminatedChain.pollCallId);
+                for (const affectedCallId of terminatedChain.continuationCallIds) explicitTerminateAffectedCallIds.add(affectedCallId);
+              }
+              for (const [observingCallId, observedCell] of binding?.pollObservedCell ?? []) {
+                if (observedCell === terminatedCellId) explicitTerminateAffectedCallIds.add(observingCallId);
+              }
+            }
           }
         } catch { /* malformed arguments stay unclassified */ }
       }

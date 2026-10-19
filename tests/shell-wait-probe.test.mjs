@@ -17774,6 +17774,80 @@ process.exit(result.status ?? 1);
       assert.equal(continuationInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'a cancelled accepted continuation of the pending observation stays credited');
     });
 
+    test('an explicit terminate claims every response of its affected cell (round-8 review fix)', async () => {
+      // Codex round-8 review fix: when `wait({cell_id, terminate: true})`
+      // stops a cell, BOTH the terminating call's own response AND the
+      // outstanding normal wait's response carry `Script terminated`. The
+      // explicit-terminate classification must bind to the affected
+      // CELL/observation chain (the round-7 chain identity) — the outstanding
+      // wait's marker is the explicit ender's resolution, never native
+      // cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted continuation of cell-x, still
+        // outstanding (no response yet) when the explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      // (a) The explicit terminate:X stops the cell while the normal wait is
+      // outstanding: BOTH termination responses are the explicit ender's —
+      // no native settlement, no latency, survival ungrounded. The parent
+      // turn rides the standard i1 shape (grounded control launch +
+      // qualifying reads) so the survival wiring is fully established except
+      // the delivery attribution.
+      const explicitTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate', arguments: JSON.stringify({ cell_id: 'cell-x', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'wait-terminate', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const explicitInteraction = interactionFor(explicitTerminate);
+      assert.equal(explicitInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(explicitInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the explicit ender');
+      assert.equal(explicitInteraction.settledAfterCall.atMs, null);
+      assert.equal(explicitInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const explicitFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        explicitTerminate, [], LAUNCHER,
+      );
+      assert.equal(explicitFacts.interrupt.settled, null, 'the explicit alternate ender never reports native settlement');
+      assert.equal(explicitFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(explicitFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an explicit ender');
+      assert.equal(explicitFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // (b) An explicit terminate of an UNRELATED cell leaves the cell-x
+      // normal wait's native cancellation credited (the affected-cell
+      // binding is not a blanket explicit-terminate exclusion).
+      const unrelatedTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      const unrelatedTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate-other', arguments: JSON.stringify({ cell_id: 'cell-other', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+      ], unrelatedTurnEvents];
+      const unrelatedInteraction = interactionFor(unrelatedTerminate);
+      assert.equal(unrelatedInteraction.pendingBeforeCall.observed, true);
+      assert.equal(unrelatedInteraction.cancelledAfterCall.atMs, BASE_MS + 5_600, 'a native cancellation outside the terminated cell stays credited');
+    });
+
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
       // A MULTI-statement cell: statement 0 is the original-handle poll,
       // statement 1 an unrelated await. The poll's own result IS present in
@@ -19261,6 +19335,7 @@ process.exit(result.status ?? 1);
         pendingWindowConfirmed: true,
       },
       turnSettled: true,
+      deliveryToSettlementMs: 5_000,
       companionOutcome: 'ceased',
       durableObligations: 'settled',
       cleanupKill: false,
@@ -19366,6 +19441,44 @@ process.exit(result.status ?? 1);
       const misclassified = evaluateNativeInterruptionSettlement({ ...base, terminalWinner: 'cancelled', naturalCompletionObserved: true });
       assert.equal(misclassified.qualified, false);
       assert.ok(misclassified.reasons.includes('natural-completion-misclassified-as-cancelled'));
+    });
+
+    test('settlement qualification requires the measured latency within the §16.5 responsiveness bound (round-8 review fix)', async () => {
+      // Codex round-8 review fix: `turnSettled` alone cannot distinguish
+      // RESPONSIVE settlement from eventual settlement — the measured
+      // delivery-to-settlement latency is a REQUIRED conjunct. Unknown/null
+      // ⇒ `settlement-latency-unestablished`; over §16.5's frozen 60000-ms
+      // responsiveness bound ⇒ `settlement-latency-over-bound`; finite and
+      // within the bound ⇒ the responsiveness conjunct passes.
+      const { RESPONSIVENESS_BOUND_MS } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      assert.equal(RESPONSIVENESS_BOUND_MS, 60_000, 'the frozen §16.5 responsiveness bound');
+      // Unknown latency: every other fact positive — NOT qualified.
+      const unestablished = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: null }));
+      assert.equal(unestablished.qualified, false, 'an unestablished latency never qualifies Gate D');
+      assert.ok(unestablished.reasons.includes('settlement-latency-unestablished'), JSON.stringify(unestablished.reasons));
+      assert.equal(unestablished.layers.turnSettlement, false, 'the turn-settlement layer includes the responsiveness conjunct');
+      // Over the bound: NOT qualified with the named reason.
+      const overBound = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 61_000 }));
+      assert.equal(overBound.qualified, false, 'settlement slower than the §16.5 bound never qualifies');
+      assert.ok(overBound.reasons.includes('settlement-latency-over-bound'), JSON.stringify(overBound.reasons));
+      assert.equal(overBound.layers.turnSettlement, false);
+      // Exactly at the bound and below it: the conjunct passes.
+      const atBound = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 60_000 }));
+      assert.equal(atBound.qualified, true);
+      assert.deepEqual(atBound.reasons, []);
+      assert.equal(atBound.layers.turnSettlement, true);
+      const responsive = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 5_000 }));
+      assert.equal(responsive.qualified, true);
+      assert.equal(responsive.layers.turnSettlement, true);
+      // The absent (legacy) fact shape counts as unknown: fail closed.
+      const absent = { ...settlementInput() };
+      delete absent.deliveryToSettlementMs;
+      const absentResult = evaluateNativeInterruptionSettlement(absent);
+      assert.equal(absentResult.qualified, false);
+      assert.ok(absentResult.reasons.includes('settlement-latency-unestablished'));
+      // The latency is a typed safe-integer-or-null input.
+      assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 'soon' })), /deliveryToSettlementMs/i);
+      assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 1_500.5 })), /deliveryToSettlementMs/i);
     });
   });
 
