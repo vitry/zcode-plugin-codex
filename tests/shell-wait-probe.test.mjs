@@ -18190,6 +18190,93 @@ process.exit(result.status ?? 1);
       }
     });
 
+    test('a continuation resolution stops covering later polls with the old cell (round-14 review fix)', () => {
+      // Codex round-14 review fix: poll A yields cell "1" and an ACCEPTED
+      // wait resolves it with a LIVE process handle (a completed result
+      // carrying session_id, no exit code). The association pass skipped that
+      // resolution and left `outstandingCell` on the resolved cell, so poll
+      // B — issued AFTER the resolution — stayed tagged as observing cell
+      // "1". A later `wait({cell_id:"1", terminate:true})` (which cannot
+      // terminate B) then reclassified B's GENUINE native cancellation as
+      // explicit termination, clearing `cancelledAfterCall` and the survival
+      // delivery bound. Resolutions are now accounted in event order before
+      // subsequent polls associate: B keeps its native credit, and a
+      // terminate targeting B's OWN cell still classifies explicit-ender.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const cellTwo = 'Script running with cell ID 2\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // Poll A yields cell "1"; the accepted wait resolves it with a live
+      // handle; poll B is issued after that resolution and cancelled
+      // NATIVELY; the later terminate targets the OLD resolved cell "1".
+      const resolvedThenPolled = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'resolve-1', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(600, { type: 'function_call_output', call_id: 'resolve-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 7 }) }] }),
+        wrappedRead('poll-b', 7, 700),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'old-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ];
+      const interaction = interactionFor([resolvedThenPolled, i1Rollouts()[1]]);
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'premise — poll B was pending at delivery');
+      assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the stale-cell terminate never reclassifies poll B\'s genuine cancellation');
+      assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500);
+      assert.equal(interaction.explicitTerminateAfterCall.atMs, null, 'the resolved cell\'s terminate records no explicit-ender marker');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, [resolvedThenPolled, i1Rollouts()[1]], [], LAUNCHER,
+      );
+      assert.equal(facts.interrupt.settled, true, 'the genuine cancellation keeps native settlement');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, 'the measured latency is preserved');
+      assert.equal(facts.survivalControl.noCollateralQualified, true, 'the survival delivery bound stays grounded');
+      // Keeper: a terminate targeting poll B's OWN outstanding cell ("2")
+      // still classifies the affected markers as the explicit alternate
+      // ender — B's yielded observation (round-9 shape: its outstanding
+      // normal wait receives the terminated marker) keeps full coverage.
+      const ownCellTerminated = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'resolve-1', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(600, { type: 'function_call_output', call_id: 'resolve-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 7 }) }] }),
+        wrappedRead('poll-b', 7, 700),
+        at(800, { type: 'custom_tool_call_output', call_id: 'poll-b', output: cellTwo }),
+        at(900, { type: 'function_call', name: 'wait', call_id: 'wait-b', arguments: JSON.stringify({ cell_id: '2' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'b-t', arguments: JSON.stringify({ cell_id: '2', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-b', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'b-t', output: terminatedMarker }),
+      ];
+      const ownInteraction = interactionFor([ownCellTerminated, i1Rollouts()[1]]);
+      assert.equal(ownInteraction.pendingBeforeCall.observed, true, 'keeper premise — cell 2 was pending at delivery');
+      assert.equal(ownInteraction.cancelledAfterCall.atMs, null, 'the in-session terminate of B\'s own cell suppresses native cancellation credit');
+      assert.equal(ownInteraction.settledAfterCall.atMs, null);
+      assert.equal(ownInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'the in-session terminate of B\'s own cell classifies the affected marker');
+      const ownFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, [ownCellTerminated, i1Rollouts()[1]], [], LAUNCHER,
+      );
+      assert.equal(ownFacts.interrupt.settled, null, 'the explicit ender never reports native settlement');
+      assert.equal(ownFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(ownFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an explicit ender');
+    });
+
 
 
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {

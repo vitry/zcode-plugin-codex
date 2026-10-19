@@ -1481,7 +1481,35 @@ function deriveChildObservationBinding(rollouts, options) {
       if (entry.call.kind !== 'write_stdin') continue;
       if (parsePreparationFrame(entry.call.value?.chars) !== null) preparationStatements.add(`${entry.callId}#${entry.statementIndex ?? 0}`);
     }
+    // Codex round-14 review fix: per cell, the EVENT INDEX at which an
+    // accepted continuation RESOLVED it — recorded in this pass's event
+    // order, BEFORE any subsequent poll associates (the pass visits call
+    // events chronologically, and a resolution's response event always
+    // precedes any poll issued after it).
+    /** @type {Map<string, number>} */
+    const resolvedCellAtEventIndex = new Map();
     for (const entry of calls) {
+      // Codex round-14 review fix: account for continuation RESOLUTIONS in
+      // event order before associating subsequent polls. Poll A yielding a
+      // cell and an accepted wait resolving it with a LIVE process handle (a
+      // completed result carrying session_id, no exit code) — or a completion
+      // — ends that cell's observable existence; an OBSERVED-but-undecodable
+      // response resolves it too (the wait demonstrably received one). Without
+      // this accounting, `outstandingCell` stayed on the resolved cell and a
+      // later same-handle poll was associated with the stale cell — letting a
+      // terminate of the OLD cell reclassify that poll's genuine native
+      // cancellation as explicit termination (clearing `cancelledAfterCall`
+      // and the survival delivery bound). A parsed PENDING continuation
+      // response (the cell still running) and a genuinely ABSENT response are
+      // NOT resolutions: the cell stays outstanding.
+      if (entry.call.kind === 'wait' && sequence.acceptedWaitCallIds.has(entry.callId)
+        && outstandingCell !== null
+        && typeof entry.call.value?.cell_id === 'string' && entry.call.value.cell_id === outstandingCell) {
+        const resolution = responsesByCallId.get(entry.callId) ?? null;
+        if (resolution !== null && (entry.output?.state === 'completed' || entry.output === null)) {
+          resolvedCellAtEventIndex.set(outstandingCell, resolution.eventIndex);
+        }
+      }
       const isPreparationWrite = preparationStatements.has(`${entry.callId}#${entry.statementIndex ?? 0}`);
       const isPoll = entry.call.kind === 'write_stdin'
         && readHandleId(entry.call.value?.session_id) === originalHandleId
@@ -1537,7 +1565,17 @@ function deriveChildObservationBinding(rollouts, options) {
       });
       // Codex round-8 review fix: tag the pending cell this poll was
       // OBSERVING at issue (the outstanding same-handle cell, if any).
-      if (outstandingCell !== null) pollObservedCell.set(entry.callId, outstandingCell);
+      // Codex round-14 review fix: only while that cell was UNRESOLVED at
+      // this poll's call event — a continuation resolution recorded at an
+      // earlier event index ended the cell's observable existence, so the
+      // stale cell never covers a later poll (whose genuine native
+      // cancellation a terminate of the OLD cell could otherwise reclassify).
+      if (outstandingCell !== null) {
+        const resolutionEventIndex = resolvedCellAtEventIndex.get(outstandingCell) ?? null;
+        if (resolutionEventIndex === null || resolutionEventIndex > callEventIndex) {
+          pollObservedCell.set(entry.callId, outstandingCell);
+        }
+      }
       // P2-1 round-13 fix: the interval's RESPONSE boundary is the moment the
       // poll's pending window ENDS — a completed exit-code or still-running
       // response that settles/advances the poll. The poll's own YIELD header
