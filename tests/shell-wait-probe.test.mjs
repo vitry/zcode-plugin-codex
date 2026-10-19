@@ -18007,6 +18007,92 @@ process.exit(result.status ?? 1);
       assert.match(result.stdout, /"explicitObserved":true/);
     });
 
+    test('explicit cell termination is scoped to the bound Child rollout (round-12 review fix)', () => {
+      // Codex round-12 review fix: cell ids are session-local counters — a
+      // ROOT-side `wait({cell_id:"1", terminate:true})` of ITS OWN same-named
+      // cell can never terminate the Child's cell. The round-7 chain identity
+      // the coverage marks (pendingCellChains / pollObservedCell) is derived
+      // exclusively from the bound Child rollout, so the propagation is
+      // scoped to that exact session: a foreign terminate marks nothing, the
+      // Child's genuine native cancellation stays credited WITH its latency
+      // and grounds the survival bound, and the verdict is identical under
+      // either rollout scan order. A genuine CHILD-side terminate of the same
+      // cell still classifies explicit-ender.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // The Child's own observation: cell "1" yielded by poll-a, observed by
+      // the same-handle re-entry poll-b, and cancelled NATIVELY (the marker
+      // resolving poll-b is the interruption's cancellation settlement).
+      const childObservation = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        wrappedRead('poll-b', 7, 500),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ];
+      // The Root turn carries ITS OWN same-named cell terminate (session-
+      // local counter collision) beside the interrupt delivery.
+      const rootForeignTerminate = [
+        ...i1Rollouts()[1],
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'root-wait-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_100, { type: 'function_call_output', call_id: 'root-wait-t', output: terminatedMarker }),
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const map = (rollouts) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      // BOTH scan orders must credit the Child cancellation identically.
+      for (const [label, rollouts] of [
+        ['parent-first', [rootForeignTerminate, childObservation]],
+        ['child-first', [childObservation, rootForeignTerminate]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, `${label}: the Child's native cancellation stays credited`);
+        assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500, `${label}: the cancellation settlement is bound`);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, null, `${label}: a foreign-session terminate is never the Child's alternate ender`);
+        const facts = map(rollouts);
+        assert.equal(facts.interrupt.settled, true, `${label}: the genuine Child cancellation keeps native settlement`);
+        assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+        assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, `${label}: the measured latency is preserved (delivery 4400 → cancellation 5500)`);
+        assert.equal(facts.survivalControl.noCollateralQualified, true, `${label}: the survival delivery bound stays grounded`);
+      }
+      // A genuine CHILD-side terminate of cell "1" still classifies
+      // explicit-ender (the scoping never weakens in-session coverage): the
+      // child's own accepted continuation of cell "1" is stopped by the
+      // child's own terminate call — under both scan orders.
+      const childTerminate = [
+        ...childObservation.slice(0, 5),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'child-wait-t', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'child-wait-t2', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'child-wait-t2', output: terminatedMarker }),
+      ];
+      for (const [label, rollouts] of [
+        ['parent-first', [i1Rollouts()[1], childTerminate]],
+        ['child-first', [childTerminate, i1Rollouts()[1]]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, null, `${label}: the Child-side explicit ender suppresses native cancellation credit`);
+        assert.equal(interaction.settledAfterCall.atMs, null);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, `${label}: the in-session terminate classifies the affected marker`);
+      }
+    });
+
+
 
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
       // A MULTI-statement cell: statement 0 is the original-handle poll,

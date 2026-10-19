@@ -1714,6 +1714,9 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // The affected CELL ids are recorded here and expanded (through the round-7
   // chain identity) into every call id whose resolution the explicit stop
   // covers.
+  // Codex round-12 review fix: the bound Child rollout index — the session
+  // scope every explicit-terminate propagation is restricted to.
+  const boundChildRolloutIndex = binding?.childRolloutIndex ?? null;
   /** @type {Set<string>} */
   const explicitTerminateCellIds = new Set();
   /** @type {Set<string>} */
@@ -1728,8 +1731,19 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   // same-handle poll observing that cell at issue — making their
   // termination-framing responses the explicit ender's resolutions, never
   // native cancellation.
-  /** @param {unknown} terminatedCellId @param {{ pendingCellChains?: Map<string, { pollCallId: string, continuationCallIds: Set<string> }>, pollObservedCell?: Map<string, string> } | null | undefined} binding */
-  function propagateExplicitTerminatedCell(terminatedCellId, binding) {
+  /** @param {unknown} terminatedCellId @param {{ pendingCellChains?: Map<string, { pollCallId: string, continuationCallIds: Set<string> }>, pollObservedCell?: Map<string, string> } | null | undefined} binding @param {boolean} childOwned whether the terminate statement lives in the bound Child rollout */
+  function propagateExplicitTerminatedCell(terminatedCellId, binding, childOwned) {
+    // Codex round-12 review fix: explicit-terminate coverage is scoped to the
+    // bound CHILD rollout. Cell ids are session-local counters, so a ROOT-side
+    // (or any foreign-session) terminate of a same-named cell can never
+    // terminate the Child's observation — and the chains this coverage marks
+    // (pendingCellChains / pollObservedCell) are derived exclusively from the
+    // bound Child rollout, so propagation is meaningful only for terminates
+    // found in that exact session. Scoping here also makes the verdict
+    // independent of the rollout scan order: a foreign terminate recorded
+    // first can no longer pre-seed the cell-id dedupe set and suppress a
+    // genuine Child cancellation scanned later.
+    if (!childOwned) return;
     if (typeof terminatedCellId !== 'string' || explicitTerminateCellIds.has(terminatedCellId)) return;
     explicitTerminateCellIds.add(terminatedCellId);
     const terminatedChain = binding?.pendingCellChains?.get(terminatedCellId);
@@ -1947,7 +1961,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           const waitArgs = typeof payload.arguments === 'string' && payload.arguments.length <= 4096 ? JSON.parse(payload.arguments) : null;
           if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true) {
             explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-            propagateExplicitTerminatedCell(waitArgs.cell_id, binding);
+            propagateExplicitTerminatedCell(waitArgs.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
           }
         } catch { /* malformed arguments stay unclassified */ }
       }
@@ -1968,7 +1982,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           const terminateArgs = parseWrapperArguments(terminateMatch[1]);
           if (!terminateArgs || terminateArgs.terminate !== true) continue;
           explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-          propagateExplicitTerminatedCell(terminateArgs.cell_id, binding);
+          propagateExplicitTerminatedCell(terminateArgs.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
         }
       }
       /** @type {'v2' | 'v1' | null} */
@@ -2014,7 +2028,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
               // Codex round-10 review fix: the shared propagation covers the
               // INLINE form statement (and interrupt-cells carrying a wrapped
               // terminate), idempotent with the dedicated pre-family scan.
-              propagateExplicitTerminatedCell(statement.value.cell_id, binding);
+              propagateExplicitTerminatedCell(statement.value.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
             }
             if (!ROOT_CONTROL_TOOLS.has(statement.kind)) continue;
             /** @type {'v2' | 'v1' | null} */
