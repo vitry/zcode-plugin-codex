@@ -819,12 +819,20 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (delivery.exactTargetMatch !== true) reasons.push('delivery-target-unmatched');
   const turnSettled = input.turnSettled === true;
   if (!turnSettled) reasons.push('turn-settlement-unobserved');
-  // Codex round-8 review fix: the responsiveness conjunct — the measured
-  // delivery-to-settlement latency must be established AND within the frozen
-  // §16.5 bound before the settlement layer can count as responsive.
+  // Codex round-8 review fix; refined by the round-11 review fix: the
+  // responsiveness conjunct — the measured delivery-to-settlement latency
+  // must be established, NON-NEGATIVE, and within the frozen §16.5 bound
+  // before the settlement layer can count as responsive. A NEGATIVE latency
+  // is contradictory evidence (settlement cannot precede delivery) and never
+  // qualifies; ZERO stays accepted — same-timestamp rounding (the settlement
+  // event sharing the delivery's rollout timestamp) is plausible, and
+  // contradictory evidence requires a strictly-negative duration.
   const deliveryToSettlementMs = input.deliveryToSettlementMs ?? null;
-  const settlementResponsive = deliveryToSettlementMs !== null && deliveryToSettlementMs <= RESPONSIVENESS_BOUND_MS;
+  const settlementResponsive = deliveryToSettlementMs !== null
+    && deliveryToSettlementMs >= 0
+    && deliveryToSettlementMs <= RESPONSIVENESS_BOUND_MS;
   if (deliveryToSettlementMs === null) reasons.push('settlement-latency-unestablished');
+  else if (deliveryToSettlementMs < 0) reasons.push('settlement-latency-contradictory');
   else if (!settlementResponsive) reasons.push('settlement-latency-over-bound');
   const companionSettled = input.companionOutcome === 'ceased' || input.companionOutcome === 'terminal-result';
   if (input.companionOutcome === 'survived-unsettled') reasons.push('companion-still-live-unsettled');

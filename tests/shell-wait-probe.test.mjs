@@ -19639,6 +19639,20 @@ process.exit(result.status ?? 1);
       // The latency is a typed safe-integer-or-null input.
       assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 'soon' })), /deliveryToSettlementMs/i);
       assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 1_500.5 })), /deliveryToSettlementMs/i);
+      // Codex round-11 review fix: settlement cannot precede delivery — a
+      // NEGATIVE latency is contradictory evidence and never qualifies,
+      // however positive every other fact is.
+      const negative = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: -1 }));
+      assert.equal(negative.qualified, false, 'a negative latency never qualifies Gate D');
+      assert.ok(negative.reasons.includes('settlement-latency-contradictory'), JSON.stringify(negative.reasons));
+      assert.equal(negative.layers.turnSettlement, false, 'the turn-settlement layer excludes contradictory latencies');
+      // ZERO is accepted: same-timestamp rounding (the settlement event
+      // sharing the delivery's rollout timestamp) is plausible and
+      // contradictory evidence requires a strictly-negative duration.
+      const zero = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 0 }));
+      assert.equal(zero.qualified, true, 'a zero latency (same-timestamp rounding) qualifies');
+      assert.deepEqual(zero.reasons, []);
+      assert.equal(zero.layers.turnSettlement, true);
     });
   });
 
