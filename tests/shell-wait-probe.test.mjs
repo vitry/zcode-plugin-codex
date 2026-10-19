@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 
@@ -17993,18 +17993,32 @@ process.exit(result.status ?? 1);
         "const interaction = extractInterruptInteraction(rollouts, [MARKER], { childThreadId: 'child-thread-1', command: LAUNCHER });",
         "console.log(JSON.stringify({ orderingBound: interaction.orderingBound, explicitObserved: interaction.explicitTerminateAfterCall.atMs !== null }));",
       ].join('\n');
-      const scriptPath = join(tmpdir(), 'shell-wait-leak-probe.mjs');
-      await writeFile(scriptPath, childScript);
-      const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
-      assert.equal(result.status, 0, result.stderr);
-      // The LEAK assertion FIRST (it is this test's defect): the private
-      // marker appears NOWHERE in the process output.
-      assert.equal(result.stdout.includes(privateMarker), false, 'the private cell id leaked to stdout');
-      assert.equal(result.stderr.includes(privateMarker), false, 'the private cell id leaked to stderr');
-      // The scan's classification behavior is unchanged: the wrapped
-      // terminate is still collected and its response classified as the
-      // explicit alternate ender.
-      assert.match(result.stdout, /"explicitObserved":true/);
+      // Codex round-13 review fix: this probe previously wrote a FIXED shared
+      // tmpdir filename. Concurrent shell-research runs in separate worktrees
+      // target the same path, and because the generated script embeds an
+      // absolute module path, one run could overwrite another's script —
+      // making it test the wrong checkout or execute partially written
+      // JavaScript — and the file was left behind. The probe now runs from a
+      // uniquely owned mkdtemp directory, removed in `finally`.
+      const ownedDir = await mkdtemp(join(tmpdir(), 'shell-wait-leak-probe-'));
+      const scriptPath = join(ownedDir, 'shell-wait-leak-probe.mjs');
+      assert.equal(dirname(scriptPath), ownedDir, 'the probe script must live inside the owned temporary directory');
+      try {
+        await writeFile(scriptPath, childScript);
+        const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        // The LEAK assertion FIRST (it is this test's defect): the private
+        // marker appears NOWHERE in the process output.
+        assert.equal(result.stdout.includes(privateMarker), false, 'the private cell id leaked to stdout');
+        assert.equal(result.stderr.includes(privateMarker), false, 'the private cell id leaked to stderr');
+        // The scan's classification behavior is unchanged: the wrapped
+        // terminate is still collected and its response classified as the
+        // explicit alternate ender.
+        assert.match(result.stdout, /"explicitObserved":true/);
+      } finally {
+        await rm(ownedDir, { recursive: true, force: true });
+      }
+      await assert.rejects(stat(ownedDir), { code: 'ENOENT' }, 'the owned probe directory must be removed after the test');
     });
 
     test('explicit cell termination is scoped to the bound Child rollout (round-12 review fix)', () => {
@@ -18087,6 +18101,90 @@ process.exit(result.status ?? 1);
         const interaction = interactionFor(rollouts);
         assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
         assert.equal(interaction.cancelledAfterCall.atMs, null, `${label}: the Child-side explicit ender suppresses native cancellation credit`);
+        assert.equal(interaction.settledAfterCall.atMs, null);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, `${label}: the in-session terminate classifies the affected marker`);
+      }
+    });
+
+    test('terminate statement keys never cross the rollout session (round-13 review fix)', () => {
+      // Codex round-13 review fix: Root and Child rollouts REUSE the call id
+      // "9" — Root's call 9 is `wait({cell_id:"1", terminate:true})`, the
+      // Child's call 9 is the genuinely-cancelled pending observation. The
+      // statement keys are call-id-keyed, so an unguarded Root insertion
+      // classified the Child's OWN cancellation as an explicit ender
+      // (parent-first) while crediting it child-first — order-dependent. All
+      // terminate bookkeeping is now gated on child ownership, so the Child
+      // cancellation stays credited under BOTH scan orders; a genuine
+      // Child-side terminate keeps its explicit-ender classification.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // The Child's call id "9": the pending observation cancelled natively.
+      const childCancelledNine = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('9', 7, 300),
+        at(5_500, { type: 'custom_tool_call_output', call_id: '9', output: terminatedMarker }),
+      ];
+      // The Root's call id "9": a terminate of ITS OWN same-named cell.
+      const rootTerminateNine = [
+        ...i1Rollouts()[1],
+        at(5_000, { type: 'function_call', name: 'wait', call_id: '9', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_100, { type: 'function_call_output', call_id: '9', output: terminatedMarker }),
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const map = (rollouts) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      for (const [label, rollouts] of [
+        ['parent-first', [rootTerminateNine, childCancelledNine]],
+        ['child-first', [childCancelledNine, rootTerminateNine]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — the Child observation was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, `${label}: the Child's genuine cancellation stays credited`);
+        assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, null, `${label}: a foreign-session statement key never classifies the Child marker`);
+        const facts = map(rollouts);
+        assert.equal(facts.interrupt.settled, true, `${label}: the genuine cancellation keeps native settlement`);
+        assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, `${label}: the measured latency is preserved`);
+        assert.equal(facts.survivalControl.noCollateralQualified, true, `${label}: the survival delivery bound stays grounded`);
+      }
+      // Keeper: a genuine CHILD-side terminate (call id "child-t") of cell
+      // "1" still records its bookkeeping — the cell's OUTSTANDING wait
+      // (round-9 shape) stays explicit-ender under both scan orders, with
+      // Root's foreign same-cell terminate present alongside.
+      const childOwnTerminate = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        // The OUTSTANDING normal wait of cell 1 — in flight when the
+        // in-session explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'child-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'child-t', output: terminatedMarker }),
+      ];
+      for (const [label, rollouts] of [
+        ['parent-first', [rootTerminateNine, childOwnTerminate]],
+        ['child-first', [childOwnTerminate, rootTerminateNine]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, null, `${label}: the in-session terminate still suppresses native cancellation credit`);
         assert.equal(interaction.settledAfterCall.atMs, null);
         assert.equal(interaction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, `${label}: the in-session terminate classifies the affected marker`);
       }

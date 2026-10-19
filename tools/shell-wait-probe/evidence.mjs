@@ -1946,6 +1946,14 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         continue;
       }
       if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') continue;
+      // Codex round-13 review fix: EVERY explicit-terminate bookkeeping
+      // insertion — the call-id-keyed statement set AND the cell-wide
+      // propagation — is gated on child ownership. Call ids are rollout-local
+      // counters, so an unguarded Root insertion of a same-named call id
+      // classified the Child's OWN genuinely-cancelled observation as an
+      // explicit ender (order-dependently, by scan order). A terminate
+      // outside the bound Child rollout records nothing.
+      const terminateBookkeepingChildOwned = rolloutIndex === boundChildRolloutIndex;
       // Codex review round 10: an EXPLICIT wait termination — its marker
       // response is that call's own stop, never native settlement.
       // Codex round-8 review fix: the explicit stop targets a CELL — record
@@ -1959,9 +1967,9 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       if (payload.type === 'function_call' && /(?:^|\.)wait$/u.test(typeof payload.name === 'string' ? payload.name : '')) {
         try {
           const waitArgs = typeof payload.arguments === 'string' && payload.arguments.length <= 4096 ? JSON.parse(payload.arguments) : null;
-          if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true) {
+          if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true && terminateBookkeepingChildOwned) {
             explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-            propagateExplicitTerminatedCell(waitArgs.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
+            propagateExplicitTerminatedCell(waitArgs.cell_id, binding, true);
           }
         } catch { /* malformed arguments stay unclassified */ }
       }
@@ -1975,14 +1983,14 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       // dedicated shape match (line-scoped, bounded like the strict parser).
       // The call event precedes the affected responses in rollout order, so
       // the marks are in place before those markers are classified.
-      if (payload.type === 'custom_tool_call' && typeof payload.input === 'string') {
+      if (payload.type === 'custom_tool_call' && typeof payload.input === 'string' && terminateBookkeepingChildOwned) {
         for (const line of payload.input.split('\n')) {
           const terminateMatch = /^(?:const r = await )?tools\.wait\((\{[\s\S]{1,4096}?\})\);\s*text\(/.exec(line.trim());
           if (!terminateMatch) continue;
           const terminateArgs = parseWrapperArguments(terminateMatch[1]);
           if (!terminateArgs || terminateArgs.terminate !== true) continue;
           explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-          propagateExplicitTerminatedCell(terminateArgs.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
+          propagateExplicitTerminatedCell(terminateArgs.cell_id, binding, true);
         }
       }
       /** @type {'v2' | 'v1' | null} */
@@ -2023,12 +2031,12 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         const statements = parseCallStatements(event);
         if (statements) {
           for (const [statementIndex, statement] of statements.entries()) {
-            if (statement.kind === 'wait' && statement.value && /** @type {any} */ (statement.value).terminate === true) {
+            if (statement.kind === 'wait' && statement.value && /** @type {any} */ (statement.value).terminate === true && terminateBookkeepingChildOwned) {
               explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#${statementIndex}`);
               // Codex round-10 review fix: the shared propagation covers the
               // INLINE form statement (and interrupt-cells carrying a wrapped
               // terminate), idempotent with the dedicated pre-family scan.
-              propagateExplicitTerminatedCell(statement.value.cell_id, binding, rolloutIndex === boundChildRolloutIndex);
+              propagateExplicitTerminatedCell(statement.value.cell_id, binding, true);
             }
             if (!ROOT_CONTROL_TOOLS.has(statement.kind)) continue;
             /** @type {'v2' | 'v1' | null} */
