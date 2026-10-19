@@ -1718,6 +1718,29 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   const explicitTerminateCellIds = new Set();
   /** @type {Set<string>} */
   const explicitTerminateAffectedCallIds = new Set();
+  // Codex round-10 review fix: the ONE shared propagation helper for explicit
+  // cell terminations — consumed by EVERY collection form (direct
+  // function_call waits, `const r = await` wrapped cells, and inline
+  // `text(await tools.wait(...))` statements), so a fourth call form cannot
+  // reintroduce the partial-coverage gap. It records the terminated CELL id
+  // and marks the cell's whole observation coverage: the round-7 chain (the
+  // poll that opened the cell plus the accepted continuations) and every
+  // same-handle poll observing that cell at issue — making their
+  // termination-framing responses the explicit ender's resolutions, never
+  // native cancellation.
+  /** @param {unknown} terminatedCellId @param {{ pendingCellChains?: Map<string, { pollCallId: string, continuationCallIds: Set<string> }>, pollObservedCell?: Map<string, string> } | null | undefined} binding */
+  function propagateExplicitTerminatedCell(terminatedCellId, binding) {
+    if (typeof terminatedCellId !== 'string' || explicitTerminateCellIds.has(terminatedCellId)) return;
+    explicitTerminateCellIds.add(terminatedCellId);
+    const terminatedChain = binding?.pendingCellChains?.get(terminatedCellId);
+    if (terminatedChain) {
+      explicitTerminateAffectedCallIds.add(terminatedChain.pollCallId);
+      for (const affectedCallId of terminatedChain.continuationCallIds) explicitTerminateAffectedCallIds.add(affectedCallId);
+    }
+    for (const [observingCallId, observedCell] of binding?.pollObservedCell ?? []) {
+      if (observedCell === terminatedCellId) explicitTerminateAffectedCallIds.add(observingCallId);
+    }
+  }
   // Turn-SETTLEMENT resolutions (codex review rounds 5-6): the bound Child's
   // post-call response that resolves its interrupted observation — an
   // exit-code completion, or one of the pinned host's NATIVE cancellation
@@ -1924,53 +1947,28 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           const waitArgs = typeof payload.arguments === 'string' && payload.arguments.length <= 4096 ? JSON.parse(payload.arguments) : null;
           if (waitArgs && typeof waitArgs === 'object' && waitArgs.terminate === true) {
             explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-            const terminatedCellId = waitArgs.cell_id;
-            if (typeof terminatedCellId === 'string' && !explicitTerminateCellIds.has(terminatedCellId)) {
-              explicitTerminateCellIds.add(terminatedCellId);
-              const terminatedChain = binding?.pendingCellChains?.get(terminatedCellId);
-              if (terminatedChain) {
-                explicitTerminateAffectedCallIds.add(terminatedChain.pollCallId);
-                for (const affectedCallId of terminatedChain.continuationCallIds) explicitTerminateAffectedCallIds.add(affectedCallId);
-              }
-              for (const [observingCallId, observedCell] of binding?.pollObservedCell ?? []) {
-                if (observedCell === terminatedCellId) explicitTerminateAffectedCallIds.add(observingCallId);
-              }
-            }
+            propagateExplicitTerminatedCell(waitArgs.cell_id, binding);
           }
         } catch { /* malformed arguments stay unclassified */ }
       }
-      // Codex round-9 review fix: a WRAPPED `tools.wait({cell_id,
-      // terminate: true})` statement gets the SAME cell-wide explicit-terminate
-      // coverage — the pinned cell grammar (WRAPPER_PATTERN) admits only
-      // exec_command/write_stdin in the `const r = await` form, so the wrapped
-      // terminate is scanned with its OWN dedicated shape match (line-scoped,
-      // bounded like the strict parser). It records the terminating key AND
-      // marks the terminated CELL's whole observation coverage (the round-7
-      // chain: the poll that opened the cell plus the accepted continuations,
-      // and every same-handle poll observing that cell at issue) so the
-      // outstanding normal wait's termination marker is the explicit ender's
-      // resolution, never native cancellation. The call event precedes the
-      // affected responses in rollout order, so the marks are in place before
-      // those markers are classified.
+      // Codex round-9/10 review fixes: a WRAPPED `tools.wait({cell_id,
+      // terminate: true})` statement — in BOTH supported wrapped forms, the
+      // `const r = await` cell and the INLINE `text(await tools.wait(...));`
+      // statement — gets the SAME cell-wide explicit-terminate coverage via
+      // the shared propagation helper. The pinned cell grammar
+      // (WRAPPER_PATTERN) admits only exec_command/write_stdin in the
+      // `const r = await` form, so wrapped waits are scanned with their OWN
+      // dedicated shape match (line-scoped, bounded like the strict parser).
+      // The call event precedes the affected responses in rollout order, so
+      // the marks are in place before those markers are classified.
       if (payload.type === 'custom_tool_call' && typeof payload.input === 'string') {
         for (const line of payload.input.split('\n')) {
-          const terminateMatch = /^const r = await tools\.wait\((\{[\s\S]{1,4096}?\})\);\s*text\(/.exec(line.trim());
+          const terminateMatch = /^(?:const r = await )?tools\.wait\((\{[\s\S]{1,4096}?\})\);\s*text\(/.exec(line.trim());
           if (!terminateMatch) continue;
           const terminateArgs = parseWrapperArguments(terminateMatch[1]);
           if (!terminateArgs || terminateArgs.terminate !== true) continue;
           explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
-          const wrappedTerminatedCellId = terminateArgs.cell_id;
-          if (typeof wrappedTerminatedCellId !== 'string' || explicitTerminateCellIds.has(wrappedTerminatedCellId)) continue;
-          explicitTerminateCellIds.add(wrappedTerminatedCellId);
-          console.error('T9-MARK', wrappedTerminatedCellId, 'chain=', binding && binding.pendingCellChains ? (binding.pendingCellChains.get(wrappedTerminatedCellId) ? 'found' : 'missing') : 'no-binding');
-          const terminatedChain = binding?.pendingCellChains?.get(wrappedTerminatedCellId);
-          if (terminatedChain) {
-            explicitTerminateAffectedCallIds.add(terminatedChain.pollCallId);
-            for (const affectedCallId of terminatedChain.continuationCallIds) explicitTerminateAffectedCallIds.add(affectedCallId);
-          }
-          for (const [observingCallId, observedCell] of binding?.pollObservedCell ?? []) {
-            if (observedCell === wrappedTerminatedCellId) explicitTerminateAffectedCallIds.add(observingCallId);
-          }
+          propagateExplicitTerminatedCell(terminateArgs.cell_id, binding);
         }
       }
       /** @type {'v2' | 'v1' | null} */
@@ -2013,6 +2011,10 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           for (const [statementIndex, statement] of statements.entries()) {
             if (statement.kind === 'wait' && statement.value && /** @type {any} */ (statement.value).terminate === true) {
               explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#${statementIndex}`);
+              // Codex round-10 review fix: the shared propagation covers the
+              // INLINE form statement (and interrupt-cells carrying a wrapped
+              // terminate), idempotent with the dedicated pre-family scan.
+              propagateExplicitTerminatedCell(statement.value.cell_id, binding);
             }
             if (!ROOT_CONTROL_TOOLS.has(statement.kind)) continue;
             /** @type {'v2' | 'v1' | null} */

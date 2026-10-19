@@ -17910,6 +17910,104 @@ process.exit(result.status ?? 1);
       assert.equal(directInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600);
     });
 
+    test('an INLINE wrapped terminate claims every response of its affected cell too (round-10 review fix)', () => {
+      // Codex round-10 review fix: the supported INLINE form
+      // `text(await tools.wait({cell_id, terminate: true}));` must propagate
+      // the SAME cell-wide explicit-terminate coverage as the direct-call and
+      // `const r = await` wrapped forms — an outstanding normal wait's
+      // termination marker belongs to the explicit ender, never to native
+      // cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted direct continuation of cell-x, still
+        // outstanding when the INLINE explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      const inlineTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-inline', input: 'text(await tools.wait({ cell_id: "cell-x", terminate: true }));\n' }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-inline', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const inlineInteraction = interactionFor(inlineTerminate);
+      assert.equal(inlineInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(inlineInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the inline explicit ender');
+      assert.equal(inlineInteraction.settledAfterCall.atMs, null);
+      assert.equal(inlineInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const inlineFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        inlineTerminate, [], LAUNCHER,
+      );
+      assert.equal(inlineFacts.interrupt.settled, null, 'the inline explicit ender never reports native settlement');
+      assert.equal(inlineFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(inlineFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an inline explicit ender');
+      assert.equal(inlineFacts.survivalControl.reason, 'delivery-bound-unestablished');
+    });
+
+    test('the wrapped-terminate scan never writes model-controlled cell ids to stderr or stdout (round-10 review fix)', async () => {
+      // Codex round-10 review fix (data leak): the scan processes unclassified
+      // cells WITHOUT an established binding, and a cell_id is
+      // model-controlled content — structural-only retention means no raw
+      // value may reach stderr/stdout from the scan path, even when it
+      // appears in `redactions` (the scan never consults them). The leaked
+      // debug output printed the terminated cell id verbatim; it is removed
+      // entirely (no replacement logging).
+      const privateMarker = 'cell-PRIVATE-MARKER-7f3a1c9d2e';
+      const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childScript = [
+        "import { extractInterruptInteraction } from " + JSON.stringify(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url))) + ";",
+        "const MARKER = " + JSON.stringify(privateMarker) + ";",
+        "const LAUNCHER = " + JSON.stringify(launcherCommand) + ";",
+        "const at = (offsetMs, payload) => ({ type: 'response_item', timestamp: 1_700_000_000_000 + offsetMs, payload });",
+        "const rollouts = [[",
+        "  { type: 'session_meta', payload: { id: 'root-thread-1' } },",
+        "  at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: 'text(await tools.interrupt_agent({ \"target\": \"t\" }));\\n' }),",
+        "], [",
+        "  { type: 'session_meta', payload: { id: 'child-thread-1' } },",
+        "  at(100, { type: 'custom_tool_call', name: 'exec', call_id: 'launch-1', input: 'const r = await tools.exec_command({ cmd: ' + JSON.stringify(LAUNCHER) + ', workdir: \"/w\" }); text(JSON.stringify(r))\\n' }),",
+        "  at(200, { type: 'custom_tool_call_output', call_id: 'launch-1', output: 'Wall time: 0.2500 seconds\\nProcess running with session ID 7\\nOutput:\\n' }),",
+        "  at(300, { type: 'custom_tool_call', name: 'exec', call_id: 'poll-a', input: 'const r = await tools.write_stdin({ session_id: 7, chars: \"\", yield_time_ms: 1000 }); text(JSON.stringify(r))\\n' }),",
+        "  at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: 'Script running with cell ID ' + MARKER + '\\nWall time 0.1 seconds\\nOutput:\\n' }),",
+        "  at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: MARKER }) }),",
+        "  at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-w', input: 'const r = await tools.wait({ cell_id: ' + JSON.stringify(MARKER) + ', terminate: true }); text(JSON.stringify(r))\\n' }),",
+        "  at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: [{ type: 'input_text', text: 'Script terminated\\nWall time 0.1 seconds\\nOutput:\\n' }, { type: 'input_text', text: 'killed\\n' }] }),",
+        "  at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-w', output: [{ type: 'input_text', text: 'Script terminated\\nWall time 0.1 seconds\\nOutput:\\n' }, { type: 'input_text', text: 'killed\\n' }] }),",
+        "]];",
+        "const interaction = extractInterruptInteraction(rollouts, [MARKER], { childThreadId: 'child-thread-1', command: LAUNCHER });",
+        "console.log(JSON.stringify({ orderingBound: interaction.orderingBound, explicitObserved: interaction.explicitTerminateAfterCall.atMs !== null }));",
+      ].join('\n');
+      const scriptPath = join(tmpdir(), 'shell-wait-leak-probe.mjs');
+      await writeFile(scriptPath, childScript);
+      const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      // The LEAK assertion FIRST (it is this test's defect): the private
+      // marker appears NOWHERE in the process output.
+      assert.equal(result.stdout.includes(privateMarker), false, 'the private cell id leaked to stdout');
+      assert.equal(result.stderr.includes(privateMarker), false, 'the private cell id leaked to stderr');
+      // The scan's classification behavior is unchanged: the wrapped
+      // terminate is still collected and its response classified as the
+      // explicit alternate ender.
+      assert.match(result.stdout, /"explicitObserved":true/);
+    });
+
+
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
       // A MULTI-statement cell: statement 0 is the original-handle poll,
       // statement 1 an unrelated await. The poll's own result IS present in
