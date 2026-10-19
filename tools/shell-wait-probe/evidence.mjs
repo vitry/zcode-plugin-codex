@@ -1939,6 +1939,40 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           }
         } catch { /* malformed arguments stay unclassified */ }
       }
+      // Codex round-9 review fix: a WRAPPED `tools.wait({cell_id,
+      // terminate: true})` statement gets the SAME cell-wide explicit-terminate
+      // coverage — the pinned cell grammar (WRAPPER_PATTERN) admits only
+      // exec_command/write_stdin in the `const r = await` form, so the wrapped
+      // terminate is scanned with its OWN dedicated shape match (line-scoped,
+      // bounded like the strict parser). It records the terminating key AND
+      // marks the terminated CELL's whole observation coverage (the round-7
+      // chain: the poll that opened the cell plus the accepted continuations,
+      // and every same-handle poll observing that cell at issue) so the
+      // outstanding normal wait's termination marker is the explicit ender's
+      // resolution, never native cancellation. The call event precedes the
+      // affected responses in rollout order, so the marks are in place before
+      // those markers are classified.
+      if (payload.type === 'custom_tool_call' && typeof payload.input === 'string') {
+        for (const line of payload.input.split('\n')) {
+          const terminateMatch = /^const r = await tools\.wait\((\{[\s\S]{1,4096}?\})\);\s*text\(/.exec(line.trim());
+          if (!terminateMatch) continue;
+          const terminateArgs = parseWrapperArguments(terminateMatch[1]);
+          if (!terminateArgs || terminateArgs.terminate !== true) continue;
+          explicitTerminateStatements.add(`${/** @type {string} */ (typeof payload.call_id === 'string' ? payload.call_id : '')}#0`);
+          const wrappedTerminatedCellId = terminateArgs.cell_id;
+          if (typeof wrappedTerminatedCellId !== 'string' || explicitTerminateCellIds.has(wrappedTerminatedCellId)) continue;
+          explicitTerminateCellIds.add(wrappedTerminatedCellId);
+          console.error('T9-MARK', wrappedTerminatedCellId, 'chain=', binding && binding.pendingCellChains ? (binding.pendingCellChains.get(wrappedTerminatedCellId) ? 'found' : 'missing') : 'no-binding');
+          const terminatedChain = binding?.pendingCellChains?.get(wrappedTerminatedCellId);
+          if (terminatedChain) {
+            explicitTerminateAffectedCallIds.add(terminatedChain.pollCallId);
+            for (const affectedCallId of terminatedChain.continuationCallIds) explicitTerminateAffectedCallIds.add(affectedCallId);
+          }
+          for (const [observingCallId, observedCell] of binding?.pollObservedCell ?? []) {
+            if (observedCell === wrappedTerminatedCellId) explicitTerminateAffectedCallIds.add(observingCallId);
+          }
+        }
+      }
       /** @type {'v2' | 'v1' | null} */
       let family = null;
       /** @type {unknown} */

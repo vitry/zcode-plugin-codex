@@ -17848,6 +17848,68 @@ process.exit(result.status ?? 1);
       assert.equal(unrelatedInteraction.cancelledAfterCall.atMs, BASE_MS + 5_600, 'a native cancellation outside the terminated cell stays credited');
     });
 
+    test('a WRAPPED terminate call claims every response of its affected cell too (round-9 review fix)', () => {
+      // Codex round-9 review fix: the wrapped `tools.wait({cell_id,
+      // terminate: true})` collection site must populate the SAME cell-wide
+      // explicit-terminate coverage as the direct-call branch — an outstanding
+      // normal wait's `Script terminated` response belongs to the explicit
+      // ender, never to native cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted direct continuation of cell-x, still
+        // outstanding when the WRAPPED explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      const wrappedTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-w', input: 'const r = await tools.wait({ cell_id: "cell-x", terminate: true }); text(JSON.stringify(r))\n' }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-w', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const wrappedInteraction = interactionFor(wrappedTerminate);
+      assert.equal(wrappedInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(wrappedInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the wrapped explicit ender');
+      assert.equal(wrappedInteraction.settledAfterCall.atMs, null);
+      assert.equal(wrappedInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const wrappedFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        wrappedTerminate, [], LAUNCHER,
+      );
+      assert.equal(wrappedFacts.interrupt.settled, null, 'the wrapped explicit ender never reports native settlement');
+      assert.equal(wrappedFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(wrappedFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against a wrapped explicit ender');
+      assert.equal(wrappedFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // The DIRECT-call keeper stays green: the same shape with a direct
+      // terminate keeps both responses explicit-ender.
+      const directTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate', arguments: JSON.stringify({ cell_id: 'cell-x', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'wait-terminate', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const directInteraction = interactionFor(directTerminate);
+      assert.equal(directInteraction.pendingBeforeCall.observed, true);
+      assert.equal(directInteraction.cancelledAfterCall.atMs, null, 'the direct-call explicit-ender coverage is unchanged');
+      assert.equal(directInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600);
+    });
+
     test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
       // A MULTI-statement cell: statement 0 is the original-handle poll,
       // statement 1 an unrelated await. The poll's own result IS present in
@@ -19481,5 +19543,114 @@ process.exit(result.status ?? 1);
       assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 1_500.5 })), /deliveryToSettlementMs/i);
     });
   });
+
+// Round-9 review fix: the cleanup boundary applies to EXIT-CODE settlements
+// too — a pending poll resolved by an exit code at/after the recorded
+// cleanup boundary is the cleanup's resolution, never the delivery's native
+// settlement, and the survival delivery bound stays ungrounded.
+describe('cleanup-boundary attribution for exit-code settlements (round-9 review fix)', async () => {
+  const { mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
+  const { extractSurvivalControlFacts } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+  const CHILD_THREAD = 'a1b2c3d4-1111-4222-8333-444455556666';
+  const LAUNCHER = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+  const BASE_MS = 1_700_000_000_000;
+  const CONTROL_PATH = '/private/tmp/sc-fixture/survival-control.mjs';
+  const at = (offsetMs, payload) => ({ type: 'response_item', timestamp: BASE_MS + offsetMs, payload });
+  const childMeta = () => ({ type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: 'p1', source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_task_1' } } } } });
+  const parentMeta = () => ({ type: 'session_meta', payload: { id: 'p1' } });
+  const wrapped = (callId, value, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n` });
+  const output = (callId, result, offsetMs) => at(offsetMs, { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }] });
+  const wrappedRead = (callId, sessionId, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 1000 })}); text(JSON.stringify(r))\n` });
+  const controlLines = (count) => Array.from({ length: count }, (_, index) => `zcode-survival-control ${index + 1} ${index * 400}`).join('\n');
+
+  // The i1 shape with the pending poll resolved by an EXIT CODE at
+  // `exitAtMs`: the qualifying reads/emissions are unchanged.
+  const exitResolvedRollouts = (exitAtMs) => [[
+    childMeta(),
+    wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+    output('rescue-launch', { output: '', session_id: 7 }, 200),
+    wrappedRead('rescue-poll', 7, 300),
+    output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+    wrappedRead('rescue-poll-2', 7, 4_000),
+    at(exitAtMs, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output: [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify({ output: 'done', exit_code: 0, session_id: 7 }) },
+    ] }),
+  ], [
+    parentMeta(),
+    wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+    output('control-launch', { output: '', session_id: 44 }, 1_100),
+    wrappedRead('control-read-1', 44, 3_000),
+    output('control-read-1', { output: controlLines(12) }, 3_100),
+    at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+    at(4_500, { type: 'custom_tool_call_output', call_id: 'int-1', output: [{ type: 'input_text', text: JSON.stringify({ previous_status: 'running' }) }] }),
+    wrappedRead('control-read-2', 44, 6_000),
+    output('control-read-2', { output: controlLines(13) }, 6_100),
+  ]];
+  const heldWithBoundary = (cleanupBoundaryAtMs) => ({
+    endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: false,
+    result: { code: 0, stdout: '', stderr: '' },
+    cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs },
+    timeline: null,
+  });
+  const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+  const mapSurvival = (held, rollouts) => mapShellWaitLiveFacts(
+    { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+    held, { status: 'supported', inconclusive: null, facts: {
+      linkage: { childThreadId: CHILD_THREAD },
+      completion: { qualified: true, processExit: 0, publicResultMatched: true, decisiveEnd: 'process-exit', structuralViolationCount: 0 },
+    } },
+    null, null, fixture, rollouts, [], LAUNCHER,
+  );
+
+  test('an exit-code settlement at/after the cleanup boundary never grounds the survival bound (round-9 review fix)', async () => {
+    // Budget cleanup initiates at 5400; the pending poll resolves with an
+    // EXIT CODE at 5500 — after the boundary. The resolution is the
+    // cleanup's, whatever its response kind: the survival delivery bound
+    // stays unestablished and no-collateral fails closed (previously the
+    // exit grounded the bound and qualified).
+    const rollouts = exitResolvedRollouts(5_500);
+    const facts = mapSurvival(heldWithBoundary(BASE_MS + 5_400), rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, false, 'a cleanup-generated exit settlement never qualifies no-collateral');
+    assert.equal(facts.survivalControl.reason, 'delivery-bound-unestablished');
+    assert.equal(facts.survivalControlInputs.deliveryBoundTag, null, 'the survival delivery bound stays ungrounded');
+    // The interrupt's own exit-code settlement branch is likewise excluded.
+    assert.equal(facts.interrupt.settled, null, 'the cleanup-generated exit never reports native interrupt settlement');
+    assert.equal(facts.interrupt.deliveryToSettlementMs, null);
+    // The reader consumes the identity-bound interaction: no bound.
+    const interaction = (await import('../tools/shell-wait-probe/evidence.mjs')).extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER });
+    const readerFacts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: 60, interruptInteraction: interaction, exactTargetMatch: true, settledDeliveryCleanupGenerated: true, childThreadId: CHILD_THREAD });
+    assert.equal(readerFacts.deliveryBoundTag, null);
+  });
+
+  test('an exit-code settlement strictly before the cleanup boundary keeps full credit (round-9 review fix keeper)', async () => {
+    // The exit (5500) STRICTLY precedes the recorded cleanup boundary
+    // (5600): genuine native settlement — bound anchored, latency measured,
+    // no-collateral qualified.
+    const rollouts = exitResolvedRollouts(5_500);
+    const facts = mapSurvival(heldWithBoundary(BASE_MS + 5_600), rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, true, 'an exit-code settlement strictly before the boundary keeps full credit');
+    assert.equal(facts.survivalControl.reason, null);
+    assert.equal(facts.interrupt.settled, true);
+    assert.equal(facts.interrupt.settledBasis, 'terminal-observation-after-delivery');
+    assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, 'interrupt call 4400 → exit settlement 5500');
+    const readerFacts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: 60, interruptInteraction: (await import('../tools/shell-wait-probe/evidence.mjs')).extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER }), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+    assert.equal(readerFacts.deliveryBoundTag, 4_500);
+  });
+
+  test('an exit-code settlement in a run with no cleanup kill keeps full credit (round-9 review fix keeper)', () => {
+    const rollouts = exitResolvedRollouts(5_500);
+    const heldNoKill = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+      result: { code: 0, stdout: '', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+      timeline: null,
+    };
+    const facts = mapSurvival(heldNoKill, rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, true, 'a run with no cleanup kill keeps the existing bound semantics');
+    assert.equal(facts.interrupt.settled, true);
+  });
+});
 
 }

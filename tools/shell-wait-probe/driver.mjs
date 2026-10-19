@@ -2962,33 +2962,35 @@ export function extractFinalAgentMessage(rollouts) {
 // previous status; every non-active variant is excluded here.
 
 /**
- * Whether a cancellation marker may be credited as a genuine native
- * settlement. Codex overall review fix (the boundary refinement of round 19),
- * extended to EVERY termination path by the second overall review fix: the
- * coarse `budgetExpired` boolean discarded genuine pre-cleanup settlements —
- * the Child can cancel BEFORE the deadline while the held turn is still
- * waiting (Root still reporting or the fixed hold still running) — and,
- * conversely, credited markers produced by the early-exit/failure cleanup
- * kills solely because the budget had not expired. The driver records the
- * WALL-CLOCK epoch-ms initiation boundary (`held.cleanup.cleanupBoundaryAtMs`,
- * on the same clock as the rollout event timestamps) on EVERY controlled-
- * process termination path. Credit holds only when NO cleanup kill was
- * initiated (no boundary recorded and none demonstrable) or the marker's
- * rollout event time STRICTLY precedes the recorded boundary; a marker at or
- * after the boundary — or a kill demonstrably initiated without a recorded
- * boundary — fails closed to the unattributed semantics.
- * @param {number} cancelledAtMs the cancellation resolution's rollout event time
+ * Whether a settlement resolution's rollout event time STRICTLY precedes the
+ * recorded cleanup boundary. Codex overall review fix (the boundary refinement
+ * of round 19), generalized by the round-9 review fix to ANY settlement
+ * resolution timestamp — cancellation markers AND exit-code completions
+ * alike. The coarse `budgetExpired` boolean discarded genuine pre-cleanup
+ * settlements — the observation can resolve BEFORE the budget deadline while
+ * the held turn is still waiting (Root still reporting or the fixed hold
+ * still running) — and, conversely, credited resolutions produced by the
+ * early-exit/failure cleanup kills solely because the budget had not expired.
+ * The driver records the WALL-CLOCK epoch-ms initiation boundary
+ * (`held.cleanup.cleanupBoundaryAtMs`, on the same clock as the rollout event
+ * timestamps) on EVERY controlled-process termination path. Credit holds
+ * only when NO cleanup kill was initiated (no boundary recorded and none
+ * demonstrable) or the resolution's rollout event time STRICTLY precedes the
+ * recorded boundary; a resolution at or after the boundary — or a kill
+ * demonstrably initiated without a recorded boundary — fails closed to the
+ * unattributed semantics.
+ * @param {number} resolvedAtMs the settlement resolution's rollout event time
  * @param {HeldTurnRecord | null | undefined} held
  * @returns {boolean}
  */
-function cancellationPrecedesCleanupBoundary(cancelledAtMs, held) {
-  if (!Number.isFinite(cancelledAtMs)) return false;
+function settlementPrecedesCleanupBoundary(resolvedAtMs, held) {
+  if (!Number.isFinite(resolvedAtMs)) return false;
   const cleanup = /** @type {any} */ (held)?.cleanup;
   const boundaryAtMs = cleanup?.cleanupBoundaryAtMs;
   if (typeof boundaryAtMs === 'number' && Number.isFinite(boundaryAtMs)) {
     // A termination was INITIATED (the boundary is its initiation record):
-    // only a strictly-earlier marker can be genuine settlement.
-    return cancelledAtMs < boundaryAtMs;
+    // only a strictly-earlier resolution can be genuine settlement.
+    return resolvedAtMs < boundaryAtMs;
   }
   // No recorded boundary: credit only when NO cleanup kill was demonstrably
   // initiated (older records where a kill demonstrably occurred fail closed).
@@ -3284,23 +3286,31 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   const interruptExactTargetMatch = interruptInteraction.target.value !== null && evidenceChildThreadId !== null
     ? interruptInteraction.target.value === evidenceChildThreadId
     : null;
-  // Codex round-6 review fix: the survival delivery bound consumes the SAME
-  // cleanup-aware settlement attribution the mapper's settlement branch
-  // applies. The settled delivery is CLEANUP-GENERATED exactly when its
-  // resolution is the CANCELLATION marker the cleanup-boundary attribution
-  // rejected (at/after the recorded cleanup boundary, or a cleanup kill
-  // demonstrably initiated without a comparable boundary) — the reader then
-  // leaves the bound unestablished (fail closed), even when qualifying
-  // control reads and later emissions would otherwise qualify. Single source
-  // of truth: the decision rides THIS mapper's own
-  // cancellationPrecedesCleanupBoundary comparison (the same helper the
-  // settlement branch below consumes) and is passed to the reader as a typed
-  // option — no duplicated boundary math. A settlement anchored to an
-  // exit-code completion, strictly before the boundary, or in a run with no
-  // cleanup kill keeps the existing bound semantics.
-  const settledDeliveryCleanupGenerated = interruptInteraction.cancelledAfterCall.atMs !== null
-    && interruptInteraction.settledAfterCall.atMs === interruptInteraction.cancelledAfterCall.atMs
-    && !cancellationPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held);
+  // Codex round-6 review fix; generalized by the round-9 review fix: the
+  // survival delivery bound consumes the SAME cleanup-aware settlement
+  // attribution the mapper's settlement branches apply — for EVERY response
+  // kind. When a cleanup boundary is RECORDED, the settled delivery is
+  // CLEANUP-GENERATED exactly when its resolution timestamp (the earliest
+  // attributable settlement after the delivery: a cancellation marker OR an
+  // exit-code completion) is at/after that boundary — the reader then leaves
+  // the bound unestablished (fail closed), even when qualifying control reads
+  // and later emissions would otherwise qualify. Without a recorded boundary
+  // the PRIOR per-kind semantics stand: only a demonstrable cleanup kill
+  // excludes, and only the cancellation kind (an exit-code completion in a
+  // no-boundary run is a genuine native settlement — the legacy fixture
+  // contract). A resolution strictly before the boundary, or in a run with
+  // no cleanup kill, keeps the existing bound semantics.
+  const cleanupBoundaryAtMs = typeof held?.cleanup?.cleanupBoundaryAtMs === 'number' && Number.isFinite(held.cleanup.cleanupBoundaryAtMs)
+    ? held.cleanup.cleanupBoundaryAtMs
+    : null;
+  const settledDeliveryCleanupGenerated = interruptInteraction.settledAfterCall.atMs !== null && (
+    cleanupBoundaryAtMs !== null
+      ? interruptInteraction.settledAfterCall.atMs >= cleanupBoundaryAtMs
+      : ((held?.budgetExpired === true
+        || held?.cleanup?.verifiedProcessTerminated === true
+        || held?.cleanup?.codexTerminated === true) === true
+        && interruptInteraction.cancelledAfterCall.atMs === interruptInteraction.settledAfterCall.atMs)
+  );
   // The §16.4 survival-control verdict (release-qualification review round):
   // decoded from the SAME collected rollouts through the evidence reader —
   // the control's grounded handle, its bounded pre/post-delivery reads, and
@@ -3420,6 +3430,19 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // termination, so neither settlement nor a surviving-turn claim is
     // attributed.
     else if (interruptUnreadableContinuationObserved) interruptSettledBasis = 'unparseable-continuation-settlement-unknown';
+    // Codex round-9 review fix: the cleanup boundary applies to EXIT-CODE
+    // settlements too — an exit-code completion resolved by the cleanup kill
+    // (its event time at/after a RECORDED cleanup boundary) is the cleanup's
+    // resolution, never the delivery's native settlement. Without a recorded
+    // boundary an exit-code completion keeps the legacy credit (a completion
+    // is excluded only by the boundary evidence, never by the kill flags
+    // alone — those only bound the cancellation kind).
+    else if (interruptCompletionQualified
+      && interruptInteraction.completedAfterCall.atMs !== null
+      && cleanupBoundaryAtMs !== null
+      && interruptInteraction.completedAfterCall.atMs >= cleanupBoundaryAtMs) {
+      interruptSettledBasis = 'budget-cleanup-termination-not-attributed';
+    }
     else if (interruptCompletionQualified) {
       interruptSettled = true;
       interruptSettledBasis = 'terminal-observation-after-delivery';
@@ -3467,7 +3490,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // inconclusive verdict below is unchanged.
     else if (interruptInteraction.pendingBeforeCall.observed === true
       && interruptInteraction.cancelledAfterCall.atMs !== null
-      && cancellationPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held)) {
+      && settlementPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held)) {
       interruptSettled = true;
       interruptSettledBasis = 'native-cancellation-settlement-after-delivery';
     }
