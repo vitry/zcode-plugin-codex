@@ -7967,6 +7967,46 @@ changes. All three passes stand recorded above; the gate verdict is pass 3's.
 Line-endings growth from the drafting baseline (538 → 540 files) is Task 1/Task 2's added research
 and test files. No gate was waived.
 
+2026-10-19 PR-review closeout: the full-suite gate above was RE-RUN on the final bytes at HEAD
+`b4f3db9…`, after the fourteen review-loop fix commits — §18.3a below is the superseding gate of
+record.
+
+### 18.3a Final-bytes full-suite record (PR-review closeout, 2026-10-19) — supersedes §18.3 pass 3 as the gate of record
+
+The §18.3 pass-3 `npm test` gate was executed at HEAD `57c68a3…`; the fourteen overall-review fix
+commits (`8edc96f` … `b4f3db9` — cleanup/settlement attribution bounds, cancellation and
+explicit-terminate scoping, latency/bound enforcement, leak-probe isolation and the
+poll-association fix — touching ONLY the research seam files
+`tools/shell-wait-probe/{driver,evidence,fixture,release-qualification}.mjs` and
+`tests/shell-wait-probe.test.mjs`) came after it. Per the PR-review closeout, the full suite was
+RE-RUN on 2026-10-19 (offline; zero model turns, zero host launches) on the exact final bytes at
+HEAD `b4f3db95441a897a3eb7a8342ec1776f61025d0d`, using the same clean-clone recipe §18.3
+established: a fresh `git clone --no-hardlinks` of the worktree to `/tmp/verify-final-closeout7`
+(a path containing none of the suite's guarded identifier substrings), on branch
+`docs/rescue-shell-wait-release-qualification` (the clone's own checked-out HEAD), with
+`node_modules` COPIED in as a real directory. The clean copy remains necessary for exactly the
+§18.3-documented reason: the working tree carries three PRE-EXISTING unowned untracked scratch
+files (`findings.md`, `progress.md`, `task_plan.md`) that trip the marketplace clean-source check
+(`verifyCleanExactSource`, `scripts/build-marketplace-snapshot.mjs:215`); the scratch files were
+NOT staged, deleted or stashed, and the clone's
+`git status --porcelain=v1 --untracked-files=all` was EMPTY. The copy was proven byte-exact
+against the worktree by identical `git archive HEAD` SHA-256 digests
+(`b044ec01bf6ad6374fb6337d5c603b68cb16fb5f83d6085d446062619f79ec3f` on both sides).
+
+| Gate command | Result |
+| --- | --- |
+| **`npm test` at HEAD `b4f3db9…` — routine suite `node tools/run-test-suite.mjs routine`** | **3397 tests / 3394 pass / 0 fail / 3 skipped / 0 cancelled, exit 0** (duration_ms 666898.131959) — the same three documented opt-in-gated authenticated E2E skips as §18.3 pass 3 (`codex-skills-unqualified` ×2 — `ZCODE_CODEX_SKILLS_E2E=1`/`ZCODE_CODEX_RESCUE_E2E=1`; `real-zcode-unqualified` — `ZCODE_REAL_E2E=1`), the standing design, not new omissions |
+| **`npm test` at HEAD `b4f3db9…` — the second command `node --test tests/integration/marketplace-snapshot-build.mjs`** | **2 tests / 2 pass / 0 fail / 0 skipped / 0 cancelled, exit 0** (duration_ms 19944.631375), against the clean exact source — the `&&` chain did not short-circuit |
+| **`npm test` combined at HEAD `b4f3db9…`** | **PASS, exit 0: 3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled.** Zero `✖` lines in the entire log; a single recorded pass, no retries. |
+
+This dated record SUPERSEDES the §18.3 pass-3 record (HEAD `57c68a3…`) as the full-suite gate of
+record for this branch: the review-loop fix commits r1–r14 are now covered by a green full-suite
+run on the final implementation bytes. The `57c68a3` record remains above, historically retained,
+NOT deleted. The other §18.3 gates stand as recorded at `57c68a3…`; the fix commits touched no
+production path — the prohibited-path diff against the merged base `5effa170…` is still EMPTY at
+`b4f3db9` (re-checked 2026-10-19: `git diff 5effa170… --stat -- skills/ agents/ scripts/ hooks/
+.codex-plugin/ marketplace/ docs/superpowers/specs/` → EMPTY, exit 0). No gate was waived.
+
 ### 18.4 Spec mapping — S1–S7 and Q1–Q6 final statuses
 
 Labels used: `observed` = installed-observed on this campaign's records; `fixture-tested` = offline
