@@ -23,12 +23,13 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promis
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { PUBLIC_RESULT_SENTINEL, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, terminateVerifiedProcess } from './fixture.mjs';
+import { PUBLIC_RESULT_RESUMABLE, PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
-import { EXECUTING_EVIDENCE_SOURCE, extractInterruptInteraction, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt } from './evidence.mjs';
+import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, extractInterruptInteraction, extractSurvivalControlFacts, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
+import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
 
@@ -37,8 +38,12 @@ const MAX_CASE_EXCERPTS = 64;
 // Version tag of the observer-digest construction: bump when the hashed input
 // combination changes so old records stay interpretable. v2 adds the
 // controlled shape-diagnosis helper's module-init bytes (plan Task 2) —
-// copying the v1 two-file hash would misattribute the new classifier.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v2';
+// copying the v1 two-file hash would misattribute the new classifier. v3
+// (codex review, release-qualification round) adds the release-qualification
+// verdict helper's module-init bytes: with an exact terminal expectation the
+// evidence adjudication EXECUTES that helper, so changing it alone must
+// change the digest (and flip sourcesChangedDuringRun), never preserve them.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v3';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -57,9 +62,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
     .update('\0')
+    .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -81,9 +88,10 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, shapeSource, driverSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, driverSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
@@ -92,12 +100,14 @@ export async function observerProvenance() {
     .update('\0')
     .update(shapeSource)
     .update('\0')
+    .update(releaseQualificationSource)
+    .update('\0')
     .update(driverSource)
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -185,6 +195,52 @@ export const SHELL_WAIT_CASES = Object.freeze([
   'rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt',
   'review-wait', 'adversarial-review-wait', 'status-wait', 'background',
 ]);
+
+/**
+ * The frozen case/policy matrix (report §16.6 — the release-qualification
+ * Task 2 implementation input): the config-default pair is valid for every
+ * registered case, each with exactly one declared paragraph treatment.
+ * `candidate-paragraph` cases apply the fixture's config-default waiting
+ * paragraph to the named Role template and generic assignment skill;
+ * `canonical-host-config` cases keep the installed canonical waiting
+ * paragraph byte-identical and apply ONLY the host config (the fixture-home
+ * cap key plus the driver's `-c` exec-default argv override), recording
+ * canonical hash provenance. A future case label without a declared
+ * combination stays unsupported and fails closed.
+ */
+export const SHELL_WAIT_WAIT_POLICY_CASES = Object.freeze({
+  'rescue-baseline': 'canonical-host-config',
+  'rescue-long': 'candidate-paragraph',
+  'rescue-repeat': 'candidate-paragraph',
+  'rescue-noise': 'candidate-paragraph',
+  'rescue-interrupt': 'candidate-paragraph',
+  'review-wait': 'canonical-host-config',
+  'adversarial-review-wait': 'canonical-host-config',
+  'status-wait': 'canonical-host-config',
+  'background': 'candidate-paragraph',
+});
+
+/**
+ * The I0 native short-window baseline selector (report §16.5/§16.6): ONE
+ * closed value, valid ONLY for `rescue-interrupt` at the declared 60000
+ * requested window with the config-default pair — the measured-baseline run
+ * the interrupt responsiveness comparison may consume.
+ */
+export const INTERRUPT_BASELINE_SELECTOR_VALUE = 'short-window-60000';
+
+/**
+ * The I1 survival-control selector (report §16.4): ONE closed value, valid
+ * ONLY for `rescue-interrupt` at the candidate 3600000 window with the
+ * config-default pair. The command bytes of the declared unrelated control
+ * are fixture-owned; the caller never supplies them.
+ */
+export const SURVIVAL_CONTROL_SELECTOR_VALUE = 'progress-terminal';
+
+/** The I0 selector's declared requested window. */
+const INTERRUPT_BASELINE_POLL_MS = 60_000;
+
+/** The I1 selector's declared candidate observation window. */
+const SURVIVAL_CONTROL_POLL_MS = 3_600_000;
 
 /** @param {string} message @returns {TypeError} */
 function invalidCaseInput(message) {
@@ -289,6 +345,56 @@ function assertModelIdentifier(model) {
   }
 }
 
+/**
+ * One closed-literal selector gate (report §16.4/§16.6): an absent selector
+ * keeps legacy behavior byte-for-byte; a present one must be the exact
+ * declared value.
+ * @param {string | undefined} value @param {string} option @param {string} literal
+ */
+function assertSelectorLiteral(value, option, literal) {
+  if (value !== undefined && value !== literal) {
+    throw invalidCaseInput(`${option} only accepts the literal value ${literal}.`);
+  }
+}
+
+/**
+ * The §16.6 per-case policy combination and closed interrupt-selector gates,
+ * shared verbatim by the CLI and programmatic boundaries. Runs AFTER the
+ * individual field validations with the case-defaulted poll window, so the
+ * declared per-selector windows are enforced on the effective value.
+ * @param {{ case: string, pollMs: number, waitPolicy: string | null, interruptBaselineSelector: string | null, survivalControlSelector: string | null }} input
+ */
+function assertWaitPolicyCombination(input) {
+  if (input.interruptBaselineSelector !== null && input.survivalControlSelector !== null) {
+    throw invalidCaseInput('--interrupt-baseline-selector and --survival-control-selector are mutually exclusive: one run is either the I0 baseline or the I1 survival-control case, never both.');
+  }
+  if (input.waitPolicy !== null && !(input.case in SHELL_WAIT_WAIT_POLICY_CASES)) {
+    throw invalidCaseInput(`--wait-policy config-default is not registered for the ${input.case} case: the closed §16.6 matrix declares every supported combination.`);
+  }
+  if (input.interruptBaselineSelector !== null) {
+    if (input.waitPolicy !== 'config-default') {
+      throw invalidCaseInput('--interrupt-baseline-selector requires the --wait-policy config-default --exec-default-ms pair.');
+    }
+    if (input.case !== 'rescue-interrupt') {
+      throw invalidCaseInput('--interrupt-baseline-selector is only valid for the rescue-interrupt case.');
+    }
+    if (input.pollMs !== INTERRUPT_BASELINE_POLL_MS) {
+      throw invalidCaseInput(`--interrupt-baseline-selector requires the declared ${String(INTERRUPT_BASELINE_POLL_MS)} requested window (pass --poll-ms ${String(INTERRUPT_BASELINE_POLL_MS)}): the I0 baseline is the native short-window shape, never a long-window run.`);
+    }
+  }
+  if (input.survivalControlSelector !== null) {
+    if (input.waitPolicy !== 'config-default') {
+      throw invalidCaseInput('--survival-control-selector requires the --wait-policy config-default --exec-default-ms pair.');
+    }
+    if (input.case !== 'rescue-interrupt') {
+      throw invalidCaseInput('--survival-control-selector is only valid for the rescue-interrupt case.');
+    }
+    if (input.pollMs !== SURVIVAL_CONTROL_POLL_MS) {
+      throw invalidCaseInput(`--survival-control-selector requires the candidate ${String(SURVIVAL_CONTROL_POLL_MS)} observation window (rescue-interrupt default; pass --poll-ms ${String(SURVIVAL_CONTROL_POLL_MS)}).`);
+    }
+  }
+}
+
 /** @param {readonly string[]} argv @returns {ShellWaitCaseInput | { help: true }} */
 export function parseShellWaitArguments(argv) {
   if (!Array.isArray(argv) || argv.some((argument) => typeof argument !== 'string')) {
@@ -297,7 +403,7 @@ export function parseShellWaitArguments(argv) {
   if (argv.includes('--help')) return { help: true };
   /** @type {Record<string, string>} */
   const values = {};
-  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model', '--wait-policy', '--exec-default-ms'];
+  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model', '--wait-policy', '--exec-default-ms', '--interrupt-baseline-selector', '--survival-control-selector'];
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -362,15 +468,28 @@ export function parseShellWaitArguments(argv) {
   if (values['--exec-default-ms'] !== undefined && values['--wait-policy'] === undefined) {
     throw invalidCaseInput('--exec-default-ms requires --wait-policy config-default.');
   }
-  if (values['--wait-policy'] !== undefined && values['--case'] !== 'rescue-long') {
-    throw invalidCaseInput('--wait-policy config-default is only valid for the rescue-long case.');
-  }
+  // The closed interrupt selectors (report §16.4/§16.6): single literal
+  // values, validated before the per-case combination gate below.
+  assertSelectorLiteral(values['--interrupt-baseline-selector'], '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE);
+  assertSelectorLiteral(values['--survival-control-selector'], '--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE);
   const defaults = shellWaitCaseDefaults(/** @type {string} */ (values['--case']));
   const capMs = values['--cap-ms'] !== undefined ? Number(values['--cap-ms']) : defaults.capMs;
   const pollMs = values['--poll-ms'] !== undefined ? Number(values['--poll-ms']) : defaults.pollMs;
   if (values['--case'] === 'rescue-baseline' && pollMs !== 60_000) {
     throw invalidCaseInput('rescue-baseline preserves the plain 60000 observation; --poll-ms cannot change it.');
   }
+  // The §16.6 per-case policy matrix: every registered case carries exactly
+  // one declared combination (candidate paragraph vs canonical paragraph with
+  // host-config-only application), and the closed interrupt selectors are
+  // bound to their declared case and window — enforced on the EFFECTIVE poll
+  // window (defaults applied), never on the raw argv.
+  assertWaitPolicyCombination({
+    case: /** @type {string} */ (values['--case']),
+    pollMs,
+    waitPolicy: values['--wait-policy'] ?? null,
+    interruptBaselineSelector: values['--interrupt-baseline-selector'] ?? null,
+    survivalControlSelector: values['--survival-control-selector'] ?? null,
+  });
   return {
     case: /** @type {ShellWaitCaseLabel} */ (values['--case']),
     codexBinary: /** @type {string} */ (values['--codex']),
@@ -390,6 +509,8 @@ export function parseShellWaitArguments(argv) {
     model: values['--model'] ?? null,
     waitPolicy: values['--wait-policy'] ?? null,
     execDefaultMs: values['--exec-default-ms'] !== undefined ? Number(values['--exec-default-ms']) : null,
+    interruptBaselineSelector: values['--interrupt-baseline-selector'] ?? null,
+    survivalControlSelector: values['--survival-control-selector'] ?? null,
   };
 }
 
@@ -432,8 +553,8 @@ export async function runShellWaitCase(input, dependencies = {}) {
     sourceSha: caseInput.sourceSha,
     codexBinary: caseInput.codexBinary,
     output: caseInput.output,
-    variant: caseVariant(caseInput.case),
-    commandSkillVariant: commandSkillVariantFor(caseInput.case),
+    variant: caseVariantForRun(caseInput),
+    commandSkillVariant: commandSkillVariantFor(caseInput.case, caseVariantForRun(caseInput)),
     capMs: caseInput.capMs,
     pollMs: caseInput.pollMs,
     // The Task 4 config-default transport: the fixture receives the closed
@@ -441,6 +562,11 @@ export async function runShellWaitCase(input, dependencies = {}) {
     // host exclusively as the composed `-c` argv override. Absent → the
     // legacy fixture input stays byte-for-byte unchanged.
     ...(caseInput.waitPolicy !== null ? { waitPolicy: caseInput.waitPolicy } : {}),
+    // The §16.4 I1 survival-control support: the selector reaches the fixture
+    // as the closed boolean flag only — the selector literal itself and every
+    // command byte stay driver/fixture-owned. The fixture writes its OWN
+    // bounded control script and records its closed facts.
+    ...(caseInput.survivalControlSelector !== null ? { survivalControl: true } : {}),
     // R3: the live status-wait case NEVER uses the fixture's owning-session
     // reservation — production selects explicit Status targets OWNER-SCOPED,
     // so the job must be created inside the live host session itself (the
@@ -448,6 +574,27 @@ export async function runShellWaitCase(input, dependencies = {}) {
     // test setup only; the explicit query timeout stays a driver-level fact
     // (the rendered turn-2 invocation), never a fixture reservation input.
   });
+  // Codex self-review round 18: a DECLARED survival-control run whose
+  // fixture handle lacks the control path must refuse BEFORE the launch —
+  // the registered selector label is never silently spent without its §16.4
+  // control (the directive would silently not ride the prompt and the
+  // record would carry survivalControl: null). The disposal guarantee holds
+  // on EVERY path after creation: the refusal rethrows only after the
+  // fixture's own cleanup ran (a cleanup failure aggregates, mirroring the
+  // executor-failure path below).
+  try {
+    if (caseInput.survivalControlSelector !== null
+      && typeof /** @type {any} */ (fixture)?.survivalControlPath !== 'string') {
+      throw invalidCaseInput('a declared survival-control run requires the fixture handle to expose a bounded survivalControlPath before launch.');
+    }
+  } catch (refusal) {
+    try {
+      await disposeFixture(fixture);
+    } catch (disposalFailure) {
+      throw new AggregateError([refusal, disposalFailure], `the shell wait case was refused and its fixture cleanup also failed: ${refusal instanceof Error ? refusal.message : String(refusal)}`);
+    }
+    throw refusal;
+  }
   // P2 round-28: the observer digest is captured at CASE START — before any
   // observation runs — so the record attributes the run to the revision that
   // was on disk when the observer initialized. The record-time read then
@@ -606,9 +753,25 @@ function validateCaseInput(input) {
   if ((input.execDefaultMs ?? null) !== null && (input.waitPolicy ?? null) !== 'config-default') {
     throw invalidCaseInput('execDefaultMs requires waitPolicy "config-default".');
   }
-  if (input.waitPolicy === 'config-default' && input.case !== 'rescue-long') {
-    throw invalidCaseInput('the config-default wait policy is only valid for the rescue-long case.');
+  // The closed interrupt selectors (report §16.4/§16.6): programmatic mirror
+  // of the CLI literal gate.
+  if (input.interruptBaselineSelector !== undefined && input.interruptBaselineSelector !== null
+    && input.interruptBaselineSelector !== INTERRUPT_BASELINE_SELECTOR_VALUE) {
+    throw invalidCaseInput(`interruptBaselineSelector must be exactly "${INTERRUPT_BASELINE_SELECTOR_VALUE}" when present.`);
   }
+  if (input.survivalControlSelector !== undefined && input.survivalControlSelector !== null
+    && input.survivalControlSelector !== SURVIVAL_CONTROL_SELECTOR_VALUE) {
+    throw invalidCaseInput(`survivalControlSelector must be exactly "${SURVIVAL_CONTROL_SELECTOR_VALUE}" when present.`);
+  }
+  // The §16.6 per-case policy matrix and selector windows: the same shared
+  // combination gate as the CLI, enforced BEFORE any side effect.
+  assertWaitPolicyCombination({
+    case: /** @type {string} */ (input.case),
+    pollMs: /** @type {number} */ (input.pollMs),
+    waitPolicy: input.waitPolicy ?? null,
+    interruptBaselineSelector: input.interruptBaselineSelector ?? null,
+    survivalControlSelector: input.survivalControlSelector ?? null,
+  });
   return {
     case: /** @type {ShellWaitCaseLabel} */ (input.case),
     codexBinary: /** @type {string} */ (input.codexBinary),
@@ -624,6 +787,8 @@ function validateCaseInput(input) {
     model: input.model ?? null,
     waitPolicy: input.waitPolicy ?? null,
     execDefaultMs: input.execDefaultMs ?? null,
+    interruptBaselineSelector: input.interruptBaselineSelector ?? null,
+    survivalControlSelector: input.survivalControlSelector ?? null,
   };
 }
 
@@ -656,13 +821,29 @@ function caseVariant(label) {
 }
 
 /**
+ * The EFFECTIVE fixture variant for one run (release-qualification §16.6):
+ * the canonical-host-config policy combinations (B/RV/AR/ST) keep the
+ * canonical paragraph, so their variant stays `baseline` even for the
+ * root-family labels whose LEGACY (no-policy) runs deliver the candidate
+ * command-Skill paragraphs — a policy run must never install the candidate
+ * paragraph or record its hash.
+ * @param {ValidatedShellWaitCase} caseInput */
+function caseVariantForRun(caseInput) {
+  if (caseInput.waitPolicy !== null && SHELL_WAIT_WAIT_POLICY_CASES[caseInput.case] === 'canonical-host-config') {
+    return /** @type {const} */ ('baseline');
+  }
+  return caseVariant(caseInput.case);
+}
+
+/**
  * The root-family instruction-delivery seam: the candidate waiting paragraph
  * is delivered to the isolated installed command Skills exactly when the case
- * is root-family AND the variant is candidate. Rescue cases never touch the
- * command Skills — their delivery surface is the Role/skill assignment.
- * @param {ShellWaitCaseLabel} label */
-function commandSkillVariantFor(label) {
-  return SHELL_WAIT_CASE_SPECS[label]?.family === 'root' && caseVariant(label) === 'candidate'
+ * is root-family AND the EFFECTIVE variant is candidate. Rescue cases never
+ * touch the command Skills — their delivery surface is the Role/skill
+ * assignment.
+ * @param {ShellWaitCaseLabel} label @param {'baseline' | 'candidate'} variant */
+function commandSkillVariantFor(label, variant) {
+  return SHELL_WAIT_CASE_SPECS[label]?.family === 'root' && variant === 'candidate'
     ? /** @type {const} */ ('candidate')
     : /** @type {const} */ ('baseline');
 }
@@ -726,6 +907,14 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
         waitPolicy: {
           policy: caseInput.waitPolicy,
           execDefaultMs: caseInput.execDefaultMs ?? null,
+          // The §16.6 paragraph-treatment provenance (which paragraph the
+          // instruction hashes describe): mirrored from the fixture block
+          // when the fixture recorded it — candidate-paragraph vs
+          // canonical-host-config. A fixture block without the field (legacy
+          // shapes) keeps this record schema unchanged.
+          ...(typeof /** @type {any} */ (fixtureRecord).waitPolicy?.paragraphTreatment === 'string'
+            ? { paragraphTreatment: /** @type {any} */ (fixtureRecord).waitPolicy.paragraphTreatment }
+            : {}),
           instructions: /** @type {any} */ (fixtureRecord).waitPolicy ?? null,
         },
       } : {}),
@@ -789,6 +978,12 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       terminalStdoutChecked: liveFacts.hostResult?.terminalStdoutChecked ?? null,
       resultCheck: liveFacts.hostResult?.resultCheck ?? null,
       resultCheckLabel: liveFacts.hostResult?.resultCheckLabel ?? null,
+      // The byte-exact terminal/exit linkage verdict (release-qualification
+      // Task 2): persisted only when the live facts carried one, so legacy
+      // records keep their pinned schema.
+      ...(liveFacts.hostResult?.exactTerminalMatch !== undefined
+        ? { exactTerminalMatch: liveFacts.hostResult.exactTerminalMatch }
+        : {}),
     },
     // R4: the interrupt block carries either measured interaction facts or an
     // explicit investigated reason. Unknown optional facts stay null — never
@@ -811,7 +1006,30 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       deliveryToSettlementMs: liveFacts.interrupt?.deliveryToSettlementMs ?? null,
       timingBasis: liveFacts.interrupt?.timingBasis ?? null,
       missingPrerequisite: liveFacts.interrupt?.missingPrerequisite ?? null,
+      // Codex overall review fix 3: the cleanup boundary and cancellation
+      // timestamp behind the settlement attribution persist ONLY when the
+      // live facts carried them — legacy records stay byte-identical — so
+      // the boundary-vs-marker comparison is re-verifiable offline.
+      ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
+      ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
     },
+    // The §16.4 I1 survival-control provenance: the record carries the closed
+    // selector ONLY when it was requested, the projected §16.4 whitelist
+    // facts ONLY when an executor supplied them (an offline/unobserved run
+    // records null, never a fabricated control outcome), and the fixture's
+    // DECLARATION block (script digest, line count, cadence, tag clock) when
+    // the fixture recorded one — the fixture root is disposed after the run,
+    // so the binding to the exact control-script bytes must outlive it.
+    ...(caseInput.survivalControlSelector !== null ? {
+      survivalControlSelector: caseInput.survivalControlSelector,
+      survivalControl: /** @type {any} */ (liveFacts).survivalControl ?? null,
+      // Codex review round 12: the bounded whitelisted oracle inputs persist
+      // beside the versioned verdict for offline re-adjudication.
+      ...(Array.isArray(/** @type {any} */ (liveFacts).survivalControlInputs) || (typeof /** @type {any} */ (liveFacts).survivalControlInputs === 'object' && /** @type {any} */ (liveFacts).survivalControlInputs !== null)
+        ? { survivalControlInputs: /** @type {any} */ (liveFacts).survivalControlInputs }
+        : {}),
+      ...(fixtureRecord.survivalControl ? { survivalControlDeclaration: fixtureRecord.survivalControl } : {}),
+    } : {}),
     held: {
       endedBeforeGate: liveFacts.held?.endedBeforeGate ?? null,
       cleanupLabel: liveFacts.held?.cleanupLabel ?? null,
@@ -828,11 +1046,18 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     },
     // R3 background lifecycle: the measured Child-side settlement facts behind
     // the Root acknowledgement (the launched-Child acknowledgement is never
-    // confused with the Child's terminal completion).
+    // confused with the Child's terminal completion). Release-qualification
+    // Task 2: the three-way settlement layer split (remote terminal / local
+    // process reaping / durable obligations) is mirrored ONLY when the live
+    // facts carried it — held records without layers keep the persisted
+    // schema unchanged.
     child: {
       settlement: /** @type {any} */ (liveFacts.child)?.settlement ?? null,
       rootAcknowledgementAtElapsedMs: /** @type {any} */ (liveFacts.child)?.rootAcknowledgementAtElapsedMs ?? null,
       settlementDetectedAtElapsedMs: /** @type {any} */ (liveFacts.child)?.settlementDetectedAtElapsedMs ?? null,
+      ...(/** @type {any} */ (liveFacts.child)?.settlementLayers !== undefined
+        ? { settlementLayers: /** @type {any} */ (liveFacts.child).settlementLayers }
+        : {}),
     },
     // R3 status-wait live flow: the observed launch acknowledgement and the
     // Status query bound together (same session, exact ID match, explicit
@@ -896,6 +1121,26 @@ async function disposeFixture(fixture) {
   const dispose = /** @type {any} */ (fixture).dispose;
   if (typeof dispose !== 'function') throw new Error('the fixture handle must expose dispose()');
   await dispose();
+}
+
+/**
+ * Whether the case's held turn stays open for the bounded Child-settlement
+ * watch (release-qualification Task 2): the rescue-foreground cases extend
+ * their observation ONLY as needed to capture the exact Child/Companion
+ * settlement after Root's join, within the same declared budget;
+ * `background` already watches (the Root acknowledgement ends its turn
+ * early). `rescue-interrupt` is excluded — its post-delivery settlement
+ * evidence comes from the interrupt machinery, and a completion-shaped watch
+ * could only burn budget waiting for an exit code an interrupted turn never
+ * produces. Status runs its own deadline-only flow; root-family commands
+ * keep their renderer contracts.
+ * @param {ShellWaitCaseLabel} caseLabel
+ */
+export function runsChildSettlementWatch(caseLabel) {
+  const spec = SHELL_WAIT_CASE_SPECS[caseLabel];
+  if (!spec) throw invalidCaseInput(`unknown shell wait case: ${String(caseLabel)}`);
+  if (spec.backgroundFlow === true) return true;
+  return spec.family === 'rescue' && spec.rootJoinsChild === true && caseLabel !== 'rescue-interrupt';
 }
 
 /**
@@ -982,12 +1227,48 @@ export async function runHeldHostTurn(input) {
   let holdDeadlineMs = null;
   const budgetController = new AbortController();
   let budgetExpired = false;
+  /** @type {HeldTurnRecord['cleanup']} */
+  const cleanup = {
+    label: 'observation',
+    releasedGate: false,
+    verifiedProcessTerminated: false,
+    codexTerminated: false,
+    nativeInterruptionClaimed: false,
+    errors: /** @type {unknown[]} */ ([]),
+    // Codex overall review fix: the WALL-CLOCK epoch-ms timestamp captured when
+    // the driver INITIATES the budget cleanup (below), null until then. This —
+    // not the coarse `budgetExpired` boolean — is the pre-cleanup attribution
+    // boundary: it uses Date.now() (never the injectable monotonic `now()`)
+    // precisely so it is comparable to the rollout event timestamps the
+    // interrupt interaction's cancellation/settlement facts carry.
+    cleanupBoundaryAtMs: null,
+  };
+  // Codex round-4/round-5 review fixes: the boundary records the EARLIEST
+  // termination initiation across every site — the wrapper's cleanup
+  // sequence, the process runner's own timeout path (through the launch
+  // budget context's `recordCleanupBoundary`), and the shared-budget abort
+  // source itself (this function scope, so the budget timer below can stamp
+  // BEFORE the abort whose forwarded kills follow). Min-semantics keep the
+  // earliest initiation when several sites record.
+  const recordTerminationInitiation = () => {
+    const initiatedAtMs = Date.now();
+    if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
+      cleanup.cleanupBoundaryAtMs = initiatedAtMs;
+    }
+  };
   // The budget is polled against the injectable clock: in production this is
   // the monotonic performance.now(), and instrument tests can drive it
   // deterministically instead of waiting real wall-clock time.
   const budgetTimer = setInterval(() => {
     if (now() < budgetDeadlineMs) return;
     budgetExpired = true;
+    // Codex round-5 review fix: the shared-budget abort is FORWARDED to the
+    // turn controller and to every runner listening on this signal, and the
+    // forwarded aborts initiate their kills immediately — potentially long
+    // before the wrapper's cleanup sequence reaches its own stamp. Record the
+    // boundary at the abort SOURCE, before aborting (the same
+    // min-semantics path), so any kill the abort triggers is already bounded.
+    recordTerminationInitiation();
     budgetController.abort();
     clearInterval(budgetTimer);
   }, 50);
@@ -998,15 +1279,6 @@ export async function runHeldHostTurn(input) {
   });
   try {
 
-  /** @type {HeldTurnRecord['cleanup']} */
-  const cleanup = {
-    label: 'observation',
-    releasedGate: false,
-    verifiedProcessTerminated: false,
-    codexTerminated: false,
-    nativeInterruptionClaimed: false,
-    errors: /** @type {unknown[]} */ ([]),
-  };
   /** @type {{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }} */
   let control;
   /** @type {unknown} */
@@ -1052,6 +1324,22 @@ export async function runHeldHostTurn(input) {
       }
     } catch (error) { cleanup.errors.push(error); }
   };
+  // Codex overall review fix 2: EVERY controlled-process termination path —
+  // early exits, Status-deadline ends, failures and budget expiry alike —
+  // records the SAME wall-clock cleanup boundary at its INITIATION, before
+  // the first cleanup action. The boundary uses Date.now() (never the
+  // injectable monotonic `now()`) precisely so it is comparable to the
+  // rollout event timestamps the interrupt interaction's cancellation facts
+  // carry: a settlement marker whose rollout event time falls strictly
+  // before this instant cannot have been generated by the cleanup, and a
+  // marker at/after it is the kill's resolution — on every path, not only
+  // budget expiry.
+  const runTerminationCleanup = async () => {
+    recordTerminationInitiation();
+    await safeReleaseGate();
+    await safeTerminateExactProcess();
+    await safeTerminateCodex();
+  };
 
   /** @type {HeldTurnRecord} */
   let answer;
@@ -1064,13 +1352,16 @@ export async function runHeldHostTurn(input) {
     // (or a signal that is already aborted by then) must win the boundary
     // race, never be missed. The launch closure receives the SHARED
     // experiment cancellation signal and the REMAINING deadline so both
-    // Status turns (and their rollout loading) run on one budget.
+    // Status turns (and their rollout loading) run on one budget — and the
+    // termination-initiation recorder (round-4 review fix) so a runner-side
+    // timeout kill stamps the cleanup boundary at its own initiation.
     const budgetOutcome = new Promise((resolve) => {
       budgetController.signal.addEventListener('abort', () => resolve({ kind: 'budget' }), { once: true });
     });
     control = await input.launch({
       signal: budgetController.signal,
       remainingMs: () => Math.max(0, Math.round(budgetDeadlineMs - now())),
+      recordCleanupBoundary: recordTerminationInitiation,
     });
     timeline.launchedAtElapsedMs = Math.round(now() - startMs);
     /** @type {Promise<{ kind: 'result', value: { code: number | null, stdout: string, stderr: string } } | { kind: 'error', error: unknown }>} */
@@ -1148,11 +1439,33 @@ export async function runHeldHostTurn(input) {
         cleanup.label = childSettlement?.observed === true ? 'child-settlement-observed' : 'child-settlement-unobserved';
         timeline.childSettlementDetectedAtElapsedMs = childSettlement?.observed === true ? Math.round(now() - startMs) : null;
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
+        // Release-qualification Task 2: the three settlement layers are
+        // tracked SEPARATELY and never collapsed. In this ordering (Root
+        // acknowledged first) the local process has not been reaped yet —
+        // cleanup terminates it later and that fact stays a cleanup fact —
+        // so the local-reaping layer stays unestablished (null), and the
+        // durable obligations are never probed at held-turn scope.
+        // Codex review round 8: the settlement watch is the LOCAL exit-code
+        // watch (a linked poll returned an exit code for the local launcher
+        // handle — including nonzero) and never establishes the REMOTE
+        // terminal layer; the watch fact keeps its own observed/basis name
+        // and the remote layer joins from REMOTE outcome evidence in the
+        // mapper.
+        // Codex review round 16: the watch's OBSERVED exact-Companion exit
+        // grounds the local-reaping layer in BOTH orderings, exactly like
+        // the gate-first branch — acknowledgement timing never discards
+        // successful settlement evidence; an unobserved watch stays null.
+        /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} */
+        const settlementLayers = {
+          remoteTerminal: null,
+          localProcessReaping: childSettlement?.observed === true ? 'natural-exit-observed' : null,
+          durableObligations: null,
+        };
         answer = {
           endedBeforeGate: true,
           rootAcknowledged: true,
           budgetExpired,
-          childSettlement,
+          childSettlement: childSettlement === null ? null : { ...childSettlement, layers: settlementLayers },
           identity: undefined,
           processAliveWhileHeld: null,
           result: boundary.value,
@@ -1198,9 +1511,7 @@ export async function runHeldHostTurn(input) {
             cleanup,
             timeline,
           };
-          await safeReleaseGate();
-          await safeTerminateExactProcess();
-          await safeTerminateCodex();
+          await runTerminationCleanup();
         } else {
           cleanup.label = 'early-exit';
           timeline.endedAtElapsedMs = Math.round(now() - startMs);
@@ -1213,9 +1524,7 @@ export async function runHeldHostTurn(input) {
             cleanup,
             timeline,
           };
-          await safeReleaseGate();
-          await safeTerminateExactProcess();
-          await safeTerminateCodex();
+          await runTerminationCleanup();
         }
       } else {
         cleanup.label = 'early-exit';
@@ -1300,9 +1609,7 @@ export async function runHeldHostTurn(input) {
           cleanup,
           timeline,
         };
-        await safeReleaseGate();
-        await safeTerminateExactProcess();
-        await safeTerminateCodex();
+        await runTerminationCleanup();
       } else {
         if (statusDeadlineOutcome !== null && statusDeadlineOutcome.kind === 'error') throw statusDeadlineOutcome.error;
         if (budgetExpired) throw new Error('the held observation reached the experiment budget before gate release');
@@ -1311,7 +1618,24 @@ export async function runHeldHostTurn(input) {
       const outcome = await resultOutcome;
       if (outcome.kind === 'error') throw outcome.error;
       await waitForProcessExit(identity, 'natural');
-      if (typeof input.waitForChildSettlement === 'function') {
+      // Release-qualification Task 2 (foreground settlement extension): the
+      // AFTER-JOIN watch. The foreground extension runs ONLY here — after the
+      // gate release and the natural exit — because a foreground Root that
+      // ends BEFORE the gate is an early host exit with no joined Child to
+      // settle (the pinned early-exit classification below stays untouched).
+      // The background flow keeps its own acknowledgement-first watch input.
+      // Codex review round 9: the preceding waitForProcessExit watches the
+      // fake-ZCode peer (the host process), never the attached Companion, so
+      // it cannot ground the local-reaping layer. The layer is positive
+      // ('natural-exit-observed') ONLY when the settlement watch OBSERVED
+      // the exact Companion's exit; an unobserved watch keeps it null —
+      // never a fabricated positive lifecycle fact.
+      const afterJoinSettlementWatch = typeof input.waitForChildSettlement === 'function'
+        ? input.waitForChildSettlement
+        : typeof input.waitForChildSettlementAfterJoin === 'function'
+          ? input.waitForChildSettlementAfterJoin
+          : null;
+      if (afterJoinSettlementWatch !== null) {
         // P2-2 round-5 fix: background settlement for EITHER ordering. The
         // gate won the race — the fake peer reached its gate before Root
         // returned its acknowledgement — but Root has now returned, and the
@@ -1324,17 +1648,31 @@ export async function runHeldHostTurn(input) {
         /** @type {{ observed: boolean, basis: string | null } | null} */
         let childSettlement = null;
         try {
-          childSettlement = await input.waitForChildSettlement(budgetController.signal);
+          childSettlement = await afterJoinSettlementWatch(budgetController.signal);
         } catch { childSettlement = null; }
         if (budgetExpired) throw new Error('the held observation reached the experiment budget before the Child-side settlement');
         cleanup.label = childSettlement?.observed === true ? 'child-settlement-observed' : 'child-settlement-unobserved';
         timeline.childSettlementDetectedAtElapsedMs = childSettlement?.observed === true ? Math.round(now() - startMs) : null;
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
+        // Release-qualification Task 2 (foreground settlement extension): the
+        // natural-exit wait before this watch covered the fake-ZCode peer —
+        // round 9: the local-reaping layer is positive ONLY from the watch's
+        // OBSERVED exact-Companion exit; an unobserved watch keeps the layer
+        // unestablished (null). The remote terminal and durable layers stay
+        // independent facts (round 8: the watch is the LOCAL exit-code watch
+        // and never establishes the remote layer — the mapper joins it from
+        // REMOTE outcome evidence).
+        /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} */
+        const settlementLayers = {
+          remoteTerminal: null,
+          localProcessReaping: childSettlement?.observed === true ? 'natural-exit-observed' : null,
+          durableObligations: null,
+        };
         answer = {
           endedBeforeGate: false,
           rootAcknowledged: true,
           budgetExpired,
-          childSettlement,
+          childSettlement: childSettlement === null ? null : { ...childSettlement, layers: settlementLayers },
           identity,
           processAliveWhileHeld,
           result: outcome.value,
@@ -1371,9 +1709,7 @@ export async function runHeldHostTurn(input) {
     if (!budgetExpired) {
       // Failures other than budget expiry propagate after cleanup, like the
       // installed E2E discipline.
-      await safeReleaseGate();
-      await safeTerminateExactProcess();
-      await safeTerminateCodex();
+      await runTerminationCleanup();
       const cleanupFailure = cleanup.errors.length > 0
         ? new AggregateError([error, ...cleanup.errors], `held shell wait turn failed with cleanup errors: ${error instanceof Error ? error.message : String(error)}`)
         : error;
@@ -1386,13 +1722,9 @@ export async function runHeldHostTurn(input) {
   }
   if (budgetExpired) {
     cleanup.label = 'budget-cleanup';
-    await safeReleaseGate();
-    await safeTerminateExactProcess();
-    await safeTerminateCodex();
+    await runTerminationCleanup();
   } else if (answer.endedBeforeGate) {
-    await safeReleaseGate();
-    await safeTerminateExactProcess();
-    await safeTerminateCodex();
+    await runTerminationCleanup();
   }
   return answer;
   } finally {
@@ -1408,7 +1740,7 @@ export async function runHeldHostTurn(input) {
 
 /**
  * @typedef {{
- *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
+ *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number, recordCleanupBoundary?: () => void }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
  *   gatePath: string,
  *   gateReachedPath?: string,
  *   processPath?: string,
@@ -1419,6 +1751,7 @@ export async function runHeldHostTurn(input) {
  *   waitForObservation?: (signal: AbortSignal) => Promise<void>,
  *   waitForPollStart?: (signal: AbortSignal) => Promise<void>,
  *   waitForChildSettlement?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
+ *   waitForChildSettlementAfterJoin?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
  *   statusDeadlineFlow?: boolean,
  *   captureProcessIdentity?: () => Promise<unknown>,
  *   readProcessIdentity?: (identity: unknown) => Promise<unknown>,
@@ -1442,7 +1775,7 @@ export async function runHeldHostTurn(input) {
  *   endedBeforeGate: boolean,
  *   rootAcknowledged?: boolean,
  *   statusDeadlineReached?: boolean,
- *   childSettlement?: { observed: boolean, basis: string | null } | null,
+ *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null } } | null,
  *   budgetExpired: boolean,
  *   identity: unknown,
  *   processAliveWhileHeld: boolean | null,
@@ -1454,6 +1787,7 @@ export async function runHeldHostTurn(input) {
  *     codexTerminated: boolean,
  *     nativeInterruptionClaimed: false,
  *     errors: unknown[],
+ *     cleanupBoundaryAtMs: number | null,
  *   },
  *   timeline: HeldTurnTimeline,
  *   failure?: unknown,
@@ -1913,12 +2247,39 @@ export function composeHostLaunchArguments(promptArguments, workspace, model = n
  * rendered-result markers; Rescue cases keep the pre-R2 Rescue contract with
  * the byte-exact public sentinel. Exported as the testable seam between the
  * case specs and `inspectShellWaitEvidence`.
- * @param {{ case: ShellWaitCaseLabel, command: string, rollouts: unknown, zcodeCalls: unknown, workerDurationMs: number, pollMs: number, workerStillAliveAfterObservation: boolean | null, queryTurn?: { sessionId: string, setupEventCount: number } | null }} request
+ * @param {{ case: ShellWaitCaseLabel, command: string, rollouts: unknown, zcodeCalls: unknown, workerDurationMs: number, pollMs: number, workerStillAliveAfterObservation: boolean | null, queryTurn?: { sessionId: string, setupEventCount: number } | null, exactExpectedTerminal?: { output: string, exitCode: number } | null }} request
  * @returns {import('./evidence.mjs').ShellWaitEvidenceInput}
  */
 export function shellWaitEvidenceRequest(request) {
   const spec = SHELL_WAIT_CASE_SPECS[request.case];
   if (!spec) throw invalidCaseInput(`unknown shell wait case: ${String(request.case)}`);
+  // Codex review round 8: the byte-exact terminal expectation is DERIVED
+  // OFFLINE from the deterministic production renderer plus the case's
+  // DECLARED harmless output profile — rescue-family cases declare the
+  // fixture's public result AND its resumability fact (round-4 review fix:
+  // the rendered terminal view carries the Resumability Indicator, so the
+  // derived expectation is COMPLETE; an unestablished fact would derive no
+  // expectation at all, leaving the exact equality unestablished — never a
+  // partial framing-less expectation that false-rejects valid output or
+  // false-accepts framing-less output). The derivation inputs are case
+  // constants computed once here, so the default live executor threads the
+  // expectation through THIS validated seam and every real policy run
+  // carries the exact-byte check in its evidence facts; no free-text
+  // expected-output flag exists. Root-family cases keep their own declared
+  // result-marker layer and derive no rescue expectation (explicitly
+  // absent, never silently skipped). A supplied expectation is validated at
+  // THIS boundary exactly like the evidence boundary.
+  const exactExpectedTerminal = request.exactExpectedTerminal !== undefined && request.exactExpectedTerminal !== null
+    ? request.exactExpectedTerminal
+    : spec.family === 'rescue'
+      ? exactRescueRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE })
+      : null;
+  if (exactExpectedTerminal !== null
+    && (!exactExpectedTerminal || typeof exactExpectedTerminal !== 'object'
+      || typeof exactExpectedTerminal.output !== 'string' || exactExpectedTerminal.output.length === 0
+      || !Number.isSafeInteger(exactExpectedTerminal.exitCode) || exactExpectedTerminal.exitCode < 0)) {
+    throw invalidCaseInput('the exactExpectedTerminal expectation must carry a nonempty output string and a nonnegative integer exit code.');
+  }
   return {
     rollouts: request.rollouts,
     zcodeCalls: request.zcodeCalls,
@@ -1944,6 +2305,12 @@ export function shellWaitEvidenceRequest(request) {
     requestedPollMs: request.pollMs,
     workerDurationMs: request.workerDurationMs,
     workerStillAliveAfterObservation: request.workerStillAliveAfterObservation,
+    // The byte-exact terminal/exit expectation (release-qualification Task 2;
+    // round-8 live wiring): the DERIVED case-constant expectation rides every
+    // rescue-family request, so the default live executor persists the
+    // exact-byte verdict without any manual injection; absent (root family)
+    // → the evidence facts stay byte-identical.
+    ...(exactExpectedTerminal !== null ? { exactExpectedTerminal } : {}),
   };
 }
 
@@ -2371,7 +2738,15 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
   // observed ID. A fixture-reserved target could never work live: production
   // selects explicit Status targets OWNER-SCOPED, and the fixture-setup
   // session is not the live session.
-  const casePrompt = shellWaitCasePrompt(input.case);
+  // The §16.4 I1 wiring (release-qualification review round): with the
+  // survival-control selector the SAME declared Root turn also launches the
+  // fixture-owned progress control on its own exec_command handle and
+  // performs the bounded before/after reads — the directive rides the Root
+  // prompt, never a separate launch or an extra model turn. The path is
+  // fixture-owned and never recorded.
+  const casePrompt = input.survivalControlSelector !== null && typeof fixture.survivalControlPath === 'string'
+    ? `${shellWaitCasePrompt(input.case)} ${survivalControlPromptDirective(fixture.survivalControlPath)}`
+    : shellWaitCasePrompt(input.case);
   // The Status query-turn boundary (P2-2 round-4 fix): established inside the
   // launch closure from the OBSERVED post-turn-1 rollout state; null (the
   // fail-closed whole-rollout analysis) for every other case or when the
@@ -2398,11 +2773,34 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         const controller = new AbortController();
         controllers.push(controller);
         // The turn shares the experiment cancellation: a budget abort
-        // propagates to the turn immediately.
-        if (budgetSignal !== null) budgetSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        // propagates to the turn immediately. Codex round-5 review fix: the
+        // forwarded abort is itself a termination initiation (the runner's
+        // abort path kills the child), so the boundary is recorded BEFORE
+        // forwarding — even when the abort beats this turn's deadline timer
+        // (min-semantics; the budget source stamps first, this keeps the
+        // listener self-contained for every shared-signal abort).
+        if (budgetSignal !== null) budgetSignal.addEventListener('abort', () => {
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          controller.abort();
+        }, { once: true });
         // The turn's timeout is the REMAINING experiment deadline on the
         // shared clock, never a fresh full budgetMs.
         const remaining = remainingDeadlineMs !== null ? remainingDeadlineMs() : input.budgetMs;
+        // Codex round-4 review fix: the runner enforces its OWN timeout inside
+        // runProcess and terminates the child from there — potentially BEFORE
+        // the held turn's 50-ms budget poll notices expiry, and always before
+        // the wrapper's cleanup sequence would stamp the boundary. This
+        // watcher owns the same deadline: it records the cleanup boundary at
+        // the runner's termination initiation and THEN aborts the turn, so
+        // the runner's abort path performs the kill with the boundary already
+        // recorded (min-semantics keep the earliest initiation). The watcher
+        // is registered BEFORE the runner spawns, so at one expiry it fires
+        // first (Node timers with one expiry run in insertion order); the
+        // runner's internal timeout stays as the same-bound backstop.
+        const runnerDeadlineTimer = setTimeout(() => {
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          controller.abort();
+        }, Math.max(0, remaining));
         // composeHostLaunchArguments supplies the common exec argv EXACTLY
         // once: the status-wait resume turn passes ONLY the `resume
         // <SESSION_ID> <PROMPT>` subcommand tokens (renderExecResumeLaunch),
@@ -2411,7 +2809,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         return /** @type {Promise<{ code: number | null, stdout: string, stderr: string }>} */ (runProcess(
           closeStdinLaunch(codexLaunch(composeHostLaunchArguments(promptArguments, fixture.workspace, input.model ?? null, input.execDefaultMs ?? null), { env: runEnv })),
           { cwd: fixture.workspace, env: runEnv, timeoutMs: remaining > 0 ? remaining : 1, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal },
-        ));
+        ).finally(() => clearTimeout(runnerDeadlineTimer)));
       };
       if (input.case !== 'status-wait') {
         const result = runTurn([casePrompt]);
@@ -2464,13 +2862,18 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     // monotonic clock while the hold runs, so the record can carry an actual
     // poll-start remaining lifetime instead of the retired wall-time arithmetic.
     waitForPollStart: (signal) => waitForPollObservation(fixture.codexHome, expectedCommand, signal),
-    // R3 background lifecycle: the explicit `--background` Root turn ends at
-    // its launched-Child acknowledgement, so the held turn stays open for the
-    // CHILD's own attached-Companion observation to terminal (the settlement
-    // watch) before any cleanup or disposal. No other case runs this watch.
+    // R3 background lifecycle + release-qualification Task 2 foreground
+    // extension: the held turn stays open for the bounded Child-settlement
+    // watch (the Child's own attached-Companion observation to terminal)
+    // before any cleanup or disposal. The explicit background flow keeps its
+    // acknowledgement-first watch; the rescue-foreground cases watch ONLY
+    // AFTER THE JOIN (the gate-wins ordering) — a foreground host that ends
+    // before the gate is a pinned early exit with no joined Child to settle.
     ...(spec.backgroundFlow === true
       ? { waitForChildSettlement: (signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
-      : {}),
+      : runsChildSettlementWatch(input.case)
+        ? { waitForChildSettlementAfterJoin: (signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
+        : {}),
     // P2-1 round-7 fix: the Status deadline flow is OBSERVATION-ONLY — the
     // background launch reserves a queued job and the Status query measures
     // its own deadline, so the fake-peer completion gate is never part of the
@@ -2557,7 +2960,44 @@ export function extractFinalAgentMessage(rollouts) {
 // interrupting an active turn, and its resumability does not establish
 // active execution. V2 interruption qualification requires an ACTIVE
 // previous status; every non-active variant is excluded here.
-const TERMINAL_INTERRUPT_PREVIOUS_STATUSES = new Set(['completed', 'errored', 'shutdown', 'not_found', 'interrupted']);
+
+/**
+ * Whether a settlement resolution's rollout event time STRICTLY precedes the
+ * recorded cleanup boundary. Codex overall review fix (the boundary refinement
+ * of round 19), generalized by the round-9 review fix to ANY settlement
+ * resolution timestamp — cancellation markers AND exit-code completions
+ * alike. The coarse `budgetExpired` boolean discarded genuine pre-cleanup
+ * settlements — the observation can resolve BEFORE the budget deadline while
+ * the held turn is still waiting (Root still reporting or the fixed hold
+ * still running) — and, conversely, credited resolutions produced by the
+ * early-exit/failure cleanup kills solely because the budget had not expired.
+ * The driver records the WALL-CLOCK epoch-ms initiation boundary
+ * (`held.cleanup.cleanupBoundaryAtMs`, on the same clock as the rollout event
+ * timestamps) on EVERY controlled-process termination path. Credit holds
+ * only when NO cleanup kill was initiated (no boundary recorded and none
+ * demonstrable) or the resolution's rollout event time STRICTLY precedes the
+ * recorded boundary; a resolution at or after the boundary — or a kill
+ * demonstrably initiated without a recorded boundary — fails closed to the
+ * unattributed semantics.
+ * @param {number} resolvedAtMs the settlement resolution's rollout event time
+ * @param {HeldTurnRecord | null | undefined} held
+ * @returns {boolean}
+ */
+function settlementPrecedesCleanupBoundary(resolvedAtMs, held) {
+  if (!Number.isFinite(resolvedAtMs)) return false;
+  const cleanup = /** @type {any} */ (held)?.cleanup;
+  const boundaryAtMs = cleanup?.cleanupBoundaryAtMs;
+  if (typeof boundaryAtMs === 'number' && Number.isFinite(boundaryAtMs)) {
+    // A termination was INITIATED (the boundary is its initiation record):
+    // only a strictly-earlier resolution can be genuine settlement.
+    return resolvedAtMs < boundaryAtMs;
+  }
+  // No recorded boundary: credit only when NO cleanup kill was demonstrably
+  // initiated (older records where a kill demonstrably occurred fail closed).
+  return held?.budgetExpired !== true
+    && cleanup?.verifiedProcessTerminated !== true
+    && cleanup?.codexTerminated !== true;
+}
 
 /**
  * Map the held outcome and evidence into the redacted live-facts shape.
@@ -2619,10 +3059,18 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   // buildCaseRecord ONLY for waitPolicy records, so legacy live facts stay
   // byte-for-byte unchanged.
   const waitPolicyComparisonFact = /** @type {any} */ (evidence?.facts)?.waitPolicyComparisonFact ?? null;
+  const knownInnerNonterminality = ['inner-cap-live-handle', 'inner-process-exited', 'outer-yield-inner-unresolved'];
   const waitPolicyObservation = input.waitPolicy === 'config-default'
     ? {
       decisivePollExplicitYield: waitPolicyComparisonFact?.decisivePollExplicitYield ?? 'unknown',
       decisiveCallSurface: waitPolicyComparisonFact?.decisiveCallSurface ?? 'unknown',
+      // The INNER-vs-OUTER fact (codex review): 'inner-cap-live-handle' is
+      // the real M evidence — the inner call reached its cap and returned a
+      // live handle — while 'outer-yield-inner-unresolved' is the outer
+      // cell's yield and never grounds M. Unknown stays unknown.
+      decisiveInnerNonterminality: knownInnerNonterminality.includes(waitPolicyComparisonFact?.decisiveInnerNonterminality)
+        ? waitPolicyComparisonFact.decisiveInnerNonterminality
+        : 'unknown',
       decisiveInnerYieldMs: typeof waitPolicyComparisonFact?.decisiveInnerYieldMs === 'number' && Number.isFinite(waitPolicyComparisonFact.decisiveInnerYieldMs)
         ? waitPolicyComparisonFact.decisiveInnerYieldMs
         : null,
@@ -2684,6 +3132,24 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       : { observed: false, basis: null },
     rootAcknowledgementAtElapsedMs,
     settlementDetectedAtElapsedMs: childSettlementDetectedAtElapsedMs,
+    // Release-qualification Task 2: the three-way settlement layer split is
+    // projected ONLY when the held record carries it — held records without
+    // layers keep the mapping schema byte-identical.
+    // Codex review round 8: the remote-terminal layer joins from REMOTE
+    // outcome evidence — the observer's remote completion facts attributable
+    // to the exact Child — NEVER from the held local exit-code watch (a
+    // linked poll's exit code, including nonzero, is a local Companion
+    // fact). Without remote outcome evidence the layer stays null.
+    ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.layers !== undefined
+      ? {
+        settlementLayers: {
+          ...held.childSettlement.layers,
+          remoteTerminal: evidence?.status === 'supported' && /** @type {any} */ (evidence.facts)?.completion?.qualified === true
+            ? true
+            : null,
+        },
+      }
+      : {}),
   };
   // P2-1 round-6 fix: the settled-background exemption enforces the
   // background NO-JOIN contract — the background prompt explicitly forbids
@@ -2816,12 +3282,102 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ? { childThreadId: interruptChildThreadId, command: companionCommand }
     : null;
   const interruptInteraction = extractInterruptInteraction(rollouts ?? [], redactions ?? [], interruptBindingOptions);
-  const interruptCompletionQualified = evidence?.status === 'supported' && /** @type {any} */ (evidence.facts)?.completion?.qualified === true;
-  const interruptPendingInnerAtEnd = /** @type {any} */ (evidence?.facts)?.observations?.pendingInnerAtEnd === true;
   const evidenceChildThreadId = interruptChildThreadId;
   const interruptExactTargetMatch = interruptInteraction.target.value !== null && evidenceChildThreadId !== null
     ? interruptInteraction.target.value === evidenceChildThreadId
     : null;
+  // Codex round-6 review fix; generalized by the round-9 review fix: the
+  // survival delivery bound consumes the SAME cleanup-aware settlement
+  // attribution the mapper's settlement branches apply — for EVERY response
+  // kind. When a cleanup boundary is RECORDED, the settled delivery is
+  // CLEANUP-GENERATED exactly when its resolution timestamp (the earliest
+  // attributable settlement after the delivery: a cancellation marker OR an
+  // exit-code completion) is at/after that boundary — the reader then leaves
+  // the bound unestablished (fail closed), even when qualifying control reads
+  // and later emissions would otherwise qualify. Without a recorded boundary
+  // the PRIOR per-kind semantics stand: only a demonstrable cleanup kill
+  // excludes, and only the cancellation kind (an exit-code completion in a
+  // no-boundary run is a genuine native settlement — the legacy fixture
+  // contract). A resolution strictly before the boundary, or in a run with
+  // no cleanup kill, keeps the existing bound semantics.
+  const cleanupBoundaryAtMs = typeof held?.cleanup?.cleanupBoundaryAtMs === 'number' && Number.isFinite(held.cleanup.cleanupBoundaryAtMs)
+    ? held.cleanup.cleanupBoundaryAtMs
+    : null;
+  const settledDeliveryCleanupGenerated = interruptInteraction.settledAfterCall.atMs !== null && (
+    cleanupBoundaryAtMs !== null
+      ? interruptInteraction.settledAfterCall.atMs >= cleanupBoundaryAtMs
+      : ((held?.budgetExpired === true
+        || held?.cleanup?.verifiedProcessTerminated === true
+        || held?.cleanup?.codexTerminated === true) === true
+        && interruptInteraction.cancelledAfterCall.atMs === interruptInteraction.settledAfterCall.atMs)
+  );
+  // The §16.4 survival-control verdict (release-qualification review round):
+  // decoded from the SAME collected rollouts through the evidence reader —
+  // the control's grounded handle, its bounded pre/post-delivery reads, and
+  // its EMISSION tags — and qualified by the offline oracle. Emission-time
+  // semantics per §16.4 as amended: liveness/completion bind to a tag
+  // strictly after the delivery bound, never to observation time. Selector
+  // runs without an observable control fail closed to null; non-selector
+  // runs gain nothing.
+  const survivalControlFacts = input.case === 'rescue-interrupt'
+    && input.survivalControlSelector === SURVIVAL_CONTROL_SELECTOR_VALUE
+    && /** @type {any} */ (fixture)?.survivalControlPath != null
+    && Array.isArray(rollouts) && rollouts.length > 0
+    ? extractSurvivalControlFacts(rollouts, /** @type {any} */ (fixture).survivalControlPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction, exactTargetMatch: interruptExactTargetMatch, settledDeliveryCleanupGenerated, childThreadId: interruptChildThreadId })
+    : null;
+  // Codex review round 12: the BOUNDED, WHITELISTED oracle inputs persist
+  // beside the versioned verdict (offline re-adjudication of the recorded
+  // post-delivery tag against its bound). Closed integers, booleans, the
+  // ownership/identity classification, and the bound's derivation anchors —
+  // never private paths or raw rollouts.
+  const survivalControlInputs = survivalControlFacts?.launched === true && survivalControlFacts.handleGrounded === true
+    ? {
+      deliveryBoundTag: survivalControlFacts.deliveryBoundTag,
+      settledDeliveryAtMs: survivalControlFacts.settledDeliveryAtMs ?? null,
+      launchAtMs: survivalControlFacts.launchAtMs ?? null,
+      emittedLines: survivalControlFacts.emittedLines,
+      completionMarker: survivalControlFacts.completionMarker,
+      postDeliveryRead: survivalControlFacts.postDeliveryRead,
+      beforeDeliveryRead: survivalControlFacts.beforeDeliveryRead,
+      ownership: survivalControlFacts.ownership,
+      owningRootSessionId: survivalControlFacts.owningRootSessionId ?? null,
+      controlExitObserved: survivalControlFacts.controlExitObserved ?? null,
+      controlExitPremature: survivalControlFacts.controlExitPremature ?? null,
+      controlExitCode: survivalControlFacts.controlExitCode ?? null,
+      completionBeforeDeliveryObserved: survivalControlFacts.completionBeforeDeliveryObserved ?? null,
+    }
+    : null;
+  const survivalControlVerdict = survivalControlFacts?.launched === true && survivalControlFacts.handleGrounded === true
+    ? evaluateSurvivalControl({
+      deliveryBoundTag: survivalControlFacts.deliveryBoundTag,
+      lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+      emittedLines: survivalControlFacts.emittedLines,
+      completionMarker: survivalControlFacts.completionMarker,
+      postDeliveryRead: survivalControlFacts.postDeliveryRead,
+      ownership: survivalControlFacts.ownership,
+      // Codex review round 8: the post-settlement read's own observed
+      // control exit — the INDEPENDENT loss evidence a 'lost' verdict
+      // requires; without it a readable empty read stays unknown.
+      controlExitObserved: survivalControlFacts.controlExitObserved ?? null,
+      // Codex review round 11: whether that exit preceded the designed
+      // completion — a premature/mid-run exit rejects liveness outright.
+      controlExitPremature: survivalControlFacts.controlExitPremature ?? null,
+      // Codex review round 13: the OBSERVED exit code — natural-completion
+      // credit requires the designed exit code; an abnormal code is a named
+      // rejection.
+      controlExitCode: survivalControlFacts.controlExitCode ?? null,
+      // Codex review round 14: the independently established pre-delivery
+      // completion evidence (the marker-returning read completed before the
+      // request) — B bounds lateness, never earliness.
+      completionBeforeDeliveryObserved: survivalControlFacts.completionBeforeDeliveryObserved ?? null,
+      // §16.4's positive-activity clause REQUIRES the bounded pre-delivery
+      // read (a fresh mid-run line, ordered before the interrupt call).
+      beforeDeliveryReadObserved: survivalControlFacts.beforeDeliveryRead.observed === true
+        && survivalControlFacts.beforeDeliveryRead.orderedBeforeInterrupt === true,
+    })
+    : null;
+  const interruptCompletionQualified = evidence?.status === 'supported' && /** @type {any} */ (evidence.facts)?.completion?.qualified === true;
+  const interruptPendingInnerAtEnd = /** @type {any} */ (evidence?.facts)?.observations?.pendingInnerAtEnd === true;
   // Post-completion classification: a delivery observed AFTER the inner
   // terminal (same-rollout event order, a bound completed event at/before the
   // call, or a qualified completion with no pending observation before the
@@ -2848,15 +3404,20 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // facts describe only the LAST call and any collateral interruption would
     // be hidden — settlement is never attributed and the reason records the
     // ambiguity.
-    if (interruptInteraction.callCount !== 1) interruptSettledBasis = 'multiple-delivery-attempts-not-attributed';
-    else if (interruptInteraction.delivered === false) interruptSettledBasis = 'delivery-rejected-no-settlement-claim';
-    else if (interruptInteraction.delivered === null) interruptSettledBasis = 'delivery-outcome-unobserved';
-    else if (interruptInteraction.orderingBound !== true) interruptSettledBasis = 'ordering-unbound-not-attributed';
+    // Codex review round 14: the interaction-local attribution guards come
+    // from the ONE shared predicate (also consumed by the survival reader's
+    // delivery-bound contract) — the guard keys map to the pinned basis
+    // strings, never diverging from the reader's exclusions.
+    const deliveryAttributionGuard = interruptDeliveryAttributionGuard(interruptInteraction);
+    if (deliveryAttributionGuard === 'multiple-delivery-attempts') interruptSettledBasis = 'multiple-delivery-attempts-not-attributed';
+    else if (deliveryAttributionGuard === 'delivery-rejected') interruptSettledBasis = 'delivery-rejected-no-settlement-claim';
+    else if (deliveryAttributionGuard === 'delivery-outcome-unobserved') interruptSettledBasis = 'delivery-outcome-unobserved';
+    else if (deliveryAttributionGuard === 'ordering-unbound') interruptSettledBasis = 'ordering-unbound-not-attributed';
     else if (interruptPostCompletion) interruptSettledBasis = 'post-completion-delivery-not-attributed';
     // P2-2 round-20 fix: a terminal observed previous status is never an
     // interrupted-turn outcome — the interrupt landed on an already-terminal
     // Child, so neither settlement nor a surviving-turn claim is attributed.
-    else if (interruptPreviousStatusTerminal) interruptSettledBasis = 'previous-status-terminal-no-interruption-claim';
+    else if (deliveryAttributionGuard === 'previous-status-terminal') interruptSettledBasis = 'previous-status-terminal-no-interruption-claim';
     // Exact-target requirement (P2-1 round-2 fix): chronological ordering
     // alone never establishes interruption. A successful delivery to ANOTHER
     // agent while the observed Child is pending — even when that Child later
@@ -2869,9 +3430,85 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // termination, so neither settlement nor a surviving-turn claim is
     // attributed.
     else if (interruptUnreadableContinuationObserved) interruptSettledBasis = 'unparseable-continuation-settlement-unknown';
+    // Codex round-9 review fix: the cleanup boundary applies to EXIT-CODE
+    // settlements too — an exit-code completion resolved by the cleanup kill
+    // (its event time at/after a RECORDED cleanup boundary) is the cleanup's
+    // resolution, never the delivery's native settlement. Without a recorded
+    // boundary an exit-code completion keeps the legacy credit (a completion
+    // is excluded only by the boundary evidence, never by the kill flags
+    // alone — those only bound the cancellation kind).
+    else if (interruptCompletionQualified
+      && interruptInteraction.completedAfterCall.atMs !== null
+      && cleanupBoundaryAtMs !== null
+      && interruptInteraction.completedAfterCall.atMs >= cleanupBoundaryAtMs) {
+      interruptSettledBasis = 'budget-cleanup-termination-not-attributed';
+    }
     else if (interruptCompletionQualified) {
       interruptSettled = true;
       interruptSettledBasis = 'terminal-observation-after-delivery';
+    }
+    // Codex review round 7: a NATIVE CANCELLATION resolution of the
+    // interrupted observation (`Script terminated` / `aborted by user` — the
+    // §16.3 stage-4 terminate-response / cancelled-future settlement) settles
+    // the interrupted turn too, projected under the SAME attribution guards
+    // as exit-code settlement: every earlier branch in this chain (exactly
+    // one delivery, delivered, bound ordering, not post-completion,
+    // nonterminal previous status, readable continuations, EXACT target)
+    // held to reach this point.
+    // Codex review round 8: the CONFIRMED pending-window predicate is part
+    // of those guards — a cancellation resolving a poll that STARTED after
+    // the interrupt (the poll did not exist at the interruption moment) is
+    // never this delivery's settlement; without the confirmed window the
+    // layer stays unattributed with the unavailable reason and no latency.
+    // The branch precedes the surviving-pending classification because a
+    // cancellation resolution contradicts a survived poll; an exit-code
+    // settlement above keeps byte-identical facts.
+    // Codex review round 19: the PRE-CLEANUP attribution boundary. A run
+    // that reached the experiment budget (`budgetExpired`) had its
+    // observation STILL UNSETTLED at expiry — the held phase waits for
+    // exactly that settlement — so a `Script terminated` marker collected
+    // after the budget cleanup is PRESUMED to be the kill's resolution, never
+    // this delivery's native cancellation (a budget kill/released completion
+    // gate is cleanup, never native cancellation).
+    // Codex overall review fix, extended to EVERY termination path by the
+    // second overall review fix: the presumption is bounded by the RECORDED
+    // cleanup boundary instead of the coarse boolean, on EVERY controlled-
+    // process termination path (early exit, Status-deadline end, failure,
+    // budget expiry). The held timeline runs on the held turn's own monotonic
+    // elapsed clock, which is NOT comparable to rollout event times, so the
+    // driver records each cleanup kill's initiation as a WALL-CLOCK epoch-ms
+    // timestamp (`held.cleanup.cleanupBoundaryAtMs`): a cancellation
+    // resolution whose rollout event time is STRICTLY BEFORE that boundary is
+    // a genuine pre-cleanup settlement and is credited below with its
+    // measured latency (the held turn does not finish when the Child's
+    // cancellation arrives — Root may still be reporting or the fixed hold
+    // still running — so `budgetExpired` can be true anyway); a marker at or
+    // after any initiated boundary — or a kill demonstrably initiated without
+    // a recorded boundary — stays the kill's resolution, unattributed, no
+    // latency (the round-19 semantics). A genuinely native cancellation in a
+    // run with NO cleanup kill keeps full credit. The overall budget-expired
+    // inconclusive verdict below is unchanged.
+    else if (interruptInteraction.pendingBeforeCall.observed === true
+      && interruptInteraction.cancelledAfterCall.atMs !== null
+      && settlementPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held)) {
+      interruptSettled = true;
+      interruptSettledBasis = 'native-cancellation-settlement-after-delivery';
+    }
+    // The same marker shape with a cleanup kill initiated at/after the
+    // marker (or demonstrably initiated without a recordable boundary):
+    // `settled` stays null with the named not-attributed basis and no
+    // delivery-to-settlement latency; the budget-cleanup inconclusive
+    // verdict below is unchanged.
+    else if (interruptInteraction.pendingBeforeCall.observed === true
+      && interruptInteraction.cancelledAfterCall.atMs !== null) {
+      interruptSettledBasis = 'budget-cleanup-termination-not-attributed';
+    }
+    // Codex review round 10: an EXPLICIT `wait({…, terminate: true})` marker
+    // is an ALTERNATE ENDER — that call's own stop, separately classified —
+    // and is never attributed as interrupt settlement: `settled` stays null
+    // with the named basis and no latency.
+    else if (interruptInteraction.explicitTerminateAfterCall.atMs !== null) {
+      interruptSettledBasis = 'explicit-cell-termination-not-attributed';
     }
     // P2-2 round-25 fix: the surviving-turn outcome requires a CONFIRMED
     // pending window — an exact-target interrupt that PRECEDED the first poll
@@ -2902,12 +3539,20 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   // unbound ordering, post-completion, foreign target) produces no
   // delivery-to-settlement measurement even when the last attempt was
   // delivered to the exact target and a terminal output follows it.
+  // Codex review round 7: the measured settlement timestamp follows the
+  // established basis — the exit-code terminal for the completion basis
+  // (byte-identical to the prior behavior) and the NATIVE CANCELLATION
+  // resolution for the cancellation basis, so a cancellation-settled case
+  // record retains the §16.5 delivery-to-settlement evidence.
+  const interruptSettlementAtMs = interruptSettledBasis === 'native-cancellation-settlement-after-delivery'
+    ? interruptInteraction.cancelledAfterCall.atMs
+    : interruptInteraction.completedAfterCall.atMs;
   const interruptDeliveryToSettlementMs = interruptSettled === true
     && interruptInteraction.delivered === true
     && interruptExactTargetMatch === true
-    && interruptInteraction.callAtMs !== null && interruptInteraction.completedAfterCall.atMs !== null
-    && interruptInteraction.completedAfterCall.atMs >= interruptInteraction.callAtMs
-    ? interruptInteraction.completedAfterCall.atMs - interruptInteraction.callAtMs
+    && interruptInteraction.callAtMs !== null && interruptSettlementAtMs !== null
+    && interruptSettlementAtMs >= interruptInteraction.callAtMs
+    ? interruptSettlementAtMs - interruptInteraction.callAtMs
     : null;
   /** @type {'rollout-event-timestamps' | 'unavailable' | null} */
   const interruptTimingBasis = !interruptInteraction.attempted
@@ -2919,6 +3564,16 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       + '(investigated owning-session surface: interrupt_agent (V2, enabled by the live features.multi_agent_v2 configuration) '
       + 'and legacy send_input {interrupt:true} (V1); the app-server turn/interrupt RPC is not reachable from the exec session process)'
       + (held?.budgetExpired === true ? '; the probe budget expired before delivery (budget cleanup is never native interruption)' : '');
+  // Codex overall review fix 3: the cleanup boundary and the cancellation
+  // timestamp behind the settlement attribution persist through BOTH
+  // projections (the typed live facts and the retained record) so offline
+  // adjudication can independently re-verify the verdict after fixture
+  // disposal. Schema-additive: each key rides ONLY when its fact exists —
+  // legacy records stay byte-identical.
+  const interruptCleanupBoundaryAtMs = typeof held?.cleanup?.cleanupBoundaryAtMs === 'number' && Number.isFinite(held.cleanup.cleanupBoundaryAtMs)
+    ? held.cleanup.cleanupBoundaryAtMs
+    : null;
+  const interruptCancelledAtMs = interruptInteraction.cancelledAfterCall.atMs;
   const interruptFacts = {
     requested: input.case === 'rescue-interrupt',
     attempted: interruptInteraction.attempted,
@@ -2940,10 +3595,12 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     deliveryToSettlementMs: interruptDeliveryToSettlementMs,
     timingBasis: interruptTimingBasis,
     missingPrerequisite: interruptMissingPrerequisite,
+    ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
+    ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
   };
   if (rolloutsFailureReason !== null) {
     inconclusive = { reason: `rollouts-unavailable: rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
-  } else if (evidence.status === 'inconclusive') {
+  } else if (evidence.status === 'inconclusive' && evidence.inconclusive !== null) {
     inconclusive = { reason: `${evidence.inconclusive.reason}: ${evidence.inconclusive.detail}` };
     if (evidence.inconclusive.excerpt) excerpts.push({ kind: 'unsupported-call-shape', ...evidence.inconclusive.excerpt });
   } else {
@@ -3083,6 +3740,12 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
         // publicResultMatchedSentinel above.
         resultCheck: resultCheck,
         resultCheckLabel: resultCheckLabel,
+        // The byte-exact terminal/exit linkage verdict (release-qualification
+        // Task 2): projected ONLY for waitPolicy runs whose evidence carried
+        // an exact expectation — legacy live facts gain no key.
+        ...(input.waitPolicy === 'config-default' && completion?.exactTerminalMatch !== undefined && completion?.exactTerminalMatch !== null
+          ? { exactTerminalMatch: completion.exactTerminalMatch }
+          : {}),
       },
       linkage: {
         checked: linkage?.checked ?? null,
@@ -3124,6 +3787,9 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       },
       child: childSettlementFacts,
       ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
+      // The §16.4 survival verdict rides EVERY selector run — null when the
+      // control could not be observed (fail closed, never fabricated).
+      ...((input.survivalControlSelector ?? null) !== null ? { survivalControl: survivalControlVerdict, survivalControlInputs } : {}),
       statusQuery: statusQueryFacts,
       excerpts,
       inconclusive: cleanupFailureReason !== null
@@ -3187,6 +3853,7 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     },
     child: childSettlementFacts,
     ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
+    ...((input.survivalControlSelector ?? null) !== null ? { survivalControl: survivalControlVerdict, survivalControlInputs } : {}),
     statusQuery: statusQueryFacts,
     excerpts,
     inconclusive: cleanupFailureReason !== null
@@ -3233,6 +3900,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   model: string | null,
  *   waitPolicy: string | null,
  *   execDefaultMs: number | null,
+ *   interruptBaselineSelector: string | null,
+ *   survivalControlSelector: string | null,
  * }} ValidatedShellWaitCase
  * @typedef {'rescue-baseline'|'rescue-long'|'rescue-repeat'|'rescue-noise'|'rescue-interrupt'|'review-wait'|'adversarial-review-wait'|'status-wait'|'background'} ShellWaitCaseLabel
  * @typedef {{
@@ -3251,6 +3920,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   model?: string | null,
  *   waitPolicy?: string | null,
  *   execDefaultMs?: number | null,
+ *   interruptBaselineSelector?: string | null,
+ *   survivalControlSelector?: string | null,
  * }} ShellWaitCaseInput
  * @typedef {import('./fixture.mjs').ShellWaitFixtureHandle} ShellWaitFixtureHandle
  * @typedef {{
@@ -3266,10 +3937,10 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  * @typedef {{
  *   codexVersion?: string | null,
  *   route?: { requested?: string, actual?: string | null },
- *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null },
+ *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, cleanupBoundaryAtMs?: number, cancelledAtMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,
@@ -3303,7 +3974,11 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === pathToFileURL(mod
     + `--source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] `
     + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] `
     + `[--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] `
-    + `[--wait-policy config-default --exec-default-ms ms]\ncases: ${SHELL_WAIT_CASES.join(', ')}`;
+    + `[--wait-policy config-default --exec-default-ms ms] `
+    + `[--interrupt-baseline-selector ${INTERRUPT_BASELINE_SELECTOR_VALUE} | --survival-control-selector ${SURVIVAL_CONTROL_SELECTOR_VALUE}] `
+    + `(the wait policy is valid for every registered case with its declared §16.6 combination; `
+    + `the interrupt selectors are valid only for rescue-interrupt at their declared windows)\n`
+    + `cases: ${SHELL_WAIT_CASES.join(', ')}`;
   try {
     const parsed = parseShellWaitArguments(process.argv.slice(2));
     if ('help' in parsed) {

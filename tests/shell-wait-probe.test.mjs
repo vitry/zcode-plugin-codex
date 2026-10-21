@@ -6,11 +6,11 @@
 // a ZCode task, or any authenticated trial, and it never imports another test
 // entry because that would trigger the entry's test registrations.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 
@@ -685,22 +685,27 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(observer.model, null, 'the model is not observable in this instrument and stays unknown');
       assert.equal(observer.reachableToolFamily, null, 'the runtime-reachable tool family is not established and stays unknown');
       // The digest is derived from the ACTUAL working-tree instrument modules
-      // under the v2 construction (plan Task 2): evidence.mjs +
-      // shape-diagnostic.mjs + driver.mjs, NUL-separated under the version
-      // tag — the shape-diagnosis helper is part of the adjudicating
-      // instrument, so a two-file v1 hash would misattribute it.
+      // under the v3 construction (codex review, release-qualification round):
+      // evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs +
+      // driver.mjs, NUL-separated under the version tag — the shape-diagnosis
+      // helper and the verdict helper are both part of the adjudicating
+      // instrument (the verdict helper executes whenever an exact terminal
+      // expectation is supplied), so older hashes would misattribute them.
       const evidenceSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url)));
       const shapeSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url)));
+      const oracleSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v2\0')
+        .update('zcode-shell-wait-observer-v3\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
         .update('\0')
+        .update(oracleSource)
+        .update('\0')
         .update(driverSource)
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -5808,52 +5813,65 @@ if (process.env[selfTestGuard] === '1') {
     // Plan Task 2 bullet 6: the helper's EXECUTING module-init bytes join the
     // observer provenance digest under an explicitly versioned construction —
     // copying the old v1 two-file hash would misattribute the new classifier.
+    // Codex review (release-qualification round): the verdict helper
+    // release-qualification.mjs now executes during evidence adjudication
+    // whenever an exact terminal expectation is supplied, so its module-init
+    // bytes AND record-time bytes join BOTH constructions under v3 — changing
+    // the helper alone must change the digest (and flip
+    // sourcesChangedDuringRun), never preserve it.
     const { readFileSync } = await import('node:fs');
     const { EXECUTING_OBSERVER_PROVENANCE, observerProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
     const { EXECUTING_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/evidence.mjs');
     const { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+    const { EXECUTING_RELEASE_QUALIFICATION_SOURCE } = await import('../tools/shell-wait-probe/release-qualification.mjs');
     const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-    const shapePath = fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url));
+    const oraclePath = fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url));
 
-    const digestV2 = (evidenceBytes, shapeBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v2\0')
+    const digestV3 = (evidenceBytes, shapeBytes, oracleBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v3\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
       .update('\0')
+      .update(oracleBytes)
+      .update('\0')
       .update(driverBytes)
       .digest('hex');
 
-    test('the executing digest binds the shape-diagnostic helper bytes under the versioned v2 construction', () => {
+    test('the executing digest binds the shape-diagnostic AND release-qualification helper bytes under the versioned v3 construction', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV2(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, driverBytes);
+      const expected = digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
-        'the digest must hash the executing evidence + shape-diagnostic + driver module-init bytes');
+        'the digest must hash the executing evidence + shape-diagnostic + release-qualification + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
-        'the digest input description must name the helper');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v2|version/u,
+        'the digest input description must name the shape helper');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /release-qualification\.mjs/u,
+        'the digest input description must name the release-qualification verdict helper');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v3|version/u,
         'the construction version must be recorded explicitly');
     });
 
-    test('the helper binding is load-bearing: omitting or changing the helper bytes changes the digest', () => {
+    test('the helper binding is load-bearing: omitting or changing either helper\'s bytes changes the digest', () => {
       const driverBytes = readFileSync(driverPath);
-      const twoFileConstruction = createHash('sha256')
-        .update('zcode-shell-wait-observer-v2\0')
+      const shapeOnlyConstruction = createHash('sha256')
+        .update('zcode-shell-wait-observer-v3\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
+        .update('\0')
+        .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
         .update('\0')
         .update(driverBytes)
         .digest('hex');
-      assert.notEqual(EXECUTING_OBSERVER_PROVENANCE.digest, twoFileConstruction,
-        'a construction without the helper bytes must not reproduce the executing digest');
-      const mutatedShape = Buffer.concat([EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, Buffer.from('\n')]);
+      assert.notEqual(EXECUTING_OBSERVER_PROVENANCE.digest, shapeOnlyConstruction,
+        'a construction without the release-qualification bytes must not reproduce the executing digest');
+      const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
-        'a helper-only byte change must change the digest',
+        'a release-qualification-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV2(EXECUTING_EVIDENCE_SOURCE, readFileSync(shapePath), driverBytes),
-        digestV2(EXECUTING_EVIDENCE_SOURCE, mutatedShape, driverBytes),
+        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), driverBytes),
+        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, driverBytes),
       );
     });
 
@@ -5862,6 +5880,8 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(recordTime.digest, EXECUTING_OBSERVER_PROVENANCE.digest,
         'at rest the working-tree bytes equal the module-init snapshot, so the digests agree');
       assert.match(String(recordTime.digestInput), /shape-diagnostic\.mjs/u);
+      assert.match(String(recordTime.digestInput), /release-qualification\.mjs/u,
+        'the record-time reader must hash the verdict helper too — a mid-run helper edit flips sourcesChangedDuringRun');
       assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
     });
   });
@@ -6688,6 +6708,9 @@ process.exit(result.status ?? 1);
       assert.match(failure?.message, /rollout parse failed/);
       assert.ok(failure?.heldTurn, 'the thrown failure must carry the structured held-turn record');
       assert.equal(failure.heldTurn.cleanup.verifiedProcessTerminated, false);
+      // Codex overall review fix 2: the failure termination path records the
+      // same wall-clock cleanup boundary at its initiation.
+      assert.equal(typeof failure.heldTurn.cleanup.cleanupBoundaryAtMs, 'number', 'the failure cleanup records its wall-clock initiation boundary');
       assert.equal(failure.heldTurn.cleanup.errors.length, 1, 'the failed termination must be among the recorded cleanup errors');
       assert.match(String(failure.heldTurn.cleanup.errors[0]), /remains live/);
     });
@@ -6759,6 +6782,10 @@ process.exit(result.status ?? 1);
       assert.equal(held.budgetExpired, false);
       assert.equal(held.cleanup.label, 'observation');
       assert.equal(held.cleanup.nativeInterruptionClaimed, false);
+      // Codex overall review fix 2: a natural completion initiates NO
+      // termination, so no cleanup boundary is recorded — the marker branch
+      // keeps full native-settlement credit for such runs.
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null, 'a no-kill natural completion records no cleanup boundary');
       assert.equal(held.processAliveWhileHeld, true);
     });
 
@@ -6838,6 +6865,12 @@ process.exit(result.status ?? 1);
       assert.equal(held.budgetExpired, true);
       assert.equal(held.cleanup.label, 'budget-cleanup');
       assert.equal(held.cleanup.nativeInterruptionClaimed, false, 'budget cleanup must never be labelled native interruption');
+      // Codex overall review fix: the budget cleanup records its initiation as
+      // a WALL-CLOCK epoch-ms cleanup boundary (Date.now(), never the
+      // injectable monotonic `now()` this test drives) — the pre-cleanup
+      // attribution boundary comparable to the rollout event timestamps.
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the budget cleanup records its wall-clock initiation boundary');
+      assert.ok(Number.isFinite(held.cleanup.cleanupBoundaryAtMs) && held.cleanup.cleanupBoundaryAtMs > 0, 'the cleanup boundary is a real epoch-ms timestamp');
       assert.deepEqual(events, ['gate-released', 'exact-process-terminated', 'codex-terminated']);
     });
 
@@ -6885,6 +6918,11 @@ process.exit(result.status ?? 1);
       });
       assert.equal(held.endedBeforeGate, true);
       assert.equal(held.cleanup.label, 'early-exit');
+      // Codex overall review fix 2: the early-exit termination path records
+      // the same wall-clock cleanup boundary at its initiation (the marker
+      // attribution branch consults it on EVERY termination path).
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the early-exit cleanup records its wall-clock initiation boundary');
+      assert.ok(Number.isFinite(held.cleanup.cleanupBoundaryAtMs) && held.cleanup.cleanupBoundaryAtMs > 0, 'the early-exit cleanup boundary is a real epoch-ms timestamp');
       assert.deepEqual(events, ['gate-released', 'exact-process-terminated', 'codex-terminated']);
       const before = pollIterations;
       await new Promise((resolve) => setTimeout(resolve, 60));
@@ -8164,7 +8202,13 @@ process.exit(result.status ?? 1);
         waitForChildSettlement: async () => ({ observed: false, basis: null }),
       });
       assert.equal(held.rootAcknowledged, true);
-      assert.deepEqual(held.childSettlement, { observed: false, basis: null });
+      assert.deepEqual(held.childSettlement, {
+        observed: false,
+        basis: null,
+        // Release-qualification Task 2: the layer split is carried even for an
+        // unobserved settlement — every layer stays honestly unestablished.
+        layers: { remoteTerminal: null, localProcessReaping: null, durableObligations: null },
+      });
       assert.equal(held.cleanup.label, 'child-settlement-unobserved', 'an ended watch without facts must not be labelled as settlement');
     });
 
@@ -8271,7 +8315,7 @@ process.exit(result.status ?? 1);
 
   describe('native interrupt interaction recording and Root Status-observation cancellation (R4)', async () => {
     const { extractInterruptInteraction } = await import('../tools/shell-wait-probe/evidence.mjs');
-    const { mapShellWaitLiveFacts, runShellWaitCase, SHELL_WAIT_CASE_SPECS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { mapShellWaitLiveFacts, runShellWaitCase, runHeldHostTurn, SHELL_WAIT_CASE_SPECS } = await import('../tools/shell-wait-probe/driver.mjs');
 
     // Exact pending Child identity: a UUID-shaped agent id (the shape the V2
     // spawn acknowledgement carries), plus a foreign id for wrong-target cases.
@@ -8334,6 +8378,702 @@ process.exit(result.status ?? 1);
       ];
       return [rootEvents, childEvents];
     }
+
+    test('an explicit wait({terminate:true}) ender is NEVER interrupt_agent settlement (codex review round 10)', () => {
+      // A linked `wait({cell_id, terminate: true})` produces the SAME
+      // `Script terminated` framing a native cancellation produces. The
+      // extractor must check the call's OWN termination flag: the marker is
+      // that call's explicit stop — an ALTERNATE ENDER, separately
+      // classified — and never credits interrupt_agent with settlement, so
+      // `settled` stays null with the explicit reason and no latency.
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        fnCall('wait', 'outer-1', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('outer-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the pending window still confirms (the window facts are independent of the ender)');
+      assert.equal(interaction.cancelledAfterCall.atMs, null, 'the explicit termination carries no native settlement credit');
+      assert.equal(interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the alternate ender is separately classified with its own timestamp');
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'the alternate ender is not interrupt settlement');
+      assert.equal(facts.interrupt.settledBasis, 'explicit-cell-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null, 'no latency without native settlement');
+      // A PLAIN native cancellation (no terminate flag anywhere) stays
+      // credited: the round-7 end-to-end case keeps its assertions.
+    });
+
+    test('a native cancellation settles the interrupted poll end to end (codex review round 7)', () => {
+      // The first long poll is interrupted BEFORE its outer cell yields: its
+      // only response is the pinned host's native termination marker
+      // (Script terminated — dffa0deb code_mode/mod.rs:307). The binding
+      // must RETAIN the poll interval closed by that cancellation (previously
+      // the undecodable marker discarded it), the pending window must
+      // confirm, and the mapper must persist the cancellation settlement with
+      // its delivery-to-settlement latency (previously settled null /
+      // settlement-unavailable).
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const cancelledPollRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(cancelledPollRollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the cancellation-closed poll interval confirms the pending window');
+      assert.equal(interaction.pendingBeforeCall.atMs, Date.parse('2026-10-06T00:00:02.000Z'));
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the native cancellation settlement is attributable to the exact Child');
+      assert.equal(interaction.settledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      // A NON-marker undecodable poll response still discards the interval
+      // (round-16 fail closed): no pending-window claim from unknown evidence.
+      const unparseableRollouts = cancelledPollRollouts.map((events, rolloutIndex) => rolloutIndex === 1
+        ? events.map((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'function_call_output'
+          ? fnOutput('poll-1', 'unrelated failure text', '2026-10-06T00:00:12.000Z')
+          : event)
+        : events);
+      const unparseableInteraction = extractInterruptInteraction(unparseableRollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(unparseableInteraction.pendingBeforeCall.observed, false, 'an undecodable non-marker response never claims the pending window');
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, cancelledPollRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, true, 'the native cancellation settles the interrupted turn in the persisted facts');
+      assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12');
+      assert.equal(facts.interrupt.timingBasis, 'rollout-event-timestamps');
+      assert.equal(facts.inconclusive, null, 'the confirmed pending window and exact delivery satisfy the interrupt contract');
+    });
+
+    test('an OVERHEAD-ENABLED native termination header still settles the interrupted poll (codex review round 18)', () => {
+      // With experimental_show_cell_overhead enabled the pinned host REWRITES
+      // the terminated cell header (dffa0deb output.rs set_handler_duration_ms):
+      // `Script terminated\nWall time <s:.3> seconds (code-mode <s:.3> seconds;
+      // overhead <s:.3> seconds)\nOutput:\n` — three-decimal timing plus the
+      // overhead suffix the wall-time and pending-header parsers already
+      // accept (output_tests.rs pins positive, zero and negative overhead).
+      // The cancellation-marker patterns must accept the SAME framing:
+      // otherwise an otherwise-identical interruption loses the pending
+      // window (observed true → false) and the settlement timing, leaving
+      // genuine interruption and survival evidence unestablishable.
+      const overheadMarkerOutput = (overhead) => [
+        { type: 'input_text', text: `Script terminated\nWall time 10.000 seconds (code-mode 9.500 seconds; overhead ${overhead} seconds)\nOutput:\n` },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const cancelledPollRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', overheadMarkerOutput('0.500'), '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(cancelledPollRollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the overhead-enabled cancellation-closed poll interval confirms the pending window');
+      assert.equal(interaction.pendingBeforeCall.atMs, Date.parse('2026-10-06T00:00:02.000Z'));
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the overhead-enabled native cancellation settlement is attributable to the exact Child');
+      assert.equal(interaction.settledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, cancelledPollRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, true, 'the overhead-enabled native cancellation settles the interrupted turn in the persisted facts');
+      assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12');
+      assert.equal(facts.interrupt.timingBasis, 'rollout-event-timestamps');
+      assert.equal(facts.inconclusive, null, 'the confirmed pending window and exact delivery satisfy the interrupt contract');
+      // Overhead may legitimately quantize to zero or negative
+      // (output_tests.rs: 1_251_400µs host → overhead -0.001): the framing is
+      // still the pinned termination header.
+      const negativeOverheadRollouts = cancelledPollRollouts.map((events, rolloutIndex) => rolloutIndex === 1
+        ? events.map((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'function_call_output'
+          ? fnOutput('poll-1', overheadMarkerOutput('-0.001'), '2026-10-06T00:00:12.000Z')
+          : event)
+        : events);
+      const negativeOverheadInteraction = extractInterruptInteraction(negativeOverheadRollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(negativeOverheadInteraction.pendingBeforeCall.observed, true, 'a negative overhead suffix is still the pinned termination framing');
+      assert.equal(negativeOverheadInteraction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      // A NON-marker response wearing the SAME overhead framing still fails
+      // closed (round-16): only the pinned `Script terminated` status decodes
+      // as native cancellation — never the shape alone.
+      const completedOverheadRollouts = cancelledPollRollouts.map((events, rolloutIndex) => rolloutIndex === 1
+        ? events.map((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'function_call_output'
+          ? fnOutput('poll-1', [
+              { type: 'input_text', text: 'Script completed\nWall time 10.000 seconds (code-mode 9.500 seconds; overhead 0.500 seconds)\nOutput:\n' },
+              { type: 'input_text', text: 'done\n' },
+            ], '2026-10-06T00:00:12.000Z')
+          : event)
+        : events);
+      const completedOverheadInteraction = extractInterruptInteraction(completedOverheadRollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(completedOverheadInteraction.pendingBeforeCall.observed === false, true, 'a non-marker overhead-shaped response never claims the pending window');
+      assert.equal(completedOverheadInteraction.cancelledAfterCall.atMs, null, 'a non-marker overhead-shaped response never credits cancellation settlement');
+    });
+
+    test('a BUDGET-CLEANUP termination never credits native settlement (codex review round 19)', () => {
+      // The interrupt is delivered, the observation stays pending until the
+      // experiment budget expires, and the held-turn CLEANUP kill resolves
+      // the poll: the collected `Script terminated` marker is the cleanup
+      // kill's resolution (rollouts are collected after cleanup), never the
+      // §16.3 native interruption settlement — a budget kill/released
+      // completion gate is cleanup, never native cancellation. The held
+      // timeline runs on the held turn's own monotonic elapsed clock, so no
+      // wall-clock cleanup-kill timestamp comparable to rollout event times
+      // is recorded: the recorded `budgetExpired` fact IS the pre-cleanup
+      // attribution boundary (an observation that had settled natively
+      // before the deadline would have resolved the held wait, keeping
+      // budgetExpired false).
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the pending window is rollout-side fact and unchanged by the cleanup boundary');
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the marker resolution is still observed — the boundary is the held-run cleanup');
+      const heldExpired = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldExpired,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'a cleanup-generated termination never credits native settlement');
+      assert.equal(facts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null, 'the cleanup kill records no delivery-to-settlement latency');
+      assert.equal(facts.inconclusive?.reason, 'the probe budget expired (budget cleanup; never native interruption)', 'the verdict keeps its existing budget-cleanup inconclusive semantics');
+      // Genuinely native cancellation: the SAME marker run WITHOUT budget
+      // expiry keeps full credit — the boundary is the cleanup, not the
+      // marker (an observation settled natively resolves the held wait
+      // before the deadline, so budgetExpired never fires and NO termination
+      // is initiated: no boundary, no kill flags — a demonstrated kill
+      // without a recorded boundary fails closed under the overall-review
+      // fix-2 contract).
+      const factsNative = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        { ...heldExpired, budgetExpired: false, cleanup: { ...heldExpired.cleanup, label: 'observation', verifiedProcessTerminated: false, codexTerminated: false } },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      assert.equal(factsNative.interrupt.settled, true, 'a pre-cleanup native cancellation keeps full settlement credit');
+      assert.equal(factsNative.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(factsNative.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12');
+    });
+
+    test('a cancellation marker STRICTLY BEFORE the recorded cleanup boundary keeps native credit even when the budget expired (overall review fix)', () => {
+      // Codex overall review P2 fix (the boundary refinement of round 19): the
+      // coarse `budgetExpired` boolean discarded genuine pre-cleanup
+      // settlements. The Child can cancel its observation BEFORE the budget
+      // deadline while the held turn is still waiting — Root still reporting,
+      // or the fixed hold still running — so `runHeldHostTurn` does not finish
+      // when the cancellation arrives and `budgetExpired` turns true anyway;
+      // the boolean then mislabeled the collected marker as cleanup-generated
+      // and discarded the measured latency. The driver therefore records the
+      // cleanup kill's initiation as a WALL-CLOCK epoch-ms timestamp
+      // (`cleanup.cleanupBoundaryAtMs`, on the same clock as the rollout event
+      // timestamps), and the marker branch credits native settlement only for
+      // markers STRICTLY BEFORE that boundary; at/after it (or with the
+      // boundary unestablishable) the round-19 cleanup semantics stand.
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed === true && interaction.cancelledAfterCall.atMs === Date.parse('2026-10-06T00:00:12.000Z'), true,
+        'premise: the marker resolves the delivered interrupt\'s confirmed pending observation at rollout time 00:00:12');
+      const mapWith = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      const heldWithBoundary = (boundary) => ({
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], ...(boundary === undefined ? {} : { cleanupBoundaryAtMs: boundary }) },
+        timeline: null,
+      });
+      // (a) The marker (00:00:12) STRICTLY precedes the recorded cleanup
+      // boundary (00:01:00): genuine native settlement credited — settled
+      // true, the native basis, and the MEASURED delivery-to-settlement
+      // latency — even though `budgetExpired` is true (the held turn was
+      // still waiting on the Root report/hold when the cancellation landed).
+      const preBoundaryFacts = mapWith(heldWithBoundary(Date.parse('2026-10-06T00:01:00.000Z')));
+      assert.equal(preBoundaryFacts.interrupt.settled, true, 'a marker strictly before the recorded cleanup boundary is a genuine pre-cleanup settlement');
+      assert.equal(preBoundaryFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(preBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12, no longer discarded by the boolean');
+      assert.equal(preBoundaryFacts.interrupt.timingBasis, 'rollout-event-timestamps');
+      // The OVERALL verdict stays inconclusive on the budget expiry — only the
+      // settlement attribution changes.
+      assert.equal(preBoundaryFacts.inconclusive?.reason, 'the probe budget expired (budget cleanup; never native interruption)');
+      // (b) A marker AT the boundary (equality is not strictly-before) and a
+      // marker AFTER the boundary stay cleanup-generated: unattributed, no
+      // latency (the round-19 semantics).
+      const atBoundaryFacts = mapWith(heldWithBoundary(Date.parse('2026-10-06T00:00:12.000Z')));
+      assert.equal(atBoundaryFacts.interrupt.settled, null, 'a marker AT the cleanup boundary is not proven pre-cleanup');
+      assert.equal(atBoundaryFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(atBoundaryFacts.interrupt.deliveryToSettlementMs, null);
+      const afterBoundaryFacts = mapWith(heldWithBoundary(Date.parse('2026-10-06T00:00:11.000Z')));
+      assert.equal(afterBoundaryFacts.interrupt.settled, null, 'a marker AFTER the cleanup boundary is the kill\'s resolution');
+      assert.equal(afterBoundaryFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(afterBoundaryFacts.interrupt.deliveryToSettlementMs, null);
+      // (c) A budget-expired run whose boundary is UNESTABLISHABLE (absent or
+      // non-finite) fails closed to the round-19 unattributed semantics.
+      const missingBoundaryFacts = mapWith(heldWithBoundary(undefined));
+      assert.equal(missingBoundaryFacts.interrupt.settled, null, 'no recorded boundary means no pre-cleanup claim');
+      assert.equal(missingBoundaryFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      const invalidBoundaryFacts = mapWith(heldWithBoundary(Number.NaN));
+      assert.equal(invalidBoundaryFacts.interrupt.settled, null);
+      assert.equal(invalidBoundaryFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+    });
+
+    test('the cleanup boundary binds EVERY termination path, not only budget expiry (overall review fix 2)', () => {
+      // Codex overall review P2 fix 2: a run that ends EARLY or FAILS before
+      // its budget expires still terminates the controlled processes — and a
+      // cancellation marker produced by THAT cleanup passed the attribution
+      // branch solely because `budgetExpired` was false, wrongly recording
+      // native settlement and latency. The driver now records the same
+      // wall-clock cleanup boundary on EVERY termination path (early exit,
+      // Status-deadline end, failure, budget expiry), and the marker branch
+      // consults it whenever a cleanup kill was INITIATED: a marker at/after
+      // any initiated boundary is the kill's resolution (unattributed), a
+      // marker strictly before it is genuine settlement, a kill demonstrably
+      // initiated without a recorded boundary fails closed, and a run with NO
+      // cleanup kill keeps full credit unchanged.
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const mapWith = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      // (a) EARLY-EXIT run whose cleanup kill initiated BEFORE the marker
+      // (boundary 00:00:11 < marker 00:00:12): the marker is the kill's
+      // resolution — unattributed, no latency — never native settlement.
+      const earlyExitWithBoundary = {
+        endedBeforeGate: true, budgetExpired: false, processAliveWhileHeld: null, result: { code: 1, stdout: '', stderr: '' },
+        cleanup: { label: 'early-exit', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:00:11.000Z') },
+        timeline: null,
+      };
+      const earlyExitFacts = mapWith(earlyExitWithBoundary);
+      assert.equal(earlyExitFacts.interrupt.settled, null, 'a marker produced by the early-exit cleanup kill is never native settlement');
+      assert.equal(earlyExitFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(earlyExitFacts.interrupt.deliveryToSettlementMs, null, 'the non-budget cleanup kill records no delivery-to-settlement latency either');
+      // (a2) FAIL-CLOSED: a cleanup kill demonstrably initiated (termination
+      // flags) but its boundary unrecorded (older records) — unattributed.
+      const earlyExitNoBoundary = {
+        ...earlyExitWithBoundary,
+        cleanup: { label: 'early-exit', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+      };
+      const noBoundaryEarlyExitFacts = mapWith(earlyExitNoBoundary);
+      assert.equal(noBoundaryEarlyExitFacts.interrupt.settled, null, 'a demonstrated kill without a recorded boundary never credits settlement');
+      assert.equal(noBoundaryEarlyExitFacts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      const failureNoBoundary = {
+        ...earlyExitNoBoundary,
+        endedBeforeGate: false,
+        cleanup: { label: 'failure', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+      };
+      const failureNoBoundaryFacts = mapWith(failureNoBoundary);
+      assert.equal(failureNoBoundaryFacts.interrupt.settled, null, 'a demonstrated host termination without a boundary fails closed on the failure path too');
+      // (b) A genuinely native cancellation in a run with NO cleanup kill
+      // (no boundary, no termination flags, budget not expired) keeps full
+      // credit unchanged.
+      const noCleanupRun = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const noCleanupFacts = mapWith(noCleanupRun);
+      assert.equal(noCleanupFacts.interrupt.settled, true, 'a run with no cleanup kill keeps native settlement credit');
+      assert.equal(noCleanupFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(noCleanupFacts.interrupt.deliveryToSettlementMs, 5_000, 'delivery 00:00:07 → cancellation settlement 00:00:12');
+      // (c) The budget-expiry boundary refinement (previous fix) stays green:
+      // a marker STRICTLY BEFORE the recorded budget-cleanup boundary is still
+      // credited.
+      const budgetPreBoundary = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+        timeline: null,
+      };
+      const budgetPreBoundaryFacts = mapWith(budgetPreBoundary);
+      assert.equal(budgetPreBoundaryFacts.interrupt.settled, true, 'the pre-boundary budget-cleanup credit (previous fix) is unchanged');
+      assert.equal(budgetPreBoundaryFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(budgetPreBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000);
+      // And a marker AT/AFTER a non-budget termination boundary behaves like
+      // the budget one: an early-exit boundary AFTER the marker (kill after
+      // settlement) is a genuine pre-cleanup settlement.
+      const earlyExitPostMarkerBoundary = {
+        ...earlyExitWithBoundary,
+        cleanup: { ...earlyExitWithBoundary.cleanup, cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+      };
+      const postMarkerBoundaryFacts = mapWith(earlyExitPostMarkerBoundary);
+      assert.equal(postMarkerBoundaryFacts.interrupt.settled, true, 'an early-exit kill initiated after the marker preserves the genuine settlement');
+      assert.equal(postMarkerBoundaryFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      assert.equal(postMarkerBoundaryFacts.interrupt.deliveryToSettlementMs, 5_000);
+    });
+
+    test('the cleanup boundary and cancellation timestamp persist through BOTH projections for offline attribution (overall review fix 3)', async (t) => {
+      // Codex overall review P2 fix 3: for interruption runs that initiate
+      // cleanup, `cleanup.cleanupBoundaryAtMs` DECIDES whether a cancellation
+      // receives native-settlement credit — but the mapper dropped it and
+      // buildCaseRecord never saved it, so after fixture disposal the
+      // retained record could not independently re-verify or reproduce the
+      // attribution. Both projections now carry the boundary and the
+      // cancellation timestamp (schema-additive: each key rides ONLY when its
+      // fact exists — legacy records stay byte-identical), so offline
+      // adjudication reproduces the verdict from the persisted facts alone.
+      const markerOutput = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', markerOutput, '2026-10-06T00:00:12.000Z'),
+      ]];
+      const mapWith = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      const budgetPreBoundary = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: Date.parse('2026-10-06T00:01:00.000Z') },
+        timeline: null,
+      };
+      // (a)+(c) The typed projection carries both facts…
+      const facts = mapWith(budgetPreBoundary);
+      assert.equal(facts.interrupt.cleanupBoundaryAtMs, Date.parse('2026-10-06T00:01:00.000Z'), 'the typed facts carry the recorded cleanup boundary');
+      assert.equal(facts.interrupt.cancelledAtMs, Date.parse('2026-10-06T00:00:12.000Z'), 'the typed facts carry the cancellation timestamp');
+      // …and the RETAINED record mirrors them (the projections agree).
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-boundary-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = {
+        workspace: '/private/tmp/i3-ws', codexHome: '/private/tmp/i3-home',
+        installedRoot: '/private/tmp/i3-installed', env: { HOME: '/private/tmp/i3-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persistCase = { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root };
+      const persisted = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.cleanupBoundaryAtMs, facts.interrupt.cleanupBoundaryAtMs, 'the record mirrors the typed cleanup boundary');
+      assert.equal(persisted.interrupt.cancelledAtMs, facts.interrupt.cancelledAtMs, 'the record mirrors the typed cancellation timestamp');
+      // OFFLINE RE-ADJUDICATION: the persisted boundary vs the persisted
+      // cancellation timestamp through the SAME strictly-before comparison
+      // reproduces the persisted verdict — independently of the disposed
+      // fixture and the raw rollouts.
+      const offlineCredited = /** @type {number} */ (persisted.interrupt.cancelledAtMs) < /** @type {number} */ (persisted.interrupt.cleanupBoundaryAtMs);
+      assert.equal(offlineCredited, true, 'the persisted marker precedes the persisted boundary');
+      assert.equal(persisted.interrupt.settled === true && persisted.interrupt.settledBasis === 'native-cancellation-settlement-after-delivery', offlineCredited,
+        'the offline comparison reproduces the credited verdict');
+      assert.equal(persisted.interrupt.deliveryToSettlementMs, 5_000);
+      // The unattributed side reproduces too: a marker AT the persisted
+      // boundary maps to settled null / the cleanup basis, and the persisted
+      // facts alone show why (the comparison fails).
+      const atBoundaryFacts = mapWith({ ...budgetPreBoundary, cleanup: { ...budgetPreBoundary.cleanup, cleanupBoundaryAtMs: Date.parse('2026-10-06T00:00:12.000Z') } });
+      const persistedAtBoundary = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => atBoundaryFacts },
+      );
+      assert.equal(/** @type {number} */ (persistedAtBoundary.interrupt.cancelledAtMs) < /** @type {number} */ (persistedAtBoundary.interrupt.cleanupBoundaryAtMs), false);
+      assert.equal(persistedAtBoundary.interrupt.settled, null);
+      assert.equal(persistedAtBoundary.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(persistedAtBoundary.interrupt.settled === true, /** @type {number} */ (persistedAtBoundary.interrupt.cancelledAtMs) < /** @type {number} */ (persistedAtBoundary.interrupt.cleanupBoundaryAtMs),
+        'the offline comparison reproduces the unattributed verdict');
+      // (b) Legacy/no-cleanup projections gain NO key: a run with no cleanup
+      // boundary and no cancellation marker keeps the pinned schema in BOTH
+      // projections.
+      const completedRollouts = markerRollouts.map((events, rolloutIndex) => rolloutIndex === 1
+        ? events.map((event) => event?.payload?.call_id === 'poll-1' && event.payload.type === 'function_call_output'
+          ? fnOutput('poll-1', completedOutputBody({ output: 'done', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:12.000Z')
+          : event)
+        : events);
+      const noCleanupNoMarkerFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, completedRollouts, [], 'node launcher',
+      );
+      assert.equal(Object.hasOwn(noCleanupNoMarkerFacts.interrupt, 'cleanupBoundaryAtMs'), false, 'a run with no cleanup boundary gains no key');
+      assert.equal(Object.hasOwn(noCleanupNoMarkerFacts.interrupt, 'cancelledAtMs'), false, 'a run with no cancellation marker gains no key');
+      const legacyPersisted = await runShellWaitCase(
+        persistCase,
+        { createFixture: async () => persistFixture, executeLiveCase: async () => noCleanupNoMarkerFacts },
+      );
+      assert.equal(Object.hasOwn(legacyPersisted.interrupt, 'cleanupBoundaryAtMs'), false, 'the legacy record gains no boundary key');
+      assert.equal(Object.hasOwn(legacyPersisted.interrupt, 'cancelledAtMs'), false, 'the legacy record gains no cancellation-timestamp key');
+      // A NO-CLEANUP run WITH a genuine cancellation carries the timestamp
+      // but still no boundary key — exactly the evidence its credit rests on.
+      const nativeNoCleanupFacts = mapWith({
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      });
+      assert.equal(Object.hasOwn(nativeNoCleanupFacts.interrupt, 'cleanupBoundaryAtMs'), false);
+      assert.equal(nativeNoCleanupFacts.interrupt.cancelledAtMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      assert.equal(nativeNoCleanupFacts.interrupt.settled, true, 'the no-cleanup native credit is unchanged');
+    });
+
+    test('the runner-side timeout kill records the cleanup boundary at its initiation (round-4 review fix)', async () => {
+      // Codex round-4 review fix: runProcess enforces its OWN timeout and
+      // terminates the child from inside the runner — potentially BEFORE the
+      // held turn's 50-ms budget poll notices expiry and long before the
+      // wrapper's cleanup sequence runs. That kill is a termination
+      // INITIATION and must record the boundary first: a cancellation marker
+      // written as the child dies (after the runner kill, before the wrapper
+      // cleanup) is the kill's resolution — unattributed — never native
+      // settlement credited against the later wrapper boundary. The launch
+      // budget context therefore supplies recordCleanupBoundary, and the
+      // wrapper's own stamp keeps min-semantics (the earliest initiation
+      // wins).
+      const RUNNER_NONCE = 'f'.repeat(64);
+      let killAtMs = null;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          // The simulated runner: its internal timeout initiates the kill at
+          // ~30 ms — recording the boundary through the supplied recorder —
+          // while the runner promise (and the wrapper's cleanup) settle much
+          // later (~220 ms).
+          setTimeout(() => {
+            killAtMs = Date.now();
+            if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          }, 30);
+          const result = new Promise((resolve) => setTimeout(() => resolve({ code: 0, stdout: '', stderr: '' }), 220));
+          return { result, terminate: async () => {} };
+        },
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => ({ pid: 66210, ppid: 88, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66210, ppid: 88, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        terminateProcessIdentity: async () => {},
+        waitForProcessExit: async () => {},
+        releaseGate: async () => {},
+        sleep: async () => {},
+        now: (() => { let value = 0; return () => (value += 30_000); })(),
+        holdMs: 5_000,
+        budgetMs: 3_600_000,
+      });
+      assert.ok(killAtMs !== null, 'premise: the runner-side kill initiated');
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the runner-side kill recorded the boundary');
+      // Min-semantics: the EARLIEST initiation stands even though the wrapper
+      // cleanup ran later.
+      assert.ok(/** @type {number} */ (held.cleanup.cleanupBoundaryAtMs) <= killAtMs + 5,
+        'the boundary is the runner kill initiation, never the later wrapper cleanup');
+      // A cancellation marker written AFTER the kill (as the child dies) but
+      // BEFORE the wrapper cleanup is AT/AFTER the recorded boundary: the
+      // marker branch must refuse native credit.
+      const markerAtMs = killAtMs + 5;
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, new Date(markerAtMs - 5_000).toISOString()),
+        interruptSuccess('int-1', 'running', new Date(markerAtMs - 4_800).toISOString()),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, new Date(markerAtMs - 12_000).toISOString()),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), new Date(markerAtMs - 11_000).toISOString()),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, new Date(markerAtMs - 10_000).toISOString()),
+        fnOutput('poll-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ], new Date(markerAtMs).toISOString()),
+      ]];
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'a marker at/after the runner-kill boundary is the kill\'s resolution, never native settlement');
+      assert.equal(facts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null);
+    });
+
+    test('the shared-budget abort records the boundary before the forwarded abort can kill (round-5 review fix)', async () => {
+      // Codex round-5 review fix: when the shared budget expires, the abort
+      // is FORWARDED to the turn controller (and to every runner listening on
+      // the shared signal) — and runProcess's abort path initiates the kill
+      // immediately, potentially long before the wrapper's cleanup sequence
+      // reaches its own stamp. The boundary must be recorded at the abort
+      // source BEFORE forwarding (the same min-semantics path): a marker
+      // written in the gap — after the forwarded kill, before the wrapper
+      // cleanup — is at/after the boundary and stays unattributed.
+      const RUNNER_NONCE = '1'.repeat(64);
+      let forwardedKillAtMs = null;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          // The runner shares the budget signal: a forwarded abort initiates
+          // the kill (runProcess's abort path); the runner never settles on
+          // its own — the budget ends the turn.
+          budgetContext?.signal?.addEventListener('abort', () => {
+            if (forwardedKillAtMs === null) forwardedKillAtMs = Date.now();
+          }, { once: true });
+          return { result: new Promise(() => {}), terminate: async () => {} };
+        },
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => {
+          // The wrapper reaches its cleanup sequencing LATER (a slow identity
+          // capture): the gap between the forwarded kill and the wrapper stamp.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          return { pid: 66211, ppid: 89, nonce: RUNNER_NONCE, startIdentity: 'start-a' };
+        },
+        readProcessIdentity: async () => ({ pid: 66211, ppid: 89, nonce: RUNNER_NONCE, startIdentity: 'start-a' }),
+        terminateProcessIdentity: async () => {},
+        waitForProcessExit: async () => {},
+        releaseGate: async () => {},
+        sleep: async () => {},
+        now: (() => { let value = 0; return () => (value += 200_000); })(),
+        holdMs: 5_000,
+        budgetMs: 120_000,
+      });
+      assert.ok(forwardedKillAtMs !== null, 'premise: the shared-budget abort forwarded and killed');
+      assert.equal(held.budgetExpired, true);
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the budget abort recorded the boundary');
+      // The boundary is stamped at the abort source — BEFORE the forwarding
+      // kill — so the kill is already bounded (min-semantics keep any earlier
+      // initiation).
+      assert.ok(/** @type {number} */ (held.cleanup.cleanupBoundaryAtMs) <= forwardedKillAtMs + 2,
+        'the boundary precedes the forwarded-abort kill initiation');
+      // A cancellation marker written in the gap (after the forwarded kill,
+      // before the wrapper cleanup) is AT/AFTER the boundary: unattributed.
+      const markerAtMs = forwardedKillAtMs + 5;
+      const markerRollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, new Date(markerAtMs - 5_000).toISOString()),
+        interruptSuccess('int-1', 'running', new Date(markerAtMs - 4_800).toISOString()),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, new Date(markerAtMs - 12_000).toISOString()),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), new Date(markerAtMs - 11_000).toISOString()),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, new Date(markerAtMs - 10_000).toISOString()),
+        fnOutput('poll-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ], new Date(markerAtMs).toISOString()),
+      ]];
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held,
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, markerRollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'a marker in the abort-to-cleanup gap is the forwarded kill\'s resolution, never native settlement');
+      assert.equal(facts.interrupt.settledBasis, 'budget-cleanup-termination-not-attributed');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null);
+    });
+
+    test('cancellation settlement requires the CONFIRMED pending window (codex review round 8)', () => {
+      // Interrupt at 00:00:07, the poll STARTS at 00:00:09 (AFTER the
+      // interrupt), cancellation at 00:00:12: the poll did not exist when the
+      // interrupt occurred, so the cancellation resolution is not attributable
+      // as THIS delivery's settlement — no settlement claim and no
+      // delivery-to-settlement latency may be persisted.
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: 'root-thread-1' } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.200Z'),
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('poll-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ], '2026-10-06T00:00:12.000Z'),
+      ]];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.pendingBeforeCall.observed, false, 'the poll started after the interrupt: no confirmed pending window');
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:12.000Z'));
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+        interruptEvidence({ qualified: false, pendingInnerAtEnd: false }),
+        null, null, interruptMappingFixture, rollouts, [], 'node launcher',
+      );
+      assert.equal(facts.interrupt.settled, null, 'an unconfirmed pending window never attributes cancellation settlement');
+      assert.equal(facts.interrupt.settledBasis, 'settlement-unavailable');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, null, 'no latency without the attributed settlement');
+    });
 
     const interruptEvidence = ({ qualified = false, pendingInnerAtEnd = true, structuralViolationCount = 0, companionOverrides = {} } = {}) => ({
       status: 'supported',
@@ -11776,8 +12516,8 @@ process.exit(result.status ?? 1);
       assert.match(driverSource, /the experiment budget expired before the Status query turn/u,
         'the executor refuses to resume the query turn after budget expiry');
       assert.match(driverSource, /timeoutMs: .*?remaining/u, 'every turn runs on the REMAINING experiment deadline, never a fresh full budget');
-      assert.match(driverSource, /budgetSignal\.addEventListener\('abort', \(\) => controller\.abort\(\)/u,
-        'the turn controllers share the experiment cancellation signal');
+      assert.match(driverSource, /budgetSignal\.addEventListener\('abort', \(\) => \{\s*if \(typeof budgetContext\?\.recordCleanupBoundary === 'function'\) budgetContext\.recordCleanupBoundary\(\);\s*controller\.abort\(\);/u,
+        'the turn controllers share the experiment cancellation signal, recording the cleanup boundary BEFORE the forwarded abort initiates any kill (round-5 review fix)');
     });
   });
 
@@ -13780,19 +14520,14 @@ process.exit(result.status ?? 1);
       assert.equal(absent.execDefaultMs, null, 'absent pair keeps the legacy null exec default');
     });
 
-    test('the pair is refused when split, on other cases, with unknown policy values, and with out-of-bound durations', () => {
+    test('the pair is refused when split, with unknown policy values, and with out-of-bound durations', () => {
       // One without the other.
       assert.throws(() => parseShellWaitArguments([...baseArguments, '--wait-policy', 'config-default']), /--exec-default-ms/i);
       assert.throws(() => parseShellWaitArguments([...baseArguments, '--exec-default-ms', '240000']), /--wait-policy/i);
-      // Wrong cases: the transport exists for the C0/C1 rescue-long arms only.
-      for (const otherCase of ['rescue-baseline', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background', 'status-wait']) {
-        const otherBase = ['--case', otherCase, '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o'];
-        assert.throws(
-          () => parseShellWaitArguments([...otherBase, '--wait-policy', 'config-default', '--exec-default-ms', '240000']),
-          /rescue-long/i,
-          `case ${otherCase} must be refused`,
-        );
-      }
+      // The per-case validity matrix (release-qualification task 2, report
+      // §16.6) is covered by its own describe below: every registered case
+      // now carries a declared combination, so the legacy rescue-long-only
+      // refusal no longer exists.
       // Unknown policy values: the closed literal gate.
       for (const badPolicy of ['raised', '1', 'CONFIG-DEFAULT', 'config-default ', '']) {
         assert.throws(
@@ -13828,7 +14563,6 @@ process.exit(result.status ?? 1);
         { waitPolicy: 'config-default', execDefaultMs: 1.5 },
         { waitPolicy: 'config-default', execDefaultMs: Number.NaN },
         { waitPolicy: 'config-default', execDefaultMs: 3_600_001 },
-        { ...baseInput, case: 'rescue-noise', waitPolicy: 'config-default', execDefaultMs: 240000 },
       ];
       for (const negative of negatives) {
         await assert.rejects(
@@ -13915,7 +14649,6 @@ process.exit(result.status ?? 1);
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--exec-default-ms', '240000'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'raised', '--exec-default-ms', '240000'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '3600001'],
-        ['--case', 'rescue-noise', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '240000'],
       ];
       for (const negative of negatives) {
         const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
@@ -14038,22 +14771,19 @@ process.exit(result.status ?? 1);
       return fixture;
     }
 
-    test('waitPolicy validation refuses unknown values and the baseline pairing before any side effect', async () => {
+    test('waitPolicy validation refuses unknown values before any side effect', async () => {
       // validateFixtureInput runs before any filesystem side effect, so these
       // rejections prove the fail-closed boundary (no fixture root is created).
+      // The legacy baseline refusal no longer exists: the release-qualification
+      // matrix (task 2, report §16.6) defines the baseline + policy
+      // combination as the canonical-paragraph host-config-only transport,
+      // covered by its own describe below.
       await assert.rejects(
         createShellWaitFixture({
           sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
           output: join(tmpdir(), 'config-default-never-created'), variant: 'candidate', waitPolicy: 'raised',
         }),
         /waitPolicy must be exactly "config-default"/i,
-      );
-      await assert.rejects(
-        createShellWaitFixture({
-          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
-          output: join(tmpdir(), 'config-default-never-created'), variant: 'baseline', waitPolicy: 'config-default',
-        }),
-        /requires variant "candidate"/i,
       );
       assert.equal(await stat(join(tmpdir(), 'config-default-never-created')).then(() => true, () => false), false,
         'the refused input must not have created any directory');
@@ -14841,6 +15571,7 @@ process.exit(result.status ?? 1);
         decisiveInnerYieldMs: 240000,
         decisiveFirstReturnWallMs: 150000,
         decisiveFirstReturnState: 'completed',
+        decisiveInnerNonterminality: 'inner-process-exited',
         decisiveFirstReturnBasis: 'rollout-event-timestamps',
       });
       const present = evidenceFor(rescueSequence({ poll: 'completed', pollReturnMs: 150000, directive: '// @exec: {"yield_time_ms": 60000}\n' }), { waitPolicyComparisonFacts: true });
@@ -14856,6 +15587,7 @@ process.exit(result.status ?? 1);
         decisiveInnerYieldMs: 240000,
         decisiveFirstReturnWallMs: 28000,
         decisiveFirstReturnState: 'yielded-pending',
+        decisiveInnerNonterminality: 'outer-yield-inner-unresolved',
         decisiveFirstReturnBasis: 'rollout-event-timestamps',
       });
       // A direct-native sequence (plain function_call cells) is derived from
@@ -14873,6 +15605,7 @@ process.exit(result.status ?? 1);
         decisiveInnerYieldMs: null,
         decisiveFirstReturnWallMs: null,
         decisiveFirstReturnState: 'unknown',
+        decisiveInnerNonterminality: 'unknown',
         decisiveFirstReturnBasis: 'unavailable',
       });
     });
@@ -14984,6 +15717,7 @@ process.exit(result.status ?? 1);
       assert.deepEqual(mapped.waitPolicyObservation, {
         decisivePollExplicitYield: 'absent',
         decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerNonterminality: 'outer-yield-inner-unresolved',
         decisiveInnerYieldMs: 240000,
         decisiveFirstReturnWallMs: 28000,
         decisiveFirstReturnState: 'yielded-pending',
@@ -15230,5 +15964,4076 @@ process.exit(result.status ?? 1);
       );
     });
   });
+
+  describe('release-qualification case and policy matrix (task 2)', async () => {
+    // Report §16.6 (the frozen case/policy matrix) is Task 2's implementation
+    // input: the config-default pair becomes valid for EVERY registered case
+    // with a per-case paragraph treatment (candidate paragraph for
+    // rescue-long/repeat/interrupt/noise/background; canonical paragraph with
+    // host-config-only application for rescue-baseline and the three
+    // Root-command cases), plus two single-closed-value interrupt selectors —
+    // the I0 native short-window baseline and the I1 survival control —
+    // validated at the CLI, the programmatic case boundary, and the fixture
+    // boundary before any side effect.
+    const { parseShellWaitArguments, runShellWaitCase, SHELL_WAIT_CASES, SHELL_WAIT_WAIT_POLICY_CASES, INTERRUPT_BASELINE_SELECTOR_VALUE, SURVIVAL_CONTROL_SELECTOR_VALUE } = await import('../tools/shell-wait-probe/driver.mjs');
+    const matrixArguments = (caseLabel, over = []) => ['--case', caseLabel, '--codex', '/bin/x', '--source-sha', 'a'.repeat(40), '--output', '/o', ...over];
+
+    test('the per-case policy table is a frozen closed map over exactly the registered cases', () => {
+      assert.equal(Object.isFrozen(SHELL_WAIT_WAIT_POLICY_CASES), true);
+      assert.deepEqual(Object.keys(SHELL_WAIT_WAIT_POLICY_CASES).sort(), [...SHELL_WAIT_CASES].sort(),
+        'the policy table must cover exactly the registered case labels — a future case without a declared combination must stay unsupported');
+      for (const candidateCase of ['rescue-long', 'rescue-repeat', 'rescue-interrupt', 'rescue-noise', 'background']) {
+        assert.equal(SHELL_WAIT_WAIT_POLICY_CASES[candidateCase], 'candidate-paragraph', `${candidateCase} applies the candidate config-default paragraph`);
+      }
+      for (const canonicalCase of ['rescue-baseline', 'review-wait', 'adversarial-review-wait', 'status-wait']) {
+        assert.equal(SHELL_WAIT_WAIT_POLICY_CASES[canonicalCase], 'canonical-host-config', `${canonicalCase} keeps the canonical paragraph and applies host config only`);
+      }
+    });
+
+    test('the policy pair parses for every registered case (matrix M/L/R/B/I0/I1/N/BG/RV/AR/ST)', () => {
+      for (const caseLabel of SHELL_WAIT_CASES) {
+        const parsed = parseShellWaitArguments(matrixArguments(caseLabel, ['--wait-policy', 'config-default', '--exec-default-ms', '3600000']));
+        assert.equal(parsed.waitPolicy, 'config-default', `case ${caseLabel} accepts the declared policy combination`);
+        assert.equal(parsed.execDefaultMs, 3_600_000);
+        assert.equal(parsed.interruptBaselineSelector, null, 'absent selectors stay null');
+        assert.equal(parsed.survivalControlSelector, null);
+      }
+    });
+
+    test('the interrupt baseline selector is the single closed value valid only for rescue-interrupt at the 60000 window with the policy', () => {
+      assert.equal(INTERRUPT_BASELINE_SELECTOR_VALUE, 'short-window-60000');
+      const parsed = parseShellWaitArguments(matrixArguments('rescue-interrupt', [
+        '--poll-ms', '60000', '--cap-ms', '3600000',
+        '--wait-policy', 'config-default', '--exec-default-ms', '3600000',
+        '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE,
+      ]));
+      assert.equal(parsed.interruptBaselineSelector, 'short-window-60000');
+      // Wrong case: the selector is declared for the rescue-interrupt case only.
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-long', ['--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+        /interrupt-baseline-selector is only valid for the rescue-interrupt case/i,
+      );
+      // Wrong window: the baseline is the declared 60000 short window only —
+      // with the case's 3600000 default or any other explicit window it is a
+      // different, undeclared shape.
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+        /60000/i,
+      );
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--poll-ms', '240000', '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+        /60000/i,
+      );
+      // Unknown values: the closed literal gate.
+      for (const bad of ['60000', 'SHORT-WINDOW-60000', 'progress-terminal', '']) {
+        assert.throws(
+          () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--poll-ms', '60000', '--interrupt-baseline-selector', bad, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+          /--interrupt-baseline-selector only accepts the literal value short-window-60000/i,
+          `selector value ${JSON.stringify(bad)} must be refused`,
+        );
+      }
+      // The selector requires the validated policy pair.
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--poll-ms', '60000', '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE])),
+        /--exec-default-ms|--wait-policy/i,
+      );
+    });
+
+    test('the survival-control selector is the single closed value valid only for rescue-interrupt at the candidate 3600000 window with the policy', () => {
+      assert.equal(SURVIVAL_CONTROL_SELECTOR_VALUE, 'progress-terminal');
+      const parsed = parseShellWaitArguments(matrixArguments('rescue-interrupt', [
+        '--cap-ms', '3600000',
+        '--wait-policy', 'config-default', '--exec-default-ms', '3600000',
+        '--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE,
+      ]));
+      assert.equal(parsed.survivalControlSelector, 'progress-terminal');
+      assert.equal(parsed.pollMs, 3_600_000, 'the interrupt case default is the candidate long window');
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-noise', ['--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+        /survival-control-selector is only valid for the rescue-interrupt case/i,
+      );
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--poll-ms', '60000', '--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+        /3600000/i,
+        'the survival control belongs to the I1 candidate long window, never the I0 short window',
+      );
+      for (const bad of ['progress', 'PROGRESS-TERMINAL', 'short-window-60000', '']) {
+        assert.throws(
+          () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--survival-control-selector', bad, '--wait-policy', 'config-default', '--exec-default-ms', '3600000'])),
+          /--survival-control-selector only accepts the literal value progress-terminal/i,
+          `selector value ${JSON.stringify(bad)} must be refused`,
+        );
+      }
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', ['--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE])),
+        /--exec-default-ms|--wait-policy/i,
+      );
+    });
+
+    test('the two interrupt selectors are mutually exclusive: one run is either the I0 baseline or the I1 survival-control case', () => {
+      assert.throws(
+        () => parseShellWaitArguments(matrixArguments('rescue-interrupt', [
+          '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE,
+          '--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE,
+          '--wait-policy', 'config-default', '--exec-default-ms', '3600000',
+        ])),
+        /mutually exclusive/i,
+      );
+    });
+
+    test('the registered B and ST combinations parse: canonical baseline host-config and status-wait with its query deadline', () => {
+      const baseline = parseShellWaitArguments(matrixArguments('rescue-baseline', [
+        '--worker-duration-ms', '420000', '--poll-ms', '60000', '--budget-ms', '1200000', '--cap-ms', '3600000',
+        '--wait-policy', 'config-default', '--exec-default-ms', '3600000',
+      ]));
+      assert.equal(baseline.pollMs, 60_000, 'rescue-baseline preserves the plain 60000 observation under the policy');
+      assert.equal(baseline.capMs, 3_600_000);
+      assert.equal(baseline.waitPolicy, 'config-default');
+      const status = parseShellWaitArguments(matrixArguments('status-wait', [
+        '--status-query-timeout-ms', '240000', '--wait-policy', 'config-default', '--exec-default-ms', '3600000',
+      ]));
+      assert.equal(status.statusQueryTimeoutMs, 240_000, 'the query deadline stays a status-wait-only fact beside the policy');
+      assert.equal(status.waitPolicy, 'config-default');
+    });
+
+    test('the programmatic boundary mirrors the selector matrix fail-closed before any side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-matrix-gate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureCreated = 0;
+      const refusingCreateFixture = async () => { fixtureCreated += 1; throw new Error('fixture must not be created'); };
+      const base = {
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+        waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+      };
+      const negatives = [
+        { ...base, case: 'rescue-long', interruptBaselineSelector: 'short-window-60000' },
+        { ...base, interruptBaselineSelector: 'short-window-60000' },
+        { ...base, pollMs: 60_000, interruptBaselineSelector: '60000' },
+        { ...base, pollMs: 60_000, survivalControlSelector: 'progress-terminal', interruptBaselineSelector: null },
+        { ...base, case: 'rescue-noise', survivalControlSelector: 'progress-terminal' },
+        { ...base, interruptBaselineSelector: 'short-window-60000', survivalControlSelector: 'progress-terminal' },
+        { ...base, interruptBaselineSelector: 'short-window-60000', waitPolicy: null, execDefaultMs: null },
+      ];
+      for (const negative of negatives) {
+        await assert.rejects(
+          runShellWaitCase({ ...negative, output: root }, { createFixture: refusingCreateFixture }),
+          /Invalid shell wait case input/i,
+          `negative ${JSON.stringify({ case: negative.case, interrupt: negative.interruptBaselineSelector ?? null, survival: negative.survivalControlSelector ?? null, poll: negative.pollMs })} must be refused`,
+        );
+      }
+      assert.equal(fixtureCreated, 0, 'matrix validation must fail before fixture creation');
+    });
+
+    test('the programmatic I1 combination passes validation and the fixture input carries only the closed policy label plus the survival-control flag', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-matrix-i1-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const captured = [];
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const bareFixture = {
+        workspace: '/private/tmp/mx-ws', codexHome: '/private/tmp/mx-home',
+        installedRoot: '/private/tmp/mx-installed', env: { HOME: '/private/tmp/mx-home' },
+        survivalControlPath: '/private/tmp/mx-ws/survival-control.mjs',
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      await runShellWaitCase(
+        {
+          case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal',
+          output: root,
+        },
+        { createFixture: async (fixtureInput) => { captured.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(captured[0].variant, 'candidate');
+      assert.equal(captured[0].waitPolicy, 'config-default');
+      assert.equal(captured[0].survivalControl, true, 'the I1 selector reaches the fixture as the closed survival-control flag');
+      assert.equal(Object.hasOwn(captured[0], 'survivalControlSelector'), false, 'the selector literal itself never reaches the fixture');
+      // The B combination: baseline variant + host-config-only policy transport.
+      await runShellWaitCase(
+        {
+          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 60_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+          output: root,
+        },
+        { createFixture: async (fixtureInput) => { captured.push(fixtureInput); return bareFixture; }, executeLiveCase: executor },
+      );
+      assert.equal(captured[1].variant, 'baseline', 'B keeps the canonical paragraph variant');
+      assert.equal(captured[1].commandSkillVariant, 'baseline', 'no command-Skill edit happens for the canonical baseline case');
+      assert.equal(captured[1].waitPolicy, 'config-default');
+      assert.equal(captured[1].capMs, 3_600_000, 'the host cap override is still a fixture input for the canonical case');
+      // The RV/AR/ST combinations are canonical-host-config too: the policy
+      // run keeps the CANONICAL command-Skill paragraphs and the baseline
+      // fixture variant — no candidate paragraph is installed anywhere.
+      for (const rootCase of ['review-wait', 'adversarial-review-wait', 'status-wait']) {
+        await runShellWaitCase(
+          {
+            case: rootCase, codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+            workerDurationMs: 130_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 360_000,
+            waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+            output: root,
+          },
+          { createFixture: async (fixtureInput) => { captured.push({ label: rootCase, fixtureInput }); return bareFixture; }, executeLiveCase: executor },
+        );
+        const entry = captured[captured.length - 1];
+        assert.equal(entry.fixtureInput.variant, 'baseline', `${rootCase}: the policy run keeps the baseline fixture variant`);
+        assert.equal(entry.fixtureInput.commandSkillVariant, 'baseline', `${rootCase}: no command-Skill edit happens under the policy`);
+      }
+    });
+
+    test('the persisted record states which paragraph treatment the run used, and the I1 record carries the closed survival-control selector', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-matrix-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
+      const bareFixture = {
+        workspace: '/private/tmp/mxr-ws', codexHome: '/private/tmp/mxr-home',
+        installedRoot: '/private/tmp/mxr-installed', env: { HOME: '/private/tmp/mxr-home' },
+        survivalControlPath: '/private/tmp/mxr-ws/survival-control.mjs',
+        record: { variant: 'baseline', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const canonicalFixture = {
+        ...bareFixture,
+        record: {
+          ...bareFixture.record,
+          waitPolicy: {
+            policy: 'config-default',
+            paragraphTreatment: 'canonical-host-config',
+            canonicalNamedRoleSha256: 'c'.repeat(64),
+            canonicalGenericMessageSha256: 'd'.repeat(64),
+          },
+        },
+      };
+      const record = await runShellWaitCase(
+        {
+          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 60_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+          output: root,
+        },
+        { createFixture: async () => canonicalFixture, executeLiveCase: executor },
+      );
+      assert.equal(record.provenance.waitPolicy.paragraphTreatment, 'canonical-host-config',
+        'the record must state WHICH paragraph treatment produced the instruction hashes');
+      assert.equal(record.provenance.waitPolicy.instructions.canonicalNamedRoleSha256, 'c'.repeat(64));
+      // A fixture block without the treatment field (legacy/mock shapes) keeps
+      // the record schema unchanged.
+      const plainRecord = await runShellWaitCase(
+        {
+          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 60_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+          output: root,
+        },
+        { createFixture: async () => bareFixture, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(plainRecord.provenance.waitPolicy, 'paragraphTreatment'), false,
+        'no treatment key may appear when the fixture block does not carry one');
+      // The I1 selector rides the record; the offline facts stay null until a
+      // live reader supplies them (never fabricated).
+      const i1Fixture = { ...bareFixture, record: { ...bareFixture.record, variant: 'candidate' } };
+      const i1Record = await runShellWaitCase(
+        {
+          case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal',
+          output: root,
+        },
+        { createFixture: async () => i1Fixture, executeLiveCase: executor },
+      );
+      assert.equal(i1Record.survivalControlSelector, 'progress-terminal');
+      assert.equal(i1Record.survivalControl, null, 'unobserved survival-control facts stay null');
+      // The fixture's survival-control DECLARATION (script digest, line count,
+      // cadence, tag clock) is mirrored into the durable record: the fixture
+      // root is disposed after the run, so the binding to the exact
+      // control-script bytes must outlive it.
+      const declaredFixture = {
+        ...i1Fixture,
+        record: {
+          ...i1Fixture.record,
+          survivalControl: {
+            selector: 'progress-terminal',
+            script: 'survival-control.mjs',
+            scriptSha256: 'e'.repeat(64),
+            lineCount: 60,
+            cadenceMs: 2000,
+            linePrefix: 'zcode-survival-control',
+            designedExitCode: 0,
+            emissionTagClock: 'control-process-monotonic-elapsed-ms-since-start',
+            commandSource: 'fixture-owned bytes; never caller-supplied',
+          },
+        },
+      };
+      const declaredRecord = await runShellWaitCase(
+        {
+          case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal',
+          output: root,
+        },
+        { createFixture: async () => declaredFixture, executeLiveCase: executor },
+      );
+      assert.deepEqual(declaredRecord.survivalControlDeclaration, declaredFixture.record.survivalControl,
+        'the durable record must keep the binding to the exact declared control-script bytes');
+      assert.equal(declaredRecord.survivalControl, null);
+      const plainInterrupt = await runShellWaitCase(
+        {
+          case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+          waitPolicy: 'config-default', execDefaultMs: 3_600_000,
+          output: root,
+        },
+        { createFixture: async () => i1Fixture, executeLiveCase: executor },
+      );
+      assert.equal(Object.hasOwn(plainInterrupt, 'survivalControlSelector'), false, 'records without the selector gain no key');
+    });
+
+    test('the driver CLI enforces the selector matrix with exit one before any launch and documents the new finite surface', () => {
+      const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const negatives = [
+        // Unknown selector literal.
+        ['--case', 'rescue-interrupt', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--interrupt-baseline-selector', '60000', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
+        // The baseline selector at the case's 3600000 default window (no --poll-ms 60000) is not the declared I0 shape.
+        ['--case', 'rescue-interrupt', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--interrupt-baseline-selector', 'short-window-60000', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
+        // The survival-control selector on a non-interrupt case.
+        ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--survival-control-selector', 'progress-terminal', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
+      ];
+      for (const negative of negatives) {
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
+        assert.match(result.stderr, /Invalid shell wait case input/);
+      }
+      const help = spawnSync(process.execPath, [driverCliPath, '--help'], { encoding: 'utf8', timeout: 30_000 });
+      assert.equal(help.status, 0, help.stderr);
+      assert.match(help.stdout, /--interrupt-baseline-selector short-window-60000/u);
+      assert.match(help.stdout, /--survival-control-selector progress-terminal/u);
+      assert.match(help.stdout, /cases: rescue-baseline/u);
+    });
+  });
+
+  describe('release-qualification fixture combinations (task 2)', async () => {
+    // Report §16.6/§16.4: the baseline+policy fixture combination keeps the
+    // CANONICAL waiting paragraph and records canonical provenance (never the
+    // candidate paragraph's hash), and the I1 survival control is a
+    // fixture-owned bounded script (60 unique tagged lines at a fixed 2000 ms
+    // cadence, natural exit 0) whose bytes and closed facts are recorded
+    // without any private path.
+    const { createShellWaitFixture, normalizeFixtureInstructionText, SURVIVAL_CONTROL_LINE_COUNT } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+    const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+
+    async function fakeInstallPlugin({ codexHome, cleanSource }) {
+      const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      await mkdir(join(installedRoot, 'agents'), { recursive: true });
+      await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+      for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+        await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+        await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+      }
+      await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+      return { pluginVersion: '0.1.0' };
+    }
+
+    async function fakeBuildSnapshot({ output, sourceSha }) {
+      await mkdir(join(output, '.agents', 'plugins'), { recursive: true });
+      await writeFile(join(output, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+    }
+
+    function fastDependencies() {
+      return {
+        buildSnapshot: fakeBuildSnapshot, installPlugin: fakeInstallPlugin,
+        runSetup: async (context) => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: context.capMs === null ? null : true }),
+      };
+    }
+
+    async function createFastFixture(t, overrides = {}, dependencies = fastDependencies()) {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-release-qual-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot,
+        sourceSha: repositorySha,
+        codexBinary: process.execPath,
+        output,
+        variant: 'candidate',
+        capMs: null,
+        pollMs: 240_000,
+        ...overrides,
+      }, dependencies);
+      t.after(() => fixture.dispose());
+      return fixture;
+    }
+
+    test('baseline variant with the policy keeps the canonical paragraph byte-identical and records canonical host-config provenance', async (t) => {
+      const fixture = await createFastFixture(t, { variant: 'baseline', capMs: 3_600_000, pollMs: 60_000, waitPolicy: 'config-default' });
+      const { installedRoot, codexHome } = fixture;
+      assert.equal(
+        await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'),
+        realTemplate,
+        'the canonical named Role template must stay byte-identical under the B combination',
+      );
+      assert.equal(
+        await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8'),
+        realSkill,
+        'the canonical generic assignment skill must stay byte-identical under the B combination',
+      );
+      const block = fixture.record.waitPolicy;
+      assert.equal(block.policy, 'config-default');
+      assert.equal(block.paragraphTreatment, 'canonical-host-config');
+      // The CANONICAL hashes are recorded — never the candidate paragraph's.
+      const canonicalRendered = renderManagedRescueRole({ template: realTemplate, pluginRoot: installedRoot });
+      assert.equal(
+        block.canonicalNamedRoleSha256,
+        createHash('sha256').update(normalizeFixtureInstructionText(canonicalRendered, [installedRoot, codexHome]), 'utf8').digest('hex'),
+        'the canonical hash must describe the UNMODIFIED rendered role under the fixture-private-root normalization',
+      );
+      assert.equal(Object.hasOwn(block, 'normalizedNamedRoleSha256'), false, 'the config-default candidate paragraph hash must not be recorded for B');
+      assert.equal(Object.hasOwn(block, 'normalizedGenericMessageSha256'), false);
+      assert.equal(block.hostConfig.capConfigurationKey, 'background_terminal_max_timeout');
+      assert.equal(block.hostConfig.capMs, 3_600_000);
+      assert.match(block.hostConfig.execDefaultTransport, /default_exec_yield_time_ms/u);
+      // The artifacts stayed byte-identical (before === after hashes).
+      for (const artifact of fixture.record.appliedArtifacts) {
+        assert.equal(artifact.beforeSha256, artifact.afterSha256, 'the canonical fixture changes no artifact byte');
+      }
+    });
+
+    test('the survival-control selector writes the fixture-owned bounded script and records closed facts without private paths', async (t) => {
+      const fixture = await createFastFixture(t, { survivalControl: true, waitPolicy: 'config-default' });
+      assert.equal(typeof fixture.survivalControlPath, 'string');
+      const scriptBytes = await readFile(fixture.survivalControlPath, 'utf8');
+      assert.match(scriptBytes, /zcode-survival-control/u, 'the fixture-owned script must carry the declared line prefix');
+      const block = fixture.record.survivalControl;
+      assert.equal(block.selector, 'progress-terminal');
+      assert.equal(block.lineCount, 60, 'the extended design: 60 lines at 2000 ms (~120 s) covers the observed 57.6–72.1 s poll starts (report §16.4 revision)');
+      assert.equal(block.cadenceMs, 2000);
+      assert.equal(block.linePrefix, 'zcode-survival-control');
+      assert.equal(block.designedExitCode, 0, 'the exit code is a DESIGN constant of the fixture-owned script, never a measured outcome');
+      assert.equal(Object.hasOwn(block, 'exitCode'), false, 'the measured-looking exitCode key must not exist beside design constants');
+      assert.equal(block.scriptSha256, createHash('sha256').update(scriptBytes, 'utf8').digest('hex'));
+      assert.equal(block.commandSource, 'fixture-owned bytes; never caller-supplied');
+      assert.equal(JSON.stringify(fixture.record).includes(fixture.survivalControlPath), false,
+        'the private script path must never enter the record');
+    });
+
+    test('the survival-control input refuses non-boolean values and non-I1 combinations before any side effect', async () => {
+      const neverCreated = join(tmpdir(), 'survival-control-never-created');
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: neverCreated, variant: 'candidate', survivalControl: 'yes',
+        }),
+        /survivalControl must be a boolean/i,
+      );
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: neverCreated, variant: 'baseline', waitPolicy: 'config-default', survivalControl: true,
+        }),
+        /candidate/i,
+        'the survival control exists only in the candidate-variant I1 fixture home',
+      );
+      await assert.rejects(
+        createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output: neverCreated, variant: 'candidate', survivalControl: true,
+        }),
+        /waitPolicy/i,
+        'the survival control is declared for the config-default policy home only',
+      );
+      assert.equal(await stat(neverCreated).then(() => true, () => false), false,
+        'the refused inputs must not have created any directory');
+    });
+
+    test('the survival-control script emits uniquely tagged lines at the declared cadence', async (t) => {
+      const fixture = await createFastFixture(t, { survivalControl: true, waitPolicy: 'config-default' });
+      const child = spawn(process.execPath, [fixture.survivalControlPath], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const startedAtMs = Date.now();
+      let collected = '';
+      const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exiting */ } }, 4600);
+      for await (const chunk of child.stdout) collected += String(chunk);
+      clearTimeout(killer);
+      const elapsedMs = Date.now() - startedAtMs;
+      const lines = collected.split('\n').filter((line) => line.length > 0);
+      // Load-tolerant COUNT (review fix): a scheduler stall must not flake
+      // the run, but the closed range still pins the 2000 ms design — over
+      // the measured window the script can never have produced MORE lines
+      // than its schedule allows (+ a small scheduling tolerance), and two
+      // lines are guaranteed short of absurd multi-second stalls.
+      const maximumBySchedule = Math.min(SURVIVAL_CONTROL_LINE_COUNT, Math.floor(elapsedMs / 2000) + 2);
+      assert.ok(lines.length >= 2 && lines.length <= maximumBySchedule,
+        `the observed line count must be consistent with the 2000 ms cadence over ${String(elapsedMs)} ms (got ${String(lines.length)}, allowed max ${String(maximumBySchedule)})`);
+      lines.forEach((line, lineIndex) => {
+        assert.match(line, new RegExp(`^zcode-survival-control ${lineIndex + 1} [0-9]+$`), `line ${lineIndex + 1} must carry its unique index and a monotonic emission tag`);
+      });
+      const tags = lines.map((line) => Number(line.split(' ')[2]));
+      assert.ok(tags[1] >= tags[0] + 1500 && tags[1] <= tags[0] + 2600, `the second line's emission tag must follow the 2000 ms cadence (got ${String(tags[1])} after ${String(tags[0])})`);
+      // A third line proves SUSTAINED cadence whenever the observation window
+      // caught one; a stalled machine may legitimately stop at two.
+      if (lines.length >= 3) {
+        assert.ok(tags[2] >= tags[1] + 1500 && tags[2] <= tags[1] + 2600, `the third line's emission tag must follow the cadence (got ${String(tags[2])} after ${String(tags[1])})`);
+      }
+    });
+  });
+
+  describe('exact terminal linkage evidence projection (task 2)', async () => {
+    // The evidence layer owns the terminal bytes, so the byte-exact linkage
+    // oracle is wired THERE: an optional validated `exactExpectedTerminal`
+    // expectation projects a closed `completion.exactTerminalMatch` verdict;
+    // without the expectation the default facts stay byte-identical. The
+    // mapper and the persisted record carry the verdict for waitPolicy runs
+    // (the plan's exact terminal-byte/exit linkage gate); legacy schemas stay
+    // unchanged.
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts, runShellWaitCase, shellWaitEvidenceRequest } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { exactRescueRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+
+    const PARENT = 'parent-thread-e';
+    const CHILD = 'child-thread-e';
+    const AGENT_PATH = '/root/zcode_rescue_task_1';
+    const LAUNCHER = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    const HANDLE = 93;
+    const expectation = exactRescueRenderedExpectation({ result: SENTINEL, resumable: false });
+
+    const sessionMeta = (id, extra = {}) => ({ type: 'session_meta', payload: { id, ...extra } });
+    const childMeta = () => sessionMeta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } });
+    const wrappedCall = (kind, callId, value) => ({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n` },
+    });
+    const callOutput = (callId, output) => ({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } });
+    const completedOutput = (result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+    const rolloutsWithTerminalOutput = (output, exitCode = 0) => ([
+      [
+        sessionMeta(PARENT),
+        { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-e', arguments: JSON.stringify({ task_name: 'zcode_rescue_task_1', fork_turns: 'none', agent_type: 'zcode-rescue', message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.' }) } },
+        { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD, agent_path: AGENT_PATH } } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: 'root-wait-e', arguments: JSON.stringify({ timeout_ms: 600000 }) } },
+      ],
+      [
+        childMeta(),
+        wrappedCall('exec_command', 'launch-e', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+        callOutput('launch-e', completedOutput({ output: '', session_id: HANDLE })),
+        wrappedCall('write_stdin', 'poll-e', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+        callOutput('poll-e', completedOutput({ output, exit_code: exitCode, session_id: HANDLE })),
+      ],
+    ]);
+    const evidenceInput = (terminalOutput, overrides = {}) => ({
+      rollouts: rolloutsWithTerminalOutput(terminalOutput),
+      zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+      command: LAUNCHER,
+      publicResult: SENTINEL,
+      requestedPollMs: 60_000,
+      workerStillAliveAfterObservation: false,
+      redactions: [],
+      ...overrides,
+    });
+
+    test('the evidence carries the exact-linkage verdict when the expectation is supplied', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: expectation, observedTerminalStdout: expectation.output }));
+      assert.equal(result.status, 'supported');
+      assert.deepEqual(result.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+    });
+
+    test('sentinel plus extra stdout and truncated output reject the exact gate even though the substring sentinel matched', () => {
+      const extra = inspectShellWaitEvidence(evidenceInput(`${expectation.output}extra\n`, { exactExpectedTerminal: expectation, observedTerminalStdout: `${expectation.output}extra\n` }));
+      assert.equal(extra.facts.completion.publicResultMatched, true, 'premise: the legacy substring check matched');
+      assert.deepEqual(extra.facts.completion.exactTerminalMatch, { matched: false, reason: 'extra-output', releaseQualificationVersion: 1 });
+      const truncated = inspectShellWaitEvidence(evidenceInput(expectation.output.slice(0, -1), { exactExpectedTerminal: expectation, observedTerminalStdout: expectation.output.slice(0, -1) }));
+      assert.equal(truncated.facts.completion.publicResultMatched, true, 'premise: the truncated body still contains the sentinel substring');
+      assert.deepEqual(truncated.facts.completion.exactTerminalMatch, { matched: false, reason: 'output-truncated', releaseQualificationVersion: 1 });
+    });
+
+    test('an exit-code mismatch rejects the exact gate even with byte-exact output', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: expectation, observedTerminalStdout: expectation.output, rollouts: rolloutsWithTerminalOutput(expectation.output, 1) }));
+      assert.deepEqual(result.facts.completion.exactTerminalMatch, { matched: false, reason: 'exit-code-mismatch', releaseQualificationVersion: 1 });
+    });
+
+    test('without the expectation input the default facts stay unchanged (no exactTerminalMatch key)', () => {
+      const result = inspectShellWaitEvidence(evidenceInput(expectation.output));
+      assert.equal(Object.hasOwn(result.facts.completion, 'exactTerminalMatch'), false);
+      const unobserved = inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: null }));
+      assert.equal(Object.hasOwn(unobserved.facts.completion, 'exactTerminalMatch'), false);
+    });
+
+    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8)', async () => {
+      // The derivation is OFFLINE and case-constant: the deterministic
+      // production renderer (renderOutput, via exactRescueRenderedExpectation
+      // — the same independent source these tests use) applied to the case's
+      // DECLARED harmless output profile. The rescue case profile declares
+      // the fixture's public result AND its resumability fact (round-4
+      // review fix: the rendered terminal view carries the Resumability
+      // Indicator, so the expectation is COMPLETE — an unestablished fact
+      // would derive no expectation at all, never a partial framing-less
+      // one). No caller supplies the expectation: the live default executor
+      // gets it through the SAME validated seam, so every real policy run
+      // carries the exact-byte check in its evidence facts.
+      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const derived = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
+      for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
+        const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+        assert.deepEqual(request.exactExpectedTerminal, derived, `${label} carries the derived exact-byte expectation`);
+      }
+      // Root-family cases keep their own declared result-marker layer: no
+      // rescue expectation is derived and the key stays explicitly absent.
+      const root = shellWaitEvidenceRequest({ case: 'review-wait', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 1, pollMs: 1000, workerStillAliveAfterObservation: false });
+      assert.equal(Object.hasOwn(root, 'exactExpectedTerminal'), false);
+      // The request boundary validates a supplied expectation exactly like
+      // the evidence boundary (both boundaries validated).
+      assert.throws(() => shellWaitEvidenceRequest({ case: 'rescue-long', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 1, pollMs: 1000, workerStillAliveAfterObservation: false, exactExpectedTerminal: { output: '' } }), /exactExpectedTerminal/i);
+      assert.throws(() => shellWaitEvidenceRequest({ case: 'rescue-long', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 1, pollMs: 1000, workerStillAliveAfterObservation: false, exactExpectedTerminal: { output: derived.output, exitCode: -1 } }), /exactExpectedTerminal/i);
+      // The LIVE composition (default request builder + the observer)
+      // persists the exact-byte verdict with no manual injection.
+      const evidence = inspectShellWaitEvidence({
+        ...shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: rolloutsWithTerminalOutput(derived.output, 0), zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }], workerDurationMs: 420_000, pollMs: 60_000, workerStillAliveAfterObservation: false }),
+        redactions: [],
+      });
+      assert.equal(evidence.status, 'supported');
+      // Round 12: the live rollout bytes are merged stdout+stderr with no
+      // attributable stream split — the verdict persists as honestly
+      // UNESTABLISHED (the derived expectation still threads and the fact
+      // still projects; a capture with stream attribution would establish it).
+      assert.deepEqual(evidence.facts.completion.exactTerminalMatch, { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 });
+    });
+
+    test('the wired rescue expectation carries the COMPLETE production framing and needs the declared Resumability Indicator (round-4 review fix)', async () => {
+      // Verified production shape (READ-ONLY trace): renderOutput's succeeded
+      // terminal view renders `Resumable: yes/no` whenever the job view
+      // carries the projection-derived indicator (scripts/lib/render.mjs
+      // :34-38, plus the resume hint for a true indicator), and
+      // terminalResultJob (scripts/zcode-companion.mjs:2492-2495) supplies
+      // that indicator from resumableJobIndicator (scripts/lib/job-control.mjs
+      // :1009-1029 — accepted session + same-turn permission snapshot +
+      // binding currency, definite for the live single-turn succeeded run).
+      // An expectation WITHOUT the line is PARTIAL: it false-rejects valid
+      // output as extra-output and false-accepts framing-less output. The
+      // fixture therefore DECLARES the resumability fact, the wiring derives
+      // the COMPLETE expectation from it, and an UNESTABLISHED fact derives
+      // NO expectation at all — never a partial framing-less one.
+      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
+      assert.equal(PUBLIC_RESULT_RESUMABLE, true, 'the fixture declares the resumability fact of its successful rescue result view');
+      const { renderOutput } = await import('../scripts/lib/render.mjs');
+      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
+      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: PUBLIC_RESULT_RESUMABLE } }),
+        'the complete expectation IS the production render with the indicator line');
+      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the framing includes the rendered Resumable line');
+      // The live wiring derives the SAME complete expectation from the
+      // declared fact.
+      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+      assert.deepEqual(request.exactExpectedTerminal, complete, 'the wired derivation carries the complete framing');
+      // (a) An attributable capture carrying sentinel + the correct Resumable
+      // line (+ hint) MATCHES — previously rejected as extra-output against
+      // the partial framing-less expectation.
+      const matched = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      // (b) A capture MISSING the required framing is rejected — never
+      // accepted (previously the partial expectation byte-matched it).
+      const framingless = inspectShellWaitEvidence(evidenceInput(`${SENTINEL}\n`, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: `${SENTINEL}\n` }));
+      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'framing-less output never satisfies the exact gate');
+      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'output-truncated');
+      // (c) An UNESTABLISHED resumability fact derives NO expectation — the
+      // exact equality stays unestablished (no verdict key), never a partial
+      // expectation and never a false rejection.
+      assert.equal(exactRescueRenderedExpectation({ result: SENTINEL, resumable: null }), null);
+      assert.equal(exactRescueRenderedExpectation({ result: SENTINEL }), null);
+      const unestablished = inspectShellWaitEvidence(evidenceInput(complete.output));
+      assert.equal(Object.hasOwn(unestablished.facts.completion, 'exactTerminalMatch'), false, 'no threaded expectation leaves the equality unestablished');
+    });
+
+    test('exact stdout equality needs STREAM ATTRIBUTION; merged-only output is unestablished (codex review round 12)', () => {
+      // Provenance (round 12): the pinned unified-exec serialization merges
+      // stdout/stderr chunks AS THEY ARRIVE into the linked terminal
+      // `result.output` — merged rollout bytes carry NO attributable stream
+      // split, so byte equality is UNESTABLISHED from merged output alone
+      // (never a false extra-output, never a strip-heuristic pass). A
+      // validated stdout-only capture — a source with TRUE stream
+      // attribution, e.g. a process capture that separates the streams — is
+      // required, and the comparison consumes that capture.
+      const mergedWithProgress = `${expectation.output}[zcode] ZCode completed the delegated turn.\n[zcode] Still waiting for ZCode; last activity 30s ago.\n`;
+      // (a) A capture with stream attribution: interleaved stderr progress
+      // in the merged bytes is irrelevant — the stdout capture is compared.
+      const attributed = inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation, observedTerminalStdout: expectation.output }));
+      assert.deepEqual(attributed.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 },
+        'the validated stdout capture carries the byte comparison');
+      // (b) Merged-only output (the live rollout shape): unestablished.
+      const mergedOnly = inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation }));
+      assert.deepEqual(mergedOnly.facts.completion.exactTerminalMatch, { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 });
+      // (c) A stdout capture containing a `[zcode] ` line is stdout content
+      // under stream attribution: still rejects.
+      const injectedCapture = inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation, observedTerminalStdout: `${expectation.output}[zcode] unexpected stdout\n` }));
+      assert.equal(injectedCapture.facts.completion.exactTerminalMatch.matched, false);
+      assert.equal(injectedCapture.facts.completion.exactTerminalMatch.reason, 'extra-output');
+      // (d) Corrupted stdout still rejects under stream attribution.
+      const corruptedCapture = inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation, observedTerminalStdout: `${expectation.output.slice(0, -1)}CORRUPTED\n` }));
+      assert.equal(corruptedCapture.facts.completion.exactTerminalMatch.matched, false);
+      assert.equal(corruptedCapture.facts.completion.exactTerminalMatch.reason, 'output-mismatch');
+      // (b2) An EMPTY attributable capture is DEFINITIVE (round 16): a
+      // process that exited without emitting the expected result fails the
+      // gate as truncated output — the unavailable verdict is reserved for
+      // ABSENT (null/undefined) captures.
+      const emptyCapture = inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation, observedTerminalStdout: '' }));
+      assert.deepEqual(emptyCapture.facts.completion.exactTerminalMatch, { matched: false, reason: 'output-truncated', releaseQualificationVersion: 1 });
+      // The capture is validated at the evidence boundary (an empty string is
+      // a valid capture; only non-strings and over-bound strings throw).
+      assert.throws(() => inspectShellWaitEvidence(evidenceInput(mergedWithProgress, { exactExpectedTerminal: expectation, observedTerminalStdout: 42 })), /observedTerminalStdout/i);
+    });
+
+    test('an invalid expectation shape is refused at the evidence boundary', () => {
+      assert.throws(() => inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: { output: '', exitCode: 0 } })), /exactExpectedTerminal/i);
+      assert.throws(() => inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: { output: expectation.output, exitCode: -1 } })), /exactExpectedTerminal/i);
+      assert.throws(() => inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: { output: expectation.output } })), /exactExpectedTerminal/i);
+    });
+
+    test('the decisive-poll comparison fact distinguishes inner-process nonterminality from an outer-cell yield (codex review: real M semantics)', () => {
+      // VERIFIED pipeline semantics (evidence.mjs decodeDirectResponse): a
+      // direct-form response with `Process running with session ID <id>` and
+      // NO exit code decodes as completed-state with a live handle — that is
+      // the inner call reaching its cap while the worker still runs. A
+      // pending `Script running with cell ID` output is the OUTER code-mode
+      // cell yielding with the inner call unresolved. The old overloaded
+      // `decisiveFirstReturnState` string cannot tell them apart; the new
+      // closed `decisiveInnerNonterminality` field does.
+      const timestamped = (offsetMs, payload) => ({ type: 'response_item', timestamp: 1_700_000_000_000 + offsetMs, payload });
+      const comparisonInput = (pollOutput, overrides = {}) => inspectShellWaitEvidence({
+        rollouts: [[
+          sessionMeta(PARENT),
+          { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-i', arguments: JSON.stringify({ task_name: 'zcode_rescue_task_1', fork_turns: 'none', agent_type: 'zcode-rescue', message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.' }) } },
+          { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD, agent_path: AGENT_PATH } } },
+          { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: 'root-wait-i', arguments: JSON.stringify({ timeout_ms: 600000 }) } },
+        ], [
+          childMeta(),
+          timestamped(1000, { type: 'custom_tool_call', name: 'exec', call_id: 'launch-i', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: LAUNCHER, workdir: '/installed/workspace' })}); text(JSON.stringify(r))\n` }),
+          timestamped(2000, { type: 'custom_tool_call_output', call_id: 'launch-i', output: completedOutput({ output: '', session_id: HANDLE }) }),
+          timestamped(3000, { type: 'custom_tool_call', name: 'exec', call_id: 'poll-i', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: HANDLE, chars: '', yield_time_ms: 3600000 })}); text(JSON.stringify(r))\n` }),
+          timestamped(303000, { type: 'custom_tool_call_output', call_id: 'poll-i', output: pollOutput }),
+        ]],
+        zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+        command: LAUNCHER,
+        publicResult: SENTINEL,
+        requestedPollMs: 3_600_000,
+        workerStillAliveAfterObservation: false,
+        redactions: [],
+        waitPolicyComparisonFacts: true,
+        ...overrides,
+      });
+      const pendingCell = [{ type: 'input_text', text: 'Script running with cell ID c-77\n' }];
+      const cases = [
+        ['inner-cap-live-handle', completedOutput({ output: '', session_id: HANDLE })],
+        ['inner-process-exited', completedOutput({ output: SENTINEL, exit_code: 0, session_id: HANDLE })],
+        ['outer-yield-inner-unresolved', pendingCell],
+      ];
+      for (const [expected, pollOutput] of cases) {
+        const result = comparisonInput(pollOutput);
+        assert.equal(result.status, 'supported', `premise: ${expected} rollout is supported`);
+        assert.equal(result.facts.waitPolicyComparisonFact.decisiveInnerNonterminality, expected,
+          `a ${expected} decisive poll must project the closed inner-nonterminality fact`);
+      }
+      assert.equal(comparisonInput(pendingCell).facts.waitPolicyComparisonFact.decisiveFirstReturnState, 'yielded-pending',
+        'the legacy v2 comparison string stays byte-compatible for wait-comparison');
+    });
+
+    test('the mapper projects decisiveInnerNonterminality into the waitPolicy observation block', () => {
+      const comparisonBase = {
+        decisivePollExplicitYield: 'absent',
+        decisiveCallSurface: 'code-mode-wrapper',
+        decisiveInnerYieldMs: 3_600_000,
+        decisiveFirstReturnWallMs: 300_000,
+        decisiveFirstReturnState: 'completed',
+        decisiveFirstReturnBasis: 'rollout-event-timestamps',
+      };
+      const evidenceFor = (fact) => ({
+        status: 'supported',
+        inconclusive: null,
+        facts: { completion: null, waitPolicyComparisonFact: fact },
+      });
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      for (const [value, expected] of [
+        ['inner-cap-live-handle', 'inner-cap-live-handle'],
+        ['outer-yield-inner-unresolved', 'outer-yield-inner-unresolved'],
+        ['weird', 'unknown'],
+        [undefined, 'unknown'],
+      ]) {
+        const fact = value === undefined ? undefined : { ...comparisonBase, decisiveInnerNonterminality: value };
+        const facts = mapShellWaitLiveFacts(
+          { case: 'rescue-long', waitPolicy: 'config-default', execDefaultMs: 3_600_000 },
+          held, evidenceFor(fact), '0.163.0', null,
+        );
+        assert.equal(facts.waitPolicyObservation.decisiveInnerNonterminality, expected,
+          `the mapper must project the closed inner-nonterminality fact (${String(value)})`);
+      }
+      const legacyFacts = mapShellWaitLiveFacts({ case: 'rescue-long' }, held, evidenceFor({ ...comparisonBase, decisiveInnerNonterminality: 'inner-cap-live-handle' }), '0.163.0', null);
+      assert.equal(Object.hasOwn(legacyFacts, 'waitPolicyObservation'), false, 'legacy runs gain no observation block');
+    });
+
+    test('the mapper and the persisted record carry the exact-linkage verdict only for waitPolicy runs', async (t) => {      const root = await mkdtemp(join(tmpdir(), 'shell-wait-exact-linkage-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const evidence = inspectShellWaitEvidence(evidenceInput(expectation.output, { exactExpectedTerminal: expectation, observedTerminalStdout: expectation.output }));
+      const held = {
+        endedBeforeGate: false,
+        budgetExpired: false,
+        processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const policyFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-long', waitPolicy: 'config-default', execDefaultMs: 3_600_000 },
+        held, evidence, '0.163.0', null,
+      );
+      assert.deepEqual(policyFacts.hostResult.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      const legacyFacts = mapShellWaitLiveFacts({ case: 'rescue-long' }, held, evidence, '0.163.0', null);
+      assert.equal(Object.hasOwn(legacyFacts.hostResult, 'exactTerminalMatch'), false, 'legacy live facts gain no exact-match key');
+      const mappingFixture = {
+        workspace: '/private/tmp/exact-ws', codexHome: '/private/tmp/exact-home',
+        installedRoot: '/private/tmp/exact-installed', env: { HOME: '/private/tmp/exact-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const record = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 180_000, capMs: null, pollMs: 240_000, budgetMs: 600_000, waitPolicy: 'config-default', execDefaultMs: 240_000, output: root },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => policyFacts },
+      );
+      assert.deepEqual(record.result.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      const legacyRecord = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 180_000, capMs: null, pollMs: 240_000, budgetMs: 600_000, output: root },
+        { createFixture: async () => mappingFixture, executeLiveCase: async () => legacyFacts },
+      );
+      assert.equal(Object.hasOwn(legacyRecord.result, 'exactTerminalMatch'), false, 'legacy records gain no exact-match key');
+    });
+  });
+
+  describe('foreground child-settlement extension (task 2)', async () => {
+    // The release-qualification plan extends the foreground fixture
+    // observation ONLY as needed to capture the exact Child/Companion/job
+    // settlement after Root acknowledgement, within the same declared budget:
+    // the bounded completion-settlement watch now also covers the rescue-
+    // foreground cases (never the interrupt case — its post-delivery
+    // settlement evidence comes from the interrupt machinery), and the three
+    // settlement layers — remote terminal, local process reaping, durable
+    // obligations — are tracked SEPARATELY and never collapsed.
+    const { runHeldHostTurn, runsChildSettlementWatch, mapShellWaitLiveFacts, runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { evaluateChildSettlementLayers } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+    const TEST_NONCE = 'nonce-settlement-extension';
+
+    test('the settlement-watch selector covers the rescue foreground cases and the background flow — never interrupt, status, or root-family cases', () => {
+      for (const covered of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'background']) {
+        assert.equal(runsChildSettlementWatch(covered), true, `${covered} runs the bounded settlement watch`);
+      }
+      for (const excluded of ['rescue-interrupt', 'status-wait', 'review-wait', 'adversarial-review-wait']) {
+        assert.equal(runsChildSettlementWatch(excluded), false, `${excluded} keeps its own settlement contract`);
+      }
+      assert.throws(() => runsChildSettlementWatch('not-a-case'), /unknown shell wait case/i);
+    });
+
+    test('the gate-wins ordering runs the settlement watch after the natural exit and records the three layers separately', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      /** @type {string[]} */
+      const order = [];
+      let resolveResult;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: new Promise((resolve) => { resolveResult = resolve; }) }),
+        waitForGate: async () => { order.push('gate-wait'); },
+        captureProcessIdentity: async () => { order.push('capture'); return { pid: 71000, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement' }; },
+        readProcessIdentity: async () => undefined,
+        waitForProcessExit: async () => { order.push('natural-exit'); },
+        releaseGate: async () => {
+          order.push('gate-release');
+          resolveResult({ code: 0, stdout: '', stderr: '' });
+        },
+        waitForChildSettlementAfterJoin: async () => {
+          order.push('settlement-watch');
+          return { observed: true, basis: 'exact-launch-handle-linked-completed-exit-code-output' };
+        },
+        terminateProcessIdentity: async () => { order.push('terminate'); return { attempted: true, exited: true, failure: null }; },
+      });
+      assert.equal(held.endedBeforeGate, false);
+      assert.equal(held.cleanup.label, 'child-settlement-observed');
+      // Codex review round 8: the settlement watch is the LOCAL exit-code
+      // watch (a linked poll returned an exit code for the local launcher
+      // handle) — it never establishes the REMOTE terminal layer. The local
+      // watch fact keeps its own name (observed/basis); the remote layer is
+      // populated later from REMOTE outcome evidence in the mapper.
+      assert.deepEqual(held.childSettlement, {
+        observed: true,
+        basis: 'exact-launch-handle-linked-completed-exit-code-output',
+        layers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null },
+      });
+      // Ordering: the gate releases (the experiment control), the natural
+      // exit is observed, and ONLY THEN does the settlement watch run — the
+      // worker is never killed merely because Root returned.
+      assert.ok(order.indexOf('gate-release') !== -1);
+      assert.ok(order.indexOf('natural-exit') < order.indexOf('settlement-watch'), `order: ${order.join(' → ')}`);
+      assert.ok(order.indexOf('gate-release') < order.indexOf('settlement-watch'), `order: ${order.join(' → ')}`);
+      assert.equal(order.includes('terminate'), false, 'no cleanup termination runs before or during the settlement watch');
+      assert.equal(typeof held.timeline.childSettlementDetectedAtElapsedMs, 'number');
+    });
+
+    test('an UNOBSERVED after-join settlement keeps local reaping unestablished (codex review round 9)', async (t) => {
+      // The preceding waitForProcessExit watches the fake-ZCode peer (the
+      // host process), never the attached Companion, so it cannot ground the
+      // local-reaping layer. With the settlement watch returning
+      // {observed: false} the exact Companion's exit was NOT observed: the
+      // layer stays null — never a fabricated positive lifecycle fact.
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-e-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      let resolveResult;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: new Promise((resolve) => { resolveResult = resolve; }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71004, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement-e' }),
+        readProcessIdentity: async () => undefined,
+        waitForProcessExit: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: '', stderr: '' }); },
+        waitForChildSettlementAfterJoin: async () => ({ observed: false, basis: null }),
+      });
+      assert.equal(held.cleanup.label, 'child-settlement-unobserved');
+      assert.deepEqual(held.childSettlement, {
+        observed: false,
+        basis: null,
+        layers: { remoteTerminal: null, localProcessReaping: null, durableObligations: null },
+      }, 'an unobserved settlement acquires no positive local-reaping claim');
+    });
+
+    test('a foreground early host exit with only the after-join watch keeps the pinned early-exit classification and never waits for readiness', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-d-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      let watchRan = false;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: Promise.resolve({ code: 1, stdout: '', stderr: '' }) }),
+        // Readiness NEVER arrives: the early-exit classification must not
+        // hang on the gate-reached marker waiting for a worker that never
+        // launched.
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => ({ pid: 71003, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement-d' }),
+        readProcessIdentity: async () => undefined,
+        releaseGate: async () => {},
+        waitForChildSettlementAfterJoin: async () => { watchRan = true; return { observed: true, basis: 'never' }; },
+        sleep: async () => {},
+      });
+      assert.equal(held.endedBeforeGate, true, 'a foreground host that ends before the gate is the pinned early exit');
+      assert.equal(held.cleanup.label, 'early-exit');
+      assert.equal(held.childSettlement ?? null, null, 'no joined Child exists, so no settlement facts may appear');
+      assert.equal(watchRan, false, 'the after-join watch never runs in the early-exit ordering');
+    });
+
+    test('the result-wins ordering keeps local reaping unestablished and records the remote terminal independently', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-b-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71001, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement-b' }),
+        readProcessIdentity: async () => undefined,
+        releaseGate: async () => {},
+        waitForChildSettlement: async () => ({ observed: true, basis: 'exact-launch-handle-linked-completed-exit-code-output' }),
+      });
+      assert.equal(held.endedBeforeGate, true);
+      // Codex review round 8: the local exit-code watch never establishes the
+      // remote terminal layer (the watch fact keeps its own observed/basis
+      // name); the remote layer joins from REMOTE outcome evidence only.
+      // Codex review round 16: the watch's OBSERVED exact-Companion exit
+      // grounds the local-reaping layer in BOTH orderings — acknowledgement
+      // timing never discards successful settlement evidence.
+      assert.deepEqual(held.childSettlement, {
+        observed: true,
+        basis: 'exact-launch-handle-linked-completed-exit-code-output',
+        layers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null },
+      });
+    });
+
+    test('an UNOBSERVING ack-wins watch keeps local reaping unestablished (codex review round 16)', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-f-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71005, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement-f' }),
+        readProcessIdentity: async () => undefined,
+        releaseGate: async () => {},
+        waitForChildSettlement: async () => ({ observed: false, basis: null }),
+      });
+      assert.equal(held.cleanup.label, 'child-settlement-unobserved');
+      assert.deepEqual(held.childSettlement.layers, { remoteTerminal: null, localProcessReaping: null, durableObligations: null },
+        'an unobserving watch grounds no positive local-reaping claim in either ordering');
+    });
+
+    test('an unobserved settlement keeps the remote-terminal layer unknown without fabricating the other layers', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-c-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71002, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-settlement-c' }),
+        readProcessIdentity: async () => undefined,
+        releaseGate: async () => {},
+        waitForChildSettlement: async () => ({ observed: false, basis: null }),
+      });
+      assert.equal(held.childSettlement.observed, false);
+      assert.deepEqual(held.childSettlement.layers, { remoteTerminal: null, localProcessReaping: null, durableObligations: null });
+    });
+
+    test('evaluateChildSettlementLayers reports each layer independently and never collapses them', () => {
+      assert.deepEqual(
+        evaluateChildSettlementLayers({ remoteTerminal: true, localProcessReaping: 'natural-exit-observed', durableObligations: null }),
+        { remoteTerminal: 'observed', localProcessReaping: 'natural-exit-observed', durableObligations: 'unestablished', settlementEstablished: true, releaseQualificationVersion: 1 },
+        'an unestablishable durable layer never erases the observed remote terminal',
+      );
+      assert.deepEqual(
+        evaluateChildSettlementLayers({ remoteTerminal: null, localProcessReaping: null, durableObligations: 'unresolved' }),
+        { remoteTerminal: 'unestablished', localProcessReaping: 'unestablished', durableObligations: 'unresolved', settlementEstablished: false, releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateChildSettlementLayers({ remoteTerminal: true, localProcessReaping: 'cleanup-terminated', durableObligations: 'settled' }),
+        { remoteTerminal: 'observed', localProcessReaping: 'cleanup-terminated', durableObligations: 'observed', settlementEstablished: true, releaseQualificationVersion: 1 },
+        'a cleanup termination stays distinguishable from a natural exit',
+      );
+      assert.throws(() => evaluateChildSettlementLayers({ remoteTerminal: 'yes', localProcessReaping: null, durableObligations: null }), /remoteTerminal/i);
+      assert.throws(() => evaluateChildSettlementLayers({ remoteTerminal: true, localProcessReaping: 'spontaneous', durableObligations: null }), /localProcessReaping/i);
+      assert.throws(() => evaluateChildSettlementLayers({ remoteTerminal: true, localProcessReaping: null, durableObligations: 'maybe' }), /durableObligations/i);
+    });
+
+    test('the mapper projects the settlement layers only when the held record carries them', () => {
+      // Codex review round 8: the remote-terminal layer joins from REMOTE
+      // outcome evidence (the observer's remote completion facts attributable
+      // to the exact Child), NEVER from the local exit-code watch. A held
+      // record whose watch claims the local exit — with or without a legacy
+      // remoteTerminal: true layer — and NO remote outcome evidence projects
+      // remoteTerminal null; attributable remote evidence projects true. The
+      // local watch fact keeps its own observed/basis fields.
+      const held = {
+        endedBeforeGate: false,
+        budgetExpired: false,
+        processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'child-settlement-observed', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+        childSettlement: {
+          observed: true,
+          basis: 'exact-launch-handle-linked-completed-exit-code-output',
+          layers: { remoteTerminal: true, localProcessReaping: 'natural-exit-observed', durableObligations: null },
+        },
+      };
+      const noRemoteEvidence = { status: 'inconclusive', inconclusive: { reason: 'r', detail: 'd' }, facts: null };
+      const facts = mapShellWaitLiveFacts({ case: 'background' }, held, noRemoteEvidence, null, null);
+      assert.deepEqual(facts.child.settlementLayers, { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null }, 'the local exit-code watch alone never establishes the remote terminal');
+      assert.equal(facts.child.settlement.observed, true, 'the local watch fact stays separately visible under its own name');
+      // Attributable REMOTE outcome evidence establishes the layer.
+      const remoteQualified = mapShellWaitLiveFacts(
+        { case: 'background' },
+        { ...held, childSettlement: { ...held.childSettlement, layers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null } } },
+        { status: 'supported', inconclusive: null, facts: { completion: { qualified: true, processExit: 0, publicResultMatched: true, decisiveEnd: 'process-exit', structuralViolationCount: 0 }, linkage: { checked: true, exact: true, agentType: 'zcode-rescue', childThreadId: 'c1', parentThreadId: 'p1' }, collection: { rolloutCount: 2, childToolCallCount: 4, truncated: false, excerpts: [] }, companion: { launchCount: 1, sendCount: 1, sendCountKnown: true, duplicateLaunch: false, preLaunchDiagnostics: { excerpts: [], truncated: false } }, handle: { originalHandleChecked: true }, observations: { outerReturns: 1, modelCalls: 2, rootJoins: 0, decisiveWallMs: 5, pendingInnerAtEnd: false } } },
+        null, null,
+      );
+      assert.deepEqual(remoteQualified.child.settlementLayers, { remoteTerminal: true, localProcessReaping: 'natural-exit-observed', durableObligations: null });
+      const legacyFacts = mapShellWaitLiveFacts(
+        { case: 'background' },
+        { ...held, childSettlement: { observed: true, basis: 'exact-launch-handle-linked-completed-exit-code-output' } },
+        noRemoteEvidence, null, null,
+      );
+      assert.equal(Object.hasOwn(legacyFacts.child, 'settlementLayers'), false, 'held records without layers keep the mapping schema unchanged');
+    });
+
+    test('the persisted case record carries the settlement layers — the durable evidence keeps the three-way split', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-settlement-record-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const held = {
+        endedBeforeGate: false,
+        budgetExpired: false,
+        processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'child-settlement-observed', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+        childSettlement: {
+          observed: true,
+          basis: 'exact-launch-handle-linked-completed-exit-code-output',
+          // Codex review round 8: the held LOCAL watch never claims the
+          // remote layer — the mapper joins it from remote outcome evidence.
+          layers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null },
+        },
+      };
+      const facts = mapShellWaitLiveFacts({ case: 'background' }, held, { status: 'inconclusive', inconclusive: { reason: 'r', detail: 'd' }, facts: null }, null, null);
+      const fixture = {
+        workspace: '/private/tmp/settlement-ws', codexHome: '/private/tmp/settlement-home',
+        installedRoot: '/private/tmp/settlement-installed', env: { HOME: '/private/tmp/settlement-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const record = await runShellWaitCase(
+        { case: 'background', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 120_000, capMs: null, pollMs: 3_600_000, budgetMs: 300_000, output: root },
+        { createFixture: async () => fixture, executeLiveCase: async () => facts },
+      );
+      assert.deepEqual(record.child.settlementLayers, { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: null },
+        'the durable record must keep the remote-terminal / local-reaping / durable-obligations split');
+      // Held records without layers keep the persisted schema unchanged.
+      const legacyRecord = await runShellWaitCase(
+        { case: 'background', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 120_000, capMs: null, pollMs: 3_600_000, budgetMs: 300_000, output: root },
+        { createFixture: async () => fixture, executeLiveCase: async () => ({
+          ...facts,
+          child: { settlement: facts.child.settlement, rootAcknowledgementAtElapsedMs: facts.child.rootAcknowledgementAtElapsedMs, settlementDetectedAtElapsedMs: facts.child.settlementDetectedAtElapsedMs },
+        }) },
+      );
+      assert.equal(Object.hasOwn(legacyRecord.child, 'settlementLayers'), false, 'records without layers gain no key');
+    });
+  });
+
+  describe('survival-control live wiring (task 2 codex review)', async () => {
+    // Report §16.4's frozen design, wired end to end: the I1 selector composes
+    // the Root-turn instruction that launches the fixture-owned control on its
+    // OWN exec_command handle inside the SAME Root turn (no extra model turn,
+    // no standalone launch), the evidence reader decodes the control's
+    // bounded pre/post-delivery reads from the collected rollouts, and the
+    // mapper projects the §16.4 emission-time verdict into liveFacts/
+    // record.survivalControl. The control clock is anchored by the control's
+    // OWN first emission tag against its rollout event time, so
+    // deliveryBoundTag is derived, never guessed.
+    const { runShellWaitCase, mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { extractInterruptInteraction, extractSurvivalControlFacts } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { survivalControlPromptDirective, SURVIVAL_CONTROL_LINE_COUNT } = await import('../tools/shell-wait-probe/fixture.mjs');
+
+    const CONTROL_PATH = '/private/tmp/sc-fixture/survival-control.mjs';
+    // The child thread id must be ID-SHAPED (the pinned target sanitizer
+    // keeps only UUID/hex agent ids as exact-target values), so the exact-
+    // target attribution the round-10 guard consumes can resolve.
+    const CHILD_THREAD = 'a1b2c3d4-1111-4222-8333-444455556666';
+    const PARENT_THREAD = 'b2c3d4e5-5555-4666-8777-888899990000';
+    const LAUNCHER = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const BASE_MS = 1_700_000_000_000;
+
+    const at = (offsetMs, payload) => ({ type: 'response_item', timestamp: BASE_MS + offsetMs, payload });
+    const childMeta = () => ({ type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: PARENT_THREAD, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_task_1' } } } } });
+    const parentMeta = () => ({ type: 'session_meta', payload: { id: PARENT_THREAD } });
+    const wrapped = (callId, value, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n` });
+    const wrappedRead = (callId, sessionId, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 1000 })}); text(JSON.stringify(r))\n` });
+    const output = (callId, result, offsetMs) => at(offsetMs, { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }] });
+    const controlLines = (count, tagStep = 400) => Array.from({ length: count }, (_, index) => `zcode-survival-control ${index + 1} ${index * tagStep}`).join('\n');
+    const interruptCall = (offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` });
+    // The pinned V2 delivered shape: `previous_status` is the pinned AgentStatus STRING label — the tagged-object nesting used before round 9 decoded to `delivered: null`, which the round-9 delivery contract correctly refuses.
+    const interruptOutput = (offsetMs, status = 'running') => at(offsetMs, { type: 'custom_tool_call_output', call_id: 'int-1', output: [{ type: 'input_text', text: JSON.stringify({ previous_status: status }) }] });
+
+    /** The synthetic I1 rollout set: the Control launch, the pre-interrupt read, the interrupt REQUEST (4400) inside the confirmed pending window [4000, 5500) — the poll starts at 4000, strictly before the request, per §16.3 stage 2 — the child's settled exit-code completion (5500 — the attributable ≥-completed-delivery event), and the post-delivery read. With L = 1000 the sound bound is B = 5500 − 1000 = 4500: lines 1–12 emit at tags 0..4400 (at or before the bound), line 13 at 4800 (strictly after). */
+    const i1Rollouts = ({ preReadLineCount = 12, postReadLineCount = 13, postReadAtMs = 6_000, includePreRead = true, launchOutput = '', interruptDirective = '' } = {}) => {
+      const parent = [
+        parentMeta(),
+        wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+        output('control-launch', { output: launchOutput, session_id: 44 }, 1_100),
+      ];
+      if (includePreRead) {
+        parent.push(wrappedRead('control-read-1', 44, 3_000));
+        parent.push(output('control-read-1', { output: controlLines(preReadLineCount) }, 3_100));
+      }
+      parent.push(at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `${interruptDirective}text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }));
+      parent.push(interruptOutput(4_500));
+      parent.push(wrappedRead('control-read-2', 44, postReadAtMs));
+      parent.push(output('control-read-2', { output: controlLines(postReadLineCount) }, postReadAtMs + 100));
+      return [
+        [
+          childMeta(),
+          wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+          output('rescue-launch', { output: '', session_id: 7 }, 200),
+          wrappedRead('rescue-poll', 7, 300),
+          output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+          wrappedRead('rescue-poll-2', 7, 4_000),
+          output('rescue-poll-2', { output: '', exit_code: 0, session_id: 7 }, 5_500),
+        ],
+        parent,
+      ];
+    };
+    /** The ONE interrupt interaction attributed by the SAME machinery as the main interrupt oracle. */
+    const interactionFor = (rollouts) => extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER });
+
+    test('the fixture prompt directive coordinates interrupt readiness through the control clock, never through the child handle (post-F codex review fix)', () => {
+      assert.equal(SURVIVAL_CONTROL_LINE_COUNT, 60, 'the extended control design: 60 lines at the fixed 2000-ms cadence (~120 s), covering the observed 57.6–72.1 s poll starts with coordination margin');
+      const directive = survivalControlPromptDirective(CONTROL_PATH);
+      assert.match(directive, /exec_command/u, 'the control is launched through the ordinary exec_command seam');
+      assert.match(directive, new RegExp(`${CONTROL_PATH.replaceAll('/', '/')}|${escapeRegExp(CONTROL_PATH)}`), 'the directive names the fixture-owned script path');
+      assert.match(directive, /exactly once/u, 'one declared launch, never a standalone extra turn');
+      assert.match(directive, /own handle/u, 'the control rides its OWN handle, never the observed Companion handle');
+      assert.match(directive, /never stop or kill|do not .*kill/u, 'the control is never stopped by this instrument');
+      assert.match(directive, /unrelated to the Rescue child|do not confuse/i, 'the control shares no stop authority with the Rescue child');
+      assert.match(directive, /before the interrupt|first read/i, 'a bounded read is required before the interrupt');
+      assert.match(directive, /after the interrupt|one final time/i, 'a bounded read is required after the interrupt');
+      assert.match(directive, /verbatim/i, 'the reads are reported verbatim for emission-tag decoding');
+      // Codex review fix (post-F, findings 1+2): Root's tools CANNOT operate
+      // the CHILD's session handles or pending cells, so the former STEP 1
+      // (Root delivers and observes the child's write_stdin) was
+      // architecturally impossible and is GONE. The child's long poll stays
+      // child-owned — driven by the child's own registered candidate
+      // paragraph — and the directive never mentions the registered
+      // 3600000 child window at all.
+      assert.doesNotMatch(directive, /3600000/u, 'the child-owned 3600000 poll window never enters the Root directive');
+      assert.doesNotMatch(directive, /deliver the child/iu, 'Root is never asked to deliver the child\'s observation');
+      assert.doesNotMatch(directive, /child's (?:long )?empty-input/u, 'no clause instructs Root to drive the child\'s empty-input write_stdin');
+      // The F-cause ordering (interrupt only after preparation) is KEPT, but
+      // re-grounded entirely in Root's OWN supported tools as five strictly
+      // ordered steps (A)-(E).
+      assert.match(directive, /strictly in this order/iu, 'the five interrupt-flow steps are declared strictly ordered');
+      // (A) spawn the Rescue child exactly as before and retain the EXACT
+      // full agent id from the spawn acknowledgement.
+      assert.match(directive, /spawn the Rescue child/u, 'step A keeps the ordinary child spawn');
+      assert.match(directive, /EXACT full agent id/u, 'step A retains the exact full agent id');
+      assert.match(directive, /spawn acknowledgement/u, 'the interrupt target anchors to the spawn acknowledgement');
+      // (B) the control launches IMMEDIATELY AFTER the child launch so its
+      // lifetime covers the delivery coordination (review finding 2).
+      assert.match(directive, /immediately after the child launch/iu, 'the control launch is ordered after the child launch');
+      // (C) readiness coordination through the control clock: bounded
+      // fresh-line reads until the readiness floor (index >= 40, ~80 s after
+      // control start in the extended design) — an observer-coordination
+      // approximation of the child's poll-start window, never a claim of
+      // observing the child's poll.
+      assert.match(directive, /readiness/iu, 'a named readiness-coordination step exists');
+      assert.match(directive, /yield_time_ms 1000/u, 'every control read is bounded at yield_time_ms 1000');
+      assert.match(directive, /fresh progress line/u, 'each readiness read requires a fresh line');
+      assert.match(directive, /index is at least 40/u, 'the readiness floor is line index 40 in the extended 60-line design');
+      assert.match(directive, /approximately 80 seconds/iu, 'the floor is stated as ~80 s after the control start');
+      assert.match(directive, /observer-coordination approximation/iu, 'the floor is recorded as an observer-coordination approximation');
+      assert.match(directive, /NOT an observation of the child's poll|never a claim of observing the child's poll/iu, 'the floor never claims to observe the child poll');
+      // (D) the §16.4 pre-delivery read stays: one more fresh mid-run read
+      // ordered before the interrupt.
+      assert.match(directive, /below the (?:program's )?line count/iu, 'step D keeps the fresh mid-run line below the line count');
+      // (E) the exactly-one interrupt carries the EXACT full agent id copied
+      // from the spawn acknowledgement — never shortened or guessed.
+      assert.match(directive, /exactly-one interrupt_agent/u, 'step E is the exactly-one interrupt delivery');
+      assert.match(directive, /never a shortened, paraphrased, or guessed target/u, 'the target is never shortened, paraphrased, or guessed');
+      // Strict (A)-(E) textual ordering: spawn, control launch, readiness
+      // floor, pre-delivery read, interrupt.
+      const step1At = directive.indexOf('STEP 1');
+      const step2At = directive.indexOf('STEP 2');
+      const step3At = directive.indexOf('STEP 3');
+      const step4At = directive.indexOf('STEP 4');
+      const step5At = directive.indexOf('STEP 5');
+      assert.ok(step1At !== -1 && step2At !== -1 && step3At !== -1 && step4At !== -1 && step5At !== -1, 'all five steps are present');
+      assert.ok(step1At < step2At && step2At < step3At && step3At < step4At && step4At < step5At, 'the five steps appear strictly in order');
+      const interruptClauseAt = directive.indexOf('interrupt_agent');
+      assert.ok(step3At < interruptClauseAt && step4At < interruptClauseAt, 'the interrupt delivery is textually sequenced AFTER the readiness floor and the pre-delivery read');
+      assert.throws(() => survivalControlPromptDirective('relative/path.mjs'), /absolute/i);
+      assert.throws(() => survivalControlPromptDirective(''), /absolute/i);
+    });
+
+    test('the evidence reader grounds the control handle, derives the delivery bound from the control clock, and orders the reads', () => {
+      const facts = extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(facts.launched, true);
+      assert.equal(facts.handleGrounded, true);
+      // The SOUND delivery bound (codex review rounds 2–3): B = D − L where
+      // D is the attributable COMPLETED-DELIVERY/SETTLEMENT event (the
+      // interrupted Child's settled exit-code completion at 5500, per the
+      // §16.3 stage sequence) — NEVER the request dispatch alone (4400). The
+      // control cannot start before its launch event (1000), so a line whose
+      // tag strictly exceeds B was truly emitted after the control could
+      // have been killed.
+      assert.equal(facts.deliveryBoundTag, 5_500 - 1_000, 'deliveryBoundTag = settled-delivery event time − launch event time');
+      assert.deepEqual(facts.emittedLines, Array.from({ length: 13 }, (_, index) => ({ index: index + 1, tag: index * 400 })));
+      assert.deepEqual(facts.completionMarker, null, 'the declared final line never appeared: no completion marker');
+      assert.deepEqual(facts.beforeDeliveryRead, { observed: true, lastLineIndex: 12, orderedBeforeInterrupt: true });
+      assert.deepEqual(facts.postDeliveryRead, { occurred: true, readable: true, returnedLines: true }, 'line 13 carries tag 4800 > 4500: the post-SETTLEMENT read collected the newest emission');
+    });
+
+    test('the codex round-3 reproduction: the request dispatch alone is not a delivery bound', async () => {
+      // Request at 3000, the control emits tag 4000 around the true kill
+      // (~5000), the interrupted Child settles at 5500. The request-anchored
+      // bound (3000 − 1000 = 2000) wrongly qualified the tag-4000 line; the
+      // settled bound 5500 − 1000 = 4500 rejects it.
+      const rollouts = [[
+        parentMeta(),
+        wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+        output('control-launch', { output: '', session_id: 44 }, 1_100),
+        wrappedRead('control-read-1', 44, 1_800),
+        output('control-read-1', { output: 'zcode-survival-control 1 0' }, 1_900),
+        interruptCall(3_000),
+        interruptOutput(3_100),
+        wrappedRead('control-read-2', 44, 6_000),
+        output('control-read-2', { output: 'zcode-survival-control 1 0\nzcode-survival-control 2 4000' }, 6_100),
+      ], [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('rescue-poll', 7, 300),
+        output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+        wrappedRead('rescue-poll-2', 7, 2_800),
+        output('rescue-poll-2', { output: '', exit_code: 0, session_id: 7 }, 5_500),
+      ]];
+      const facts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(facts.deliveryBoundTag, 5_500 - 1_000, 'the bound anchors to the settled delivery, never the request');
+      assert.equal(facts.postDeliveryRead.returnedLines, false, 'tag 4000 is at or below B = 4500: no post-delivery emission is proven');
+      const verdict = (await import('../tools/shell-wait-probe/release-qualification.mjs')).evaluateSurvivalControl({
+        deliveryBoundTag: facts.deliveryBoundTag,
+        lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+        emittedLines: facts.emittedLines,
+        completionMarker: facts.completionMarker,
+        postDeliveryRead: facts.postDeliveryRead,
+        beforeDeliveryReadObserved: facts.beforeDeliveryRead.observed === true && facts.beforeDeliveryRead.orderedBeforeInterrupt === true,
+        ownership: facts.ownership,
+      });
+      assert.equal(verdict.noCollateralQualified, false);
+      // Round 8: a readable read without new tags and WITHOUT independent
+      // loss evidence leaves the post-delivery state unknown, never 'lost'.
+      assert.equal(verdict.postDelivery, 'unknown');
+    });
+
+    test('the post-delivery read binds to its INVOCATION following confirmed settlement (codex review round 3)', () => {
+      const base = { includePreRead: true };
+      // (a) invoked BEFORE the interrupt request (2500 < 3000) but its output
+      // timestamped after: the output receipt never establishes the read.
+      const invokedBefore = i1Rollouts({ ...base, postReadLineCount: 13, postReadAtMs: 6_000 });
+      // Re-time read-2's INVOCATION before the request while keeping its
+      // output after the settlement.
+      const aRollouts = (() => {
+        const r = invokedBefore;
+        r[1] = r[1].map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call'
+          ? at(2_500, event.payload) : event);
+        return r;
+      })();
+      const aFacts = extractSurvivalControlFacts(aRollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(aRollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(aFacts.postDeliveryRead.occurred, false, 'a read invoked before the request is never the post-settlement read');
+      // (b) invoked DURING settling (after the request 4400, before the
+      // settled delivery 5500): still not the required post-settlement read.
+      const bRollouts = (() => {
+        const r = i1Rollouts({ ...base, postReadLineCount: 13, postReadAtMs: 6_000 });
+        r[1] = r[1].map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call'
+          ? at(5_000, event.payload) : event);
+        return r;
+      })();
+      const bFacts = extractSurvivalControlFacts(bRollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(bRollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(bFacts.postDeliveryRead.occurred, false, 'a read invoked while interruption is still settling is not the post-settlement read');
+      // (c) a genuinely post-settlement invocation (6000 > 5500) passes.
+      const cFacts = extractSurvivalControlFacts(i1Rollouts({ ...base, postReadLineCount: 13 }), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts({ ...base, postReadLineCount: 13 })), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(cFacts.postDeliveryRead.occurred, true);
+    });
+
+    test('the reader marks the post-delivery read readable only from its OWN decoded response (codex review round 5)', () => {
+      // (a) The post-settlement read was INVOKED but its own response is an
+      // unresolved pending cell — no attributable decoded result, so the
+      // mandatory read is NOT established even though the invocation
+      // happened, and no post-bound tags exist to show life either.
+      const unanswered = i1Rollouts({ postReadLineCount: 12 }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script running with cell ID cell-read-2\n' }] })
+        : event));
+      const unansweredFacts = extractSurvivalControlFacts(unanswered, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(unanswered), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(unansweredFacts.postDeliveryRead, { occurred: true, readable: false, returnedLines: false },
+        'invocation alone never makes the post-delivery read established');
+      // (b) A first unanswered post-settlement read does not poison a LATER
+      // attributable readable post-delivery read: the readable gate holds
+      // when ANY post-settlement-invoked read carries its own decoded
+      // result, and line 13 (tag 4800 > 4500) is then a proven post-delivery
+      // emission.
+      const answeredLater = (() => {
+        const events = unanswered[1].concat([
+          wrappedRead('control-read-3', 44, 6_500),
+          output('control-read-3', { output: controlLines(13) }, 6_600),
+        ]);
+        return [unanswered[0], events];
+      })();
+      const answeredFacts = extractSurvivalControlFacts(answeredLater, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(answeredLater), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(answeredFacts.postDeliveryRead, { occurred: true, readable: true, returnedLines: true },
+        'a later readable post-settlement read establishes the mandatory read');
+    });
+
+    test('the reader reports the control exit from the post-settlement read (codex review round 8)', () => {
+      // A post-settlement read whose OWN response carries the control's exit
+      // code is the independent LOSS evidence the §16.4 oracle requires for a
+      // 'lost' verdict; a readable read without an exit proves nothing about
+      // loss (a healthy control can return no new line between emissions).
+      const exited = i1Rollouts({ postReadLineCount: 12 }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(12), exit_code: 0 }) }] })
+        : event));
+      const exitedFacts = extractSurvivalControlFacts(exited, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(exited), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(exitedFacts.postDeliveryRead, { occurred: true, readable: true, returnedLines: false });
+      assert.equal(exitedFacts.controlExitObserved, true, 'the post-settlement read observed the control exit');
+      // Round 11: the exit was observed while only lines 1..12 existed —
+      // BEFORE the designed final-line completion: a PREMATURE/mid-run exit.
+      assert.equal(exitedFacts.controlExitPremature, true);
+      const runningFacts = extractSurvivalControlFacts(i1Rollouts({ postReadLineCount: 12 }), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts({ postReadLineCount: 12 })), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(runningFacts.postDeliveryRead, { occurred: true, readable: true, returnedLines: false });
+      assert.equal(runningFacts.controlExitObserved, false, 'a readable read without an exit establishes no loss');
+      // The DESIGNED completion read returns all declared lines (60 in the
+      // extended design) with the exit — NOT premature.
+      const designedExit = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] })
+        : event));
+      const designedFacts = extractSurvivalControlFacts(designedExit, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(designedExit), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(designedFacts.controlExitObserved, true);
+      assert.equal(designedFacts.controlExitPremature, false, 'an exit observed with the full designed output is the natural completion');
+      // Round 13: the OBSERVED exit code is preserved in the projected facts.
+      assert.equal(designedFacts.controlExitCode, 0);
+      // Round 12: unified-exec reads DRAIN pending output, so an exit
+      // response may legitimately carry an EMPTY body. Premature is judged
+      // from the ACCUMULATED emission evidence: read-2 observed line 13
+      // (post-bound), read-3 observed exit 137 with an empty body — the
+      // accumulated maximum (13) is still a prefix of the designed output ⇒
+      // a premature/mid-run exit, never alive, never qualified.
+      const drainedExit = i1Rollouts({ postReadLineCount: 13 });
+      drainedExit[1].push(
+        wrappedRead('control-read-3', 44, 7_000),
+        at(7_100, { type: 'custom_tool_call_output', call_id: 'control-read-3', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', exit_code: 137 }) }] }),
+      );
+      const drainedFacts = extractSurvivalControlFacts(drainedExit, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(drainedExit), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(drainedFacts.controlExitObserved, true);
+      assert.equal(drainedFacts.controlExitPremature, true, 'an empty exit response is still premature after only line 13');
+      const drainedHeld = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const drainedFixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const drainedMapperFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        drainedHeld, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, drainedFixture, drainedExit, [], LAUNCHER,
+      );
+      assert.equal(drainedMapperFacts.survivalControl.postDelivery, 'lost', 'a premature drained exit is lost, never alive');
+      assert.equal(drainedMapperFacts.survivalControl.reason, 'premature-control-exit');
+      assert.equal(drainedMapperFacts.survivalControl.noCollateralQualified, false);
+    });
+
+    test('a completed-but-outputless post-settlement read response is NOT a readable mandatory read (codex review round 6)', () => {
+      // The straddling-read hazard: an EARLIER read (invoked before the
+      // interrupt) carries a post-bound emission tag, so returnedLines would
+      // be true — but the mandatory post-settlement read's own response
+      // decodes as completed JSON WITHOUT any output text ({"error": ...}),
+      // e.g. a failed read. A parseable error envelope is not a decoded
+      // terminal-read result: the gate must stay unestablished.
+      const straddling = i1Rollouts({ postReadLineCount: 12 }).map((events) => events.map((event) => {
+        if (event?.payload?.call_id === 'control-read-1' && event.payload.type === 'custom_tool_call_output') {
+          return at(3_100, { type: 'custom_tool_call_output', call_id: 'control-read-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(13) }) }] });
+        }
+        if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output') {
+          return at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ error: 'read failed' }) }] });
+        }
+        return event;
+      }));
+      const readerFacts = extractSurvivalControlFacts(straddling, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(straddling), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(readerFacts.deliveryBoundTag, 5_500 - 1_000);
+      assert.deepEqual(readerFacts.postDeliveryRead, { occurred: true, readable: false, returnedLines: true },
+        'the straddling read supplies post-bound tags, but the mandatory read has no decoded output');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, straddling, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.postDelivery, 'alive', 'the emission tags still show life after the bound');
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'a failed mandatory read never qualifies, even with straddling tags');
+      assert.equal(facts.survivalControl.reason, 'post-delivery-read-not-established');
+    });
+
+    test('a directive-prefixed interrupt cell is attributed through the SAME parser (codex review round 3)', () => {
+      // The old separate prefix scan rejected this admitted wrapper shape, so
+      // an otherwise observable I1 run lost its delivery bound entirely.
+      const rollouts = i1Rollouts({ interruptDirective: '// @exec: {"yield_time_ms":1000}\n' });
+      const facts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(facts.deliveryBoundTag, 5_500 - 1_000, 'the directive-prefixed cell yields the settled delivery bound');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts2 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      assert.equal(facts2.survivalControl.noCollateralQualified, true, 'full survival evaluation proceeds on the same attribution as the main interrupt oracle');
+    });
+
+    test('a cancelled-turn settlement bounds delivery even without an exit code (codex review round 5)', () => {
+      // Native interruption cancels the pending poll: the bound Child's
+      // post-call resolution is one of the PINNED HOST's native cancellation
+      // responses (round 6 — verified against dffa0deb: code_mode/mod.rs
+      // format_script_status emits `Script terminated\nWall time <s> seconds
+      // \nOutput:\n` for a terminated cell; tools/parallel.rs abort_message
+      // emits `Wall time: <s> seconds\naborted by user` for exec_command and
+      // `aborted by user after <s>s` for every other tool). The
+      // settled-delivery bound must still be established and the surviving
+      // control must qualify. Unknown JSON bodies, undecodable responses and
+      // missing responses never establish the bound (fail closed both ways).
+      const withChildOutput = (output) => i1Rollouts().map((events, rolloutIndex) => rolloutIndex === 0
+        ? events.map((event) => event?.payload?.call_id === 'rescue-poll-2' && event.payload.type === 'custom_tool_call_output'
+          ? at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output })
+          : event)
+        : events);
+      const nativeTerminated = withChildOutput([
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ]);
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      // Codex round-6 review-fix note: the held run models a NO-cleanup natural
+      // completion (no boundary, no termination flags) — a demonstrated
+      // cleanup kill without a recorded boundary fails the marker attribution
+      // closed under the overall-review fix-2 contract, and this test's intent
+      // is the unbounded native-cancellation settlement.
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const readerFacts = extractSurvivalControlFacts(nativeTerminated, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(nativeTerminated), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(readerFacts.deliveryBoundTag, 5_500 - 1_000, 'the native terminated-cell response anchors the settled delivery bound');
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, nativeTerminated, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, true, 'a demonstrably surviving control qualifies on the native cancellation settlement');
+      // The pinned host's direct-call abort framings anchor the bound equally.
+      const abortedExec = withChildOutput('Wall time: 0.1 seconds\naborted by user');
+      assert.equal(extractSurvivalControlFacts(abortedExec, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(abortedExec), exactTargetMatch: true, childThreadId: CHILD_THREAD }).deliveryBoundTag, 5_500 - 1_000,
+        'the exec_command aborted-by-user response anchors the settled delivery bound');
+      const abortedTool = withChildOutput('aborted by user after 0.1s');
+      assert.equal(extractSurvivalControlFacts(abortedTool, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(abortedTool), exactTargetMatch: true, childThreadId: CHILD_THREAD }).deliveryBoundTag, 5_500 - 1_000,
+        'the tool aborted-after response anchors the settled delivery bound');
+      // An arbitrary JSON body without an exit code proves nothing about the
+      // turn: the bound stays unestablished (fail closed).
+      const unknownJson = withChildOutput([{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: '{}' }]);
+      assert.equal(extractSurvivalControlFacts(unknownJson, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(unknownJson), exactTargetMatch: true, childThreadId: CHILD_THREAD }).deliveryBoundTag, null,
+        'an unknown completed JSON body never establishes the settlement bound');
+      // Genuinely unestablishable: no post-call bound resolution at all —
+      // the bound stays null and nothing qualifies (fail closed).
+      const unestablishable = i1Rollouts().map((events, rolloutIndex) => rolloutIndex === 0
+        ? events.filter((event) => !(event?.payload?.call_id === 'rescue-poll-2' && event.payload.type === 'custom_tool_call_output'))
+        : events);
+      const facts2 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, unestablishable, [], LAUNCHER,
+      );
+      assert.equal(facts2.survivalControl.noCollateralQualified, false, 'an unestablishable settlement bound never qualifies');
+      assert.equal(facts2.survivalControl.reason, 'delivery-bound-unestablished');
+      // An OBSERVED but undecodable bound response is UNKNOWN evidence, never
+      // settlement timing: its event time may precede the true abort-chain
+      // settlement, so anchoring on it could only shrink the bound in the
+      // false-qualify direction. The bound stays unestablished (fail closed).
+      const unparseableOnly = withChildOutput('unrelated failure text');
+      const unparseableFacts = extractSurvivalControlFacts(unparseableOnly, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(unparseableOnly), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(unparseableFacts.deliveryBoundTag, null, 'an undecodable response never anchors the settled-delivery bound');
+    });
+
+    test('a REJECTED interrupt never supplies the survival delivery bound (codex review round 9)', () => {
+      // The interrupt is rejected (target-unknown) and the Child later
+      // completes naturally: that completion is the Child's OWN lifecycle,
+      // never a delivery bound. The delivery contract (exact-accepted
+      // delivery + confirmed pending window — the same guards the mapper's
+      // settlement branch applies) must hold before the bound is
+      // established; otherwise survival qualification stays unestablished
+      // even while control emissions continue past the would-be bound.
+      const rejected = i1Rollouts().map((events) => events.map((event) => event?.payload?.call_id === 'int-1' && event.payload.type === 'custom_tool_call_output'
+        ? at(4_500, { type: 'custom_tool_call_output', call_id: 'int-1', output: [{ type: 'input_text', text: JSON.stringify({ error: 'agent not found: no agent with the given id' }) }] })
+        : event));
+      const interaction = interactionFor(rejected);
+      assert.equal(interaction.delivered, false, 'the target-unknown rejection is a delivered: false fact');
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the fixture poll starts before the request and resolves after it');
+      const readerFacts = extractSurvivalControlFacts(rejected, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interaction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(readerFacts.deliveryBoundTag, null, 'a rejected interrupt never establishes the settled-delivery bound');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rejected, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'survival stays unestablished without the confirmed delivery contract');
+      assert.equal(facts.survivalControl.reason, 'delivery-bound-unestablished');
+      // The DELIVERED positive case keeps its bound and qualification.
+      const deliveredFacts = extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(deliveredFacts.deliveryBoundTag, 4_500, 'the delivered case still anchors the settled-delivery bound');
+    });
+
+    test('the survival reader consumes the cleanup-aware settlement attribution option (round-6 review fix)', () => {
+      // Codex round-6 review fix: the reader's delivery-bound contract must
+      // incorporate the SAME cleanup-boundary attribution the mapper applies.
+      // The attribution rides the options as a typed boolean computed ONCE in
+      // the mapper (single source of truth — no duplicated boundary math): a
+      // settled delivery whose resolution is the cleanup-generated
+      // cancellation leaves the bound unestablished; option false/absent
+      // (settlement strictly before the boundary, or no cleanup kill) keeps
+      // the existing semantics.
+      const options = (over = {}) => ({ lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD, ...over });
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options()).deliveryBoundTag, 4_500, 'premise: the settled delivery anchors the bound');
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: true })).deliveryBoundTag, null,
+        'a cleanup-generated settlement never grounds the survival delivery bound');
+      assert.equal(extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: false })).deliveryBoundTag, 4_500,
+        'a settlement strictly before the boundary (or no cleanup kill) keeps the bound');
+      assert.throws(() => extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, options({ settledDeliveryCleanupGenerated: 'yes' })), /settledDeliveryCleanupGenerated/i,
+        'the cleanup-aware attribution is a closed boolean-or-null input');
+    });
+
+    test('a cleanup-generated cancellation never grounds the survival delivery bound (round-6 review fix)', () => {
+      // Codex round-6 review fix: the reader consumed the RAW settledAfterCall
+      // timestamp as the delivery bound even when the mapper's cleanup
+      // attribution rejected that marker as native settlement — with
+      // qualifying control reads and later emissions the run then qualified
+      // no-collateral although the completed delivery was unattributed. The
+      // mapper now passes its own cleanup-aware attribution (the same
+      // cancellationPrecedesCleanupBoundary comparison) into the reader: the
+      // bound stays unestablished for cleanup-generated resolutions (fail
+      // closed). A settlement strictly BEFORE the boundary, and runs with NO
+      // cleanup kill, keep the bound and qualify.
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const heldBase = {
+        endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const heldWithBoundary = (cleanupBoundaryAtMs) => ({ ...heldBase, cleanup: { ...heldBase.cleanup, cleanupBoundaryAtMs } });
+      const mapSurvival = (held) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, nativeCancelledRollouts(), [], LAUNCHER,
+      );
+      // The qualifying shape: the child's settlement is the pinned NATIVE
+      // CANCELLATION framing at 5500; the control reads 12 lines before the
+      // interrupt and 13 lines after the marker-anchored delivery bound —
+      // every survival precondition except the delivery attribution holds.
+      function nativeCancelledRollouts() {
+        return i1Rollouts().map((events, rolloutIndex) => rolloutIndex === 0
+          ? events.map((event) => event?.payload?.call_id === 'rescue-poll-2' && event.payload.type === 'custom_tool_call_output'
+            ? at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output: [
+              { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+              { type: 'input_text', text: 'killed\n' },
+            ] })
+            : event)
+          : events);
+      }
+      // (a) The recorded cleanup boundary is AT the marker: the settled
+      // resolution is cleanup-generated — the bound stays unestablished and
+      // the verdict fails closed, however qualifying the reads/emissions are.
+      const atBoundaryFacts = mapSurvival(heldWithBoundary(BASE_MS + 5_500));
+      assert.equal(atBoundaryFacts.survivalControl.noCollateralQualified, false, 'a cleanup-generated settlement never qualifies no-collateral');
+      assert.equal(atBoundaryFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // (b) The boundary strictly AFTER the marker: the settlement precedes
+      // the cleanup — genuine native settlement keeps the bound and qualifies.
+      const beforeBoundaryFacts = mapSurvival(heldWithBoundary(BASE_MS + 6_000));
+      assert.equal(beforeBoundaryFacts.survivalControl.noCollateralQualified, true, 'a settlement strictly before the recorded boundary keeps the bound and qualifies');
+      // (c) NO cleanup kill at all (no boundary, no termination flags, budget
+      // not expired): the existing bound semantics stand.
+      const noCleanupHeld = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const noCleanupFacts = mapSurvival(noCleanupHeld);
+      assert.equal(noCleanupFacts.survivalControl.noCollateralQualified, true, 'a run with no cleanup kill keeps the existing bound semantics');
+    });
+
+    test('cancellation settlement binds to the observation identity pending at delivery (round-7 review fix)', () => {
+      // Codex round-7 review fix: a cancellation marker that merely FOLLOWS the
+      // interrupt is not automatically its settlement. Poll A yields a pending
+      // cell before the interrupt and never resolves; the child then starts a
+      // NEW poll B on the same handle; B is cancelled. B's cancellation
+      // resolves an observation that did not exist at delivery, so identity
+      // binding (the observation binding's per-poll callId — the same identity
+      // field the pending-window machinery uses) must refuse it: settled
+      // stays null with the fail-closed basis, no latency, and the survival
+      // bound stays ungrounded. A cancellation of the SAME poll, and of an
+      // ACCEPTED CONTINUATION of its pending cell, stays credited.
+      const interruptTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const childLaunch = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+      ];
+      const pendingYield = at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: 'Script running with cell ID cell-a\nWall time 0.1 seconds\nOutput:\n' });
+      // (a) A LATER, DIFFERENT poll (B, started after the interrupt) cancelled:
+      // never the delivered interrupt's settlement. The parent turn rides the
+      // standard i1 shape (grounded control launch + qualifying reads) so the
+      // survival wiring is fully established except the delivery attribution.
+      const laterPollCancelled = [[
+        ...childLaunch,
+        pendingYield,
+        wrappedRead('poll-b', 7, 5_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const laterInteraction = interactionFor(laterPollCancelled);
+      assert.equal(laterInteraction.pendingBeforeCall.observed, true, 'premise: poll A was pending at delivery');
+      assert.equal(laterInteraction.cancelledAfterCall.atMs, null, "a later poll's cancellation never settles the delivery");
+      assert.equal(laterInteraction.settledAfterCall.atMs, null);
+      const laterFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, laterPollCancelled, [], LAUNCHER,
+      );
+      assert.equal(laterFacts.interrupt.settled, null, 'the misattributed cancellation never reports native settlement');
+      assert.equal(laterFacts.interrupt.deliveryToSettlementMs, null, 'no delivery-to-settlement latency from a foreign observation');
+      assert.equal(laterFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded (fail closed)');
+      assert.equal(laterFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      const laterReaderFacts = extractSurvivalControlFacts(laterPollCancelled, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: laterInteraction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(laterReaderFacts.deliveryBoundTag, null, 'the reader consumes the identity-bound interaction: no bound');
+      // (i) The SAME poll's cancellation stays credited (its single response
+      // is the marker; the pending window comes from the outstanding interval).
+      const samePollCancelled = [[
+        ...childLaunch,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-a', output: terminatedMarker }),
+      ], interruptTurnEvents];
+      const samePollInteraction = interactionFor(samePollCancelled);
+      assert.equal(samePollInteraction.pendingBeforeCall.observed, true);
+      assert.equal(samePollInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the pending observation\'s own cancellation stays credited');
+      // (ii) A cancelled SAME-HANDLE RE-ENTRY issued BEFORE the delivery (the
+      // child's re-entry on the same handle while the observation was still
+      // outstanding) stays credited — the established same-handle continuation
+      // semantics.
+      const continuationCancelled = [[
+        ...childLaunch,
+        pendingYield,
+        wrappedRead('poll-b', 7, 4_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ], interruptTurnEvents];
+      const continuationInteraction = interactionFor(continuationCancelled);
+      assert.equal(continuationInteraction.pendingBeforeCall.observed, true);
+      assert.equal(continuationInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'a cancelled accepted continuation of the pending observation stays credited');
+    });
+
+    test('an explicit terminate claims every response of its affected cell (round-8 review fix)', async () => {
+      // Codex round-8 review fix: when `wait({cell_id, terminate: true})`
+      // stops a cell, BOTH the terminating call's own response AND the
+      // outstanding normal wait's response carry `Script terminated`. The
+      // explicit-terminate classification must bind to the affected
+      // CELL/observation chain (the round-7 chain identity) — the outstanding
+      // wait's marker is the explicit ender's resolution, never native
+      // cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted continuation of cell-x, still
+        // outstanding (no response yet) when the explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      // (a) The explicit terminate:X stops the cell while the normal wait is
+      // outstanding: BOTH termination responses are the explicit ender's —
+      // no native settlement, no latency, survival ungrounded. The parent
+      // turn rides the standard i1 shape (grounded control launch +
+      // qualifying reads) so the survival wiring is fully established except
+      // the delivery attribution.
+      const explicitTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate', arguments: JSON.stringify({ cell_id: 'cell-x', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'wait-terminate', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const explicitInteraction = interactionFor(explicitTerminate);
+      assert.equal(explicitInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(explicitInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the explicit ender');
+      assert.equal(explicitInteraction.settledAfterCall.atMs, null);
+      assert.equal(explicitInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const explicitFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        explicitTerminate, [], LAUNCHER,
+      );
+      assert.equal(explicitFacts.interrupt.settled, null, 'the explicit alternate ender never reports native settlement');
+      assert.equal(explicitFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(explicitFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an explicit ender');
+      assert.equal(explicitFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // (b) An explicit terminate of an UNRELATED cell leaves the cell-x
+      // normal wait's native cancellation credited (the affected-cell
+      // binding is not a blanket explicit-terminate exclusion).
+      const unrelatedTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      const unrelatedTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate-other', arguments: JSON.stringify({ cell_id: 'cell-other', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+      ], unrelatedTurnEvents];
+      const unrelatedInteraction = interactionFor(unrelatedTerminate);
+      assert.equal(unrelatedInteraction.pendingBeforeCall.observed, true);
+      assert.equal(unrelatedInteraction.cancelledAfterCall.atMs, BASE_MS + 5_600, 'a native cancellation outside the terminated cell stays credited');
+    });
+
+    test('a WRAPPED terminate call claims every response of its affected cell too (round-9 review fix)', () => {
+      // Codex round-9 review fix: the wrapped `tools.wait({cell_id,
+      // terminate: true})` collection site must populate the SAME cell-wide
+      // explicit-terminate coverage as the direct-call branch — an outstanding
+      // normal wait's `Script terminated` response belongs to the explicit
+      // ender, never to native cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted direct continuation of cell-x, still
+        // outstanding when the WRAPPED explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      const wrappedTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-w', input: 'const r = await tools.wait({ cell_id: "cell-x", terminate: true }); text(JSON.stringify(r))\n' }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-w', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const wrappedInteraction = interactionFor(wrappedTerminate);
+      assert.equal(wrappedInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(wrappedInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the wrapped explicit ender');
+      assert.equal(wrappedInteraction.settledAfterCall.atMs, null);
+      assert.equal(wrappedInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const wrappedFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        wrappedTerminate, [], LAUNCHER,
+      );
+      assert.equal(wrappedFacts.interrupt.settled, null, 'the wrapped explicit ender never reports native settlement');
+      assert.equal(wrappedFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(wrappedFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against a wrapped explicit ender');
+      assert.equal(wrappedFacts.survivalControl.reason, 'delivery-bound-unestablished');
+      // The DIRECT-call keeper stays green: the same shape with a direct
+      // terminate keeps both responses explicit-ender.
+      const directTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'wait-terminate', arguments: JSON.stringify({ cell_id: 'cell-x', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'wait-terminate', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const directInteraction = interactionFor(directTerminate);
+      assert.equal(directInteraction.pendingBeforeCall.observed, true);
+      assert.equal(directInteraction.cancelledAfterCall.atMs, null, 'the direct-call explicit-ender coverage is unchanged');
+      assert.equal(directInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600);
+    });
+
+    test('an INLINE wrapped terminate claims every response of its affected cell too (round-10 review fix)', () => {
+      // Codex round-10 review fix: the supported INLINE form
+      // `text(await tools.wait({cell_id, terminate: true}));` must propagate
+      // the SAME cell-wide explicit-terminate coverage as the direct-call and
+      // `const r = await` wrapped forms — an outstanding normal wait's
+      // termination marker belongs to the explicit ender, never to native
+      // cancellation.
+      const cellX = 'Script running with cell ID cell-x\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      const childBase = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellX }),
+        // The NORMAL WAIT: an accepted direct continuation of cell-x, still
+        // outstanding when the INLINE explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: 'cell-x' }) }),
+      ];
+      const inlineTerminate = [[
+        ...childBase,
+        at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-inline', input: 'text(await tools.wait({ cell_id: "cell-x", terminate: true }));\n' }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-inline', output: terminatedMarker }),
+      ], i1Rollouts()[1]];
+      const inlineInteraction = interactionFor(inlineTerminate);
+      assert.equal(inlineInteraction.pendingBeforeCall.observed, true, 'premise: cell-x was pending at delivery');
+      assert.equal(inlineInteraction.cancelledAfterCall.atMs, null, 'the outstanding wait\'s termination marker belongs to the inline explicit ender');
+      assert.equal(inlineInteraction.settledAfterCall.atMs, null);
+      assert.equal(inlineInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'BOTH termination responses classify as the explicit alternate ender');
+      const inlineFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        {
+          endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+          result: { code: 0, stdout: '', stderr: '' },
+          cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+          timeline: null,
+        },
+        { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} },
+        inlineTerminate, [], LAUNCHER,
+      );
+      assert.equal(inlineFacts.interrupt.settled, null, 'the inline explicit ender never reports native settlement');
+      assert.equal(inlineFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(inlineFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an inline explicit ender');
+      assert.equal(inlineFacts.survivalControl.reason, 'delivery-bound-unestablished');
+    });
+
+    test('the wrapped-terminate scan never writes model-controlled cell ids to stderr or stdout (round-10 review fix)', async () => {
+      // Codex round-10 review fix (data leak): the scan processes unclassified
+      // cells WITHOUT an established binding, and a cell_id is
+      // model-controlled content — structural-only retention means no raw
+      // value may reach stderr/stdout from the scan path, even when it
+      // appears in `redactions` (the scan never consults them). The leaked
+      // debug output printed the terminated cell id verbatim; it is removed
+      // entirely (no replacement logging).
+      const privateMarker = 'cell-PRIVATE-MARKER-7f3a1c9d2e';
+      const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childScript = [
+        "import { extractInterruptInteraction } from " + JSON.stringify(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url))) + ";",
+        "const MARKER = " + JSON.stringify(privateMarker) + ";",
+        "const LAUNCHER = " + JSON.stringify(launcherCommand) + ";",
+        "const at = (offsetMs, payload) => ({ type: 'response_item', timestamp: 1_700_000_000_000 + offsetMs, payload });",
+        "const rollouts = [[",
+        "  { type: 'session_meta', payload: { id: 'root-thread-1' } },",
+        "  at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: 'text(await tools.interrupt_agent({ \"target\": \"t\" }));\\n' }),",
+        "], [",
+        "  { type: 'session_meta', payload: { id: 'child-thread-1' } },",
+        "  at(100, { type: 'custom_tool_call', name: 'exec', call_id: 'launch-1', input: 'const r = await tools.exec_command({ cmd: ' + JSON.stringify(LAUNCHER) + ', workdir: \"/w\" }); text(JSON.stringify(r))\\n' }),",
+        "  at(200, { type: 'custom_tool_call_output', call_id: 'launch-1', output: 'Wall time: 0.2500 seconds\\nProcess running with session ID 7\\nOutput:\\n' }),",
+        "  at(300, { type: 'custom_tool_call', name: 'exec', call_id: 'poll-a', input: 'const r = await tools.write_stdin({ session_id: 7, chars: \"\", yield_time_ms: 1000 }); text(JSON.stringify(r))\\n' }),",
+        "  at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: 'Script running with cell ID ' + MARKER + '\\nWall time 0.1 seconds\\nOutput:\\n' }),",
+        "  at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: MARKER }) }),",
+        "  at(5_000, { type: 'custom_tool_call', name: 'exec', call_id: 'wait-terminate-w', input: 'const r = await tools.wait({ cell_id: ' + JSON.stringify(MARKER) + ', terminate: true }); text(JSON.stringify(r))\\n' }),",
+        "  at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: [{ type: 'input_text', text: 'Script terminated\\nWall time 0.1 seconds\\nOutput:\\n' }, { type: 'input_text', text: 'killed\\n' }] }),",
+        "  at(5_700, { type: 'custom_tool_call_output', call_id: 'wait-terminate-w', output: [{ type: 'input_text', text: 'Script terminated\\nWall time 0.1 seconds\\nOutput:\\n' }, { type: 'input_text', text: 'killed\\n' }] }),",
+        "]];",
+        "const interaction = extractInterruptInteraction(rollouts, [MARKER], { childThreadId: 'child-thread-1', command: LAUNCHER });",
+        "console.log(JSON.stringify({ orderingBound: interaction.orderingBound, explicitObserved: interaction.explicitTerminateAfterCall.atMs !== null }));",
+      ].join('\n');
+      // Codex round-13 review fix: this probe previously wrote a FIXED shared
+      // tmpdir filename. Concurrent shell-research runs in separate worktrees
+      // target the same path, and because the generated script embeds an
+      // absolute module path, one run could overwrite another's script —
+      // making it test the wrong checkout or execute partially written
+      // JavaScript — and the file was left behind. The probe now runs from a
+      // uniquely owned mkdtemp directory, removed in `finally`.
+      const ownedDir = await mkdtemp(join(tmpdir(), 'shell-wait-leak-probe-'));
+      const scriptPath = join(ownedDir, 'shell-wait-leak-probe.mjs');
+      assert.equal(dirname(scriptPath), ownedDir, 'the probe script must live inside the owned temporary directory');
+      try {
+        await writeFile(scriptPath, childScript);
+        const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        // The LEAK assertion FIRST (it is this test's defect): the private
+        // marker appears NOWHERE in the process output.
+        assert.equal(result.stdout.includes(privateMarker), false, 'the private cell id leaked to stdout');
+        assert.equal(result.stderr.includes(privateMarker), false, 'the private cell id leaked to stderr');
+        // The scan's classification behavior is unchanged: the wrapped
+        // terminate is still collected and its response classified as the
+        // explicit alternate ender.
+        assert.match(result.stdout, /"explicitObserved":true/);
+      } finally {
+        await rm(ownedDir, { recursive: true, force: true });
+      }
+      await assert.rejects(stat(ownedDir), { code: 'ENOENT' }, 'the owned probe directory must be removed after the test');
+    });
+
+    test('explicit cell termination is scoped to the bound Child rollout (round-12 review fix)', () => {
+      // Codex round-12 review fix: cell ids are session-local counters — a
+      // ROOT-side `wait({cell_id:"1", terminate:true})` of ITS OWN same-named
+      // cell can never terminate the Child's cell. The round-7 chain identity
+      // the coverage marks (pendingCellChains / pollObservedCell) is derived
+      // exclusively from the bound Child rollout, so the propagation is
+      // scoped to that exact session: a foreign terminate marks nothing, the
+      // Child's genuine native cancellation stays credited WITH its latency
+      // and grounds the survival bound, and the verdict is identical under
+      // either rollout scan order. A genuine CHILD-side terminate of the same
+      // cell still classifies explicit-ender.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // The Child's own observation: cell "1" yielded by poll-a, observed by
+      // the same-handle re-entry poll-b, and cancelled NATIVELY (the marker
+      // resolving poll-b is the interruption's cancellation settlement).
+      const childObservation = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        wrappedRead('poll-b', 7, 500),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ];
+      // The Root turn carries ITS OWN same-named cell terminate (session-
+      // local counter collision) beside the interrupt delivery.
+      const rootForeignTerminate = [
+        ...i1Rollouts()[1],
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'root-wait-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_100, { type: 'function_call_output', call_id: 'root-wait-t', output: terminatedMarker }),
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const map = (rollouts) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      // BOTH scan orders must credit the Child cancellation identically.
+      for (const [label, rollouts] of [
+        ['parent-first', [rootForeignTerminate, childObservation]],
+        ['child-first', [childObservation, rootForeignTerminate]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, `${label}: the Child's native cancellation stays credited`);
+        assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500, `${label}: the cancellation settlement is bound`);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, null, `${label}: a foreign-session terminate is never the Child's alternate ender`);
+        const facts = map(rollouts);
+        assert.equal(facts.interrupt.settled, true, `${label}: the genuine Child cancellation keeps native settlement`);
+        assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+        assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, `${label}: the measured latency is preserved (delivery 4400 → cancellation 5500)`);
+        assert.equal(facts.survivalControl.noCollateralQualified, true, `${label}: the survival delivery bound stays grounded`);
+      }
+      // A genuine CHILD-side terminate of cell "1" still classifies
+      // explicit-ender (the scoping never weakens in-session coverage): the
+      // child's own accepted continuation of cell "1" is stopped by the
+      // child's own terminate call — under both scan orders.
+      const childTerminate = [
+        ...childObservation.slice(0, 5),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'child-wait-t', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'child-wait-t2', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'child-wait-t2', output: terminatedMarker }),
+      ];
+      for (const [label, rollouts] of [
+        ['parent-first', [i1Rollouts()[1], childTerminate]],
+        ['child-first', [childTerminate, i1Rollouts()[1]]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, null, `${label}: the Child-side explicit ender suppresses native cancellation credit`);
+        assert.equal(interaction.settledAfterCall.atMs, null);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, `${label}: the in-session terminate classifies the affected marker`);
+      }
+    });
+
+    test('terminate statement keys never cross the rollout session (round-13 review fix)', () => {
+      // Codex round-13 review fix: Root and Child rollouts REUSE the call id
+      // "9" — Root's call 9 is `wait({cell_id:"1", terminate:true})`, the
+      // Child's call 9 is the genuinely-cancelled pending observation. The
+      // statement keys are call-id-keyed, so an unguarded Root insertion
+      // classified the Child's OWN cancellation as an explicit ender
+      // (parent-first) while crediting it child-first — order-dependent. All
+      // terminate bookkeeping is now gated on child ownership, so the Child
+      // cancellation stays credited under BOTH scan orders; a genuine
+      // Child-side terminate keeps its explicit-ender classification.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // The Child's call id "9": the pending observation cancelled natively.
+      const childCancelledNine = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('9', 7, 300),
+        at(5_500, { type: 'custom_tool_call_output', call_id: '9', output: terminatedMarker }),
+      ];
+      // The Root's call id "9": a terminate of ITS OWN same-named cell.
+      const rootTerminateNine = [
+        ...i1Rollouts()[1],
+        at(5_000, { type: 'function_call', name: 'wait', call_id: '9', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_100, { type: 'function_call_output', call_id: '9', output: terminatedMarker }),
+      ];
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const map = (rollouts) => mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      for (const [label, rollouts] of [
+        ['parent-first', [rootTerminateNine, childCancelledNine]],
+        ['child-first', [childCancelledNine, rootTerminateNine]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — the Child observation was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, `${label}: the Child's genuine cancellation stays credited`);
+        assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, null, `${label}: a foreign-session statement key never classifies the Child marker`);
+        const facts = map(rollouts);
+        assert.equal(facts.interrupt.settled, true, `${label}: the genuine cancellation keeps native settlement`);
+        assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, `${label}: the measured latency is preserved`);
+        assert.equal(facts.survivalControl.noCollateralQualified, true, `${label}: the survival delivery bound stays grounded`);
+      }
+      // Keeper: a genuine CHILD-side terminate (call id "child-t") of cell
+      // "1" still records its bookkeeping — the cell's OUTSTANDING wait
+      // (round-9 shape) stays explicit-ender under both scan orders, with
+      // Root's foreign same-cell terminate present alongside.
+      const childOwnTerminate = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        // The OUTSTANDING normal wait of cell 1 — in flight when the
+        // in-session explicit ender fires.
+        at(500, { type: 'function_call', name: 'wait', call_id: 'wait-normal', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'child-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-normal', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'child-t', output: terminatedMarker }),
+      ];
+      for (const [label, rollouts] of [
+        ['parent-first', [rootTerminateNine, childOwnTerminate]],
+        ['child-first', [childOwnTerminate, rootTerminateNine]],
+      ]) {
+        const interaction = interactionFor(rollouts);
+        assert.equal(interaction.pendingBeforeCall.observed, true, `${label}: premise — cell 1 was pending at delivery`);
+        assert.equal(interaction.cancelledAfterCall.atMs, null, `${label}: the in-session terminate still suppresses native cancellation credit`);
+        assert.equal(interaction.settledAfterCall.atMs, null);
+        assert.equal(interaction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, `${label}: the in-session terminate classifies the affected marker`);
+      }
+    });
+
+    test('a continuation resolution stops covering later polls with the old cell (round-14 review fix)', () => {
+      // Codex round-14 review fix: poll A yields cell "1" and an ACCEPTED
+      // wait resolves it with a LIVE process handle (a completed result
+      // carrying session_id, no exit code). The association pass skipped that
+      // resolution and left `outstandingCell` on the resolved cell, so poll
+      // B — issued AFTER the resolution — stayed tagged as observing cell
+      // "1". A later `wait({cell_id:"1", terminate:true})` (which cannot
+      // terminate B) then reclassified B's GENUINE native cancellation as
+      // explicit termination, clearing `cancelledAfterCall` and the survival
+      // delivery bound. Resolutions are now accounted in event order before
+      // subsequent polls associate: B keeps its native credit, and a
+      // terminate targeting B's OWN cell still classifies explicit-ender.
+      const cellOne = 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n';
+      const cellTwo = 'Script running with cell ID 2\nWall time 0.1 seconds\nOutput:\n';
+      const terminatedMarker = [
+        { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'killed\n' },
+      ];
+      // Poll A yields cell "1"; the accepted wait resolves it with a live
+      // handle; poll B is issued after that resolution and cancelled
+      // NATIVELY; the later terminate targets the OLD resolved cell "1".
+      const resolvedThenPolled = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'resolve-1', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(600, { type: 'function_call_output', call_id: 'resolve-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 7 }) }] }),
+        wrappedRead('poll-b', 7, 700),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'old-t', arguments: JSON.stringify({ cell_id: '1', terminate: true }) }),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'poll-b', output: terminatedMarker }),
+      ];
+      const interaction = interactionFor([resolvedThenPolled, i1Rollouts()[1]]);
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'premise — poll B was pending at delivery');
+      assert.equal(interaction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the stale-cell terminate never reclassifies poll B\'s genuine cancellation');
+      assert.equal(interaction.settledAfterCall.atMs, BASE_MS + 5_500);
+      assert.equal(interaction.explicitTerminateAfterCall.atMs, null, 'the resolved cell\'s terminate records no explicit-ender marker');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, [resolvedThenPolled, i1Rollouts()[1]], [], LAUNCHER,
+      );
+      assert.equal(facts.interrupt.settled, true, 'the genuine cancellation keeps native settlement');
+      assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, 'the measured latency is preserved');
+      assert.equal(facts.survivalControl.noCollateralQualified, true, 'the survival delivery bound stays grounded');
+      // Keeper: a terminate targeting poll B's OWN outstanding cell ("2")
+      // still classifies the affected markers as the explicit alternate
+      // ender — B's yielded observation (round-9 shape: its outstanding
+      // normal wait receives the terminated marker) keeps full coverage.
+      const ownCellTerminated = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('poll-a', 7, 300),
+        at(400, { type: 'custom_tool_call_output', call_id: 'poll-a', output: cellOne }),
+        at(500, { type: 'function_call', name: 'wait', call_id: 'resolve-1', arguments: JSON.stringify({ cell_id: '1' }) }),
+        at(600, { type: 'function_call_output', call_id: 'resolve-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 7 }) }] }),
+        wrappedRead('poll-b', 7, 700),
+        at(800, { type: 'custom_tool_call_output', call_id: 'poll-b', output: cellTwo }),
+        at(900, { type: 'function_call', name: 'wait', call_id: 'wait-b', arguments: JSON.stringify({ cell_id: '2' }) }),
+        at(5_000, { type: 'function_call', name: 'wait', call_id: 'b-t', arguments: JSON.stringify({ cell_id: '2', terminate: true }) }),
+        at(5_600, { type: 'function_call_output', call_id: 'wait-b', output: terminatedMarker }),
+        at(5_700, { type: 'function_call_output', call_id: 'b-t', output: terminatedMarker }),
+      ];
+      const ownInteraction = interactionFor([ownCellTerminated, i1Rollouts()[1]]);
+      assert.equal(ownInteraction.pendingBeforeCall.observed, true, 'keeper premise — cell 2 was pending at delivery');
+      assert.equal(ownInteraction.cancelledAfterCall.atMs, null, 'the in-session terminate of B\'s own cell suppresses native cancellation credit');
+      assert.equal(ownInteraction.settledAfterCall.atMs, null);
+      assert.equal(ownInteraction.explicitTerminateAfterCall.atMs, BASE_MS + 5_600, 'the in-session terminate of B\'s own cell classifies the affected marker');
+      const ownFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, [ownCellTerminated, i1Rollouts()[1]], [], LAUNCHER,
+      );
+      assert.equal(ownFacts.interrupt.settled, null, 'the explicit ender never reports native settlement');
+      assert.equal(ownFacts.interrupt.deliveryToSettlementMs, null);
+      assert.equal(ownFacts.survivalControl.noCollateralQualified, false, 'the survival bound stays ungrounded against an explicit ender');
+    });
+
+
+
+    test('a whole-cell termination during an UNRELATED statement never credits the finished poll (codex review round 14)', () => {
+      // A MULTI-statement cell: statement 0 is the original-handle poll,
+      // statement 1 an unrelated await. The poll's own result IS present in
+      // the whole-cell `Script terminated` response — the poll finished
+      // before the termination, which hit the later statement. Statement-
+      // level attribution is required: no cancellation credit for the poll,
+      // no settlement timing, no pending window (fail closed). The
+      // SINGLE-statement poll cancellation (every earlier fixture) stays
+      // credited.
+      const terminatedHeader = { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' };
+      const sharedCellRollouts = [[
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        at(4_000, { type: 'custom_tool_call', name: 'exec', call_id: 'shared-poll-cell', input: 'const r = await tools.write_stdin({ session_id: 7, chars: "", yield_time_ms: 60000 }); text(JSON.stringify(r))\nconst r = await tools.exec_command({ cmd: "sleep 30" }); text(JSON.stringify(r))\n' }),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'shared-poll-cell', output: [
+          terminatedHeader,
+          { type: 'input_text', text: JSON.stringify({ output: 'waiting', session_id: 7, exit_code: 0 }) },
+        ] }),
+      ], [
+        parentMeta(),
+        wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+        output('control-launch', { output: '', session_id: 44 }, 1_100),
+        wrappedRead('control-read-1', 44, 3_000),
+        output('control-read-1', { output: controlLines(12) }, 3_100),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+        wrappedRead('control-read-2', 44, 6_000),
+        output('control-read-2', { output: controlLines(13) }, 6_100),
+      ]];
+      const interaction = interactionFor(sharedCellRollouts);
+      assert.equal(interaction.settledAfterCall.atMs, null, 'the whole-cell termination is not the finished poll\'s cancellation');
+      const readerFacts = extractSurvivalControlFacts(sharedCellRollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interaction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(readerFacts.deliveryBoundTag, null, 'no delivery bound from a misattributed whole-cell termination');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, sharedCellRollouts, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'a finished poll never yields a pending window or survival');
+      assert.equal(facts.survivalControl.reason, 'delivery-bound-unestablished');
+      // The SINGLE-statement poll cancellation stays credited (round 5/6).
+      const singleFacts = extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts()), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(singleFacts.deliveryBoundTag, 4_500, 'the single-statement cancellation still anchors the bound');
+      // Round 17: a SINGLE-statement cell that PRINTED its poll result
+      // (completed live handle) before the cell was terminated is NOT
+      // cancellation — the poll returned normally and its pending-at-
+      // interrupt status is unproven ⇒ no settlement timing, settled null.
+      const printedThenTerminated = [[
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('rescue-poll', 7, 4_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll', output: [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'waiting', exit_code: 0, session_id: 7 }) },
+        ] }),
+      ], [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ]];
+      const printedInteraction = interactionFor(printedThenTerminated);
+      assert.equal(printedInteraction.cancelledAfterCall.atMs, null, 'a completed poll result is never cancellation');
+      assert.equal(printedInteraction.settledAfterCall.atMs, null, 'no settlement timing from a normally returned poll');
+      const printedFixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const printedHeld = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const printedMapperFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        printedHeld, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, printedFixture, printedThenTerminated, [], LAUNCHER,
+      );
+      assert.equal(printedMapperFacts.interrupt.settled, null, 'a normally returned poll is never interrupt settlement');
+      assert.equal(printedMapperFacts.interrupt.deliveryToSettlementMs, null);
+      // A single-statement poll still PENDING at termination (no result in
+      // the terminated response) keeps the cancellation credit.
+      const stillPending = [[
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('rescue-poll', 7, 4_000),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll', output: [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'killed\n' },
+        ] }),
+      ], [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ]];
+      const stillPendingInteraction = interactionFor(stillPending);
+      assert.equal(stillPendingInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'the genuinely pending single-statement poll keeps its cancellation timing');
+    });
+
+    test('a whole-cell termination during an EARLIER statement never credits the unexecuted final wait (round-5 review fix)', () => {
+      // Cell shape [unrelated await, wait-on-pending]: the round-14
+      // last-statement rule credited the FINAL statement's cancellation
+      // whenever its own result was absent — but a termination that hit the
+      // EARLIER await means the final wait never executed, and the whole-cell
+      // header is that await's cancellation. Crediting the last statement
+      // additionally requires POSITIVE evidence the preceding statements
+      // completed: the supported cell prints one JSON result per completed
+      // statement IN ORDER, so the terminated response must carry them.
+      const terminatedHeader = { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' };
+      const awaitThenWaitCell = 'const r = await tools.exec_command({ cmd: "sleep 30" }); text(JSON.stringify(r))\nconst r = await tools.write_stdin({ session_id: 7, chars: "", yield_time_ms: 60000 }); text(JSON.stringify(r))\n';
+      const childEvents = [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        wrappedRead('rescue-poll', 7, 300),
+        output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+        at(4_000, { type: 'custom_tool_call', name: 'exec', call_id: 'await-then-wait', input: awaitThenWaitCell }),
+      ];
+      const interruptTurnEvents = [
+        parentMeta(),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+      ];
+      // (a) Terminated during the FIRST await — the terminated response
+      // carries NO predecessor results: the unexecuted final wait is never
+      // the cancellation and no settlement timing is recorded (fail closed;
+      // the pending window's close is equally unestablishable in this shape).
+      const duringAwait = [[
+        ...childEvents,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'await-then-wait', output: [terminatedHeader] }),
+      ], interruptTurnEvents];
+      const duringAwaitInteraction = interactionFor(duringAwait);
+      assert.equal(duringAwaitInteraction.cancelledAfterCall.atMs, null, 'no predecessor results: the unexecuted final wait is never the cancellation');
+      assert.equal(duringAwaitInteraction.settledAfterCall.atMs, null, 'settlement timing stays unestablished without the executed statement');
+      // (b) Terminated during the FINAL wait — the predecessor's completed
+      // result IS present in the terminated response (the supported cell
+      // prints statement results in order): the last statement's cancellation
+      // stays credited (the round-14 companion semantics).
+      const duringWait = [[
+        ...childEvents,
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'await-then-wait', output: [terminatedHeader, { type: 'input_text', text: JSON.stringify({ output: 'slept', exit_code: 0 }) }] }),
+      ], interruptTurnEvents];
+      const duringWaitInteraction = interactionFor(duringWait);
+      assert.equal(duringWaitInteraction.cancelledAfterCall.atMs, BASE_MS + 5_500, 'a completed predecessor proves the final statement ran: its cancellation is credited');
+      assert.equal(duringWaitInteraction.settledAfterCall.atMs, BASE_MS + 5_500);
+    });
+
+    test('the qualifying pre-delivery read must FINISH before the interrupt request (codex review round 10)', () => {
+      // A control read INVOKED before the interrupt (4300 < 4400) whose
+      // fresh output only ARRIVED afterward (4500 > 4400) proves no
+      // pre-delivery activity: the fresh line may have been emitted after
+      // the interruption. The read must both be invoked AND complete before
+      // the request.
+      const lateRead = i1Rollouts({ preReadLineCount: 12 }).map((events) => events.map((event) => {
+        if (event?.payload?.call_id === 'control-read-1' && event.payload.type === 'custom_tool_call') return at(4_300, event.payload);
+        if (event?.payload?.call_id === 'control-read-1' && event.payload.type === 'custom_tool_call_output') return at(4_500, { type: 'custom_tool_call_output', call_id: 'control-read-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(12) }) }] });
+        return event;
+      }));
+      const lateFacts = extractSurvivalControlFacts(lateRead, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(lateRead), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(lateFacts.beforeDeliveryRead, { observed: false, lastLineIndex: null, orderedBeforeInterrupt: false },
+        'a read returning after the request never proves pre-delivery activity');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, lateRead, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'no pre-delivery activity proof, no qualification');
+      assert.equal(facts.survivalControl.reason, 'activity-at-delivery-unobserved');
+      // A read fully completing BEFORE the request stays the qualifying read.
+      const earlyFacts = extractSurvivalControlFacts(i1Rollouts({ preReadLineCount: 12 }), CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(i1Rollouts({ preReadLineCount: 12 })), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(earlyFacts.beforeDeliveryRead, { observed: true, lastLineIndex: 12, orderedBeforeInterrupt: true });
+    });
+
+    test('the survival bound requires validated EXACT-TARGET attribution (codex review round 10)', async () => {
+      // A SUCCESSFUL interrupt targeting a DIFFERENT agent: the pending
+      // window and settlement timestamp describe the OBSERVED Child, so the
+      // Child's natural completion would become the foreign delivery's
+      // bound. Validated exact-target attribution (the mapper's guard) is
+      // required; a foreign-targeted success leaves the bound null.
+      const foreignTarget = i1Rollouts().map((events) => events.map((event) => event?.payload?.call_id === 'int-1' && event.payload.type === 'custom_tool_call'
+        ? at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: 'text(await tools.interrupt_agent({ "target": "some-other-agent" }));\n' })
+        : event));
+      const interaction = interactionFor(foreignTarget);
+      assert.equal(interaction.delivered, true);
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the observed Child pending window and settlement exist independently of the target');
+      const foreignFacts = extractSurvivalControlFacts(foreignTarget, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interaction, exactTargetMatch: false, childThreadId: CHILD_THREAD });
+      assert.equal(foreignFacts.deliveryBoundTag, null, 'a foreign-targeted success never establishes the survival bound');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, foreignTarget, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'the foreign delivery never bounds the control');
+      assert.equal(facts.survivalControl.reason, 'delivery-bound-unestablished');
+      // The exact-target case keeps its bound (round-9 deliveredFacts pin).
+      // Round 14: an ACCEPTED interrupt whose previous_status is already
+      // terminal ('interrupted') is rejected by the mapper's settlement
+      // chain — the survival bound must apply the SAME guard (the shared
+      // delivery-attribution predicate) or subsequent control output would
+      // qualify against an interrupt that never interrupted anything.
+      const terminalPrevious = i1Rollouts().map((events) => events.map((event) => event?.payload?.call_id === 'int-1' && event.payload.type === 'custom_tool_call_output'
+        ? interruptOutput(4_500, 'interrupted')
+        : event));
+      const terminalInteraction = interactionFor(terminalPrevious);
+      assert.equal(terminalInteraction.delivered, true);
+      assert.equal(terminalInteraction.previousStatus, 'interrupted');
+      const terminalFacts = extractSurvivalControlFacts(terminalPrevious, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: terminalInteraction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(terminalFacts.deliveryBoundTag, null, 'a terminal previous status excludes the delivery bound');
+      const terminalFixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const terminalHeld = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const mapperFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        terminalHeld, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, terminalFixture, terminalPrevious, [], LAUNCHER,
+      );
+      assert.equal(mapperFacts.interrupt.settledBasis, 'previous-status-terminal-no-interruption-claim', 'the mapper rejects settlement for the same reason');
+      assert.equal(mapperFacts.survivalControl.noCollateralQualified, false, 'the survival layer never qualifies against a rejected attribution');
+      // Round 15: the survival-control path is shell-quoted ONCE (the pinned
+      // shlex.quote rule: shell-safe strings stay raw; anything else is
+      // single-quoted with closing-quote escaping), and the SAME rendered
+      // command drives both the prompt directive and the evidence reader's
+      // attribution match — a TMPDIR with spaces must still launch and
+      // attribute, and any quoting/normalization mismatch fails closed.
+      const spacedPath = '/private/tmp/sc dir/survival-control.mjs';
+      const quotedCommand = `'${spacedPath}'`;
+      const { survivalControlShellCommand } = await import('../tools/shell-wait-probe/evidence.mjs');
+      assert.equal(survivalControlShellCommand(spacedPath), quotedCommand, 'a path with spaces renders single-quoted');
+      assert.equal(survivalControlShellCommand(CONTROL_PATH), CONTROL_PATH, 'a shell-safe path renders unchanged');
+      const spacedDirective = survivalControlPromptDirective(spacedPath);
+      assert.match(spacedDirective, new RegExp(escapeRegExp(quotedCommand)), 'the directive embeds the quoted command');
+      assert.doesNotMatch(spacedDirective, new RegExp(`run exactly \`${escapeRegExp(spacedPath)}\``), 'the raw spaced path is never embedded unquoted');
+      const spacedRollouts = [[
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+        output('rescue-launch', { output: '', session_id: 7 }, 200),
+        at(4_000, { type: 'custom_tool_call', name: 'exec', call_id: 'rescue-poll-2', input: `const r = await tools.write_stdin({ session_id: 7, chars: "", yield_time_ms: 60000 }); text(JSON.stringify(r))\n` }),
+        at(5_500, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', exit_code: 0, session_id: 7 }) }] }),
+      ], [
+        parentMeta(),
+        wrapped('control-launch', { cmd: quotedCommand, yield_time_ms: 1000 }, 1_000),
+        output('control-launch', { output: '', session_id: 44 }, 1_100),
+        wrappedRead('control-read-1', 44, 3_000),
+        output('control-read-1', { output: controlLines(12) }, 3_100),
+        at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+        interruptOutput(4_500),
+        wrappedRead('control-read-2', 44, 6_000),
+        output('control-read-2', { output: controlLines(13) }, 6_100),
+      ]];
+      const spacedInteraction = interactionFor(spacedRollouts);
+      const spacedFacts = extractSurvivalControlFacts(spacedRollouts, spacedPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: spacedInteraction, exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(spacedFacts.launched, true, 'the quoted spaced path launches and attributes');
+      assert.equal(spacedFacts.handleGrounded, true);
+      assert.equal(spacedFacts.ownership, 'root');
+      assert.equal(spacedFacts.deliveryBoundTag, 4_500, 'the full attribution chain works on the SAME rendered command');
+      // (b) A quoting/normalization mismatch (double quotes instead of the
+      // canonical single-quote form) fails attribution — never matched.
+      const mismatchRollouts = spacedRollouts.map((events) => events.map((event) => event?.payload?.call_id === 'control-launch' && event.payload.type === 'custom_tool_call'
+        ? at(1_000, { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch', input: `const r = await tools.exec_command({ "cmd": '"${spacedPath}"' }); text(JSON.stringify(r))\n` })
+        : event));
+      const mismatchFacts = extractSurvivalControlFacts(mismatchRollouts, spacedPath, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(mismatchRollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(mismatchFacts.launched, false, 'a non-canonical quoting form never attributes');
+      // Round 14: pre-delivery completion evidence — the read that returned
+      // the completion marker (the declared final line, 60 in the extended
+      // design) must itself have COMPLETED before the interrupt request.
+      const earlyCompletionRead = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => {
+        if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call') return at(3_000, event.payload);
+        if (event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output') return at(3_500, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] });
+        return event;
+      }));
+      const earlyFacts = extractSurvivalControlFacts(earlyCompletionRead, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(earlyCompletionRead), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(earlyFacts.completionBeforeDeliveryObserved, true, 'the marker-returning read completed before the request');
+      const lateCompletionRead = i1Rollouts({ postReadLineCount: SURVIVAL_CONTROL_LINE_COUNT }).map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: controlLines(SURVIVAL_CONTROL_LINE_COUNT), exit_code: 0 }) }] })
+        : event));
+      const lateFacts = extractSurvivalControlFacts(lateCompletionRead, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(lateCompletionRead), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(lateFacts.completionBeforeDeliveryObserved, false, 'a marker returned after the request is not pre-delivery evidence');
+    });
+
+    test('contradictory emission evidence persists null-safe not-qualified facts (codex self-review round 18)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-contradictory-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = {
+        workspace: '/private/tmp/i1c-ws', codexHome: '/private/tmp/i1c-home',
+        installedRoot: '/private/tmp/i1c-installed', env: { HOME: '/private/tmp/i1c-home' },
+        survivalControlPath: CONTROL_PATH,
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      // read-2 returns line 13 with a tag BELOW read-1's line-12 tag: the
+      // reader emits non-monotonic tags (the reader's own index dedupe
+      // cannot mask cross-read tag contradictions) — the oracle must return
+      // the named verdict instead of throwing through the mapper.
+      const contradictoryRollouts = i1Rollouts().map((events) => events.map((event) => event?.payload?.call_id === 'control-read-2' && event.payload.type === 'custom_tool_call_output'
+        ? at(6_100, { type: 'custom_tool_call_output', call_id: 'control-read-2', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'zcode-survival-control 13 100' }) }] })
+        : event));
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, contradictoryRollouts, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false);
+      assert.equal(facts.survivalControl.reason, 'contradictory-emission-evidence');
+      const record = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal', output: root },
+        { createFixture: async () => fixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(record.survivalControl.reason, 'contradictory-emission-evidence', 'the durable record persists the named verdict');
+    });
+
+    test('a declared-control run REFUSES a fixture handle without the control path (codex self-review round 18)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-no-control-path-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      let fixtureDisposed = false;
+      const fixtureWithoutControlPath = {
+        workspace: '/private/tmp/i1n-ws', codexHome: '/private/tmp/i1n-home',
+        installedRoot: '/private/tmp/i1n-installed', env: { HOME: '/private/tmp/i1n-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => { fixtureDisposed = true; },
+      };
+      let executorRan = false;
+      await assert.rejects(
+        runShellWaitCase(
+          { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal', output: root },
+          {
+            createFixture: async () => fixtureWithoutControlPath,
+            executeLiveCase: async () => { executorRan = true; return {}; },
+          },
+        ),
+        /survivalControlPath/,
+      );
+      assert.equal(executorRan, false, 'the run is refused BEFORE the executor launches');
+      assert.equal(fixtureDisposed, true, 'the disposal guarantee holds on the refusal path: the fixture cleanup ran');
+      // A control-path-less handle WITHOUT the selector proceeds untouched.
+      const record = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => fixtureWithoutControlPath, executeLiveCase: async () => ({}) },
+      );
+      assert.equal(record.status ?? 'executed', 'executed');
+    });
+
+
+    test('the survival control must be ROOT-owned: child-owned or unidentifiable launches reject (codex review round 5)', () => {
+      // Identical control events, but launched inside the CHILD rollout.
+      const childOwnedRollouts = (() => {
+        const base = i1Rollouts();
+        const controlEvents = base[1].slice(1, 10);
+        return [base[0].concat(controlEvents), [base[1][0]]];
+      })();
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, childOwnedRollouts, [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false, 'a child-owned control shares the interrupt authority surface: never qualified');
+      assert.equal(facts.survivalControl.reason, 'control-not-root-owned');
+      // Unidentifiable ownership (no session metadata on the launch rollout).
+      const orphanRollouts = (() => {
+        const base = i1Rollouts();
+        return [base[1].map((event) => event?.type === 'session_meta' ? null : event).filter(Boolean), base[0]];
+      })();
+      const facts2 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, orphanRollouts, [], LAUNCHER,
+      );
+      assert.equal(facts2.survivalControl.noCollateralQualified, false, 'an unidentifiable owning session never qualifies');
+      assert.equal(facts2.survivalControl.reason, 'control-not-root-owned');
+      // Subagent SOURCE metadata without a top-level parent_thread_id is
+      // equally a spawned CHILD rollout (the identifyRootRollout P2-4
+      // criteria, codex review round 6): the control is not Root-owned.
+      const subagentSourced = (() => {
+        const base = i1Rollouts();
+        return [base[0].concat(base[1].slice(1, 10)).map((event) => event?.type === 'session_meta'
+          ? { type: 'session_meta', payload: { id: CHILD_THREAD, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_task_1' } } } } }
+          : event), [base[1][0]]];
+      })();
+      const facts3 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, subagentSourced, [], LAUNCHER,
+      );
+      assert.equal(facts3.survivalControl.noCollateralQualified, false, 'a subagent-sourced control never qualifies');
+      assert.equal(facts3.survivalControl.reason, 'control-not-root-owned');
+      // Round 11: the control launch + reads hosted by an UNRELATED
+      // top-level session are outside the declared I1 Root turn — never
+      // qualified, with the ownership reason.
+      const unrelatedSession = (() => {
+        const base = i1Rollouts();
+        return [base[0], [{ type: 'session_meta', payload: { id: 'unrelated-root-session' } }, ...base[1].slice(1)]];
+      })();
+      const facts4 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, unrelatedSession, [], LAUNCHER,
+      );
+      assert.equal(facts4.survivalControl.noCollateralQualified, false, 'a control outside the owning Root session never qualifies');
+      assert.equal(facts4.survivalControl.reason, 'control-not-root-owned');
+    });
+
+    test('the ownership taxonomy: a malformed parent_thread_id identifies nothing (codex review round 5)', () => {
+      const readFacts = (rollouts) => extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      // The declared design: the control launch lives in the ROOT's own
+      // top-level rollout (no parent_thread_id).
+      assert.equal(readFacts(i1Rollouts()).ownership, 'root');
+      // A spawned child rollout carries a non-empty parent_thread_id.
+      const childOwned = (() => {
+        const base = i1Rollouts();
+        return [base[0].concat(base[1].slice(1, 10)), [base[1][0]]];
+      })();
+      assert.equal(readFacts(childOwned).ownership, 'child');
+      // No session metadata on the launch rollout: unidentifiable.
+      const orphan = (() => {
+        const base = i1Rollouts();
+        return [base[1].map((event) => event?.type === 'session_meta' ? null : event).filter(Boolean), base[0]];
+      })();
+      assert.equal(readFacts(orphan).ownership, 'unidentifiable');
+      // Subagent source metadata WITHOUT a top-level parent_thread_id marks a
+      // spawned child just the same (the identifyRootRollout criteria,
+      // codex review round 6) — never a positively-identified Root.
+      const subagentSourced = i1Rollouts().map((events) => events.map((event) => event?.type === 'session_meta' && event.payload?.id === PARENT_THREAD
+        ? { type: 'session_meta', payload: { id: PARENT_THREAD, source: { subagent: { thread_spawn: { agent_path: '/root/task' } } } } }
+        : event));
+      assert.equal(readFacts(subagentSourced).ownership, 'child');
+      // A MALFORMED parent link (empty string) identifies nothing either —
+      // it counts neither as a child link nor as a proven root (fail closed).
+      const malformed = i1Rollouts().map((events) => events.map((event) => event?.type === 'session_meta' && event.payload?.id === PARENT_THREAD
+        ? { type: 'session_meta', payload: { ...event.payload, parent_thread_id: '' } }
+        : event));
+      assert.equal(readFacts(malformed).ownership, 'unidentifiable');
+      // Round 11: an UNRELATED top-level session (its own id, no subagent
+      // markers) is NOT the owning Root — the owning Root is the interrupted
+      // Child's parent session, resolved from the Child rollout's parent
+      // binding.
+      const unrelatedSession = i1Rollouts().map((events) => events.map((event) => event?.type === 'session_meta' && event.payload?.id === PARENT_THREAD
+        ? { type: 'session_meta', payload: { id: 'unrelated-root-session' } }
+        : event));
+      assert.equal(readFacts(unrelatedSession).ownership, 'unidentifiable');
+      // Session metadata WITHOUT an id identifies nothing.
+      const idless = i1Rollouts().map((events) => events.map((event) => event?.type === 'session_meta' && event.payload?.id === PARENT_THREAD
+        ? { type: 'session_meta', payload: {} }
+        : event));
+      assert.equal(readFacts(idless).ownership, 'unidentifiable');
+    });
+
+    test('a shared-cell control read leaves execution ordering unknown (codex review round 4)', async (t) => {
+      // The control read shares an admitted multi-statement cell with a
+      // PRECEDING awaited statement, and the cell was submitted before the
+      // interrupt request while the predecessor straddled it: the read's
+      // true execution time is bounded by its predecessor, so the cell
+      // submission is NOT its invocation. The old code used the submission
+      // and qualified without the required pre-interrupt activity
+      // observation; the fixed reader leaves the ordering unknown (fail
+      // closed).
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-shared-cell-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const sharedCellInput = 'const r = await tools.exec_command({cmd:"sleep 5"}); text(JSON.stringify(r))\n'
+        + 'const r = await tools.write_stdin({session_id: 44, chars: "", yield_time_ms: 1000}); text(JSON.stringify(r))\n';
+      const rollouts = [
+        [
+          childMeta(),
+          wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+          output('rescue-launch', { output: '', session_id: 7 }, 200),
+          wrappedRead('rescue-poll', 7, 300),
+          output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+          wrappedRead('rescue-poll-2', 7, 4_000),
+          output('rescue-poll-2', { output: '', exit_code: 0, session_id: 7 }, 5_500),
+        ],
+        [
+          parentMeta(),
+          wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+          output('control-launch', { output: '', session_id: 44 }, 1_100),
+          at(2_000, { type: 'custom_tool_call', name: 'exec', call_id: 'shared-cell', input: sharedCellInput }),
+          at(6_000, { type: 'custom_tool_call_output', call_id: 'shared-cell', output: [
+            { type: 'input_text', text: JSON.stringify({ output: 'slept', exit_code: 0 }) },
+            { type: 'input_text', text: JSON.stringify({ output: controlLines(12), session_id: 44 }) },
+          ] }),
+          interruptCall(4_400),
+          interruptOutput(4_500),
+        ],
+      ];
+      const facts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(
+        facts.beforeDeliveryRead,
+        { observed: false, lastLineIndex: null, orderedBeforeInterrupt: null },
+        'the shared-cell read has no attributable invocation: its ordering is unknown, never pre-interrupt',
+      );
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts2 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      assert.equal(facts2.survivalControl.noCollateralQualified, false, 'unknown execution ordering never qualifies no-collateral');
+      assert.equal(facts2.survivalControl.reason, 'activity-at-delivery-unobserved');
+    });
+
+    test('the codex buffered-receipt reproduction: a tag above the receipt-anchored bound but at or below B never proves survival', async () => {
+      // Exact scenario: startup tag 0 RECEIVED at 1000 (buffered output —
+      // receipt ≠ emission), interrupt at 2500, a line emitted at tag 2000
+      // BEFORE the interrupt that only surfaces in the post-delivery read.
+      // The retired receipt-time anchor computed bound 2500 − 1000 = 1500 and
+      // wrongly qualified; the sound bound B = D − L = 2500 − 500 = 2000
+      // rejects it (tag 2000 is not strictly above 2000), and the read
+      // returning nothing new reports lost — never survival.
+      const rollouts = [[
+        parentMeta(),
+        wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 500),
+        output('control-launch', { output: '', session_id: 44 }, 600),
+        wrappedRead('control-read-1', 44, 900),
+        output('control-read-1', { output: 'zcode-survival-control 1 0' }, 1_000),
+        interruptCall(2_500),
+        interruptOutput(2_600),
+        wrappedRead('control-read-2', 44, 2_900),
+        output('control-read-2', { output: 'zcode-survival-control 1 0\nzcode-survival-control 2 2000' }, 3_000),
+      ], [
+        childMeta(),
+        wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 700),
+        output('rescue-launch', { output: '', session_id: 7 }, 800),
+        wrappedRead('rescue-poll', 7, 2_000),
+        output('rescue-poll', { output: 'waiting', session_id: 7 }, 2_100),
+        wrappedRead('rescue-poll-2', 7, 2_400),
+        output('rescue-poll-2', { output: '', exit_code: 0, session_id: 7 }, 2_700),
+      ]];
+      const facts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.equal(facts.deliveryBoundTag, 2_700 - 500, 'the bound is the sound D − L with the SETTLED delivery (2700), never the receipt-anchored 1500 and never the bare request');
+      assert.equal(facts.postDeliveryRead.returnedLines, false, 'tag 2000 is not strictly above B = 2000');
+      const verdict = (await import('../tools/shell-wait-probe/release-qualification.mjs')).evaluateSurvivalControl({
+        deliveryBoundTag: facts.deliveryBoundTag,
+        lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+        emittedLines: facts.emittedLines,
+        completionMarker: facts.completionMarker,
+        postDeliveryRead: facts.postDeliveryRead,
+        beforeDeliveryReadObserved: facts.beforeDeliveryRead.observed === true && facts.beforeDeliveryRead.orderedBeforeInterrupt === true,
+        ownership: facts.ownership,
+      });
+      assert.equal(verdict.noCollateralQualified, false, 'buffered bytes received after delivery never prove post-delivery survival');
+      // Round 8: readable read, no new tags, no independent loss evidence —
+      // the state stays unknown.
+      assert.equal(verdict.postDelivery, 'unknown');
+    });
+
+    test('the qualifying pre-interrupt read must be DISTINCT from the launch response and ADVANCING', () => {
+      // launch → interrupt → post-read, where the launch output itself
+      // already carries line 1: the launch response must never count as the
+      // required pre-delivery read, and the post-read (lines 1–2) is not
+      // ordered before the interrupt either.
+      const rollouts = i1Rollouts({ includePreRead: false, launchOutput: 'zcode-survival-control 1 0', postReadLineCount: 2 });
+      const facts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: SURVIVAL_CONTROL_LINE_COUNT, interruptInteraction: interactionFor(rollouts), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+      assert.deepEqual(facts.beforeDeliveryRead, { observed: false, lastLineIndex: null, orderedBeforeInterrupt: false },
+        'without a distinct pre-interrupt read, activity at delivery is unobserved');
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts2 = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, rollouts, [], LAUNCHER,
+      );
+      assert.equal(facts2.survivalControl.noCollateralQualified, false, 'no-collateral cannot qualify without the required pre-delivery read');
+      assert.equal(facts2.survivalControl.reason, 'activity-at-delivery-unobserved');
+    });
+
+    test('the mapper projects the §16.4 verdict end to end: positively active control, alive after delivery', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-i1-wiring-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = {
+        workspace: '/private/tmp/i1-ws', codexHome: '/private/tmp/i1-home',
+        installedRoot: '/private/tmp/i1-installed', env: { HOME: '/private/tmp/i1-home' },
+        survivalControlPath: CONTROL_PATH,
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, i1Rollouts(), [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, true, 'a control positively active at delivery and emitting after the bound qualifies');
+      assert.equal(facts.survivalControl.activityAtDelivery, 'active');
+      assert.equal(facts.survivalControl.postDelivery, 'alive');
+      const record = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal', output: root },
+        { createFixture: async () => fixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(record.survivalControl.noCollateralQualified, true, 'the durable record carries the end-to-end no-collateral verdict');
+      // Round 12: the BOUNDED, WHITELISTED oracle inputs persist beside the
+      // versioned verdict — enough to re-adjudicate the recorded
+      // post-delivery emission tag against its bound offline. No private
+      // paths and no raw rollouts: the projection is closed integers,
+      // booleans, and the ownership/identity classification.
+      const inputs = record.survivalControlInputs;
+      assert.equal(typeof inputs, 'object');
+      assert.equal(inputs.deliveryBoundTag, 4_500);
+      assert.equal(typeof inputs.settledDeliveryAtMs, 'number', 'the settled-delivery anchor persists');
+      assert.equal(typeof inputs.launchAtMs, 'number', 'the launch-event anchor persists');
+      assert.equal(inputs.settledDeliveryAtMs - inputs.launchAtMs, inputs.deliveryBoundTag, 'the bound derivation re-checks from its anchors');
+      assert.deepEqual(inputs.emittedLines, Array.from({ length: 13 }, (_, index) => ({ index: index + 1, tag: index * 400 })));
+      assert.equal(inputs.completionMarker, null);
+      assert.deepEqual(inputs.postDeliveryRead, { occurred: true, readable: true, returnedLines: true });
+      assert.deepEqual(inputs.beforeDeliveryRead, { observed: true, lastLineIndex: 12, orderedBeforeInterrupt: true });
+      assert.equal(inputs.ownership, 'root');
+      assert.equal(inputs.owningRootSessionId, PARENT_THREAD, 'the owning-Root identity is the verified parent session');
+      assert.equal(inputs.controlExitObserved, false);
+      assert.equal(inputs.controlExitPremature, false);
+      assert.equal(inputs.controlExitCode, null, 'no exit observed in this fixture: the code persists as null');
+      assert.equal(JSON.stringify(inputs).includes('/private/tmp'), false, 'no private paths in the persisted inputs');
+      assert.equal(JSON.stringify(inputs).includes('rollouts'), false, 'no raw rollouts in the persisted inputs');
+      // OFFLINE RE-ADJUDICATION: the persisted inputs through the oracle
+      // reproduce the recorded verdict, and the recorded post-delivery tag
+      // re-checks against the recorded bound.
+      const readjudicated = (await import('../tools/shell-wait-probe/release-qualification.mjs')).evaluateSurvivalControl({
+        deliveryBoundTag: inputs.deliveryBoundTag,
+        lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+        emittedLines: inputs.emittedLines,
+        completionMarker: inputs.completionMarker,
+        postDeliveryRead: inputs.postDeliveryRead,
+        beforeDeliveryReadObserved: inputs.beforeDeliveryRead.observed === true && inputs.beforeDeliveryRead.orderedBeforeInterrupt === true,
+        ownership: inputs.ownership,
+        controlExitObserved: inputs.controlExitObserved,
+        controlExitPremature: inputs.controlExitPremature,
+      });
+      assert.equal(readjudicated.noCollateralQualified, record.survivalControl.noCollateralQualified);
+      assert.equal(readjudicated.reason, record.survivalControl.reason);
+      assert.equal(readjudicated.postDeliveryEmissionTag > inputs.deliveryBoundTag, true, 'the recorded tag exceeds the recorded bound');
+    });
+
+    test('the mandated buffered-output negative holds end to end: all lines emitted before delivery never qualify', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-i1-buffered-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fixture = {
+        workspace: '/private/tmp/i1b-ws', codexHome: '/private/tmp/i1b-home',
+        installedRoot: '/private/tmp/i1b-installed', env: { HOME: '/private/tmp/i1b-home' },
+        survivalControlPath: CONTROL_PATH,
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, i1Rollouts({ postReadLineCount: 12 }), [], LAUNCHER,
+      );
+      assert.equal(facts.survivalControl.noCollateralQualified, false,
+        'the post-delivery read returning buffered bytes proves nothing: every emission tag is at or before the bound');
+      // Round 8: a readable read without new tags and without independent
+      // loss evidence leaves the post-delivery state unknown — still
+      // not-qualified, with the explicit unknown reason.
+      assert.equal(facts.survivalControl.postDelivery, 'unknown');
+      assert.equal(facts.survivalControl.reason, 'post-delivery-state-unestablished');
+    });
+
+    test('non-selector runs gain no survival wiring: no facts, no directive, byte-identical schema', () => {
+      const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+      const held = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+        result: { code: 0, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [] },
+        timeline: null,
+      };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000 },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, fixture, i1Rollouts(), [], LAUNCHER,
+      );
+      assert.equal(Object.hasOwn(facts, 'survivalControl'), false, 'a run without the selector gains no survival facts');
+      const noPathFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+        held, { status: 'supported', inconclusive: null, facts: { linkage: { childThreadId: CHILD_THREAD } } },
+        null, null, { ...fixture, survivalControlPath: undefined }, i1Rollouts(), [], LAUNCHER,
+      );
+      assert.equal(noPathFacts.survivalControl, null, 'an ungrounded control path fails closed to null, never fabricated facts');
+      assert.throws(() => extractSurvivalControlFacts(i1Rollouts(), 'relative.mjs', { lineCount: 30, interruptInteraction: interactionFor(i1Rollouts()) }), /absolute/i);
+      assert.throws(() => extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { interruptInteraction: interactionFor(i1Rollouts()) }), /lineCount/i);
+      assert.throws(() => extractSurvivalControlFacts(i1Rollouts(), CONTROL_PATH, { lineCount: 30 }), /interruptInteraction/i);
+    });
+  });
+
+  describe('release-qualification verdict oracle (task 2)', async () => {
+    // The small offline long/repeat/cadence/settlement oracle (plan §2:
+    // "conditional new release-qualification.mjs"). Every helper is pure,
+    // closed-enum, and fail-closed: missing evidence stays null/unknown —
+    // never zero, never a fabricated pass — and the mandated synthetic
+    // discriminator examples from plan Task 2 are asserted literally.
+    const {
+      RELEASE_QUALIFICATION_VERSION,
+      REPEAT_MIN_HEADROOM_MS,
+      deriveMeasuredInnerCapMs,
+      evaluateDecisivePollHeadroom,
+      classifyLongObservation,
+      evaluateRepeatQualification,
+      evaluateExactTerminalLinkage,
+      exactRescueRenderedExpectation,
+      summarizeObservationCadence,
+      compareObservationCadence,
+      evaluateSurvivalControl,
+      evaluateChildSettlementLayers,
+      evaluateNativeInterruptionSettlement,
+    } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+
+    test('the oracle carries a closed version marker and the mandated 30000 ms repeat margin', () => {
+      assert.equal(Number.isInteger(RELEASE_QUALIFICATION_VERSION), true);
+      assert.equal(REPEAT_MIN_HEADROOM_MS, 30_000);
+      // Offline re-adjudication must prove WHICH oracle version produced a
+      // verdict: every verdict-bearing export embeds the version in its
+      // return shape.
+      const versioned = (result) => {
+        assert.equal(result.releaseQualificationVersion, RELEASE_QUALIFICATION_VERSION,
+          `the verdict must carry the oracle version: ${JSON.stringify(result)}`);
+      };
+      versioned(deriveMeasuredInnerCapMs(mObservation()));
+      versioned(deriveMeasuredInnerCapMs({ ...mObservation(), innerNonterminality: 'inner-cap-live-handle' }));
+      versioned(evaluateDecisivePollHeadroom({ measuredCapMs: 300_000, remainingLifetimeMs: 330_000 }));
+      versioned(classifyLongObservation({ observationWallMs: 400_000, measuredCapMs: 300_000, attributable: true }));
+      versioned(evaluateRepeatQualification({ measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(), repeat: repeatArm() }));
+      versioned(evaluateExactTerminalLinkage({ terminalStdout: 'x\n', exitCode: 0, expectedOutput: 'x\n', expectedExitCode: 0 }));
+      versioned(summarizeObservationCadence({ innerObservations: 1, outerContinuations: 1, rootJoins: 0, preparationWrites: 0 }));
+      versioned(compareObservationCadence({
+        baseline: summarizeObservationCadence({ innerObservations: 2, outerContinuations: 2, rootJoins: 0, preparationWrites: 0 }),
+        candidate: summarizeObservationCadence({ innerObservations: 1, outerContinuations: 1, rootJoins: 0, preparationWrites: 0 }),
+      }));
+      versioned(evaluateSurvivalControl(survivalInput({
+        emittedLines: [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }],
+      })));
+      versioned(evaluateChildSettlementLayers({ remoteTerminal: true, localProcessReaping: 'natural-exit-observed', durableObligations: null }));
+      versioned(evaluateNativeInterruptionSettlement(settlementInput()));
+    });
+
+    const mObservation = () => ({
+      attributable: true,
+      innerNonterminality: 'inner-cap-live-handle',
+      firstReturnWallMs: 300_000,
+      requestedInnerYieldMs: 3_600_000,
+      interruptAttempted: false,
+      decisivePollExplicitYield: 'absent',
+      decisiveCallSurface: 'code-mode-wrapper',
+    });
+
+    test('M derives ONLY from an original-handle nonterminal poll of its own time under an unexpired requested window', () => {
+      assert.deepEqual(deriveMeasuredInnerCapMs(mObservation()), { measuredCapMs: 300_000, reason: null, releaseQualificationVersion: 1 });
+    });
+
+    test('M grounds on INNER-PROCESS nonterminality (cap reached, live handle) — never on a mere outer-cell yield', () => {
+      // REAL M evidence (verified pipeline semantics): the inner write_stdin
+      // awaited its full clamped cap and returned a LIVE process handle
+      // without an exit code — the host decodes that direct-form response as
+      // completed-state with `session_id` and no `exit_code`.
+      assert.equal(deriveMeasuredInnerCapMs({ ...mObservation(), innerNonterminality: 'inner-cap-live-handle' }).measuredCapMs, 300_000);
+      // A yielded outer code-mode cell leaves the INNER call unresolved: its
+      // duration measures the outer yield, never the inner cap.
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), innerNonterminality: 'outer-yield-inner-unresolved' }),
+        { measuredCapMs: null, reason: 'outer-yield-inner-unresolved', releaseQualificationVersion: 1 },
+      );
+      // The inner process actually exited: terminal, not a cap measurement.
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), innerNonterminality: 'inner-process-exited' }),
+        { measuredCapMs: null, reason: 'first-return-not-nonterminal', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), innerNonterminality: 'unknown' }),
+        { measuredCapMs: null, reason: 'inner-nonterminality-unestablished', releaseQualificationVersion: 1 },
+      );
+    });
+
+    test('pragma ABSENCE must be observed: the supported unknown value never grounds M (codex review round 2)', () => {
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), decisivePollExplicitYield: 'unknown' }),
+        { measuredCapMs: null, reason: 'pragma-state-unestablished', releaseQualificationVersion: 1 },
+        'an unestablished pragma state is not observed absence',
+      );
+      assert.equal(deriveMeasuredInnerCapMs({ ...mObservation(), decisivePollExplicitYield: 'absent' }).measuredCapMs, 300_000,
+        'only the literal absent value grounds M');
+    });
+
+    test('M is grounded only by an ORIGINAL-HANDLE poll: an unattributable observation never grounds M', () => {
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), attributable: false }),
+        { measuredCapMs: null, reason: 'observation-unattributed', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        deriveMeasuredInnerCapMs({ ...mObservation(), attributable: null }),
+        { measuredCapMs: null, reason: 'observation-unattributed', releaseQualificationVersion: 1 },
+        'an unestablishable attribution fails closed the same way',
+      );
+    });
+
+    test('M rejects every alternate ender, exited inner process, unknown shape, and expired window fail-closed', () => {
+      for (const [mutate, reason] of [
+        [(observation) => ({ ...observation, innerNonterminality: 'inner-process-exited' }), 'first-return-not-nonterminal'],
+        [(observation) => ({ ...observation, innerNonterminality: 'outer-yield-inner-unresolved' }), 'outer-yield-inner-unresolved'],
+        [(observation) => ({ ...observation, innerNonterminality: 'unknown' }), 'inner-nonterminality-unestablished'],
+        [(observation) => ({ ...observation, innerNonterminality: null }), 'inner-nonterminality-unestablished'],
+        [(observation) => ({ ...observation, interruptAttempted: true }), 'alternate-ender-interrupt'],
+        [(observation) => ({ ...observation, interruptAttempted: null }), 'interrupt-state-unestablished'],
+        [(observation) => ({ ...observation, decisivePollExplicitYield: 'present' }), 'explicit-pragma-present'],
+        [(observation) => ({ ...observation, decisivePollExplicitYield: 'unknown' }), 'pragma-state-unestablished'],
+        [(observation) => ({ ...observation, decisivePollExplicitYield: null }), 'pragma-state-unestablished'],
+        [(observation) => ({ ...observation, decisiveCallSurface: 'direct-native' }), 'unsupported-call-surface'],
+        [(observation) => ({ ...observation, decisiveCallSurface: 'unknown' }), 'unsupported-call-surface'],
+        [(observation) => ({ ...observation, decisiveCallSurface: null }), 'unsupported-call-surface'],
+        [(observation) => ({ ...observation, firstReturnWallMs: null }), 'missing-evidence'],
+        [(observation) => ({ ...observation, requestedInnerYieldMs: null }), 'missing-evidence'],
+        [(observation) => ({ ...observation, firstReturnWallMs: 3_600_000 }), 'requested-window-expired'],
+        [(observation) => ({ ...observation, firstReturnWallMs: 3_600_001 }), 'requested-window-expired'],
+      ]) {
+        const result = deriveMeasuredInnerCapMs(mutate(mObservation()));
+        assert.deepEqual(result, { measuredCapMs: null, reason, releaseQualificationVersion: 1 }, `expected reason ${reason}`);
+      }
+    });
+
+    test('the mandated discriminator boundary: M=300000 with remaining=329999 fails the headroom precondition, remaining=330000 passes it, null M never fabricates a pass', () => {
+      assert.deepEqual(
+        evaluateDecisivePollHeadroom({ measuredCapMs: 300_000, remainingLifetimeMs: 329_999 }),
+        { qualified: false, headroomMs: 29_999, reason: 'insufficient-headroom', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateDecisivePollHeadroom({ measuredCapMs: 300_000, remainingLifetimeMs: 330_000 }),
+        { qualified: true, headroomMs: 30_000, reason: null, releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateDecisivePollHeadroom({ measuredCapMs: null, remainingLifetimeMs: 10_000_000 }),
+        { qualified: false, headroomMs: null, reason: 'measured-cap-unavailable', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateDecisivePollHeadroom({ measuredCapMs: 300_000, remainingLifetimeMs: null }),
+        { qualified: false, headroomMs: null, reason: 'remaining-lifetime-unavailable', releaseQualificationVersion: 1 },
+      );
+    });
+
+    test('a long poll finishing naturally BEFORE the reference is INCONCLUSIVE for cap propagation, never host failure', () => {
+      assert.deepEqual(
+        classifyLongObservation({ observationWallMs: 290_000, measuredCapMs: 300_000, attributable: true }),
+        { classification: 'inconclusive-before-reference', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        classifyLongObservation({ observationWallMs: 300_001, measuredCapMs: 300_000, attributable: true }),
+        { classification: 'beyond-reference', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        classifyLongObservation({ observationWallMs: 400_000, measuredCapMs: 300_000, attributable: false }),
+        { classification: 'unattributed', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        classifyLongObservation({ observationWallMs: null, measuredCapMs: 300_000, attributable: true }),
+        { classification: 'unavailable', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        classifyLongObservation({ observationWallMs: 400_000, measuredCapMs: null, attributable: true }),
+        { classification: 'unavailable', releaseQualificationVersion: 1 },
+      );
+    });
+
+    const leaderArm = () => ({ remainingLifetimeMs: 400_000, longObservationWallMs: 500_000, observationAttributable: true, exactTerminalMatch: true });
+    const repeatArm = () => ({ remainingLifetimeMs: 380_000, longObservationWallMs: 480_000, observationAttributable: true, exactTerminalMatch: true });
+
+    test('a fresh matching repeat qualifies only when EACH arm independently clears M+30000 and the beyond-reference observation on identical settings', () => {
+      assert.deepEqual(
+        evaluateRepeatQualification({ measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(), repeat: repeatArm() }),
+        { verdict: 'repeat-qualified', reasons: [], releaseQualificationVersion: 1 },
+      );
+    });
+
+    test('a valid L with a late/too-short R is NOT qualified (identical settings never excuse a late repeat)', () => {
+      const result = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(),
+        repeat: { ...repeatArm(), remainingLifetimeMs: 200_000 },
+      });
+      assert.equal(result.verdict, 'repeat-not-qualified');
+      assert.ok(result.reasons.includes('repeat:insufficient-headroom'), `reasons must name the failing arm: ${JSON.stringify(result.reasons)}`);
+    });
+
+    test('null M never fabricates a repeat pass; a before-reference R is INCONCLUSIVE, not failed', () => {
+      assert.deepEqual(
+        evaluateRepeatQualification({ measuredCapMs: null, settingsIdentical: true, leader: leaderArm(), repeat: repeatArm() }),
+        { verdict: 'inconclusive', reasons: ['measured-cap-unavailable'], releaseQualificationVersion: 1 },
+      );
+      const beforeReference = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(),
+        repeat: { ...repeatArm(), longObservationWallMs: 290_000 },
+      });
+      assert.equal(beforeReference.verdict, 'inconclusive');
+      assert.ok(beforeReference.reasons.includes('repeat:inconclusive-before-reference'));
+    });
+
+    test('terminal-linkage mismatches and unattributed observations reject the affected arm; settings mismatches invalidate the claim', () => {
+      const mismatched = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(),
+        repeat: { ...repeatArm(), exactTerminalMatch: false },
+      });
+      assert.equal(mismatched.verdict, 'repeat-not-qualified');
+      assert.ok(mismatched.reasons.includes('repeat:terminal-linkage-mismatch'));
+      const unattributed = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: true, leader: leaderArm(),
+        repeat: { ...repeatArm(), observationAttributable: false },
+      });
+      assert.equal(unattributed.verdict, 'repeat-not-qualified');
+      assert.ok(unattributed.reasons.includes('repeat:observation-unattributed'));
+      const changedSettings = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: false, leader: leaderArm(), repeat: repeatArm(),
+      });
+      assert.deepEqual(changedSettings, { verdict: 'repeat-not-qualified', reasons: ['settings-mismatch'], releaseQualificationVersion: 1 });
+      const unestablishedSettings = evaluateRepeatQualification({
+        measuredCapMs: 300_000, settingsIdentical: null, leader: leaderArm(), repeat: repeatArm(),
+      });
+      assert.equal(unestablishedSettings.verdict, 'inconclusive');
+      assert.ok(unestablishedSettings.reasons.includes('settings-unestablished'));
+    });
+
+    test('the exact-output gate accepts ONLY the byte-exact production-rendered framing with the linked exit code', async () => {
+      // Independent source of truth: the REAL production renderer builds the
+      // expected framing; the oracle must agree with it byte-for-byte.
+      const { renderOutput } = await import('../scripts/lib/render.mjs');
+      const expectation = exactRescueRenderedExpectation({ result: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', resumable: false });
+      assert.equal(expectation.exitCode, 0);
+      assert.equal(expectation.output, renderOutput({ result: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', job: { resumable: false } }),
+        'the exact expectation must BE the production render, not a transcription');
+      const linked = { expectedOutput: expectation.output, expectedExitCode: expectation.exitCode };
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: expectation.output, exitCode: 0, ...linked }),
+        { matched: true, reason: null, releaseQualificationVersion: 1 },
+      );
+      // The legacy substring sentinel semantics can NEVER satisfy this gate:
+      // a bare sentinel (no rendered indicator line) is the rendered framing
+      // truncated before its indicator — named as a truncation, and rejected.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', exitCode: 0, ...linked }),
+        { matched: false, reason: 'output-truncated', releaseQualificationVersion: 1 },
+      );
+      // Sentinel plus extra stdout (before or after) is rejected.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: `${expectation.output}extra\n`, exitCode: 0, ...linked }),
+        { matched: false, reason: 'extra-output', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: `noise\n${expectation.output}`, exitCode: 0, ...linked }),
+        { matched: false, reason: 'extra-output', releaseQualificationVersion: 1 },
+      );
+      // Truncated output is rejected.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: expectation.output.slice(0, -1), exitCode: 0, ...linked }),
+        { matched: false, reason: 'output-truncated', releaseQualificationVersion: 1 },
+      );
+      // Exact exit-code linkage: exact bytes with the wrong (or unknown) exit code never match.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: expectation.output, exitCode: 1, ...linked }),
+        { matched: false, reason: 'exit-code-mismatch', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: expectation.output, exitCode: null, ...linked }),
+        { matched: null, reason: 'missing-evidence', releaseQualificationVersion: 1 },
+      );
+      // Round 12: merged-only bytes (no attributable stream split) leave the
+      // exact equality UNESTABLISHED — never a guess.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: null, exitCode: 0, ...linked }),
+        { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 },
+      );
+      // Round 16: an EMPTY attributable capture is definitive — a process
+      // that exited without emitting the expected result fails as truncated
+      // output; the unavailable verdict stays reserved for ABSENT captures.
+      assert.deepEqual(
+        evaluateExactTerminalLinkage({ terminalStdout: '', exitCode: 0, ...linked }),
+        { matched: false, reason: 'output-truncated', releaseQualificationVersion: 1 },
+      );
+    });
+
+    test('cadence counts keep inner observations, outer continuations, total re-entry, Root joins and preparation separate — with no whole-job-zero claims', () => {
+      const established = summarizeObservationCadence({ innerObservations: 2, outerContinuations: 3, rootJoins: 1, preparationWrites: 1 });
+      assert.deepEqual(established, {
+        innerObservations: 2, outerContinuations: 3, totalObservationReEntry: 5,
+        rootJoins: 1, preparationWrites: 1, establishable: true, reason: null, releaseQualificationVersion: 1,
+      });
+      // Unknown inputs stay null end to end — never a fabricated zero.
+      assert.deepEqual(
+        summarizeObservationCadence({ innerObservations: null, outerContinuations: 3, rootJoins: null, preparationWrites: null }),
+        { innerObservations: null, outerContinuations: 3, totalObservationReEntry: null, rootJoins: null, preparationWrites: null, establishable: false, reason: 'cadence-unavailable', releaseQualificationVersion: 1 },
+      );
+      assert.deepEqual(
+        summarizeObservationCadence({ innerObservations: 2, outerContinuations: null, rootJoins: null, preparationWrites: null }),
+        { innerObservations: 2, outerContinuations: null, totalObservationReEntry: null, rootJoins: null, preparationWrites: null, establishable: false, reason: 'cadence-unavailable', releaseQualificationVersion: 1 },
+      );
+      // The comparison: fewer candidate re-entries is the reduced-intervention
+      // verdict; equal-or-greater is not reduced; unknown cadence is inconclusive.
+      assert.deepEqual(
+        compareObservationCadence({
+          baseline: summarizeObservationCadence({ innerObservations: 3, outerContinuations: 3, rootJoins: 0, preparationWrites: 0 }),
+          candidate: summarizeObservationCadence({ innerObservations: 2, outerContinuations: 2, rootJoins: 0, preparationWrites: 0 }),
+        }),
+        { verdict: 'reduced', reason: null, releaseQualificationVersion: 1 },
+      );
+      assert.equal(
+        compareObservationCadence({
+          baseline: summarizeObservationCadence({ innerObservations: 2, outerContinuations: 2, rootJoins: 0, preparationWrites: 0 }),
+          candidate: summarizeObservationCadence({ innerObservations: 2, outerContinuations: 2, rootJoins: 0, preparationWrites: 0 }),
+        }).verdict, 'not-reduced',
+      );
+      assert.deepEqual(
+        compareObservationCadence({
+          baseline: summarizeObservationCadence({ innerObservations: null, outerContinuations: null, rootJoins: null, preparationWrites: null }),
+          candidate: summarizeObservationCadence({ innerObservations: 2, outerContinuations: 2, rootJoins: 0, preparationWrites: 0 }),
+        }),
+        { verdict: 'inconclusive', reason: 'cadence-unavailable', releaseQualificationVersion: 1 },
+      );
+    });
+
+    const survivalInput = (over = {}) => ({
+      deliveryBoundTag: 10_000,
+      lineCount: 30,
+      emittedLines: Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+      completionMarker: null,
+      postDeliveryRead: { occurred: true, readable: true, returnedLines: true },
+      beforeDeliveryReadObserved: true,
+      ownership: 'root',
+      ...over,
+    });
+
+    test('the post-delivery read must be a READABLE attributable result: invocation alone never qualifies (codex review round 5)', () => {
+      const postBoundTag = [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }];
+      // {occurred, returnedLines} without a readable response: the read may
+      // never have answered — tags from another straddling read prove
+      // nothing. Not qualified, explicit reason.
+      const unreadable = evaluateSurvivalControl(survivalInput({
+        emittedLines: postBoundTag,
+        postDeliveryRead: { occurred: true, returnedLines: false },
+      }));
+      assert.equal(unreadable.postDelivery, 'alive', 'the emission tags still show life after the bound');
+      assert.equal(unreadable.noCollateralQualified, false);
+      assert.equal(unreadable.reason, 'post-delivery-read-not-established');
+      // A READABLE empty-result post-delivery read with NO independent loss
+      // evidence does NOT establish loss (codex review round 8): the fixture
+      // emits every 2000 ms but the read asks every 1000 ms, so a HEALTHY
+      // control can return no new line between emissions — even with a live
+      // process handle. Qualification stays false and the state stays
+      // unknown, never 'lost'.
+      const readableEmpty = evaluateSurvivalControl(survivalInput({
+        postDeliveryRead: { occurred: true, readable: true, returnedLines: false },
+      }));
+      assert.equal(readableEmpty.postDelivery, 'unknown');
+      assert.equal(readableEmpty.reason, 'post-delivery-state-unestablished');
+      assert.equal(readableEmpty.noCollateralQualified, false);
+      // INDEPENDENT loss evidence — the control's own exit observed by the
+      // post-delivery read — is what establishes 'lost'.
+      const lostWithExit = evaluateSurvivalControl(survivalInput({
+        postDeliveryRead: { occurred: true, readable: true, returnedLines: false },
+        controlExitObserved: true,
+      }));
+      assert.equal(lostWithExit.postDelivery, 'lost');
+      assert.equal(lostWithExit.reason, 'no-post-delivery-emission-after-bound');
+      assert.equal(lostWithExit.noCollateralQualified, false);
+      // The loss-evidence fact is a closed boolean-or-null input.
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ controlExitObserved: 'yes' })), /controlExitObserved/i);
+      // Ownership must be the Root: child-owned or unidentifiable controls
+      // never qualify (codex review round 5).
+      const childOwned = evaluateSurvivalControl(survivalInput({ ownership: 'child' }));
+      assert.equal(childOwned.noCollateralQualified, false);
+      assert.equal(childOwned.reason, 'control-not-root-owned');
+      const unidentifiable = evaluateSurvivalControl(survivalInput({ ownership: 'unidentifiable' }));
+      assert.equal(unidentifiable.noCollateralQualified, false);
+      assert.equal(unidentifiable.reason, 'control-not-root-owned');
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ ownership: 'elsewhere' })), /ownership/i);
+      // A present-but-non-boolean readable is invalid input (fail closed);
+      // a MISSING readable counts as not readable (legacy fact shapes).
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ postDeliveryRead: { occurred: true, readable: 'yes', returnedLines: false } })), /readable/i);
+    });
+
+    test('an observed PREMATURE control exit rejects liveness even with a post-bound line (codex review round 11)', () => {
+      // A control killed after line 4: the buffered post-bound line proves
+      // brief survival past the bound, but the OBSERVED exit code occurred
+      // before the designed line-30 completion — a premature/mid-run exit.
+      // It rejects with the explicit premature-exit reason; it is never
+      // 'alive' and never qualified.
+      const killedAfterLine4 = evaluateSurvivalControl(survivalInput({
+        emittedLines: [
+          { index: 1, tag: 0 }, { index: 2, tag: 3_600 }, { index: 3, tag: 7_200 }, { index: 4, tag: 11_000 },
+        ],
+        controlExitObserved: true,
+        controlExitPremature: true,
+      }));
+      assert.equal(killedAfterLine4.postDelivery, 'lost');
+      assert.equal(killedAfterLine4.reason, 'premature-control-exit');
+      assert.equal(killedAfterLine4.noCollateralQualified, false);
+      assert.equal(killedAfterLine4.activityAtDelivery, 'active', 'the control was still mid-run at delivery');
+      // The DESIGNED natural completion: line 30 emitted after the bound and
+      // the observed exit consistent with it (not premature) stays qualified.
+      const natural = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 26_100 },
+        controlExitObserved: true,
+        controlExitPremature: false,
+        controlExitCode: 0,
+      }));
+      assert.equal(natural.postDelivery, 'completed');
+      assert.equal(natural.noCollateralQualified, true);
+      // The premature fact is a closed boolean-or-null input.
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ controlExitPremature: 'yes' })), /controlExitPremature/i);
+    });
+
+    test('an ABNORMAL control exit rejects natural-completion credit even after the final line (codex review round 13)', () => {
+      // The post-settlement read returns the FULL designed output (line 30)
+      // but the observed exit code is 137 (killed): the final progress line
+      // alone never credits natural completion — the OBSERVED exit code must
+      // equal the designed exit code (0), and an abnormal code is a distinct
+      // named rejection ('lost', never 'completed', never qualified).
+      const killedAtCompletion = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 26_100 },
+        controlExitObserved: true,
+        controlExitPremature: false,
+        controlExitCode: 137,
+      }));
+      assert.equal(killedAtCompletion.postDelivery, 'lost');
+      assert.equal(killedAtCompletion.reason, 'abnormal-control-exit');
+      assert.equal(killedAtCompletion.noCollateralQualified, false);
+      // The DESIGNED completion: full output + the designed exit code 0 ⇒
+      // natural-completion credit stands.
+      const designed = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 26_100 },
+        controlExitObserved: true,
+        controlExitPremature: false,
+        controlExitCode: 0,
+      }));
+      assert.equal(designed.postDelivery, 'completed');
+      assert.equal(designed.noCollateralQualified, true);
+      // An UNOBSERVABLE exit code keeps the fail-closed semantics: the
+      // control is observed dead, never credited completed or alive, never
+      // qualified.
+      const unknownCode = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 26_100 },
+        controlExitObserved: true,
+        controlExitPremature: false,
+        controlExitCode: null,
+      }));
+      assert.equal(unknownCode.postDelivery, 'lost');
+      assert.equal(unknownCode.noCollateralQualified, false);
+      // The observed exit code is a closed safe-integer-or-null input.
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ controlExitCode: 'zero' })), /controlExitCode/i);
+    });
+
+    test('a tag at or below the bound never proves completion BEFORE delivery (codex review round 14)', () => {
+      // Launch at 0, control start at 5s, settlement at 60s ⇒ B = 60000 − 0.
+      // The final tag 58000 is emitted at ~63s: B bounds LATENESS, not
+      // earliness — a tag at or below B never proves pre-delivery emission.
+      // Without independently established pre-delivery evidence (the read
+      // that returned the completion marker completed before the request)
+      // the completion timing stays unknown — never 'completed-before' and
+      // never 'lost'.
+      const lateStart = evaluateSurvivalControl(survivalInput({
+        deliveryBoundTag: 60_000,
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 2_000 })),
+        completionMarker: { index: 30, tag: 58_000 },
+      }));
+      assert.equal(lateStart.completionBeforeDeliveryObserved, false);
+      assert.equal(lateStart.activityAtDelivery, 'unknown', 'the final line was not read before the request: no mid-run proof either');
+      assert.equal(lateStart.postDelivery, 'unknown', 'the completion timing is unknown, never completed-before or lost');
+      assert.equal(lateStart.noCollateralQualified, false);
+      // INDEPENDENTLY established pre-delivery evidence: the read that
+      // returned the completion marker completed before the request ⇒
+      // 'completed-before' is a legitimate established rejection.
+      const established = evaluateSurvivalControl(survivalInput({
+        deliveryBoundTag: 60_000,
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 2_000 })),
+        completionMarker: { index: 30, tag: 58_000 },
+        completionBeforeDeliveryObserved: true,
+      }));
+      assert.equal(established.completionBeforeDeliveryObserved, true);
+      assert.equal(established.activityAtDelivery, 'completed-before');
+      assert.equal(established.postDelivery, 'unknown');
+      assert.equal(established.noCollateralQualified, false);
+      assert.equal(established.reason, 'control-completed-before-delivery');
+      // The fact is a closed boolean-or-null input.
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ completionBeforeDeliveryObserved: 'yes' })), /completionBeforeDeliveryObserved/i);
+    });
+
+    test('contradictory emission evidence yields a NAMED verdict, never a throw (codex self-review round 18)', () => {
+      // Duplicate indices, decreasing indices, and non-monotonic tags are
+      // CONTRADICTORY EMISSION EVIDENCE — a named not-qualified verdict, the
+      // same contradiction class the reader's conflicting-tag path treats as
+      // null facts. Shape errors (index bounds, non-finite tags) stay
+      // typed-input throws.
+      const duplicateIndex = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 1, tag: 900 }, { index: 1, tag: 1_800 }],
+      }));
+      assert.equal(duplicateIndex.noCollateralQualified, false);
+      assert.equal(duplicateIndex.reason, 'contradictory-emission-evidence');
+      assert.equal(duplicateIndex.postDelivery, 'unknown');
+      const decreasingIndex = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 2, tag: 900 }, { index: 1, tag: 1_800 }],
+      }));
+      assert.equal(decreasingIndex.noCollateralQualified, false);
+      assert.equal(decreasingIndex.reason, 'contradictory-emission-evidence');
+      const nonMonotonic = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 1, tag: 1_800 }, { index: 2, tag: 900 }],
+      }));
+      assert.equal(nonMonotonic.noCollateralQualified, false);
+      assert.equal(nonMonotonic.reason, 'contradictory-emission-evidence');
+      // Shape errors keep the typed-input throws.
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ emittedLines: [{ index: 0, tag: 900 }] })), /index/i);
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ emittedLines: [{ index: 1, tag: Number.NaN }] })), /tag/i);
+    });
+
+    test('a control positively active at delivery and emitting strictly after the delivery bound qualifies no-collateral', () => {
+      const result = evaluateSurvivalControl(survivalInput({
+        emittedLines: [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }],
+      }));
+      assert.equal(result.started, true);
+      assert.equal(result.lastLineIndexAtDelivery, 12);
+      assert.equal(result.lastEmissionTagBeforeDelivery, 9_900);
+      assert.equal(result.activityAtDelivery, 'active');
+      assert.equal(result.postDelivery, 'alive');
+      assert.equal(result.postDeliveryEmissionTag, 11_000);
+      assert.equal(result.noCollateralQualified, true);
+      assert.equal(result.reason, null);
+    });
+
+    test('the §16.4 pre-delivery read is REQUIRED: emission tags alone never prove activity at delivery', () => {
+      const result = evaluateSurvivalControl(survivalInput({
+        emittedLines: [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }],
+        beforeDeliveryReadObserved: false,
+      }));
+      assert.equal(result.activityAtDelivery, 'unknown', 'without the ordered pre-delivery read, activity at delivery is unobserved');
+      assert.equal(result.noCollateralQualified, false);
+      assert.equal(result.reason, 'activity-at-delivery-unobserved');
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ beforeDeliveryReadObserved: null })), /beforeDeliveryReadObserved/i);
+    });
+
+    test('the bounded post-delivery read is REQUIRED: tags alone never qualify survival (codex review round 2)', () => {
+      const postBoundTag = [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }];
+      // A post-delivery emission tag with NO read: the required bounded
+      // observation did not (positively) happen — not qualified, explicit
+      // reason, never silently unknown.
+      const noRead = evaluateSurvivalControl(survivalInput({
+        emittedLines: postBoundTag,
+        postDeliveryRead: null,
+      }));
+      assert.equal(noRead.postDelivery, 'alive', 'the emission tags still show life after the bound');
+      assert.equal(noRead.noCollateralQualified, false);
+      assert.equal(noRead.reason, 'post-delivery-read-not-established');
+      const readNotExecuted = evaluateSurvivalControl(survivalInput({
+        emittedLines: postBoundTag,
+        postDeliveryRead: { occurred: false, returnedLines: false },
+      }));
+      assert.equal(readNotExecuted.noCollateralQualified, false);
+      assert.equal(readNotExecuted.reason, 'post-delivery-read-not-established');
+      // A post-bound COMPLETION marker equally requires the executed read.
+      // Round 13: natural-completion credit also requires the OBSERVED
+      // designed exit (0), which this input carries.
+      const completedNoRead = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 5 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 58_000 },
+        controlExitObserved: true,
+        controlExitCode: 0,
+        postDeliveryRead: null,
+      }));
+      assert.equal(completedNoRead.postDelivery, 'completed');
+      assert.equal(completedNoRead.noCollateralQualified, false);
+      assert.equal(completedNoRead.reason, 'post-delivery-read-not-established');
+    });
+
+    test('independent natural completion after the delivery bound qualifies ONLY through the marker’s own emission time', () => {
+      const result = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 5 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 58_000 },
+        postDeliveryRead: { occurred: true, readable: true, returnedLines: true },
+        // Round 13: natural-completion credit requires the OBSERVED designed
+        // exit (0) — the marker emission alone never proves the control
+        // finished successfully.
+        controlExitObserved: true,
+        controlExitCode: 0,
+      }));
+      assert.equal(result.activityAtDelivery, 'active');
+      assert.equal(result.postDelivery, 'completed');
+      assert.equal(result.postDeliveryEmissionTag, 58_000);
+      assert.equal(result.noCollateralQualified, true);
+      // Without the observed designed exit the marker emission alone leaves
+      // the completion uncredited (fail closed).
+      const noExit = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 5 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: { index: 30, tag: 58_000 },
+        postDeliveryRead: { occurred: true, readable: true, returnedLines: true },
+      }));
+      assert.equal(noExit.postDelivery, 'unknown');
+      assert.equal(noExit.noCollateralQualified, false);
+    });
+
+    test('mandated negative (a): all lines emitted before delivery never qualify — a post-delivery read returning them proves nothing', () => {
+      const result = evaluateSurvivalControl(survivalInput({}));
+      assert.equal(result.noCollateralQualified, false, 'emission times, not observation times, bind survival');
+      // Round 8: readable read, no new tags, no independent loss evidence —
+      // the state stays unknown; the control could be alive between
+      // emissions. 'lost' requires the observed control exit.
+      assert.equal(result.postDelivery, 'unknown');
+      assert.equal(result.postDeliveryEmissionTag, null);
+      assert.equal(result.reason, 'post-delivery-state-unestablished');
+      // With INDEPENDENT loss evidence (the read observed the control exit)
+      // the state is 'lost' — and the rejection still holds.
+      const lostWithExit = evaluateSurvivalControl(survivalInput({ controlExitObserved: true }));
+      assert.equal(lostWithExit.postDelivery, 'lost');
+      assert.equal(lostWithExit.reason, 'no-post-delivery-emission-after-bound');
+      assert.equal(lostWithExit.noCollateralQualified, false);
+    });
+
+    test('mandated negative (b): a control whose last line preceded delivery and which died during delivery is REJECTED even though the post-delivery read returns the buffered bytes', () => {
+      // Died mid-run during delivery: line 12 was the last emission (before
+      // the bound), the read after delivery returns the buffered bytes, but
+      // no line carries an emission tag after the bound.
+      const diedMidRun = evaluateSurvivalControl(survivalInput({}));
+      assert.equal(diedMidRun.activityAtDelivery, 'active');
+      assert.equal(diedMidRun.noCollateralQualified, false);
+      // The all-lines-before-delivery shape with the final index looks
+      // completed-at-delivery: activity is not mid-run and survival fails closed.
+      const lastLineBeforeDeath = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 200 })),
+        completionMarker: null,
+      }));
+      assert.equal(lastLineBeforeDeath.activityAtDelivery, 'unknown');
+      // Round 8: without the observed control exit the readable read cannot
+      // distinguish a live-but-quiescent control from a lost one — unknown;
+      // with the independent exit evidence the state is 'lost'.
+      assert.equal(lastLineBeforeDeath.postDelivery, 'unknown');
+      assert.equal(lastLineBeforeDeath.noCollateralQualified, false);
+      const lastLineBeforeDeathWithExit = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 200 })),
+        completionMarker: null,
+        controlExitObserved: true,
+      }));
+      assert.equal(lastLineBeforeDeathWithExit.postDelivery, 'lost');
+      assert.equal(lastLineBeforeDeathWithExit.noCollateralQualified, false);
+      // Round 8: the same shape WITHOUT the observed control exit stays
+      // unknown — the rejection (never qualified) is identical.
+      const deathUnobserved = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 200 })),
+        completionMarker: null,
+        controlExitObserved: null,
+      }));
+      assert.equal(deathUnobserved.postDelivery, 'unknown');
+      assert.equal(deathUnobserved.noCollateralQualified, false);
+    });
+
+    test('mandated negative (c): a completion marker whose emission time cannot be established after the delivery bound keeps survival NOT qualified', () => {
+      const result = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 5 }, (_, index) => ({ index: index + 1, tag: index * 900 })),
+        completionMarker: null,
+        postDeliveryRead: null,
+      }));
+      assert.equal(result.noCollateralQualified, false);
+      assert.equal(result.postDelivery, 'unknown');
+      assert.equal(result.postDeliveryEmissionTag, null);
+    });
+
+    test('activity at delivery unobserved, completion before delivery, and an unestablishable delivery bound all fail no-collateral', () => {
+      const quiet = evaluateSurvivalControl(survivalInput({ emittedLines: [{ index: 1, tag: 20_000 }] }));
+      assert.equal(quiet.activityAtDelivery, 'unknown');
+      assert.equal(quiet.noCollateralQualified, false);
+      assert.equal(quiet.reason, 'activity-at-delivery-unobserved');
+      // Round 14: B bounds lateness, never earliness — a marker at or below
+      // the bound is 'completed-before' ONLY with the independently
+      // established pre-delivery evidence; otherwise the timing stays
+      // unknown (never a fabricated completed-before or lost).
+      const completedBeforeUnestablished = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 200 })),
+        completionMarker: { index: 30, tag: 6_100 },
+      }));
+      assert.equal(completedBeforeUnestablished.activityAtDelivery, 'unknown');
+      assert.equal(completedBeforeUnestablished.postDelivery, 'unknown');
+      assert.equal(completedBeforeUnestablished.noCollateralQualified, false);
+      assert.equal(completedBeforeUnestablished.reason, 'activity-at-delivery-unobserved');
+      const completedBefore = evaluateSurvivalControl(survivalInput({
+        emittedLines: Array.from({ length: 30 }, (_, index) => ({ index: index + 1, tag: index * 200 })),
+        completionMarker: { index: 30, tag: 6_100 },
+        completionBeforeDeliveryObserved: true,
+      }));
+      assert.equal(completedBefore.activityAtDelivery, 'completed-before');
+      assert.equal(completedBefore.noCollateralQualified, false);
+      assert.equal(completedBefore.reason, 'control-completed-before-delivery');
+      const unbound = evaluateSurvivalControl(survivalInput({ deliveryBoundTag: null }));
+      assert.equal(unbound.activityAtDelivery, 'unknown');
+      assert.equal(unbound.postDelivery, 'unknown');
+      assert.equal(unbound.noCollateralQualified, false);
+      assert.equal(unbound.reason, 'delivery-bound-unestablished');
+      const neverStarted = evaluateSurvivalControl(survivalInput({ emittedLines: null }));
+      assert.equal(neverStarted.started, false);
+      assert.equal(neverStarted.noCollateralQualified, false);
+      assert.equal(neverStarted.reason, 'control-start-unobserved');
+    });
+
+    test('survival-control typed inputs are validated fail-closed', () => {
+      // Round 18: cross-line CONTRADICTIONS are named verdicts, not throws.
+      const decreasing = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 2, tag: 5_000 }, { index: 1, tag: 6_000 }],
+      }));
+      assert.equal(decreasing.noCollateralQualified, false);
+      assert.equal(decreasing.reason, 'contradictory-emission-evidence');
+      const duplicate = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 1, tag: 6_000 }, { index: 1, tag: 7_000 }],
+      }));
+      assert.equal(duplicate.noCollateralQualified, false);
+      assert.equal(duplicate.reason, 'contradictory-emission-evidence');
+      assert.throws(() => evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 31, tag: 6_000 }],
+      })), /lineCount/i, 'an index beyond the declared line count is refused');
+      // Round 18: a decreasing TAG is a cross-line contradiction (named
+      // verdict), while a non-finite tag stays a typed-input throw.
+      const decreasingTag = evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 1, tag: 7_000 }, { index: 2, tag: 6_000 }],
+      }));
+      assert.equal(decreasingTag.noCollateralQualified, false);
+      assert.equal(decreasingTag.reason, 'contradictory-emission-evidence');
+      assert.throws(() => evaluateSurvivalControl(survivalInput({
+        emittedLines: [{ index: 1, tag: Number.NaN }],
+      })), /tag/i, 'a non-finite emission tag is refused');
+      assert.throws(() => evaluateSurvivalControl(survivalInput({ deliveryBoundTag: 'soon' })), /deliveryBoundTag/i);
+    });
+
+    const settlementInput = (over = {}) => ({
+      delivery: {
+        delivered: true,
+        exactTargetMatch: true,
+        aliasResolved: true,
+        terminalBeforeInterrupt: false,
+        deliverySent: true,
+        previousStatusOnly: false,
+        unreadableContinuation: false,
+        pendingWindowConfirmed: true,
+      },
+      turnSettled: true,
+      deliveryToSettlementMs: 5_000,
+      companionOutcome: 'ceased',
+      durableObligations: 'settled',
+      cleanupKill: false,
+      survivalControl: evaluateSurvivalControl(survivalInput({
+        emittedLines: [...Array.from({ length: 12 }, (_, index) => ({ index: index + 1, tag: index * 900 })), { index: 13, tag: 11_000 }],
+      })),
+      terminalWinner: 'succeeded',
+      naturalCompletionObserved: false,
+      statusObservationTimeoutOnly: false,
+      ...over,
+    });
+
+    test('the fully-established native settlement qualifies with the production terminal winner passed through untouched', () => {
+      const result = evaluateNativeInterruptionSettlement(settlementInput());
+      assert.equal(result.qualified, true);
+      assert.deepEqual(result.reasons, []);
+      assert.deepEqual(result.layers, { delivery: true, turnSettlement: true, companion: true, durableObligations: true, noCollateral: true });
+      assert.equal(result.terminalWinner, 'succeeded', 'the production winner is recorded, never coerced');
+    });
+
+    test('every mandated rejection fails the settlement closed', () => {
+      const rejections = [
+        ['delivery-target-unmatched', settlementInput({ delivery: { delivered: true, exactTargetMatch: false, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['alias-unresolved', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: false, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['alias-unresolved', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: null, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['terminal-before-interrupt', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: true, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: false } })],
+        ['delivery-unsent', settlementInput({ delivery: { delivered: false, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: false, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['delivery-not-established', settlementInput({ delivery: { delivered: null, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: null, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['previous-status-snapshot-only', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: true, unreadableContinuation: false, pendingWindowConfirmed: true } })],
+        ['unreadable-continuation', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: true, pendingWindowConfirmed: true } })],
+        ['pending-window-unconfirmed', settlementInput({ delivery: { delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: false } })],
+        ['turn-settlement-unobserved', settlementInput({ turnSettled: false })],
+        ['turn-settlement-unobserved', settlementInput({ turnSettled: null })],
+        ['companion-still-live-unsettled', settlementInput({ companionOutcome: 'survived-unsettled' })],
+        ['companion-outcome-unobserved', settlementInput({ companionOutcome: null })],
+        ['durable-obligations-unresolved', settlementInput({ durableObligations: 'unresolved' })],
+        ['durable-obligations-unobserved', settlementInput({ durableObligations: null })],
+        ['cleanup-termination-is-not-native-settlement', settlementInput({ cleanupKill: true })],
+        ['survival-control-unadjudicated', settlementInput({ survivalControl: null })],
+        ['collateral-control-not-qualified', settlementInput({ survivalControl: evaluateSurvivalControl(survivalInput({})) })],
+        ['natural-completion-misclassified-as-cancelled', settlementInput({ terminalWinner: 'cancelled', naturalCompletionObserved: true })],
+        ['observation-timeout-is-not-control-loss', settlementInput({ statusObservationTimeoutOnly: true, survivalControl: evaluateSurvivalControl(survivalInput({ postDeliveryRead: { occurred: true, readable: true, returnedLines: false }, controlExitObserved: true })) })],
+      ];
+      for (const [reason, input] of rejections) {
+        const result = evaluateNativeInterruptionSettlement(input);
+        assert.equal(result.qualified, false, `expected rejection ${reason}`);
+        assert.ok(result.reasons.includes(reason), `reasons must include ${reason}: ${JSON.stringify(result.reasons)}`);
+        assert.equal(typeof result.terminalWinner, typeof input.terminalWinner === 'string' ? 'string' : 'object',
+          'the terminal winner passes through every rejection untouched');
+      }
+      // The observation-timeout downgrade must NOT duplicate the generic
+      // collateral reason: the exact array is pinned. The control's loss
+      // state rests on the READABLE post-delivery read's INDEPENDENT exit
+      // evidence (round 8) — invocation or a bare readable empty result
+      // never establishes 'lost'.
+      const timeoutOnly = evaluateNativeInterruptionSettlement(settlementInput({
+        statusObservationTimeoutOnly: true,
+        survivalControl: evaluateSurvivalControl(survivalInput({ postDeliveryRead: { occurred: true, readable: true, returnedLines: false }, controlExitObserved: true })),
+      }));
+      assert.deepEqual(timeoutOnly.reasons, ['observation-timeout-is-not-control-loss'],
+        'the invalid-loss downgrade dedupes the generic collateral reason');
+    });
+
+    test('unknown delivery prerequisites never qualify settlement (codex review round 4)', () => {
+      const base = settlementInput();
+      // deliverySent unknown alone: actual dispatch was not established.
+      const nullSent = evaluateNativeInterruptionSettlement({ ...base, delivery: { ...base.delivery, deliverySent: null } });
+      assert.equal(nullSent.qualified, false);
+      assert.ok(nullSent.reasons.includes('delivery-dispatch-unestablished'), JSON.stringify(nullSent.reasons));
+      assert.equal(nullSent.layers.delivery, false);
+      // terminalBeforeInterrupt unknown alone: nonterminal targeting was not
+      // established.
+      const nullTerminal = evaluateNativeInterruptionSettlement({ ...base, delivery: { ...base.delivery, terminalBeforeInterrupt: null } });
+      assert.equal(nullTerminal.qualified, false);
+      assert.ok(nullTerminal.reasons.includes('terminal-state-unestablished'), JSON.stringify(nullTerminal.reasons));
+      assert.equal(nullTerminal.layers.delivery, false);
+      // Both unknown: both per-fact reasons appear.
+      const bothNull = evaluateNativeInterruptionSettlement({ ...base, delivery: { ...base.delivery, deliverySent: null, terminalBeforeInterrupt: null } });
+      assert.equal(bothNull.qualified, false);
+      assert.ok(bothNull.reasons.includes('delivery-dispatch-unestablished'));
+      assert.ok(bothNull.reasons.includes('terminal-state-unestablished'));
+    });
+
+    test('an unobserved terminal winner never qualifies settlement (codex review round 7)', () => {
+      const base = settlementInput();
+      // Every other prerequisite positive but the exact durable terminal
+      // outcome unobserved: NOT qualified, explicit reason.
+      const nullWinner = evaluateNativeInterruptionSettlement({ ...base, terminalWinner: null });
+      assert.equal(nullWinner.qualified, false);
+      assert.ok(nullWinner.reasons.includes('terminal-winner-unobserved'), JSON.stringify(nullWinner.reasons));
+      assert.equal(nullWinner.terminalWinner, null, 'the unobserved winner passes through as null, never fabricated');
+      // Observed production winners keep their existing semantics: the
+      // natural-completion vs cancellation winner/error distinctions are
+      // untouched, and an observed winner qualifies as before.
+      const cancelledWinner = evaluateNativeInterruptionSettlement({ ...base, terminalWinner: 'cancelled' });
+      assert.equal(cancelledWinner.qualified, true);
+      assert.equal(cancelledWinner.terminalWinner, 'cancelled');
+      const failedWinner = evaluateNativeInterruptionSettlement({ ...base, terminalWinner: 'failed' });
+      assert.equal(failedWinner.qualified, true);
+      assert.equal(failedWinner.terminalWinner, 'failed');
+      // The natural-completion misclassification rejection still fires on an
+      // OBSERVED cancelled winner (unchanged production semantics).
+      const misclassified = evaluateNativeInterruptionSettlement({ ...base, terminalWinner: 'cancelled', naturalCompletionObserved: true });
+      assert.equal(misclassified.qualified, false);
+      assert.ok(misclassified.reasons.includes('natural-completion-misclassified-as-cancelled'));
+    });
+
+    test('settlement qualification requires the measured latency within the §16.5 responsiveness bound (round-8 review fix)', async () => {
+      // Codex round-8 review fix: `turnSettled` alone cannot distinguish
+      // RESPONSIVE settlement from eventual settlement — the measured
+      // delivery-to-settlement latency is a REQUIRED conjunct. Unknown/null
+      // ⇒ `settlement-latency-unestablished`; over §16.5's frozen 60000-ms
+      // responsiveness bound ⇒ `settlement-latency-over-bound`; finite and
+      // within the bound ⇒ the responsiveness conjunct passes.
+      const { RESPONSIVENESS_BOUND_MS } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      assert.equal(RESPONSIVENESS_BOUND_MS, 60_000, 'the frozen §16.5 responsiveness bound');
+      // Unknown latency: every other fact positive — NOT qualified.
+      const unestablished = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: null }));
+      assert.equal(unestablished.qualified, false, 'an unestablished latency never qualifies Gate D');
+      assert.ok(unestablished.reasons.includes('settlement-latency-unestablished'), JSON.stringify(unestablished.reasons));
+      assert.equal(unestablished.layers.turnSettlement, false, 'the turn-settlement layer includes the responsiveness conjunct');
+      // Over the bound: NOT qualified with the named reason.
+      const overBound = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 61_000 }));
+      assert.equal(overBound.qualified, false, 'settlement slower than the §16.5 bound never qualifies');
+      assert.ok(overBound.reasons.includes('settlement-latency-over-bound'), JSON.stringify(overBound.reasons));
+      assert.equal(overBound.layers.turnSettlement, false);
+      // Exactly at the bound and below it: the conjunct passes.
+      const atBound = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 60_000 }));
+      assert.equal(atBound.qualified, true);
+      assert.deepEqual(atBound.reasons, []);
+      assert.equal(atBound.layers.turnSettlement, true);
+      const responsive = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 5_000 }));
+      assert.equal(responsive.qualified, true);
+      assert.equal(responsive.layers.turnSettlement, true);
+      // The absent (legacy) fact shape counts as unknown: fail closed.
+      const absent = { ...settlementInput() };
+      delete absent.deliveryToSettlementMs;
+      const absentResult = evaluateNativeInterruptionSettlement(absent);
+      assert.equal(absentResult.qualified, false);
+      assert.ok(absentResult.reasons.includes('settlement-latency-unestablished'));
+      // The latency is a typed safe-integer-or-null input.
+      assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 'soon' })), /deliveryToSettlementMs/i);
+      assert.throws(() => evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 1_500.5 })), /deliveryToSettlementMs/i);
+      // Codex round-11 review fix: settlement cannot precede delivery — a
+      // NEGATIVE latency is contradictory evidence and never qualifies,
+      // however positive every other fact is.
+      const negative = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: -1 }));
+      assert.equal(negative.qualified, false, 'a negative latency never qualifies Gate D');
+      assert.ok(negative.reasons.includes('settlement-latency-contradictory'), JSON.stringify(negative.reasons));
+      assert.equal(negative.layers.turnSettlement, false, 'the turn-settlement layer excludes contradictory latencies');
+      // ZERO is accepted: same-timestamp rounding (the settlement event
+      // sharing the delivery's rollout timestamp) is plausible and
+      // contradictory evidence requires a strictly-negative duration.
+      const zero = evaluateNativeInterruptionSettlement(settlementInput({ deliveryToSettlementMs: 0 }));
+      assert.equal(zero.qualified, true, 'a zero latency (same-timestamp rounding) qualifies');
+      assert.deepEqual(zero.reasons, []);
+      assert.equal(zero.layers.turnSettlement, true);
+    });
+  });
+
+// Round-9 review fix: the cleanup boundary applies to EXIT-CODE settlements
+// too — a pending poll resolved by an exit code at/after the recorded
+// cleanup boundary is the cleanup's resolution, never the delivery's native
+// settlement, and the survival delivery bound stays ungrounded.
+describe('cleanup-boundary attribution for exit-code settlements (round-9 review fix)', async () => {
+  const { mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
+  const { extractSurvivalControlFacts } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+  const CHILD_THREAD = 'a1b2c3d4-1111-4222-8333-444455556666';
+  const LAUNCHER = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+  const BASE_MS = 1_700_000_000_000;
+  const CONTROL_PATH = '/private/tmp/sc-fixture/survival-control.mjs';
+  const at = (offsetMs, payload) => ({ type: 'response_item', timestamp: BASE_MS + offsetMs, payload });
+  const childMeta = () => ({ type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: 'p1', source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_task_1' } } } } });
+  const parentMeta = () => ({ type: 'session_meta', payload: { id: 'p1' } });
+  const wrapped = (callId, value, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify(value)}); text(JSON.stringify(r))\n` });
+  const output = (callId, result, offsetMs) => at(offsetMs, { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }] });
+  const wrappedRead = (callId, sessionId, offsetMs) => at(offsetMs, { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 1000 })}); text(JSON.stringify(r))\n` });
+  const controlLines = (count) => Array.from({ length: count }, (_, index) => `zcode-survival-control ${index + 1} ${index * 400}`).join('\n');
+
+  // The i1 shape with the pending poll resolved by an EXIT CODE at
+  // `exitAtMs`: the qualifying reads/emissions are unchanged.
+  const exitResolvedRollouts = (exitAtMs) => [[
+    childMeta(),
+    wrapped('rescue-launch', { cmd: LAUNCHER, workdir: '/w' }, 100),
+    output('rescue-launch', { output: '', session_id: 7 }, 200),
+    wrappedRead('rescue-poll', 7, 300),
+    output('rescue-poll', { output: 'waiting', session_id: 7 }, 400),
+    wrappedRead('rescue-poll-2', 7, 4_000),
+    at(exitAtMs, { type: 'custom_tool_call_output', call_id: 'rescue-poll-2', output: [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify({ output: 'done', exit_code: 0, session_id: 7 }) },
+    ] }),
+  ], [
+    parentMeta(),
+    wrapped('control-launch', { cmd: CONTROL_PATH, yield_time_ms: 1000 }, 1_000),
+    output('control-launch', { output: '', session_id: 44 }, 1_100),
+    wrappedRead('control-read-1', 44, 3_000),
+    output('control-read-1', { output: controlLines(12) }, 3_100),
+    at(4_400, { type: 'custom_tool_call', name: 'exec', call_id: 'int-1', input: `text(await tools.interrupt_agent({ "target": "${CHILD_THREAD}" }));\n` }),
+    at(4_500, { type: 'custom_tool_call_output', call_id: 'int-1', output: [{ type: 'input_text', text: JSON.stringify({ previous_status: 'running' }) }] }),
+    wrappedRead('control-read-2', 44, 6_000),
+    output('control-read-2', { output: controlLines(13) }, 6_100),
+  ]];
+  const heldWithBoundary = (cleanupBoundaryAtMs) => ({
+    endedBeforeGate: false, budgetExpired: true, processAliveWhileHeld: false,
+    result: { code: 0, stdout: '', stderr: '' },
+    cleanup: { label: 'budget-cleanup', releasedGate: true, verifiedProcessTerminated: true, codexTerminated: true, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs },
+    timeline: null,
+  });
+  const fixture = { workspace: '/w', codexHome: '/h', installedRoot: '/i', env: { HOME: '/h' }, survivalControlPath: CONTROL_PATH, record: { variant: 'candidate', appliedArtifacts: [] }, dispose: async () => {} };
+  const mapSurvival = (held, rollouts) => mapShellWaitLiveFacts(
+    { case: 'rescue-interrupt', waitPolicy: 'config-default', execDefaultMs: 3_600_000, survivalControlSelector: 'progress-terminal' },
+    held, { status: 'supported', inconclusive: null, facts: {
+      linkage: { childThreadId: CHILD_THREAD },
+      completion: { qualified: true, processExit: 0, publicResultMatched: true, decisiveEnd: 'process-exit', structuralViolationCount: 0 },
+    } },
+    null, null, fixture, rollouts, [], LAUNCHER,
+  );
+
+  test('an exit-code settlement at/after the cleanup boundary never grounds the survival bound (round-9 review fix)', async () => {
+    // Budget cleanup initiates at 5400; the pending poll resolves with an
+    // EXIT CODE at 5500 — after the boundary. The resolution is the
+    // cleanup's, whatever its response kind: the survival delivery bound
+    // stays unestablished and no-collateral fails closed (previously the
+    // exit grounded the bound and qualified).
+    const rollouts = exitResolvedRollouts(5_500);
+    const facts = mapSurvival(heldWithBoundary(BASE_MS + 5_400), rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, false, 'a cleanup-generated exit settlement never qualifies no-collateral');
+    assert.equal(facts.survivalControl.reason, 'delivery-bound-unestablished');
+    assert.equal(facts.survivalControlInputs.deliveryBoundTag, null, 'the survival delivery bound stays ungrounded');
+    // The interrupt's own exit-code settlement branch is likewise excluded.
+    assert.equal(facts.interrupt.settled, null, 'the cleanup-generated exit never reports native interrupt settlement');
+    assert.equal(facts.interrupt.deliveryToSettlementMs, null);
+    // The reader consumes the identity-bound interaction: no bound.
+    const interaction = (await import('../tools/shell-wait-probe/evidence.mjs')).extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER });
+    const readerFacts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: 60, interruptInteraction: interaction, exactTargetMatch: true, settledDeliveryCleanupGenerated: true, childThreadId: CHILD_THREAD });
+    assert.equal(readerFacts.deliveryBoundTag, null);
+  });
+
+  test('an exit-code settlement strictly before the cleanup boundary keeps full credit (round-9 review fix keeper)', async () => {
+    // The exit (5500) STRICTLY precedes the recorded cleanup boundary
+    // (5600): genuine native settlement — bound anchored, latency measured,
+    // no-collateral qualified.
+    const rollouts = exitResolvedRollouts(5_500);
+    const facts = mapSurvival(heldWithBoundary(BASE_MS + 5_600), rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, true, 'an exit-code settlement strictly before the boundary keeps full credit');
+    assert.equal(facts.survivalControl.reason, null);
+    assert.equal(facts.interrupt.settled, true);
+    assert.equal(facts.interrupt.settledBasis, 'terminal-observation-after-delivery');
+    assert.equal(facts.interrupt.deliveryToSettlementMs, 1_100, 'interrupt call 4400 → exit settlement 5500');
+    const readerFacts = extractSurvivalControlFacts(rollouts, CONTROL_PATH, { lineCount: 60, interruptInteraction: (await import('../tools/shell-wait-probe/evidence.mjs')).extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: LAUNCHER }), exactTargetMatch: true, childThreadId: CHILD_THREAD });
+    assert.equal(readerFacts.deliveryBoundTag, 4_500);
+  });
+
+  test('an exit-code settlement in a run with no cleanup kill keeps full credit (round-9 review fix keeper)', () => {
+    const rollouts = exitResolvedRollouts(5_500);
+    const heldNoKill = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: false,
+      result: { code: 0, stdout: '', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+      timeline: null,
+    };
+    const facts = mapSurvival(heldNoKill, rollouts);
+    assert.equal(facts.survivalControl.noCollateralQualified, true, 'a run with no cleanup kill keeps the existing bound semantics');
+    assert.equal(facts.interrupt.settled, true);
+  });
+});
 
 }
